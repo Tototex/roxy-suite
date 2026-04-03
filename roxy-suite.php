@@ -2,14 +2,14 @@
 /**
  * Plugin Name: Roxy Suite
  * Description: Unified management plugin for Newport Roxy — Show Tickets, Will Call, Event Booking, Member Check, Arcade, and Legacy NFC Redirect.
- * Version: 1.0.2
+ * Version: 1.0.3
  * Author: Newport Roxy (AI Team)
  * Update URI: https://github.com/Tototex/roxy-suite
  */
 
 if (!defined('ABSPATH')) exit;
 
-define('ROXY_SUITE_VERSION', '1.0.2');
+define('ROXY_SUITE_VERSION', '1.0.3');
 define('ROXY_SUITE_PATH', plugin_dir_path(__FILE__));
 define('ROXY_SUITE_URL', plugin_dir_url(__FILE__));
 
@@ -19,6 +19,9 @@ require_once ROXY_SUITE_PATH . 'includes/class-roxy-suite-updater.php';
 // ── Unified admin menu ─────────────────────────────────────────────────────────
 require_once ROXY_SUITE_PATH . 'includes/class-roxy-suite-admin.php';
 \RoxySuite\Admin::init();
+
+// ── Health check ───────────────────────────────────────────────────────────────
+require_once ROXY_SUITE_PATH . 'includes/class-roxy-suite-health.php';
 
 \RoxySuite\Updater::init([
     'plugin_file' => plugin_basename(__FILE__),
@@ -47,19 +50,8 @@ function roxy_suite_dashboard_page() {
     if (!current_user_can('manage_options')) return;
     ?>
     <div class="wrap">
-        <h1>Roxy Suite</h1>
-        <p style="color:#666;">All active modules are listed below. Click any link to open that section.</p>
-        <table class="widefat" style="max-width:560px;margin-top:16px;">
-            <thead><tr><th>Module</th><th>Admin Page</th></tr></thead>
-            <tbody>
-                <tr><td><strong>Will Call</strong></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=roxy-will-call')); ?>">Open Will Call</a></td></tr>
-                <tr><td><strong>Show Tickets</strong></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=roxy-st-settings')); ?>">Open Settings</a></td></tr>
-                <tr><td><strong>Event Booking</strong></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=roxy-eb')); ?>">Open Bookings</a></td></tr>
-                <tr><td><strong>Member Check</strong></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=roxy-scan-log')); ?>">Open Scan Log</a></td></tr>
-                <tr><td><strong>Arcade</strong></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=roxy-arcade-settings')); ?>">Open Settings</a></td></tr>
-            </tbody>
-        </table>
-        <p style="margin-top:24px;color:#888;font-size:12px;">Roxy Suite v<?php echo esc_html(ROXY_SUITE_VERSION); ?></p>
+        <h1>Roxy Suite — Dashboard</h1>
+        <?php \RoxySuite\Health::render(); ?>
     </div>
     <?php
 }
