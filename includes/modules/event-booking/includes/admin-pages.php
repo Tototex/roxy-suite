@@ -2,12 +2,8 @@
 if (!defined('ABSPATH')) exit;
 
 function roxy_eb_register_admin_pages() {
-    add_action('admin_menu', function () {
-        add_submenu_page('roxy-suite', 'Event Booking', 'Event Booking', 'manage_options', 'roxy-eb', 'roxy_eb_admin_bookings_page');
-        add_submenu_page('roxy-suite', 'Calendar Blocks', 'Calendar Blocks', 'manage_options', 'roxy-eb-blocks', 'roxy_eb_admin_blocks_page');
-        add_submenu_page('roxy-suite', 'EB Settings', 'EB Settings', 'manage_options', 'roxy-eb-settings', 'roxy_eb_admin_settings_page');
-        add_submenu_page('roxy-suite', 'Sling Logs', 'Sling Logs', 'manage_options', 'roxy-eb-sling-logs', 'roxy_eb_admin_sling_logs_page');
-    });
+    // Admin menu registration is handled by RoxySuite\Admin (class-roxy-suite-admin.php).
+    // The four render functions below are called directly from the tabbed Event Booking page.
 }
 
 function roxy_eb_admin_settings_page() {
@@ -187,7 +183,7 @@ function roxy_eb_admin_blocks_page() {
                     <td><?php echo esc_html($r['end_at']); ?></td>
                     <td><?php echo esc_html($r['type']); ?></td>
                     <td><?php echo esc_html($r['visibility'] ?? 'private'); ?></td>
-                    <td><?php $url = add_query_arg(['page' => 'roxy-eb-blocks', 'delete' => intval($r['id']), '_wpnonce' => wp_create_nonce('roxy_eb_del_block_' . intval($r['id']))], admin_url('admin.php')); ?><a class="button" href="<?php echo esc_url($url); ?>" onclick="return confirm('Delete this block?');">Delete</a></td>
+                    <td><?php $url = add_query_arg(['page' => 'roxy-event-booking', 'tab' => 'calendar', 'delete' => intval($r['id']), '_wpnonce' => wp_create_nonce('roxy_eb_del_block_' . intval($r['id']))], admin_url('admin.php')); ?><a class="button" href="<?php echo esc_url($url); ?>" onclick="return confirm('Delete this block?');">Delete</a></td>
                 </tr>
                 <?php endforeach; endif; ?>
             </tbody>
@@ -388,7 +384,7 @@ function roxy_eb_admin_bookings_page() {
         <p>Confirmed and invoice-pending bookings. Pizza reminders run until pizza is marked handled. Bookings are hidden from this list 4 hours after doors close unless you show archived.</p>
 
         <form method="get" style="margin:12px 0 16px;">
-            <input type="hidden" name="page" value="roxy-eb" />
+            <input type="hidden" name="page" value="roxy-event-booking" />
             <label>
                 <input type="checkbox" name="show_archived" value="1" <?php checked($show_archived); ?> onchange="this.form.submit()">
                 Show archived
@@ -408,7 +404,7 @@ if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'edit' && isse
 ?>
     <div class="card" style="max-width:980px; padding:16px; margin:12px 0;">
         <h2 style="margin-top:0;">Edit Booking #<?php echo esc_html($edit_id); ?></h2>
-        <form method="post" action="<?php echo esc_url(add_query_arg(['page'=>'roxy-eb','roxy_eb_action'=>'update','booking_id'=>$edit_id], admin_url('admin.php'))); ?>">
+        <form method="post" action="<?php echo esc_url(add_query_arg(['page'=>'roxy-event-booking','roxy_eb_action'=>'update','booking_id'=>$edit_id], admin_url('admin.php'))); ?>">
             <?php wp_nonce_field('roxy_eb_admin_edit_' . $edit_id); ?>
             <table class="form-table">
                 <tr><th scope="row"><label for="doors_open_date">Date</label></th><td><input type="date" id="doors_open_date" name="doors_open_date" value="<?php echo esc_attr($dateVal); ?>" required></td></tr>
@@ -430,7 +426,7 @@ if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'edit' && isse
                 <tr><th scope="row"><label for="notes_admin">Event notes</label></th><td><textarea id="notes_admin" name="notes_admin" rows="3" style="width:420px;max-width:100%;"><?php echo esc_textarea($b['notes_admin'] ?? ''); ?></textarea></td></tr>
                 <tr><th scope="row">Notify customer</th><td><label><input type="checkbox" name="email_customer" value="1"> Email customer about this change</label></td></tr>
             </table>
-            <p><button type="submit" class="button button-primary">Save changes</button> <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=roxy-eb' . ($show_archived ? '&show_archived=1' : ''))); ?>">Done</a></p>
+            <p><button type="submit" class="button button-primary">Save changes</button> <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=roxy-event-booking' . ($show_archived ? '&show_archived=1' : ''))); ?>">Done</a></p>
         </form>
     </div>
 <?php endif; endif; ?>
@@ -476,7 +472,7 @@ if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'edit' && isse
                         <td><?php echo esc_html($ss ?: '—'); ?></td>
                         <td>
                             <?php
-                                $base_args = ['page' => 'roxy-eb'];
+                                $base_args = ['page' => 'roxy-event-booking'];
                                 if ($show_archived) $base_args['show_archived'] = 1;
                             ?>
                             <?php if ($booking['status'] !== 'cancelled'): ?>
@@ -506,10 +502,11 @@ function roxy_eb_admin_sling_logs_page() {
     <div class="wrap">
         <h1>Sling Logs</h1>
         <form method="get" style="margin: 12px 0;">
-            <input type="hidden" name="page" value="roxy-eb-sling-logs" />
+            <input type="hidden" name="page" value="roxy-event-booking" />
+            <input type="hidden" name="tab" value="sling-logs" />
             <label>Booking ID: <input type="number" name="booking_id" value="<?php echo esc_attr($booking_filter ?: ''); ?>" min="0" /></label>
             <button class="button">Filter</button>
-            <?php if ($booking_filter): ?><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=roxy-eb-sling-logs')); ?>">Clear</a><?php endif; ?>
+            <?php if ($booking_filter): ?><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=roxy-event-booking&tab=sling-logs')); ?>">Clear</a><?php endif; ?>
         </form>
         <table class="widefat striped">
             <thead><tr><th>Time</th><th>Booking</th><th>Action</th><th>Endpoint</th><th>HTTP</th><th>Message</th></tr></thead>
@@ -517,7 +514,7 @@ function roxy_eb_admin_sling_logs_page() {
             <?php if (empty($rows)): ?><tr><td colspan="6">No logs found.</td></tr><?php else: foreach ($rows as $r): ?>
                 <tr>
                     <td><code><?php echo esc_html($r['created_at']); ?></code></td>
-                    <td><?php echo $r['booking_id'] ? '<a href="' . esc_url(admin_url('admin.php?page=roxy-eb&booking_id=' . intval($r['booking_id']))) . '">' . intval($r['booking_id']) . '</a>' : ''; ?></td>
+                    <td><?php echo $r['booking_id'] ? '<a href="' . esc_url(admin_url('admin.php?page=roxy-event-booking&booking_id=' . intval($r['booking_id']))) . '">' . intval($r['booking_id']) . '</a>' : ''; ?></td>
                     <td><?php echo esc_html($r['action']); ?></td>
                     <td><code><?php echo esc_html($r['endpoint']); ?></code></td>
                     <td><?php echo esc_html($r['http_code']); ?></td>

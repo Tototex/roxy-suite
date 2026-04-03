@@ -23,7 +23,6 @@ class Tickets {
     add_action('woocommerce_order_status_changed', [__CLASS__, 'on_order_changed'], 30, 1);
     add_action('woocommerce_refund_created', [__CLASS__, 'on_refund_created'], 30, 2);
 
-    add_action('admin_menu', [__CLASS__, 'admin_menu']);
     add_action('admin_post_roxy_st_check_in_ticket', [__CLASS__, 'handle_check_in']);
     add_action('admin_post_roxy_st_uncheck_in_ticket', [__CLASS__, 'handle_uncheck_in']);
     add_action('admin_enqueue_scripts', [__CLASS__, 'enqueue_admin_assets']);
@@ -51,39 +50,19 @@ class Tickets {
     ]);
   }
 
-  public static function admin_menu(): void {
-    add_submenu_page(
-      'roxy-suite',
-      'Door Mode',
-      'Door Mode',
-      'edit_posts',
-      'roxy-st-door-mode',
-      [__CLASS__, 'render_door_mode_page']
-    );
-
-    add_submenu_page(
-      'roxy-suite',
-      'Check-In',
-      'Check-In',
-      'edit_posts',
-      'roxy-st-check-in',
-      [__CLASS__, 'render_checkin_page']
-    );
-  }
-
   public static function enqueue_admin_assets(string $hook): void {
     $page = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : '';
-    $is_door_mode = ($page === 'roxy-st-door-mode');
-    $is_door_hook = ($hook === CPT::POST_TYPE . '_page_roxy-st-door-mode');
-    $is_checkin   = ($page === 'roxy-st-check-in');
-    $is_checkin_hook = ($hook === CPT::POST_TYPE . '_page_roxy-st-check-in');
+    $tab  = isset($_GET['tab'])  ? sanitize_key(wp_unslash($_GET['tab']))  : '';
+
+    $is_door_mode = ($page === 'roxy-show-tickets' && $tab === 'door-mode');
+    $is_checkin   = ($page === 'roxy-show-tickets' && $tab === 'check-in');
 
     // Pre-load jsQR on both scanner pages so it is ready before any user gesture fires
-    if ($is_door_mode || $is_door_hook || $is_checkin || $is_checkin_hook) {
+    if ($is_door_mode || $is_checkin) {
       wp_enqueue_script('jsqr', 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js', [], '1.4.0', true);
     }
 
-    if (!$is_door_mode && !$is_door_hook) {
+    if (!$is_door_mode) {
       return;
     }
 
@@ -93,8 +72,8 @@ class Tickets {
       'ajaxUrl' => admin_url('admin-ajax.php'),
       'nonce' => wp_create_nonce('roxy_st_door_mode'),
       'checkInNonce' => wp_create_nonce('roxy_st_door_checkin'),
-      'manualPage' => add_query_arg(['post_type' => CPT::POST_TYPE, 'page' => 'roxy-st-check-in'], admin_url('edit.php')),
-      'doorPage' => add_query_arg(['post_type' => CPT::POST_TYPE, 'page' => 'roxy-st-door-mode'], admin_url('edit.php')),
+      'manualPage' => admin_url('admin.php?page=roxy-show-tickets&tab=check-in'),
+      'doorPage'   => admin_url('admin.php?page=roxy-show-tickets&tab=door-mode'),
       'allEventsLabel' => 'All Events',
       'noEventSelectedText' => 'Showing all events. Select a specific event to enable wrong-ticket protection and live attendance.',
       'nfcUnsupportedText' => 'NFC scanning is not supported on this device or browser. Use QR or manual lookup.',
@@ -528,7 +507,7 @@ class Tickets {
     echo '</div></section>';
   }
 
-  public static function render_door_mode_page(): void {
+  public static function render_door_mode_page(bool $wrap = true): void {
     if (!current_user_can('edit_posts')) {
       wp_die('You do not have permission to access this page.');
     }
@@ -538,7 +517,7 @@ class Tickets {
     $ticket = $manual_token !== '' ? self::get_ticket_by_token($manual_token) : null;
     $door_showings = self::get_door_mode_showings();
 
-    echo '<div class="wrap roxy-door-wrap">';
+    if ($wrap) echo '<div class="wrap roxy-door-wrap">';
     echo '<div class="roxy-door-shell">';
     echo '<div class="roxy-door-header">';
     echo '<div>';
@@ -546,8 +525,8 @@ class Tickets {
     echo '<p>Camera-first scanning for phones and tablets. Scan a ticket, review the result, then tap Admit.</p>';
     echo '</div>';
     echo '<div class="roxy-door-links">';
-    echo '<a href="' . esc_url(add_query_arg(['post_type' => CPT::POST_TYPE, 'page' => 'roxy-st-check-in'], admin_url('edit.php'))) . '" class="button">Manual Check-In</a>';
-    echo '<a href="' . esc_url(add_query_arg(['post_type' => CPT::POST_TYPE, 'page' => 'roxy-st-door-mode'], admin_url('edit.php'))) . '" class="button">Reset</a>';
+    echo '<a href="' . esc_url(admin_url('admin.php?page=roxy-show-tickets&tab=check-in')) . '" class="button">Manual Check-In</a>';
+    echo '<a href="' . esc_url(admin_url('admin.php?page=roxy-show-tickets&tab=door-mode')) . '" class="button">Reset</a>';
     echo '</div>';
     echo '</div>';
 
@@ -695,7 +674,7 @@ class Tickets {
       echo '<button type="button" class="button roxy-door-undo" data-ticket-id="' . esc_attr((string) $payload['ticket_id']) . '" data-undo="1">Undo Check-In</button>';
     }
     echo '<button type="button" class="button roxy-door-rescan">Rescan</button>';
-    echo '<a href="' . esc_url(add_query_arg(['post_type' => CPT::POST_TYPE, 'page' => 'roxy-st-check-in', 's' => (string) ($payload['token'] ?? '')], admin_url('edit.php'))) . '" class="button">Manual Check-In</a>';
+    echo '<a href="' . esc_url(add_query_arg(['page' => 'roxy-show-tickets', 'tab' => 'check-in', 's' => (string) ($payload['token'] ?? '')], admin_url('admin.php'))) . '" class="button">Manual Check-In</a>';
     echo '</div>';
     echo '</div>';
   }
@@ -710,12 +689,12 @@ class Tickets {
     }
     echo '<div class="roxy-door-result-actions">';
     echo '<button type="button" class="button button-primary roxy-door-rescan">Try Again</button>';
-    echo '<a href="' . esc_url(add_query_arg(['post_type' => CPT::POST_TYPE, 'page' => 'roxy-st-check-in', 's' => $token], admin_url('edit.php'))) . '" class="button">Open in Roxy Check-In</a>';
+    echo '<a href="' . esc_url(add_query_arg(['page' => 'roxy-show-tickets', 'tab' => 'check-in', 's' => $token], admin_url('admin.php'))) . '" class="button">Open in Roxy Check-In</a>';
     echo '</div>';
     echo '</div>';
   }
 
-  public static function render_checkin_page(): void {
+  public static function render_checkin_page(bool $wrap = true): void {
     if (!current_user_can('edit_posts')) {
       wp_die('You do not have permission to access this page.');
     }
@@ -730,12 +709,12 @@ class Tickets {
       $results = self::search_tickets($search);
     }
 
-    echo '<div class="wrap"><h1>Roxy Check-In</h1>';
+    if ($wrap) echo '<div class="wrap"><h1>Roxy Check-In</h1>';
     echo '<p>Scan or paste a ticket token, or search by order #, name, or email.</p>';
     echo '<div style="max-width:900px;background:#111;color:#fff;border-radius:14px;padding:16px;margin:16px 0">';
     echo '<form id="roxy-ticket-search-form" method="get" action="" style="display:grid;gap:12px;grid-template-columns:1fr auto;align-items:end">';
-    echo '<input type="hidden" name="post_type" value="' . esc_attr(CPT::POST_TYPE) . '">';
-    echo '<input type="hidden" name="page" value="roxy-st-check-in">';
+    echo '<input type="hidden" name="page" value="roxy-show-tickets">';
+    echo '<input type="hidden" name="tab" value="check-in">';
     echo '<label for="roxy-ticket-search" style="font-weight:700">Ticket Search</label>';
     echo '<input id="roxy-ticket-search" type="text" name="s" value="' . esc_attr($search ?: $token) . '" placeholder="Token, order #, name, or email" style="width:100%;max-width:520px;padding:12px;border-radius:10px;border:1px solid #444;background:#222;color:#fff">';
     echo '<button type="submit" class="button button-primary" style="height:46px">Search</button>';
@@ -756,7 +735,7 @@ class Tickets {
       echo '<div class="notice notice-warning"><p>No matching tickets found.</p></div>';
     }
 
-    echo '</div>';
+    if ($wrap) echo '</div>';
     ?>
 <script>
 (function(){
@@ -898,7 +877,7 @@ class Tickets {
     $action = $checked_in ? 'roxy_st_uncheck_in_ticket' : 'roxy_st_check_in_ticket';
     $action_label = $checked_in ? 'Undo Check-In' : 'Check In';
     $current_token = isset($_GET['ticket_token']) && $_GET['ticket_token'] !== '' ? sanitize_text_field(wp_unslash($_GET['ticket_token'])) : '';
-    $action_url = self::ticket_action_url($action, $ticket_id, 'roxy-st-check-in', $current_token);
+    $action_url = self::ticket_action_url($action, $ticket_id, 'roxy-show-tickets', $current_token, 'check-in');
 
     echo '<div style="border:1px solid #ddd;border-radius:14px;padding:16px;background:#fff">';
     echo '<div style="font-size:22px;font-weight:800;color:' . esc_attr(self::state_color($state, $checked_in)) . ';margin-bottom:8px">' . esc_html(self::state_label($state, $checked_in)) . '</div>';
@@ -919,12 +898,15 @@ class Tickets {
     echo '</div>';
   }
 
-  private static function ticket_action_url(string $action, int $ticket_id, string $page, string $token = ''): string {
+  private static function ticket_action_url(string $action, int $ticket_id, string $page, string $token = '', string $tab = ''): string {
     $query = [
-      'action' => $action,
+      'action'    => $action,
       'ticket_id' => $ticket_id,
-      'page' => $page,
+      'page'      => $page,
     ];
+    if ($tab !== '') {
+      $query['tab'] = $tab;
+    }
     if (isset($_GET['s']) && $_GET['s'] !== '') {
       $query['s'] = sanitize_text_field(wp_unslash($_GET['s']));
     }
@@ -957,12 +939,12 @@ class Tickets {
       self::undo_check_in_ticket($ticket_id);
     }
 
-    $redirect_page = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : 'roxy-st-check-in';
-    if (!in_array($redirect_page, ['roxy-st-check-in', 'roxy-st-door-mode'], true)) {
-      $redirect_page = 'roxy-st-check-in';
+    $tab = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : 'check-in';
+    if (!in_array($tab, ['check-in', 'door-mode'], true)) {
+      $tab = 'check-in';
     }
 
-    $redirect_args = ['post_type' => CPT::POST_TYPE, 'page' => $redirect_page];
+    $redirect_args = ['page' => 'roxy-show-tickets', 'tab' => $tab];
     if (isset($_GET['s']) && $_GET['s'] !== '') {
       $redirect_args['s'] = sanitize_text_field(wp_unslash($_GET['s']));
     } elseif (isset($_GET['ticket_token']) && $_GET['ticket_token'] !== '') {
@@ -970,7 +952,7 @@ class Tickets {
     } else {
       $redirect_args['ticket_token'] = (string) get_post_meta($ticket_id, self::META_TOKEN, true);
     }
-    $redirect = add_query_arg($redirect_args, admin_url('edit.php'));
+    $redirect = add_query_arg($redirect_args, admin_url('admin.php'));
     wp_safe_redirect($redirect);
     exit;
   }

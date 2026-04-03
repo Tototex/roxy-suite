@@ -7,7 +7,6 @@ class Settings {
   const OPTION_KEY = 'roxy_st_settings';
 
   public static function init(): void {
-    add_action('admin_menu', [__CLASS__, 'admin_menu']);
     add_action('admin_init', [__CLASS__, 'register_settings']);
   }
 
@@ -42,17 +41,6 @@ class Settings {
 
   public static function get_default_capacity(): int {
     return max(0, (int) self::get('default_capacity', '250'));
-  }
-
-  public static function admin_menu(): void {
-    add_submenu_page(
-      'roxy-suite',
-      'Show Tickets',
-      'Show Tickets',
-      'manage_options',
-      'roxy-st-settings',
-      [__CLASS__, 'render_page']
-    );
   }
 
   public static function register_settings(): void {
@@ -132,15 +120,14 @@ class Settings {
     }
   }
 
-  public static function render_page(): void {
+  public static function render_page(bool $wrap = true): void {
     if (!current_user_can('manage_options')) return;
-    echo '<div class="wrap">';
-    echo '<h1>Roxy Showings Settings</h1>';
+    if ($wrap) echo '<div class="wrap"><h1>Show Tickets — Settings</h1>';
     echo '<form method="post" action="options.php">';
     settings_fields(self::OPTION_KEY);
     do_settings_sections('roxy-st-settings');
     submit_button();
     echo '</form>';
-    echo '</div>';
+    if ($wrap) echo '</div>';
   }
 }

@@ -42,6 +42,7 @@ class CPT {
       'supports' => ['title', 'editor', 'thumbnail', 'excerpt'],
       'menu_icon' => 'dashicons-tickets-alt',
       'show_in_rest' => true,
+      'show_in_menu' => false,
     ]);
 
     register_taxonomy('roxy_show_type', self::POST_TYPE, [
@@ -128,7 +129,7 @@ class CPT {
     echo '</select>';
 
     // Notes — one shown at a time based on profile; initial display set by PHP to avoid flash
-    echo '<div class="roxy-help" id="roxy-ticket-products-note" style="display:' . ($profile === 'free_event' ? 'none' : '') . '"><strong>Note:</strong> Ticket products are auto-created/updated when you save this showing. Global defaults can be edited under <a href="' . esc_url(admin_url('edit.php?post_type=' . self::POST_TYPE . '&page=roxy-st-settings')) . '">Roxy Showings → Settings</a>.</div>';
+    echo '<div class="roxy-help" id="roxy-ticket-products-note" style="display:' . ($profile === 'free_event' ? 'none' : '') . '"><strong>Note:</strong> Ticket products are auto-created/updated when you save this showing. Global defaults can be edited under <a href="' . esc_url(admin_url('admin.php?page=roxy-show-tickets')) . '">Show Tickets → Settings</a>.</div>';
     echo '<div class="roxy-help" id="roxy-free-event-note" style="display:' . ($profile === 'free_event' ? '' : 'none') . '"><strong>Free Event:</strong> No ticket products will be created. This showing appears in the public listing with &ldquo;Free Admission&rdquo; shown instead of a ticket form. Any previously created ticket products for this showing will be trashed on save.</div>';
     echo '<script>document.addEventListener("DOMContentLoaded",function(){var sel=document.getElementById("roxy_pricing_profile");var live=document.getElementById("roxy-live-tier-fields");var tNote=document.getElementById("roxy-ticket-products-note");var fNote=document.getElementById("roxy-free-event-note");if(!sel)return;function upd(){var v=sel.value;if(live)live.style.display=(v==="live_event")?"contents":"none";if(tNote)tNote.style.display=(v==="free_event")?"none":"";if(fNote)fNote.style.display=(v==="free_event")?"":"none";}sel.addEventListener("change",upd);upd();});</script>';
 
