@@ -14,7 +14,7 @@ define('ROXY_SUITE_PATH', plugin_dir_path(__FILE__));
 define('ROXY_SUITE_URL', plugin_dir_url(__FILE__));
 
 // ── Roxy Grosses constants ─────────────────────────────────────────────────────
-define('ROXY_GROSSES_VER',  '0.2.0');
+define('ROXY_GROSSES_VER',  '0.2.1');
 define('ROXY_GROSSES_PATH', ROXY_SUITE_PATH . 'includes/modules/grosses/');
 define('ROXY_GROSSES_URL',  ROXY_SUITE_URL  . 'includes/modules/grosses/');
 
