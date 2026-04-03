@@ -1,0 +1,36 @@
+.roxy-arcade { display:flex; gap:16px; flex-wrap:wrap; }
+.roxy-arcade__left { flex: 1 1 640px; min-width: 320px; }
+.roxy-arcade__right { flex: 0 0 320px; min-width: 280px; display:flex; flex-direction:column; gap:12px; }
+
+.roxy-arcade__header { margin-bottom: 8px; }
+.roxy-title { margin: 0 0 6px; font-size: 42px; font-weight: 800; color: #fff !important; }
+.roxy-subtitle { font-size: 13px; opacity: 0.95; color: #fff !important; }
+
+.roxy-arcade__tabs { display:flex; gap:8px; flex-wrap:wrap; margin: 14px 0; }
+.roxy-tab { padding:10px 12px; border:2px solid #fff; background: transparent; border-radius:2px; cursor:pointer; color:#fff !important; font-weight:700; }
+.roxy-tab.is-active { background:#fff; color:#111 !important; }
+
+.roxy-arcade__canvasWrap { border:1px solid rgba(255,255,255,.25); border-radius:14px; overflow:hidden; background:#0b0b0b; }
+#roxyArcadeCanvas { width:100%; height:auto; display:block; }
+
+.roxy-arcade__controls { margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.roxy-btn { padding:10px 14px; border-radius:0; border:2px solid #111; background:#111; color:#fff !important; cursor:pointer; font-weight:700; }
+.roxy-btn--ghost { background:#fff; color:#111 !important; border-color:#111; }
+.roxy-hint { font-size: 12px; opacity: 1 !important; color: #ddd !important; }
+
+.roxy-card { border:0; border-radius:12px; padding:14px; background:#fff; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+.roxy-card h3 { margin-top: 0; }
+.roxy-board { font-size:14px; color:#111 !important; }
+.roxy-board ol { margin: 8px 0 0 18px; }
+.roxy-board li { margin: 4px 0; }
+.roxy-small { font-size:12px; opacity:.92; margin-top:8px; line-height: 1.35; color:#111 !important; }
+
+.roxy-alert { padding:10px 12px; border-radius:10px; background:#fff6d8; border:1px solid #f2d089; color:#111 !important; }
+.roxy-alert--ok { background:#eaffea; border-color:#a6e3a6; color:#111 !important; }
+
+.roxy-arcade__status { margin: 8px 0; font-size: 14px; min-height: 18px; color:#fff !important; }
+
+/* Force readability in case theme makes text black/white unexpectedly */
+.roxy-arcade a { color:#fff; text-decoration: underline; }
+.roxy-arcade a:hover { opacity:.85; }
+.roxy-arcade__right .roxy-card a { color:#111; }
