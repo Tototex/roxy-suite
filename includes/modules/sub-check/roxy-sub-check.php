@@ -74,7 +74,7 @@ class Roxy_Sub_Check {
   }
 
   private static function can_access_member_check(): bool {
-    return current_user_can('manage_woocommerce') || current_user_can('edit_posts');
+    return current_user_can('manage_woocommerce') || current_user_can('manage_options');
   }
 
   public static function template_redirect() {
