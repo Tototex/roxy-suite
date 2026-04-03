@@ -125,17 +125,21 @@ class Health {
 
     private static function module_member_check_structural(): array {
         global $wpdb;
-        $table    = $wpdb->prefix . 'roxy_member_scans';
-        $t_ok     = self::table_exists($table);
-        $page_ok  = (get_page_by_path('member-check') instanceof \WP_Post);
-        $wcs      = class_exists('WC_Subscriptions') || class_exists('WC_Subscriptions_Manager');
+        $table  = $wpdb->prefix . 'roxy_member_scans';
+        $t_ok   = self::table_exists($table);
+
+        // /member-check/ is a custom rewrite rule, not a real WP page
+        $rules    = get_option('rewrite_rules', []);
+        $rule_ok  = is_array($rules) && isset($rules['^member-check/?$']);
+
+        $wcs = class_exists('WC_Subscriptions') || class_exists('WC_Subscriptions_Manager');
 
         return self::module('Member Check', admin_url('admin.php?page=roxy-scan-log'), [
             self::item($table, $t_ok ? 'Exists' : 'Missing',
                 $t_ok ? self::PASS : self::FAIL),
-            self::item('/member-check/ page', $page_ok ? 'Found' : 'Missing',
-                $page_ok ? self::PASS : self::FAIL,
-                $page_ok ? '' : 'Create a page with slug "member-check"'),
+            self::item('/member-check/ rewrite rule', $rule_ok ? 'Active' : 'Missing',
+                $rule_ok ? self::PASS : self::FAIL,
+                $rule_ok ? '' : 'Go to Settings → Permalinks and click Save Changes to flush rewrite rules'),
             self::item('WooCommerce Subscriptions', $wcs ? 'Active' : 'Not found',
                 $wcs ? self::PASS : self::WARN,
                 $wcs ? '' : 'Required for subscription lookups'),
