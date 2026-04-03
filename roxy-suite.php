@@ -1,17 +1,22 @@
 <?php
 /**
  * Plugin Name: Roxy Suite
- * Description: Unified management plugin for Newport Roxy — Show Tickets, Will Call, Event Booking, Member Check, Arcade, and Legacy NFC Redirect.
- * Version: 1.0.5
+ * Description: Unified management plugin for Newport Roxy — Show Tickets, Will Call, Event Booking, Member Check, Arcade, Legacy NFC Redirect, and Grosses.
+ * Version: 1.0.6
  * Author: Newport Roxy (AI Team)
  * Update URI: https://github.com/Tototex/roxy-suite
  */
 
 if (!defined('ABSPATH')) exit;
 
-define('ROXY_SUITE_VERSION', '1.0.5');
+define('ROXY_SUITE_VERSION', '1.0.6');
 define('ROXY_SUITE_PATH', plugin_dir_path(__FILE__));
 define('ROXY_SUITE_URL', plugin_dir_url(__FILE__));
+
+// ── Roxy Grosses constants ─────────────────────────────────────────────────────
+define('ROXY_GROSSES_VER',  '0.2.0');
+define('ROXY_GROSSES_PATH', ROXY_SUITE_PATH . 'includes/modules/grosses/');
+define('ROXY_GROSSES_URL',  ROXY_SUITE_URL  . 'includes/modules/grosses/');
 
 // ── Shared auto-updater ────────────────────────────────────────────────────────
 require_once ROXY_SUITE_PATH . 'includes/class-roxy-suite-updater.php';
@@ -23,6 +28,25 @@ require_once ROXY_SUITE_PATH . 'includes/class-roxy-suite-admin.php';
 // ── Health check ───────────────────────────────────────────────────────────────
 require_once ROXY_SUITE_PATH . 'includes/class-roxy-suite-health.php';
 add_action('wp_ajax_roxy_suite_run_tests', ['\\RoxySuite\\Health', 'ajax_run_tests']);
+
+// ── Module toggle AJAX ─────────────────────────────────────────────────────────
+add_action('wp_ajax_roxy_suite_toggle_module', function () {
+    check_ajax_referer('roxy_suite_toggle_module', 'nonce');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error('Insufficient permissions', 403);
+    }
+    $module  = sanitize_key((string) ($_POST['module'] ?? ''));
+    $enabled = isset($_POST['enabled']) && $_POST['enabled'] !== '0' && $_POST['enabled'] !== '';
+    $allowed = ['arcade', 'sub_check', 'will_call', 'show_tickets', 'event_booking', 'grosses'];
+    if (!in_array($module, $allowed, true)) {
+        wp_send_json_error('Unknown module', 400);
+    }
+    $modules = get_option('roxy_suite_modules', []);
+    if (!is_array($modules)) $modules = [];
+    $modules[$module] = $enabled;
+    update_option('roxy_suite_modules', $modules);
+    wp_send_json_success(['module' => $module, 'enabled' => $enabled]);
+});
 
 \RoxySuite\Updater::init([
     'plugin_file' => plugin_basename(__FILE__),
@@ -57,6 +81,13 @@ function roxy_suite_dashboard_page() {
     <?php
 }
 
+// ── Module enable/disable helper ───────────────────────────────────────────────
+function roxy_suite_module_enabled(string $key): bool {
+    $modules = get_option('roxy_suite_modules', []);
+    if (!is_array($modules)) return true;
+    return ($modules[$key] ?? true) === true;
+}
+
 // ── Legacy NFC redirect (was roxy-legacy-api-redirect) ────────────────────────
 // Redirects /?sub=123 → /member-check/?sub=123 for old NFC stickers.
 add_action('template_redirect', function () {
@@ -74,28 +105,43 @@ add_action('template_redirect', function () {
 // ── Load modules ──────────────────────────────────────────────────────────────
 
 // Arcade
-require_once ROXY_SUITE_PATH . 'includes/modules/arcade/roxy-arcade.php';
+if (roxy_suite_module_enabled('arcade')) {
+    require_once ROXY_SUITE_PATH . 'includes/modules/arcade/roxy-arcade.php';
+}
 
 // Subscription Member Check
-require_once ROXY_SUITE_PATH . 'includes/modules/sub-check/roxy-sub-check.php';
+if (roxy_suite_module_enabled('sub_check')) {
+    require_once ROXY_SUITE_PATH . 'includes/modules/sub-check/roxy-sub-check.php';
+}
 
 // Will Call
-require_once ROXY_SUITE_PATH . 'includes/modules/will-call/roxy-will-call.php';
+if (roxy_suite_module_enabled('will_call')) {
+    require_once ROXY_SUITE_PATH . 'includes/modules/will-call/roxy-will-call.php';
+}
 
 // Show Tickets — constants must be set before plugins_loaded loads the class files
-if (!defined('ROXY_ST_VER')) {
-    define('ROXY_ST_VER', '0.2.10.52');
-    define('ROXY_ST_PATH', ROXY_SUITE_PATH . 'includes/modules/show-tickets/');
-    define('ROXY_ST_URL',  ROXY_SUITE_URL  . 'includes/modules/show-tickets/');
-    define('ROXY_ST_LOG_SOURCE',       'roxy-st');
-    define('ROXY_ST_META_SHOWING_ID',  '_roxy_showing_id');
-    define('ROXY_ST_META_TICKET_TYPE', '_roxy_ticket_type');
+if (roxy_suite_module_enabled('show_tickets')) {
+    if (!defined('ROXY_ST_VER')) {
+        define('ROXY_ST_VER', '0.2.10.52');
+        define('ROXY_ST_PATH', ROXY_SUITE_PATH . 'includes/modules/show-tickets/');
+        define('ROXY_ST_URL',  ROXY_SUITE_URL  . 'includes/modules/show-tickets/');
+        define('ROXY_ST_LOG_SOURCE',       'roxy-st');
+        define('ROXY_ST_META_SHOWING_ID',  '_roxy_showing_id');
+        define('ROXY_ST_META_TICKET_TYPE', '_roxy_ticket_type');
+    }
+    // The module file registers its own plugins_loaded hook for class init.
+    require_once ROXY_SUITE_PATH . 'includes/modules/show-tickets/roxy-show-tickets.php';
 }
-// The module file registers its own plugins_loaded hook for class init.
-require_once ROXY_SUITE_PATH . 'includes/modules/show-tickets/roxy-show-tickets.php';
 
 // Event Booking
-require_once ROXY_SUITE_PATH . 'includes/modules/event-booking/roxy-event-booking.php';
+if (roxy_suite_module_enabled('event_booking')) {
+    require_once ROXY_SUITE_PATH . 'includes/modules/event-booking/roxy-event-booking.php';
+}
+
+// Grosses
+if (roxy_suite_module_enabled('grosses')) {
+    require_once ROXY_SUITE_PATH . 'includes/modules/grosses/roxy-grosses.php';
+}
 
 // ── Activation hook — consolidates all module DB/setup work ───────────────────
 register_activation_hook(__FILE__, function () {
@@ -175,6 +221,13 @@ register_activation_hook(__FILE__, function () {
         \RoxyST\CPT::register();
     }
 
+    // Grosses schema + defaults
+    if (class_exists('\\RoxyGrosses\\Store')) {
+        \RoxyGrosses\Settings::ensure_defaults();
+        \RoxyGrosses\Store::install_schema();
+        \RoxyGrosses\Scheduler::sync_schedule();
+    }
+
     flush_rewrite_rules();
 });
 
@@ -185,6 +238,10 @@ register_deactivation_hook(__FILE__, function () {
     while ($ts) {
         wp_unschedule_event($ts, 'roxy_arcade_monthly_award');
         $ts = wp_next_scheduled('roxy_arcade_monthly_award');
+    }
+    // Unschedule grosses cron
+    if (class_exists('\\RoxyGrosses\\Scheduler')) {
+        \RoxyGrosses\Scheduler::clear_schedule();
     }
     flush_rewrite_rules();
 });

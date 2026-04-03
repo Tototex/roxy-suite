@@ -6,6 +6,8 @@ if (!defined('ABSPATH')) exit;
 /**
  * Unified admin menu for Roxy Suite.
  * Registers one submenu entry per module; multi-page modules get a tab UI.
+ * Submenus are gated on roxy_suite_module_enabled() so disabled modules
+ * don't appear in the navigation.
  */
 class Admin {
 
@@ -15,24 +17,40 @@ class Admin {
 
     public static function admin_menu(): void {
         // Show Tickets (tabbed: Settings | Door Mode | Check-In | Showings↗)
-        add_submenu_page(
-            'roxy-suite',
-            'Show Tickets',
-            'Show Tickets',
-            'manage_options',
-            'roxy-show-tickets',
-            [__CLASS__, 'page_show_tickets']
-        );
+        if (roxy_suite_module_enabled('show_tickets')) {
+            add_submenu_page(
+                'roxy-suite',
+                'Show Tickets',
+                'Show Tickets',
+                'manage_options',
+                'roxy-show-tickets',
+                [__CLASS__, 'page_show_tickets']
+            );
+        }
 
         // Event Booking (tabbed: Bookings | Calendar | Settings | Sling Logs)
-        add_submenu_page(
-            'roxy-suite',
-            'Event Booking',
-            'Event Booking',
-            'manage_options',
-            'roxy-event-booking',
-            [__CLASS__, 'page_event_booking']
-        );
+        if (roxy_suite_module_enabled('event_booking')) {
+            add_submenu_page(
+                'roxy-suite',
+                'Event Booking',
+                'Event Booking',
+                'manage_options',
+                'roxy-event-booking',
+                [__CLASS__, 'page_event_booking']
+            );
+        }
+
+        // Grosses (uses RoxyGrosses\Settings::render_page() with its own tab UI)
+        if (roxy_suite_module_enabled('grosses')) {
+            add_submenu_page(
+                'roxy-suite',
+                'Grosses',
+                'Grosses',
+                'manage_options',
+                'roxy-grosses',
+                ['\\RoxyGrosses\\Settings', 'render_page']
+            );
+        }
     }
 
     // ── Show Tickets ────────────────────────────────────────────────────────────
