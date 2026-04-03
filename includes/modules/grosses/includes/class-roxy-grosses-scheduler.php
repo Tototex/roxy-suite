@@ -78,6 +78,12 @@ class Scheduler {
 
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $now = new \DateTimeImmutable('now', $timezone);
+    $configured_day = max(1, min(31, (int) ($settings['advertiser_schedule_day'] ?? 1)));
+    $scheduled_day = min($configured_day, (int) $now->format('t'));
+    if ((int) $now->format('j') !== $scheduled_day) {
+      return;
+    }
+
     $target = $now->modify('first day of last month');
     $month_key = $target->format('Y-m');
 

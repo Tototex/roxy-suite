@@ -5,11 +5,47 @@ if (!defined('ABSPATH')) exit;
 
 class Workbook {
   private const SNAPSHOT_OPTION = 'roxy_grosses_workbook_snapshots';
+  private const TEMPLATE_KEY = 'workbook_template_upload';
 
   public static function init(): void {
+    add_action('admin_post_roxy_grosses_upload_template', [__CLASS__, 'handle_upload_template']);
     add_action('admin_post_roxy_grosses_refresh_workbook', [__CLASS__, 'handle_refresh_workbook']);
     add_action('admin_post_roxy_grosses_download_workbook', [__CLASS__, 'handle_download_workbook']);
     add_action('admin_post_roxy_grosses_send_advertiser_summary', [__CLASS__, 'handle_send_advertiser_summary']);
+  }
+
+  public static function handle_upload_template(): void {
+    if (!current_user_can('manage_options')) {
+      wp_die('You do not have permission to upload workbook templates.');
+    }
+
+    check_admin_referer('roxy_grosses_upload_template');
+
+    if (empty($_FILES['workbook_template']['name'])) {
+      self::redirect_with_notice('error', 'Choose an .xlsx workbook template to upload.');
+    }
+
+    require_once ABSPATH . 'wp-admin/includes/file.php';
+    $uploaded = wp_handle_upload($_FILES['workbook_template'], [
+      'test_form' => false,
+      'mimes' => ['xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ]);
+
+    if (!empty($uploaded['error'])) {
+      self::redirect_with_notice('error', (string) $uploaded['error']);
+    }
+
+    self::set_uploaded_template([
+      'path' => (string) ($uploaded['file'] ?? ''),
+      'url' => (string) ($uploaded['url'] ?? ''),
+      'name' => sanitize_file_name((string) ($_FILES['workbook_template']['name'] ?? basename((string) ($uploaded['file'] ?? 'template.xlsx')))),
+      'uploaded_at' => wp_date('Y-m-d H:i:s', null, new \DateTimeZone(Settings::get_report_timezone())),
+    ]);
+
+    Store::insert_log('upload_workbook_template', 'manual-template', null, null, true, 'Workbook template uploaded.', [
+      'path' => (string) ($uploaded['file'] ?? ''),
+    ]);
+    self::redirect_with_notice('success', 'Workbook template uploaded successfully.');
   }
 
   public static function handle_refresh_workbook(): void {
@@ -80,7 +116,7 @@ class Workbook {
     $year = (int) substr($month_value, 0, 4);
     $month = (int) substr($month_value, 5, 2);
     $result = self::send_advertiser_summary($year, $month, 'manual-advertiser');
-    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message']);
+    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], $year);
   }
 
   public static function dashboard_summary(int $year): array {
@@ -131,15 +167,15 @@ class Workbook {
         continue;
       }
 
-      $month_key = substr($week_start, 0, 7);
-      if (!isset($months[$month_key])) {
+      $month_number = (int) substr($week_start, 5, 2);
+      if ($month_number < 1 || $month_number > 12) {
         continue;
       }
 
-      $months[$month_key]['weeks']++;
-      $months[$month_key]['admissions'] += (int) ($row['admissions'] ?? 0);
-      $months[$month_key]['gross'] += (float) ($row['gross'] ?? 0);
-      $months[$month_key]['open_days'] += (int) ($row['open_days'] ?? 0);
+      $months[sprintf('%04d-%02d', $year, $month_number)]['weeks']++;
+      $months[sprintf('%04d-%02d', $year, $month_number)]['admissions'] += (int) ($row['admissions'] ?? 0);
+      $months[sprintf('%04d-%02d', $year, $month_number)]['gross'] += (float) ($row['gross'] ?? 0);
+      $months[sprintf('%04d-%02d', $year, $month_number)]['open_days'] += (int) ($row['open_days'] ?? 0);
     }
 
     foreach ($months as &$month_row) {
@@ -163,7 +199,7 @@ class Workbook {
         continue;
       }
 
-      $week_start = self::week_start_for_date($report_date);
+      $week_start = self::normalized_week_start_for_year($report_date, $year);
       if ((int) substr($week_start, 0, 4) !== $year) {
         continue;
       }
@@ -266,8 +302,7 @@ class Workbook {
     }
 
     try {
-      $snapshot = self::refresh_snapshot($year, $mode);
-      $workbook_path = (string) ($snapshot['path'] ?? '');
+      $rows = self::advertiser_rows_for_month($year, $month);
       $monthly_totals = self::monthly_totals($year);
       $month_total = null;
       foreach ($monthly_totals as $monthly_row) {
@@ -281,6 +316,8 @@ class Workbook {
         throw new \RuntimeException('No advertiser summary data is available for ' . wp_date('F Y', strtotime($month_key . '-01')) . '.');
       }
 
+      $workbook_path = self::build_advertiser_workbook_file($year, $month, $rows);
+
       $tokens = [
         '{month_name}' => (string) ($month_total['month_name'] ?? wp_date('F', strtotime($month_key . '-01'))),
         '{month}' => $month_key,
@@ -290,6 +327,8 @@ class Workbook {
       ];
       $subject = strtr((string) Settings::get('advertiser_email_subject', ''), $tokens);
       $body = strtr((string) Settings::get('advertiser_email_body', ''), $tokens);
+      $body = str_replace('Please use the Advertiser Summary tab.', '', $body);
+      $body = trim(preg_replace("/\n{3,}/", "\n\n", $body) ?? $body);
 
       $sent = wp_mail($to, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$workbook_path]);
       if (!$sent) {
@@ -321,7 +360,7 @@ class Workbook {
 
     $template = self::resolve_template_path($year);
     if (!is_readable($template)) {
-      throw new \RuntimeException('Workbook template not found: ' . $template);
+      throw new \RuntimeException('Workbook template not found. Upload one on the Workbook tab or save a valid server path in settings.');
     }
 
     if (!class_exists('ZipArchive')) {
@@ -400,10 +439,88 @@ class Workbook {
     return $snapshot;
   }
 
+  public static function template_status(): array {
+    $uploaded = self::uploaded_template();
+    if (!empty($uploaded['path']) && is_readable((string) $uploaded['path'])) {
+      return array_merge($uploaded, ['source' => 'upload', 'readable' => true]);
+    }
+
+    $fallback = str_replace('{year}', wp_date('Y'), (string) Settings::get('workbook_template_path', ''));
+    return [
+      'source' => 'settings-path',
+      'path' => $fallback,
+      'name' => basename($fallback),
+      'uploaded_at' => '',
+      'readable' => $fallback !== '' && is_readable($fallback),
+    ];
+  }
+
+  public static function advertiser_rows_for_month(int $year, int $month): array {
+    $month_key = sprintf('%04d-%02d', $year, $month);
+    $month_name = wp_date('F', strtotime($month_key . '-01'));
+    $weekly_rows = array_values(array_filter(self::weekly_rows_for_year($year), static function (array $row) use ($month_key): bool {
+      return str_starts_with((string) ($row['week_of'] ?? ''), $month_key);
+    }));
+
+    $month_total = 0;
+    foreach ($weekly_rows as $row) {
+      $month_total += (int) ($row['admissions'] ?? 0);
+    }
+
+    $rows = [[
+      'Week #',
+      'Week Of',
+      'Movie',
+      'Total Attendance',
+      'Month',
+      'Monthly Attendance',
+    ]];
+
+    foreach ($weekly_rows as $row) {
+      $rows[] = [
+        (int) ($row['week_number'] ?? 0),
+        (string) ($row['week_of'] ?? ''),
+        (string) ($row['film_title'] ?? ''),
+        (int) ($row['admissions'] ?? 0),
+        $month_name . ' ' . $year,
+        $month_total,
+      ];
+    }
+
+    if (count($rows) === 1) {
+      $rows[] = ['', '', 'No attendance rows found for this month.', 0, $month_name . ' ' . $year, 0];
+    }
+
+    return $rows;
+  }
+
+  private static function uploaded_template(): array {
+    $settings = Settings::get_all();
+    $template = $settings[self::TEMPLATE_KEY] ?? [];
+    return is_array($template) ? $template : [];
+  }
+
+  private static function set_uploaded_template(array $template): void {
+    $settings = Settings::get_all();
+    $settings[self::TEMPLATE_KEY] = [
+      'path' => sanitize_text_field((string) ($template['path'] ?? '')),
+      'url' => esc_url_raw((string) ($template['url'] ?? '')),
+      'name' => sanitize_file_name((string) ($template['name'] ?? '')),
+      'uploaded_at' => sanitize_text_field((string) ($template['uploaded_at'] ?? '')),
+    ];
+    update_option(Settings::OPTION_KEY, $settings);
+  }
+
   private static function resolve_template_path(int $year): string {
+    $uploaded = self::uploaded_template();
+    $uploaded_path = (string) ($uploaded['path'] ?? '');
+    if ($uploaded_path !== '' && is_readable($uploaded_path)) {
+      return $uploaded_path;
+    }
+
     $template = (string) Settings::get('workbook_template_path', '');
     if ($template === '') {
-      throw new \RuntimeException('No workbook template path is configured.');
+      throw new \RuntimeException('No workbook template is configured.');
     }
 
     return str_replace('{year}', (string) $year, $template);
@@ -559,6 +676,15 @@ class Workbook {
     return $current->modify('-' . $offset . ' day')->format('Y-m-d');
   }
 
+  private static function normalized_week_start_for_year(string $date, int $year): string {
+    $week_start = self::week_start_for_date($date);
+    if ((int) substr($week_start, 0, 4) < $year && (int) substr($date, 0, 4) === $year) {
+      return sprintf('%04d-01-01', $year);
+    }
+
+    return $week_start;
+  }
+
   private static function day_prefix_for_date(string $date, string $week_start): string {
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $current = new \DateTimeImmutable($date . ' 00:00:00', $timezone);
@@ -577,7 +703,62 @@ class Workbook {
       $first = $first->modify('+1 day');
     }
 
-    return (int) floor(($start->getTimestamp() - $first->getTimestamp()) / WEEK_IN_SECONDS) + 1;
+    return max(1, (int) floor(($start->getTimestamp() - $first->getTimestamp()) / WEEK_IN_SECONDS) + 1);
+  }
+
+  private static function build_advertiser_workbook_file(int $year, int $month, array $rows): string {
+    $upload_dir = wp_upload_dir();
+    $dir = trailingslashit($upload_dir['basedir']) . 'roxy-grosses/advertiser';
+    wp_mkdir_p($dir);
+    $path = trailingslashit($dir) . 'advertiser-summary-' . sprintf('%04d-%02d', $year, $month) . '.xlsx';
+    self::write_simple_xlsx($path, 'Advertiser Summary', $rows);
+    return $path;
+  }
+
+  private static function write_simple_xlsx(string $path, string $sheet_name, array $rows): void {
+    if (!class_exists('ZipArchive')) {
+      throw new \RuntimeException('ZipArchive is required to build the advertiser workbook.');
+    }
+
+    $zip = new \ZipArchive();
+    if ($zip->open($path, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+      throw new \RuntimeException('Unable to create the advertiser workbook file.');
+    }
+
+    $row_count = max(1, count($rows));
+    $col_count = 1;
+    foreach ($rows as $row) {
+      $col_count = max($col_count, count((array) $row));
+    }
+    $dimension = self::cell_ref($col_count, $row_count);
+
+    $zip->addFromString('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>');
+    $zip->addFromString('_rels/.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>');
+    $zip->addFromString('docProps/core.xml', '<?xml version="1.0" encoding="UTF-8"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>' . self::xml($sheet_name) . '</dc:title><dc:creator>Roxy Grosses</dc:creator><cp:lastModifiedBy>Roxy Grosses</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">' . gmdate('c') . '</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">' . gmdate('c') . '</dcterms:modified></cp:coreProperties>');
+    $zip->addFromString('docProps/app.xml', '<?xml version="1.0" encoding="UTF-8"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Roxy Grosses</Application><Sheets>1</Sheets></Properties>');
+    $zip->addFromString('xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>');
+    $zip->addFromString('xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="' . self::xml($sheet_name) . '" sheetId="1" r:id="rId1"/></sheets><calcPr calcMode="auto" fullCalcOnLoad="1" forceFullCalc="1"/></workbook>');
+    $zip->addFromString('xl/worksheets/sheet1.xml', self::simple_sheet_xml($rows, $dimension));
+    $zip->close();
+  }
+
+  private static function simple_sheet_xml(array $rows, string $dimension): string {
+    $xml = '<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:' . self::xml($dimension) . '"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/><sheetData>';
+    foreach ($rows as $row_index => $row) {
+      $r = $row_index + 1;
+      $xml .= '<row r="' . $r . '">';
+      foreach ((array) $row as $col_index => $value) {
+        $cell_ref = self::cell_ref($col_index + 1, $r);
+        if (is_numeric($value) && $value !== '') {
+          $xml .= '<c r="' . $cell_ref . '"><v>' . self::xml((string) $value) . '</v></c>';
+        } else {
+          $xml .= '<c r="' . $cell_ref . '" t="inlineStr"><is><t>' . self::xml((string) $value) . '</t></is></c>';
+        }
+      }
+      $xml .= '</row>';
+    }
+    $xml .= '</sheetData></worksheet>';
+    return $xml;
   }
 
   private static function studio_for_title(string $title): string {
@@ -613,5 +794,20 @@ class Workbook {
 
     wp_safe_redirect($url);
     exit;
+  }
+
+  private static function cell_ref(int $column, int $row): string {
+    $letters = '';
+    while ($column > 0) {
+      $column--;
+      $letters = chr(65 + ($column % 26)) . $letters;
+      $column = (int) floor($column / 26);
+    }
+
+    return $letters . $row;
+  }
+
+  private static function xml(string $value): string {
+    return htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8');
   }
 }

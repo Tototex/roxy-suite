@@ -21,11 +21,11 @@ class Settings {
       'email_subject'=>'Roxy grosses for {report_date}',
       'email_body'=>"Attached is the grosses report for {report_date}.\n\nGenerated automatically by the Roxy Grosses plugin.",
       'advertiser_email_subject'=>'Roxy advertiser summary for {month_name} {year}',
-      'advertiser_email_body'=>"Attached is the updated Roxy box office workbook for {month_name} {year}.\n\nPlease use the Advertiser Summary tab.",
+      'advertiser_email_body'=>"Attached is the advertiser summary workbook for {month_name} {year}.",
       'theater_name'=>'Newport Roxy Theater','general_price'=>'12','discount_price'=>'8','group_price'=>'5','lookback_days'=>'2',
       'workbook_template_path'=>'I:\\My Drive\\Grosses\\Roxy_Box_Office_{year}.xlsx',
       'schedule_enabled'=>'1','schedule_days'=>['fri','sat','sun'],'schedule_time'=>'22:00',
-      'advertiser_schedule_enabled'=>'1','advertiser_schedule_time'=>'09:00',
+      'advertiser_schedule_enabled'=>'1','advertiser_schedule_day'=>'1','advertiser_schedule_time'=>'09:00',
     ];
   }
   public static function ensure_defaults(): void {
@@ -72,7 +72,7 @@ class Settings {
       'advertiser_emails'=>['Advertiser emails','roxy_grosses_workbook'],'advertiser_email_subject'=>['Advertiser email subject','roxy_grosses_workbook'],
       'advertiser_email_body'=>['Advertiser email body','roxy_grosses_workbook'],'schedule_enabled'=>['Enable automatic grosses sends','roxy_grosses_schedule'],
       'schedule_days'=>['Automatic grosses days','roxy_grosses_schedule'],'schedule_time'=>['Automatic grosses send time','roxy_grosses_schedule'],
-      'advertiser_schedule_enabled'=>['Enable monthly advertiser email','roxy_grosses_schedule'],'advertiser_schedule_time'=>['Monthly advertiser send time','roxy_grosses_schedule'],
+      'advertiser_schedule_enabled'=>['Enable monthly advertiser email','roxy_grosses_schedule'],'advertiser_schedule_day'=>['Monthly advertiser send day','roxy_grosses_schedule'],'advertiser_schedule_time'=>['Monthly advertiser send time','roxy_grosses_schedule'],
     ];
     foreach($fields as $key=>$field){ add_settings_field($key,$field[0],[__CLASS__,'render_field'],'roxy-grosses',$field[1],['key'=>$key]); }
   }
@@ -104,6 +104,7 @@ class Settings {
       'schedule_enabled'=>!empty($input['schedule_enabled'])?'1':'0','schedule_days'=>self::sanitize_days($input['schedule_days']??$d['schedule_days']),
       'schedule_time'=>self::sanitize_time((string) ($input['schedule_time']??$d['schedule_time'])),
       'advertiser_schedule_enabled'=>!empty($input['advertiser_schedule_enabled'])?'1':'0',
+      'advertiser_schedule_day'=>(string) min(31,max(1,(int) ($input['advertiser_schedule_day']??$d['advertiser_schedule_day']))),
       'advertiser_schedule_time'=>self::sanitize_time((string) ($input['advertiser_schedule_time']??$d['advertiser_schedule_time'])),
     ];
     Scheduler::sync_schedule($sanitized); return $sanitized;
@@ -129,14 +130,15 @@ class Settings {
         elseif($key==='email_body') echo '<p class="description">You can use {report_date}, {theater_name}, {gross_total}, and {ticket_total}.</p>';
         else echo '<p class="description">You can use {month_name}, {month}, {year}, {attendance_total}, and {gross_total}.</p>';
         return;
-      case 'recipient_emails': case 'advertiser_emails': case 'admin_email': case 'email_subject': case 'advertiser_email_subject': case 'theater_name': case 'report_timezone': case 'lookback_days': case 'workbook_template_path':
+      case 'recipient_emails': case 'advertiser_emails': case 'admin_email': case 'email_subject': case 'advertiser_email_subject': case 'theater_name': case 'report_timezone': case 'lookback_days': case 'workbook_template_path': case 'advertiser_schedule_day':
         $class=in_array($key,['recipient_emails','advertiser_emails','workbook_template_path'],true)?'regular-text code':'regular-text';
         echo '<input type="text" class="'.esc_attr($class).'" name="'.esc_attr($name).'" value="'.esc_attr((string) $value).'">';
         if($key==='recipient_emails'||$key==='advertiser_emails') echo '<p class="description">Comma-separated email addresses.</p>';
         elseif($key==='admin_email') echo '<p class="description">Used for failure alerts when a run, workbook build, or email send fails.</p>';
         elseif($key==='report_timezone') echo '<p class="description">Timezone used to decide the report day and Square date window, for example America/Los_Angeles.</p>';
         elseif($key==='lookback_days') echo '<p class="description">How many previous days to include if the same film played earlier. Example: 2 includes Friday and Saturday when sending Sunday.</p>';
-        elseif($key==='workbook_template_path') echo '<p class="description">Use {year} in the file name if you keep one workbook per year.</p>';
+        elseif($key==='workbook_template_path') echo '<p class="description">Fallback only. Upload a template on the Workbook tab when possible.</p>';
+        elseif($key==='advertiser_schedule_day') echo '<p class="description">Day of the month to send last month\'s advertiser summary.</p>';
         return;
       case 'general_price': case 'discount_price': case 'group_price':
         echo '<input type="number" min="0" step="0.01" class="regular-text" name="'.esc_attr($name).'" value="'.esc_attr((string) $value).'">'; return;
@@ -182,14 +184,15 @@ class Settings {
   }
 
   private static function render_workbook_tab(int $workbook_year,string $default_advertiser_month): void {
-    $summary=Workbook::dashboard_summary($workbook_year); $monthly_rows=Workbook::monthly_totals($workbook_year); $weekly_rows=Workbook::weekly_rows_for_year($workbook_year); $snapshot=Workbook::get_snapshot_status($workbook_year);
+    $summary=Workbook::dashboard_summary($workbook_year); $monthly_rows=Workbook::monthly_totals($workbook_year); $weekly_rows=Workbook::weekly_rows_for_year($workbook_year); $snapshot=Workbook::get_snapshot_status($workbook_year); $template=Workbook::template_status();
     echo '<h2>Workbook Dashboard</h2><p>Review the yearly workbook data stored by the plugin, download the spreadsheet, and send the monthly advertiser summary.</p>';
     echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'" style="margin-bottom:16px;"><input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="workbook"><label for="roxy-grosses-workbook-year" style="margin-right:8px;"><strong>Year</strong></label><input id="roxy-grosses-workbook-year" type="number" min="2000" max="2100" name="workbook_year" value="'.esc_attr((string) $workbook_year).'">';
     submit_button('Load Year','secondary','',false,['style'=>'margin-left:8px;']); echo '</form><div style="display:flex; gap:16px; flex-wrap:wrap; margin:16px 0;">';
     foreach([['Annual Admissions',number_format_i18n((int) ($summary['annual_admissions']??0))],['Annual Gross','$'.number_format((float) ($summary['annual_gross']??0),2)],['Weeks Entered',number_format_i18n((int) ($summary['weeks_entered']??0))],['Average Gross / Entered Week','$'.number_format((float) ($summary['average_gross']??0),2)]] as $card){
       echo '<div style="min-width:220px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;"><div style="font-size:12px; color:#50575e; text-transform:uppercase;">'.esc_html($card[0]).'</div><div style="font-size:24px; font-weight:600; margin-top:8px;">'.esc_html($card[1]).'</div></div>';
     }
-    echo '</div><p><strong>Last workbook refresh:</strong> '.esc_html((string) ($snapshot['refreshed_at']??'Never')).'</p><div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:24px;">';
+    echo '</div><p><strong>Template:</strong> '.esc_html((string) ($template['name']??'None uploaded')).' | <strong>Status:</strong> '.esc_html(!empty($template['readable'])?'Ready':'Missing').'</p><p><strong>Last workbook refresh:</strong> '.esc_html((string) ($snapshot['refreshed_at']??'Never')).'</p>';
+    echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" enctype="multipart/form-data" style="margin-bottom:16px;">'; wp_nonce_field('roxy_grosses_upload_template'); echo '<input type="hidden" name="action" value="roxy_grosses_upload_template"><label for="roxy-grosses-template-file" style="margin-right:8px;"><strong>Upload workbook template</strong></label><input id="roxy-grosses-template-file" type="file" name="workbook_template" accept=".xlsx">'; submit_button('Upload Template','secondary','submit',false,['style'=>'margin-left:8px;']); echo '</form><div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:24px;">';
     echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">'; wp_nonce_field('roxy_grosses_refresh_workbook'); echo '<input type="hidden" name="action" value="roxy_grosses_refresh_workbook"><input type="hidden" name="year" value="'.esc_attr((string) $workbook_year).'">'; submit_button('Refresh Workbook Data','secondary','submit',false); echo '</form>';
     echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">'; wp_nonce_field('roxy_grosses_download_workbook'); echo '<input type="hidden" name="action" value="roxy_grosses_download_workbook"><input type="hidden" name="year" value="'.esc_attr((string) $workbook_year).'">'; submit_button('Download Excel Workbook','primary','submit',false); echo '</form>';
     echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:flex; gap:8px; align-items:flex-end;">'; wp_nonce_field('roxy_grosses_send_advertiser_summary'); echo '<input type="hidden" name="action" value="roxy_grosses_send_advertiser_summary"><div><label for="roxy-grosses-advertiser-month"><strong>Advertiser month</strong></label><br><input id="roxy-grosses-advertiser-month" type="month" name="advertiser_month" value="'.esc_attr($default_advertiser_month).'"></div>'; submit_button('Send Advertiser Summary Now','secondary','submit',false); echo '</form></div>';
