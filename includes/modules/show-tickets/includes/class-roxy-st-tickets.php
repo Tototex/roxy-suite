@@ -54,8 +54,9 @@ class Tickets {
     $page = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : '';
     $tab  = isset($_GET['tab'])  ? sanitize_key(wp_unslash($_GET['tab']))  : '';
 
-    $is_door_mode = ($page === 'roxy-show-tickets' && $tab === 'door-mode');
-    $is_checkin   = ($page === 'roxy-show-tickets' && $tab === 'check-in');
+    $is_ticket_ops = ($page === 'roxy-ticket-ops');
+    $is_door_mode = (($page === 'roxy-show-tickets' || $is_ticket_ops) && $tab === 'door-mode');
+    $is_checkin   = (($page === 'roxy-show-tickets' || $is_ticket_ops) && ($tab === 'check-in' || $tab === 'manual-checkin'));
 
     // Pre-load jsQR on both scanner pages so it is ready before any user gesture fires
     if ($is_door_mode || $is_checkin) {
@@ -72,8 +73,8 @@ class Tickets {
       'ajaxUrl' => admin_url('admin-ajax.php'),
       'nonce' => wp_create_nonce('roxy_st_door_mode'),
       'checkInNonce' => wp_create_nonce('roxy_st_door_checkin'),
-      'manualPage' => admin_url('admin.php?page=roxy-show-tickets&tab=check-in'),
-      'doorPage'   => admin_url('admin.php?page=roxy-show-tickets&tab=door-mode'),
+      'manualPage' => admin_url('admin.php?page=roxy-ticket-ops&tab=manual-checkin'),
+      'doorPage'   => admin_url('admin.php?page=roxy-ticket-ops&tab=door-mode'),
       'allEventsLabel' => 'All Events',
       'noEventSelectedText' => 'Showing all events. Select a specific event to enable wrong-ticket protection and live attendance.',
       'nfcUnsupportedText' => 'NFC scanning is not supported on this device or browser. Use QR or manual lookup.',
@@ -525,8 +526,8 @@ class Tickets {
     echo '<p>Camera-first scanning for phones and tablets. Scan a ticket, review the result, then tap Admit.</p>';
     echo '</div>';
     echo '<div class="roxy-door-links">';
-    echo '<a href="' . esc_url(admin_url('admin.php?page=roxy-show-tickets&tab=check-in')) . '" class="button">Manual Check-In</a>';
-    echo '<a href="' . esc_url(admin_url('admin.php?page=roxy-show-tickets&tab=door-mode')) . '" class="button">Reset</a>';
+    echo '<a href="' . esc_url(admin_url('admin.php?page=roxy-ticket-ops&tab=manual-checkin')) . '" class="button">Manual Check-In</a>';
+    echo '<a href="' . esc_url(admin_url('admin.php?page=roxy-ticket-ops&tab=door-mode')) . '" class="button">Reset</a>';
     echo '</div>';
     echo '</div>';
 
@@ -674,7 +675,7 @@ class Tickets {
       echo '<button type="button" class="button roxy-door-undo" data-ticket-id="' . esc_attr((string) $payload['ticket_id']) . '" data-undo="1">Undo Check-In</button>';
     }
     echo '<button type="button" class="button roxy-door-rescan">Rescan</button>';
-    echo '<a href="' . esc_url(add_query_arg(['page' => 'roxy-show-tickets', 'tab' => 'check-in', 's' => (string) ($payload['token'] ?? '')], admin_url('admin.php'))) . '" class="button">Manual Check-In</a>';
+    echo '<a href="' . esc_url(add_query_arg(['page' => 'roxy-ticket-ops', 'tab' => 'manual-checkin', 's' => (string) ($payload['token'] ?? '')], admin_url('admin.php'))) . '" class="button">Manual Check-In</a>';
     echo '</div>';
     echo '</div>';
   }
@@ -689,7 +690,7 @@ class Tickets {
     }
     echo '<div class="roxy-door-result-actions">';
     echo '<button type="button" class="button button-primary roxy-door-rescan">Try Again</button>';
-    echo '<a href="' . esc_url(add_query_arg(['page' => 'roxy-show-tickets', 'tab' => 'check-in', 's' => $token], admin_url('admin.php'))) . '" class="button">Open in Roxy Check-In</a>';
+    echo '<a href="' . esc_url(add_query_arg(['page' => 'roxy-ticket-ops', 'tab' => 'manual-checkin', 's' => $token], admin_url('admin.php'))) . '" class="button">Open in Roxy Check-In</a>';
     echo '</div>';
     echo '</div>';
   }
@@ -713,8 +714,8 @@ class Tickets {
     echo '<p>Scan or paste a ticket token, or search by order #, name, or email.</p>';
     echo '<div style="max-width:900px;background:#111;color:#fff;border-radius:14px;padding:16px;margin:16px 0">';
     echo '<form id="roxy-ticket-search-form" method="get" action="" style="display:grid;gap:12px;grid-template-columns:1fr auto;align-items:end">';
-    echo '<input type="hidden" name="page" value="roxy-show-tickets">';
-    echo '<input type="hidden" name="tab" value="check-in">';
+    echo '<input type="hidden" name="page" value="roxy-ticket-ops">';
+    echo '<input type="hidden" name="tab" value="manual-checkin">';
     echo '<label for="roxy-ticket-search" style="font-weight:700">Ticket Search</label>';
     echo '<input id="roxy-ticket-search" type="text" name="s" value="' . esc_attr($search ?: $token) . '" placeholder="Token, order #, name, or email" style="width:100%;max-width:520px;padding:12px;border-radius:10px;border:1px solid #444;background:#222;color:#fff">';
     echo '<button type="submit" class="button button-primary" style="height:46px">Search</button>';
@@ -877,7 +878,7 @@ class Tickets {
     $action = $checked_in ? 'roxy_st_uncheck_in_ticket' : 'roxy_st_check_in_ticket';
     $action_label = $checked_in ? 'Undo Check-In' : 'Check In';
     $current_token = isset($_GET['ticket_token']) && $_GET['ticket_token'] !== '' ? sanitize_text_field(wp_unslash($_GET['ticket_token'])) : '';
-    $action_url = self::ticket_action_url($action, $ticket_id, 'roxy-show-tickets', $current_token, 'check-in');
+    $action_url = self::ticket_action_url($action, $ticket_id, 'roxy-ticket-ops', $current_token, 'manual-checkin');
 
     echo '<div style="border:1px solid #ddd;border-radius:14px;padding:16px;background:#fff">';
     echo '<div style="font-size:22px;font-weight:800;color:' . esc_attr(self::state_color($state, $checked_in)) . ';margin-bottom:8px">' . esc_html(self::state_label($state, $checked_in)) . '</div>';
@@ -940,11 +941,15 @@ class Tickets {
     }
 
     $tab = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : 'check-in';
-    if (!in_array($tab, ['check-in', 'door-mode'], true)) {
-      $tab = 'check-in';
+    if (!in_array($tab, ['check-in', 'manual-checkin', 'door-mode'], true)) {
+      $tab = 'manual-checkin';
     }
 
-    $redirect_args = ['page' => 'roxy-show-tickets', 'tab' => $tab];
+    if ($tab === 'check-in') {
+      $tab = 'manual-checkin';
+    }
+
+    $redirect_args = ['page' => 'roxy-ticket-ops', 'tab' => $tab];
     if (isset($_GET['s']) && $_GET['s'] !== '') {
       $redirect_args['s'] = sanitize_text_field(wp_unslash($_GET['s']));
     } elseif (isset($_GET['ticket_token']) && $_GET['ticket_token'] !== '') {

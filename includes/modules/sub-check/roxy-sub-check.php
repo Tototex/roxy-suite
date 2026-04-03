@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Roxy Subscription Check
  * Description: NFC-friendly membership verification page for WooCommerce Subscriptions. Per-subscription photo, scan log, and customer photo upload.
- * Version: 1.3.7
+ * Version: 1.3.8
  * Author: Newport Roxy (AI Team)
  * Update URI: https://github.com/Tototex/roxy-sub-check
  */
@@ -23,7 +23,9 @@ class Roxy_Sub_Check {
     add_action('save_post', [__CLASS__, 'save_subscription_photo_metabox'], 10, 2);
     add_action('admin_enqueue_scripts', [__CLASS__, 'admin_enqueue_media']);
 
-    add_action('admin_menu', [__CLASS__, 'admin_menu']);
+    if (!defined('ROXY_SUITE_VERSION')) {
+      add_action('admin_menu', [__CLASS__, 'admin_menu']);
+    }
 
     add_action('woocommerce_subscription_details_table', [__CLASS__, 'render_myaccount_photo_uploader'], 50);
     add_action('init', [__CLASS__, 'handle_myaccount_photo_upload']);
@@ -384,7 +386,7 @@ class Roxy_Sub_Check {
     );
   }
 
-  public static function render_scan_log_page() {
+  public static function render_scan_log_page(bool $wrap = true, bool $show_title = true) {
     if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
       wp_die('Insufficient permissions.');
     }
@@ -420,18 +422,23 @@ class Roxy_Sub_Check {
       $rows = $wpdb->get_results($wpdb->prepare($sql, $per_page, $offset), ARRAY_A);
     }
 
-    $base_url = admin_url('admin.php?page=roxy-scan-log');
-    if (!function_exists('WC')) {
+    $page_slug = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : 'roxy-scan-log';
+    $base_url = admin_url('admin.php?page=' . $page_slug);
+    if (!function_exists('WC') && $page_slug === 'roxy-scan-log') {
       $base_url = admin_url('tools.php?page=roxy-scan-log');
     }
 
     $export_url = add_query_arg(['roxy_export' => 'csv'] + ($filter_sub ? ['sub' => $filter_sub] : []), $base_url);
 
-    echo '<div class="wrap">';
-    echo '<h1>Roxy Scan Log</h1>';
+    if ($wrap) {
+      echo '<div class="wrap">';
+    }
+    if ($show_title) {
+      echo '<h1>Roxy Scan Log</h1>';
+    }
 
     echo '<form method="get" style="margin:12px 0;">';
-    echo '<input type="hidden" name="page" value="roxy-scan-log">';
+    echo '<input type="hidden" name="page" value="' . esc_attr($page_slug) . '">';
     echo '<label>Filter by Subscription ID: </label> ';
     echo '<input type="number" name="sub" value="' . esc_attr($filter_sub ?: '') . '" style="width:160px;"> ';
     echo '<button class="button">Filter</button> ';
@@ -478,7 +485,9 @@ class Roxy_Sub_Check {
       echo '</div>';
     }
 
-    echo '</div>';
+    if ($wrap) {
+      echo '</div>';
+    }
   }
 
   private static function export_scan_log_csv($filter_sub) {

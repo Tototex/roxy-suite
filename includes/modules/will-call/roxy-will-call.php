@@ -2,14 +2,14 @@
 /**
  * Plugin Name: Roxy Will Call (WooCommerce)
  * Description: Will call list for WooCommerce products or Roxy Showings with check-in tracking, order links, dates, totals, revenue, attendance counters, and search.
- * Version: 0.3.7
+ * Version: 0.3.8
  * Author: Newport Roxy (AI Team)
  * Update URI: https://github.com/Tototex/roxy-will-call
  */
 
 if (!defined('ABSPATH')) exit;
 
-define('ROXY_WC_VERSION', '0.3.7');
+define('ROXY_WC_VERSION', '0.3.8');
 
 
 const ROXY_WC_CONTEXT_SHOWING_OFFSET = 1000000000;
@@ -86,18 +86,20 @@ function roxy_will_call_customer_key(string $name, string $email): string {
   return md5($name . '|' . $email);
 }
 
-add_action('admin_menu', function () {
-  add_submenu_page(
-    'roxy-suite',
-    'Will Call',
-    'Will Call',
-    'manage_woocommerce',
-    'roxy-will-call',
-    'roxy_will_call_admin_page'
-  );
-});
+if (!defined('ROXY_SUITE_VERSION')) {
+  add_action('admin_menu', function () {
+    add_submenu_page(
+      'roxy-suite',
+      'Will Call',
+      'Will Call',
+      'manage_woocommerce',
+      'roxy-will-call',
+      'roxy_will_call_admin_page'
+    );
+  });
+}
 
-function roxy_will_call_admin_page() {
+function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
   if (!current_user_can('manage_woocommerce')) {
     wp_die('Not allowed.');
   }
@@ -111,12 +113,16 @@ function roxy_will_call_admin_page() {
   $selected_product_id = isset($_GET['product_id']) ? absint($_GET['product_id']) : 0;
   $selected_showing_id = isset($_GET['showing_id']) ? absint($_GET['showing_id']) : 0;
   $show_archived = !empty($_GET['show_archived']);
+  if ($wrap) {
+    echo '<div class="wrap">';
+  }
+  if ($show_title) {
+    echo '<h1>Will Call</h1>';
+  }
   ?>
-  <div class="wrap">
-    <h1>Will Call</h1>
 
     <form method="get" style="margin:12px 0;display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
-      <input type="hidden" name="page" value="roxy-will-call" />
+      <input type="hidden" name="page" value="<?php echo esc_attr(isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : 'roxy-will-call'); ?>" />
       <div>
         <label for="mode"><strong>Mode</strong></label><br />
         <select name="mode" id="mode">
@@ -157,8 +163,6 @@ function roxy_will_call_admin_page() {
         echo '<p>Select a showing or product to generate the list.</p>';
       }
     ?>
-  </div>
-
   <style>
     @media print {
       #adminmenumain, #wpadminbar, .notice, .update-nag, .wrap form, .wrap .button, .roxy-wc-search-wrap, .roxy-wc-offline-bar { display:none !important; }
@@ -530,6 +534,9 @@ function roxy_will_call_admin_page() {
     });
   </script>
   <?php
+  if ($wrap) {
+    echo '</div>';
+  }
 }
 
 function roxy_will_call_product_dropdown($selected) {
