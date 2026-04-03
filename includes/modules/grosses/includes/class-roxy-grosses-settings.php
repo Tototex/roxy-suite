@@ -1,522 +1,254 @@
 <?php
 namespace RoxyGrosses;
-
 if (!defined('ABSPATH')) exit;
 
 class Settings {
-  public const OPTION_KEY = 'roxy_grosses_settings';
-  public const STATUS_KEY = 'roxy_grosses_last_report';
+  public const OPTION_KEY='roxy_grosses_settings';
+  public const STATUS_KEY='roxy_grosses_last_report';
 
-  public static function init(): void {
-    // admin_menu is registered by RoxySuite\Admin — not here
-    add_action('admin_init', [__CLASS__, 'register_settings']);
-  }
-
+  public static function init(): void { add_action('admin_init',[__CLASS__,'register_settings']); }
   public static function current_tab(): string {
-    $tab = isset($_GET['tab']) ? sanitize_key((string) wp_unslash($_GET['tab'])) : 'reports';
-    return in_array($tab, ['reports', 'settings', 'logs'], true) ? $tab : 'reports';
+    $tab=isset($_GET['tab'])?sanitize_key((string) wp_unslash($_GET['tab'])):'reports';
+    return in_array($tab,['reports','workbook','settings','logs'],true)?$tab:'reports';
   }
-
   public static function defaults(): array {
     return [
-      'square_environment' => 'production',
-      'square_access_token' => '',
-      'square_location_ids' => '',
-      'report_timezone' => wp_timezone_string() ?: 'America/Los_Angeles',
-      'ticket_keywords' => "ticket\nadmission",
-      'exclude_keywords' => "popcorn\nsoda\ndrink\ncandy\nmembership",
-      'film_mappings' => '',
-      'recipient_emails' => 'comscore@example.com,lori@example.com',
-      'admin_email' => get_option('admin_email'),
-      'email_subject' => 'Roxy grosses for {report_date}',
-      'email_body' => "Attached is the grosses report for {report_date}.\n\nGenerated automatically by the Roxy Grosses plugin.",
-      'theater_name' => 'Newport Roxy Theater',
-      'general_price' => '12',
-      'discount_price' => '8',
-      'group_price' => '5',
-      'lookback_days' => '2',
-      'schedule_enabled' => '1',
-      'schedule_days' => ['fri', 'sat', 'sun'],
-      'schedule_time' => '22:00',
+      'square_environment'=>'production','square_access_token'=>'','square_location_ids'=>'',
+      'report_timezone'=>wp_timezone_string()?:'America/Los_Angeles',
+      'ticket_keywords'=>"ticket\nadmission",'exclude_keywords'=>"popcorn\nsoda\ndrink\ncandy\nmembership",
+      'film_mappings'=>'','studio_mappings'=>'',
+      'recipient_emails'=>'comscore@example.com,lori@example.com','advertiser_emails'=>'','admin_email'=>get_option('admin_email'),
+      'email_subject'=>'Roxy grosses for {report_date}',
+      'email_body'=>"Attached is the grosses report for {report_date}.\n\nGenerated automatically by the Roxy Grosses plugin.",
+      'advertiser_email_subject'=>'Roxy advertiser summary for {month_name} {year}',
+      'advertiser_email_body'=>"Attached is the updated Roxy box office workbook for {month_name} {year}.\n\nPlease use the Advertiser Summary tab.",
+      'theater_name'=>'Newport Roxy Theater','general_price'=>'12','discount_price'=>'8','group_price'=>'5','lookback_days'=>'2',
+      'workbook_template_path'=>'I:\\My Drive\\Grosses\\Roxy_Box_Office_{year}.xlsx',
+      'schedule_enabled'=>'1','schedule_days'=>['fri','sat','sun'],'schedule_time'=>'22:00',
+      'advertiser_schedule_enabled'=>'1','advertiser_schedule_time'=>'09:00',
     ];
   }
-
   public static function ensure_defaults(): void {
-    $existing = get_option(self::OPTION_KEY, null);
-    if ($existing === null) {
-      add_option(self::OPTION_KEY, self::defaults());
-    }
+    if (get_option(self::OPTION_KEY,null)===null) add_option(self::OPTION_KEY,self::defaults());
   }
-
   public static function get_all(): array {
-    $saved = get_option(self::OPTION_KEY, []);
-    if (!is_array($saved)) {
-      $saved = [];
-    }
-
-    $all = wp_parse_args($saved, self::defaults());
-    $all['schedule_days'] = self::sanitize_days($all['schedule_days'] ?? []);
+    $saved=get_option(self::OPTION_KEY,[]); if(!is_array($saved)) $saved=[];
+    $all=wp_parse_args($saved,self::defaults()); $all['schedule_days']=self::sanitize_days($all['schedule_days']??[]);
     return $all;
   }
-
-  public static function get(string $key, $default = '') {
-    $all = self::get_all();
-    return array_key_exists($key, $all) ? $all[$key] : $default;
-  }
-
+  public static function get(string $key,$default=''){ $all=self::get_all(); return array_key_exists($key,$all)?$all[$key]:$default; }
   public static function get_report_timezone(): string {
-    $timezone = sanitize_text_field((string) self::get('report_timezone', wp_timezone_string() ?: 'America/Los_Angeles'));
-
-    try {
-      new \DateTimeZone($timezone);
-      return $timezone;
-    } catch (\Exception $e) {
-      return wp_timezone_string() ?: 'America/Los_Angeles';
-    }
+    $timezone=sanitize_text_field((string) self::get('report_timezone',wp_timezone_string()?:'America/Los_Angeles'));
+    try { new \DateTimeZone($timezone); return $timezone; } catch (\Exception $e) { return wp_timezone_string()?:'America/Los_Angeles'; }
   }
-
-  public static function get_status(): array {
-    $status = get_option(self::STATUS_KEY, []);
-    return is_array($status) ? $status : [];
-  }
-
+  public static function get_status(): array { $status=get_option(self::STATUS_KEY,[]); return is_array($status)?$status:[]; }
   public static function set_status(array $status): void {
-    update_option(self::STATUS_KEY, [
-      'sent_at' => sanitize_text_field((string) ($status['sent_at'] ?? '')),
-      'report_date' => sanitize_text_field((string) ($status['report_date'] ?? '')),
-      'mode' => sanitize_text_field((string) ($status['mode'] ?? '')),
-      'message' => sanitize_text_field((string) ($status['message'] ?? '')),
-      'row_count' => max(0, (int) ($status['row_count'] ?? 0)),
-      'gross_total' => round((float) ($status['gross_total'] ?? 0), 2),
+    update_option(self::STATUS_KEY,[
+      'sent_at'=>sanitize_text_field((string) ($status['sent_at']??'')),
+      'report_date'=>sanitize_text_field((string) ($status['report_date']??'')),
+      'mode'=>sanitize_text_field((string) ($status['mode']??'')),
+      'message'=>sanitize_text_field((string) ($status['message']??'')),
+      'row_count'=>max(0,(int) ($status['row_count']??0)),
+      'gross_total'=>round((float) ($status['gross_total']??0),2),
     ]);
   }
 
   public static function register_settings(): void {
-    register_setting(self::OPTION_KEY, self::OPTION_KEY, [
-      'type' => 'array',
-      'sanitize_callback' => [__CLASS__, 'sanitize'],
-      'default' => self::defaults(),
-    ]);
-
-    add_settings_section(
-      'roxy_grosses_square',
-      'Square',
-      function () {
-        echo '<p>Connect to Square and define how ticket line items should be recognized.</p>';
-      },
-      'roxy-grosses'
-    );
-
-    add_settings_section(
-      'roxy_grosses_email',
-      'Email + Report',
-      function () {
-        echo '<p>Choose recipients and the contents of the generated grosses report email.</p>';
-      },
-      'roxy-grosses'
-    );
-
-    add_settings_section(
-      'roxy_grosses_schedule',
-      'Schedule',
-      function () {
-        echo '<p>Pick the automatic report days and send time. Use the manual form below for odd schedules.</p>';
-      },
-      'roxy-grosses'
-    );
-
-    $fields = [
-      'square_environment' => ['label' => 'Square environment', 'section' => 'roxy_grosses_square'],
-      'square_access_token' => ['label' => 'Square access token', 'section' => 'roxy_grosses_square'],
-      'square_location_ids' => ['label' => 'Square location IDs', 'section' => 'roxy_grosses_square'],
-      'report_timezone' => ['label' => 'Report timezone', 'section' => 'roxy_grosses_square'],
-      'ticket_keywords' => ['label' => 'Ticket keywords', 'section' => 'roxy_grosses_square'],
-      'exclude_keywords' => ['label' => 'Exclude keywords', 'section' => 'roxy_grosses_square'],
-      'film_mappings' => ['label' => 'Film mappings', 'section' => 'roxy_grosses_square'],
-      'recipient_emails' => ['label' => 'Recipient emails', 'section' => 'roxy_grosses_email'],
-      'admin_email' => ['label' => 'Admin alert email', 'section' => 'roxy_grosses_email'],
-      'email_subject' => ['label' => 'Email subject', 'section' => 'roxy_grosses_email'],
-      'email_body' => ['label' => 'Email body', 'section' => 'roxy_grosses_email'],
-      'theater_name' => ['label' => 'Theater name', 'section' => 'roxy_grosses_email'],
-      'general_price' => ['label' => 'General ticket price', 'section' => 'roxy_grosses_email'],
-      'discount_price' => ['label' => 'Discount ticket price', 'section' => 'roxy_grosses_email'],
-      'group_price' => ['label' => 'Group ticket price', 'section' => 'roxy_grosses_email'],
-      'lookback_days' => ['label' => 'Previous days to include', 'section' => 'roxy_grosses_email'],
-      'schedule_enabled' => ['label' => 'Enable automatic sends', 'section' => 'roxy_grosses_schedule'],
-      'schedule_days' => ['label' => 'Automatic days', 'section' => 'roxy_grosses_schedule'],
-      'schedule_time' => ['label' => 'Automatic send time', 'section' => 'roxy_grosses_schedule'],
+    register_setting(self::OPTION_KEY,self::OPTION_KEY,['type'=>'array','sanitize_callback'=>[__CLASS__,'sanitize'],'default'=>self::defaults()]);
+    add_settings_section('roxy_grosses_square','Square',fn()=>print('<p>Connect to Square and define how ticket line items should be recognized.</p>'),'roxy-grosses');
+    add_settings_section('roxy_grosses_email','Email + Report',fn()=>print('<p>Choose recipients and the contents of the generated grosses report email.</p>'),'roxy-grosses');
+    add_settings_section('roxy_grosses_workbook','Workbook + Advertisers',fn()=>print('<p>Configure the yearly workbook template, studio mappings, and monthly advertiser summary emails.</p>'),'roxy-grosses');
+    add_settings_section('roxy_grosses_schedule','Schedule',fn()=>print('<p>Pick the automatic report days and send times. Use the manual forms for odd schedules.</p>'),'roxy-grosses');
+    $fields=[
+      'square_environment'=>['Square environment','roxy_grosses_square'],'square_access_token'=>['Square access token','roxy_grosses_square'],
+      'square_location_ids'=>['Square location IDs','roxy_grosses_square'],'report_timezone'=>['Report timezone','roxy_grosses_square'],
+      'ticket_keywords'=>['Ticket keywords','roxy_grosses_square'],'exclude_keywords'=>['Exclude keywords','roxy_grosses_square'],
+      'film_mappings'=>['Film mappings','roxy_grosses_square'],'recipient_emails'=>['Recipient emails','roxy_grosses_email'],
+      'admin_email'=>['Admin alert email','roxy_grosses_email'],'email_subject'=>['Email subject','roxy_grosses_email'],
+      'email_body'=>['Email body','roxy_grosses_email'],'theater_name'=>['Theater name','roxy_grosses_email'],
+      'general_price'=>['General ticket price','roxy_grosses_email'],'discount_price'=>['Discount ticket price','roxy_grosses_email'],
+      'group_price'=>['Group ticket price','roxy_grosses_email'],'lookback_days'=>['Previous days to include','roxy_grosses_email'],
+      'workbook_template_path'=>['Workbook template path','roxy_grosses_workbook'],'studio_mappings'=>['Studio mappings','roxy_grosses_workbook'],
+      'advertiser_emails'=>['Advertiser emails','roxy_grosses_workbook'],'advertiser_email_subject'=>['Advertiser email subject','roxy_grosses_workbook'],
+      'advertiser_email_body'=>['Advertiser email body','roxy_grosses_workbook'],'schedule_enabled'=>['Enable automatic grosses sends','roxy_grosses_schedule'],
+      'schedule_days'=>['Automatic grosses days','roxy_grosses_schedule'],'schedule_time'=>['Automatic grosses send time','roxy_grosses_schedule'],
+      'advertiser_schedule_enabled'=>['Enable monthly advertiser email','roxy_grosses_schedule'],'advertiser_schedule_time'=>['Monthly advertiser send time','roxy_grosses_schedule'],
     ];
-
-    foreach ($fields as $key => $field) {
-      add_settings_field(
-        $key,
-        $field['label'],
-        [__CLASS__, 'render_field'],
-        'roxy-grosses',
-        $field['section'],
-        ['key' => $key]
-      );
-    }
+    foreach($fields as $key=>$field){ add_settings_field($key,$field[0],[__CLASS__,'render_field'],'roxy-grosses',$field[1],['key'=>$key]); }
   }
 
   public static function sanitize($input): array {
-    $defaults = self::defaults();
-    $input = is_array($input) ? $input : [];
-
-    $sanitized = [
-      'square_environment' => in_array(($input['square_environment'] ?? ''), ['production', 'sandbox'], true) ? $input['square_environment'] : $defaults['square_environment'],
-      'square_access_token' => sanitize_text_field((string) ($input['square_access_token'] ?? $defaults['square_access_token'])),
-      'square_location_ids' => self::sanitize_line_list((string) ($input['square_location_ids'] ?? $defaults['square_location_ids'])),
-      'report_timezone' => self::sanitize_timezone((string) ($input['report_timezone'] ?? $defaults['report_timezone'])),
-      'ticket_keywords' => self::sanitize_line_list((string) ($input['ticket_keywords'] ?? $defaults['ticket_keywords'])),
-      'exclude_keywords' => self::sanitize_line_list((string) ($input['exclude_keywords'] ?? $defaults['exclude_keywords'])),
-      'film_mappings' => self::sanitize_mappings((string) ($input['film_mappings'] ?? $defaults['film_mappings'])),
-      'recipient_emails' => self::sanitize_email_list((string) ($input['recipient_emails'] ?? $defaults['recipient_emails'])),
-      'admin_email' => sanitize_email((string) ($input['admin_email'] ?? $defaults['admin_email'])),
-      'email_subject' => sanitize_text_field((string) ($input['email_subject'] ?? $defaults['email_subject'])),
-      'email_body' => sanitize_textarea_field((string) ($input['email_body'] ?? $defaults['email_body'])),
-      'theater_name' => sanitize_text_field((string) ($input['theater_name'] ?? $defaults['theater_name'])),
-      'general_price' => wc_format_decimal((string) ($input['general_price'] ?? $defaults['general_price'])),
-      'discount_price' => wc_format_decimal((string) ($input['discount_price'] ?? $defaults['discount_price'])),
-      'group_price' => wc_format_decimal((string) ($input['group_price'] ?? $defaults['group_price'])),
-      'lookback_days' => (string) max(0, (int) ($input['lookback_days'] ?? $defaults['lookback_days'])),
-      'schedule_enabled' => !empty($input['schedule_enabled']) ? '1' : '0',
-      'schedule_days' => self::sanitize_days($input['schedule_days'] ?? $defaults['schedule_days']),
-      'schedule_time' => self::sanitize_time((string) ($input['schedule_time'] ?? $defaults['schedule_time'])),
+    $d=self::defaults(); $input=is_array($input)?$input:[];
+    $sanitized=[
+      'square_environment'=>in_array(($input['square_environment']??''),['production','sandbox'],true)?$input['square_environment']:$d['square_environment'],
+      'square_access_token'=>sanitize_text_field((string) ($input['square_access_token']??$d['square_access_token'])),
+      'square_location_ids'=>self::sanitize_line_list((string) ($input['square_location_ids']??$d['square_location_ids'])),
+      'report_timezone'=>self::sanitize_timezone((string) ($input['report_timezone']??$d['report_timezone'])),
+      'ticket_keywords'=>self::sanitize_line_list((string) ($input['ticket_keywords']??$d['ticket_keywords'])),
+      'exclude_keywords'=>self::sanitize_line_list((string) ($input['exclude_keywords']??$d['exclude_keywords'])),
+      'film_mappings'=>self::sanitize_mappings((string) ($input['film_mappings']??$d['film_mappings'])),
+      'studio_mappings'=>self::sanitize_studio_mappings((string) ($input['studio_mappings']??$d['studio_mappings'])),
+      'recipient_emails'=>self::sanitize_email_list((string) ($input['recipient_emails']??$d['recipient_emails'])),
+      'advertiser_emails'=>self::sanitize_email_list((string) ($input['advertiser_emails']??$d['advertiser_emails'])),
+      'admin_email'=>sanitize_email((string) ($input['admin_email']??$d['admin_email'])),
+      'email_subject'=>sanitize_text_field((string) ($input['email_subject']??$d['email_subject'])),
+      'email_body'=>sanitize_textarea_field((string) ($input['email_body']??$d['email_body'])),
+      'advertiser_email_subject'=>sanitize_text_field((string) ($input['advertiser_email_subject']??$d['advertiser_email_subject'])),
+      'advertiser_email_body'=>sanitize_textarea_field((string) ($input['advertiser_email_body']??$d['advertiser_email_body'])),
+      'theater_name'=>sanitize_text_field((string) ($input['theater_name']??$d['theater_name'])),
+      'general_price'=>wc_format_decimal((string) ($input['general_price']??$d['general_price'])),
+      'discount_price'=>wc_format_decimal((string) ($input['discount_price']??$d['discount_price'])),
+      'group_price'=>wc_format_decimal((string) ($input['group_price']??$d['group_price'])),
+      'lookback_days'=>(string) max(0,(int) ($input['lookback_days']??$d['lookback_days'])),
+      'workbook_template_path'=>sanitize_text_field((string) ($input['workbook_template_path']??$d['workbook_template_path'])),
+      'schedule_enabled'=>!empty($input['schedule_enabled'])?'1':'0','schedule_days'=>self::sanitize_days($input['schedule_days']??$d['schedule_days']),
+      'schedule_time'=>self::sanitize_time((string) ($input['schedule_time']??$d['schedule_time'])),
+      'advertiser_schedule_enabled'=>!empty($input['advertiser_schedule_enabled'])?'1':'0',
+      'advertiser_schedule_time'=>self::sanitize_time((string) ($input['advertiser_schedule_time']??$d['advertiser_schedule_time'])),
     ];
-
-    Scheduler::sync_schedule($sanitized);
-
-    return $sanitized;
+    Scheduler::sync_schedule($sanitized); return $sanitized;
   }
 
   public static function render_field(array $args): void {
-    $key = (string) ($args['key'] ?? '');
-    $value = self::get($key, '');
-    $name = self::OPTION_KEY . '[' . $key . ']';
-
-    switch ($key) {
+    $key=(string) ($args['key']??''); $value=self::get($key,''); $name=self::OPTION_KEY.'['.$key.']';
+    switch($key){
       case 'square_environment':
-        echo '<select name="' . esc_attr($name) . '">';
-        foreach (['production' => 'Production', 'sandbox' => 'Sandbox'] as $option_value => $label) {
-          echo '<option value="' . esc_attr($option_value) . '" ' . selected($value, $option_value, false) . '>' . esc_html($label) . '</option>';
-        }
-        echo '</select>';
-        echo '<p class="description">Use sandbox only for testing with a Square sandbox token.</p>';
-        return;
-
+        echo '<select name="'.esc_attr($name).'">';
+        foreach(['production'=>'Production','sandbox'=>'Sandbox'] as $ov=>$label){ echo '<option value="'.esc_attr($ov).'" '.selected($value,$ov,false).'>'.esc_html($label).'</option>'; }
+        echo '</select><p class="description">Use sandbox only for testing with a Square sandbox token.</p>'; return;
       case 'square_access_token':
-        echo '<input type="password" class="regular-text code" name="' . esc_attr($name) . '" value="' . esc_attr((string) $value) . '" autocomplete="off">';
-        echo '<p class="description">Personal access token or OAuth token with Orders read access.</p>';
+        echo '<input type="password" class="regular-text code" name="'.esc_attr($name).'" value="'.esc_attr((string) $value).'" autocomplete="off"><p class="description">Personal access token or OAuth token with Orders read access.</p>'; return;
+      case 'square_location_ids': case 'ticket_keywords': case 'exclude_keywords': case 'film_mappings': case 'studio_mappings': case 'email_body': case 'advertiser_email_body':
+        $rows=in_array($key,['film_mappings','studio_mappings'],true)?'8':'5';
+        echo '<textarea class="large-text code" rows="'.esc_attr($rows).'" name="'.esc_attr($name).'">'.esc_textarea((string) $value).'</textarea>';
+        if($key==='square_location_ids') echo '<p class="description">One Square location ID per line. Square requires at least one location ID for order searches.</p>';
+        elseif($key==='ticket_keywords') echo '<p class="description">One keyword per line. A line item must match at least one keyword to count as a ticket.</p>';
+        elseif($key==='exclude_keywords') echo '<p class="description">One keyword per line. Matching line items are always ignored.</p>';
+        elseif($key==='film_mappings') echo '<p class="description">One mapping per line in the format: match text|Comscore title|Film code.</p>';
+        elseif($key==='studio_mappings') echo '<p class="description">One mapping per line in the format: film title|studio. Used when building the yearly workbook.</p>';
+        elseif($key==='email_body') echo '<p class="description">You can use {report_date}, {theater_name}, {gross_total}, and {ticket_total}.</p>';
+        else echo '<p class="description">You can use {month_name}, {month}, {year}, {attendance_total}, and {gross_total}.</p>';
         return;
-
-      case 'square_location_ids':
-      case 'ticket_keywords':
-      case 'exclude_keywords':
-      case 'film_mappings':
-      case 'email_body':
-        echo '<textarea class="large-text code" rows="' . esc_attr($key === 'film_mappings' ? '8' : '5') . '" name="' . esc_attr($name) . '">' . esc_textarea((string) $value) . '</textarea>';
-        if ($key === 'square_location_ids') {
-          echo '<p class="description">One Square location ID per line. Square requires at least one location ID for order searches.</p>';
-        } elseif ($key === 'ticket_keywords') {
-          echo '<p class="description">One keyword per line. A line item must match at least one keyword to count as a ticket.</p>';
-        } elseif ($key === 'exclude_keywords') {
-          echo '<p class="description">One keyword per line. Matching line items are always ignored.</p>';
-        } elseif ($key === 'film_mappings') {
-          echo '<p class="description">One mapping per line in the format: match text|Comscore title|Film code. Match text is compared against the Square line item name.</p>';
-        } else {
-          echo '<p class="description">You can use {report_date}, {theater_name}, {gross_total}, and {ticket_total}.</p>';
-        }
+      case 'recipient_emails': case 'advertiser_emails': case 'admin_email': case 'email_subject': case 'advertiser_email_subject': case 'theater_name': case 'report_timezone': case 'lookback_days': case 'workbook_template_path':
+        $class=in_array($key,['recipient_emails','advertiser_emails','workbook_template_path'],true)?'regular-text code':'regular-text';
+        echo '<input type="text" class="'.esc_attr($class).'" name="'.esc_attr($name).'" value="'.esc_attr((string) $value).'">';
+        if($key==='recipient_emails'||$key==='advertiser_emails') echo '<p class="description">Comma-separated email addresses.</p>';
+        elseif($key==='admin_email') echo '<p class="description">Used for failure alerts when a run, workbook build, or email send fails.</p>';
+        elseif($key==='report_timezone') echo '<p class="description">Timezone used to decide the report day and Square date window, for example America/Los_Angeles.</p>';
+        elseif($key==='lookback_days') echo '<p class="description">How many previous days to include if the same film played earlier. Example: 2 includes Friday and Saturday when sending Sunday.</p>';
+        elseif($key==='workbook_template_path') echo '<p class="description">Use {year} in the file name if you keep one workbook per year.</p>';
         return;
-
-      case 'recipient_emails':
-      case 'admin_email':
-      case 'email_subject':
-      case 'theater_name':
-      case 'report_timezone':
-      case 'lookback_days':
-        echo '<input type="text" class="regular-text' . ($key === 'recipient_emails' ? ' code' : '') . '" name="' . esc_attr($name) . '" value="' . esc_attr((string) $value) . '">';
-        if ($key === 'recipient_emails') {
-          echo '<p class="description">Comma-separated email addresses.</p>';
-        }
-        if ($key === 'admin_email') {
-          echo '<p class="description">Used for failure alerts when an automatic run or email send fails.</p>';
-        }
-        if ($key === 'report_timezone') {
-          echo '<p class="description">Timezone used to decide the report day and Square date window, for example America/Los_Angeles.</p>';
-        }
-        if ($key === 'lookback_days') {
-          echo '<p class="description">How many previous days to include if the same film played earlier. Example: 2 includes Friday and Saturday when sending Sunday.</p>';
-        }
-        return;
-
-      case 'general_price':
-      case 'discount_price':
-      case 'group_price':
-        echo '<input type="number" min="0" step="0.01" class="regular-text" name="' . esc_attr($name) . '" value="' . esc_attr((string) $value) . '">';
-        return;
-
-      case 'schedule_enabled':
-        echo '<label><input type="checkbox" name="' . esc_attr($name) . '" value="1" ' . checked($value, '1', false) . '> Send reports automatically</label>';
-        return;
-
+      case 'general_price': case 'discount_price': case 'group_price':
+        echo '<input type="number" min="0" step="0.01" class="regular-text" name="'.esc_attr($name).'" value="'.esc_attr((string) $value).'">'; return;
+      case 'schedule_enabled': case 'advertiser_schedule_enabled':
+        $label=$key==='schedule_enabled'?'Send grosses reports automatically':'Send advertiser summary automatically each month';
+        echo '<label><input type="checkbox" name="'.esc_attr($name).'" value="1" '.checked($value,'1',false).'> '.esc_html($label).'</label>'; return;
       case 'schedule_days':
-        $days = is_array($value) ? $value : [];
-        $labels = [
-          'mon' => 'Mon',
-          'tue' => 'Tue',
-          'wed' => 'Wed',
-          'thu' => 'Thu',
-          'fri' => 'Fri',
-          'sat' => 'Sat',
-          'sun' => 'Sun',
-        ];
-        foreach ($labels as $day => $label) {
-          echo '<label style="display:inline-block; margin-right:12px;">';
-          echo '<input type="checkbox" name="' . esc_attr($name) . '[]" value="' . esc_attr($day) . '" ' . checked(in_array($day, $days, true), true, false) . '> ' . esc_html($label);
-          echo '</label>';
-        }
-        return;
-
-      case 'schedule_time':
-        echo '<input type="time" name="' . esc_attr($name) . '" value="' . esc_attr((string) $value) . '">';
-        return;
+        $days=is_array($value)?$value:[]; foreach(['mon'=>'Mon','tue'=>'Tue','wed'=>'Wed','thu'=>'Thu','fri'=>'Fri','sat'=>'Sat','sun'=>'Sun'] as $day=>$label){
+          echo '<label style="display:inline-block; margin-right:12px;"><input type="checkbox" name="'.esc_attr($name).'[]" value="'.esc_attr($day).'" '.checked(in_array($day,$days,true),true,false).'> '.esc_html($label).'</label>';
+        } return;
+      case 'schedule_time': case 'advertiser_schedule_time':
+        echo '<input type="time" name="'.esc_attr($name).'" value="'.esc_attr((string) $value).'">'; return;
     }
   }
 
   public static function render_page(): void {
-    if (!current_user_can('manage_options')) {
-      return;
-    }
-
-    $status = self::get_status();
-    $default_date = wp_date('Y-m-d', null, new \DateTimeZone(self::get_report_timezone()));
-    $tab = self::current_tab();
-    $selected_report_id = isset($_GET['report_id']) ? max(0, (int) $_GET['report_id']) : 0;
-    $selected_report = $selected_report_id > 0 ? Store::get_report($selected_report_id) : null;
-    $saved_reports = Store::list_reports(50);
-    $logs = Store::list_logs(100);
-
-    echo '<div class="wrap">';
-    echo '<h1>Roxy Grosses</h1>';
-    echo '<nav class="nav-tab-wrapper" style="margin-bottom:16px;">';
-    echo '<a class="nav-tab ' . ($tab === 'reports' ? 'nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-grosses&tab=reports')) . '">Reports</a>';
-    echo '<a class="nav-tab ' . ($tab === 'settings' ? 'nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-grosses&tab=settings')) . '">Settings</a>';
-    echo '<a class="nav-tab ' . ($tab === 'logs' ? 'nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-grosses&tab=logs')) . '">Logs</a>';
-    echo '</nav>';
-
-    if (!empty($_GET['roxy_grosses_notice'])) {
-      $notice = sanitize_text_field(wp_unslash((string) $_GET['roxy_grosses_notice']));
-      $class = $notice === 'success' ? 'notice notice-success' : 'notice notice-error';
-      $message = isset($_GET['message']) ? sanitize_text_field(wp_unslash((string) $_GET['message'])) : '';
-      echo '<div class="' . esc_attr($class) . '"><p>' . esc_html($message) . '</p></div>';
-    }
-
-    if (!empty($status['sent_at'])) {
-      echo '<div class="notice notice-info"><p>';
-      echo 'Last report: ' . esc_html($status['report_date'] ?: 'n/a');
-      echo ' | Sent at: ' . esc_html($status['sent_at']);
-      echo ' | Mode: ' . esc_html($status['mode'] ?: 'n/a');
-      echo ' | Rows: ' . esc_html((string) ($status['row_count'] ?? 0));
-      echo ' | Gross: $' . esc_html(number_format((float) ($status['gross_total'] ?? 0), 2));
-      if (!empty($status['message'])) {
-        echo ' | ' . esc_html($status['message']);
-      }
-      echo '</p></div>';
-    }
-
-    if ($tab === 'settings') {
-      echo '<form method="post" action="options.php">';
-      settings_fields(self::OPTION_KEY);
-      do_settings_sections('roxy-grosses');
-      submit_button('Save Grosses Settings');
-      echo '</form>';
-    } elseif ($tab === 'logs') {
-      echo '<h2>Run Log</h2>';
-      echo '<p>Review automatic runs, draft pulls, saved report emails, and failures.</p>';
-      echo '<table class="widefat striped" style="max-width:1100px"><thead><tr><th>Time</th><th>Event</th><th>Mode</th><th>Report ID</th><th>End Date</th><th>Result</th><th>Message</th></tr></thead><tbody>';
-      foreach ($logs as $log_row) {
-        $report_label = !empty($log_row['report_id']) ? (string) $log_row['report_id'] : '—';
-        echo '<tr>';
-        echo '<td>' . esc_html((string) $log_row['created_at']) . '</td>';
-        echo '<td>' . esc_html((string) $log_row['event_type']) . '</td>';
-        echo '<td>' . esc_html((string) $log_row['mode']) . '</td>';
-        echo '<td>' . esc_html($report_label) . '</td>';
-        echo '<td>' . esc_html((string) ($log_row['report_end_date'] ?: '—')) . '</td>';
-        echo '<td>' . (!empty($log_row['success']) ? 'Success' : 'Failed') . '</td>';
-        echo '<td>' . esc_html((string) $log_row['message']) . '</td>';
-        echo '</tr>';
-      }
-      if (!$logs) {
-        echo '<tr><td colspan="7">No log entries yet.</td></tr>';
-      }
-      echo '</tbody></table>';
-    } else {
-      echo '<h2>Pull Report Data</h2>';
-      echo '<p>Generate a saved draft report, review it, and email it when it looks right.</p>';
-      echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
-      wp_nonce_field('roxy_grosses_pull_report');
-      echo '<input type="hidden" name="action" value="roxy_grosses_pull_report">';
-      echo '<table class="form-table"><tbody>';
-      echo '<tr><th scope="row"><label for="roxy-grosses-report-date">Report end date</label></th><td><input id="roxy-grosses-report-date" type="date" name="report_date" value="' . esc_attr($default_date) . '"></td></tr>';
-      echo '</tbody></table>';
-      submit_button('Pull And Save Draft', 'primary');
-      echo '</form>';
-
-      if ($selected_report) {
-        echo '<hr>';
-        echo '<h2>Review Saved Report #' . esc_html((string) $selected_report['id']) . '</h2>';
-        echo '<p>Created: ' . esc_html((string) $selected_report['created_at']) . ' | Status: ' . esc_html((string) $selected_report['status']) . '</p>';
-        echo '<table class="widefat striped" style="max-width:980px"><thead><tr><th>Report Date</th><th>Show Time</th><th>Theater</th><th>Film Title</th><th>General</th><th>Discount</th><th>Group</th><th>Total Tickets</th><th>Gross</th></tr></thead><tbody>';
-        foreach ((array) ($selected_report['rows'] ?? []) as $row) {
-          echo '<tr>';
-          echo '<td>' . esc_html((string) ($row['report_date'] ?? '')) . '</td>';
-          echo '<td>' . esc_html((string) ($row['show_time'] ?? '')) . '</td>';
-          echo '<td>' . esc_html((string) ($row['theater_name'] ?? '')) . '</td>';
-          echo '<td>' . esc_html((string) ($row['film_title'] ?? '')) . '</td>';
-          echo '<td>' . esc_html(number_format_i18n((int) ($row['general_qty'] ?? 0))) . '</td>';
-          echo '<td>' . esc_html(number_format_i18n((int) ($row['discount_qty'] ?? 0))) . '</td>';
-          echo '<td>' . esc_html(number_format_i18n((int) ($row['group_qty'] ?? 0))) . '</td>';
-          echo '<td>' . esc_html(number_format_i18n((int) ($row['total_tickets'] ?? 0))) . '</td>';
-          echo '<td>$' . esc_html(number_format((float) ($row['gross_total'] ?? 0), 2)) . '</td>';
-          echo '</tr>';
-        }
-        echo '</tbody></table>';
-
-        $summary = is_array($selected_report['summary'] ?? null) ? $selected_report['summary'] : [];
-        echo '<p style="margin-top:12px;"><strong>Total Gross:</strong> $' . esc_html(number_format((float) ($summary['gross_total'] ?? 0), 2)) . ' | <strong>Total Tickets:</strong> ' . esc_html(number_format_i18n((int) ($summary['total_tickets'] ?? 0))) . '</p>';
-
-        if (($selected_report['status'] ?? '') !== 'emailed') {
-          echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:12px;">';
-          wp_nonce_field('roxy_grosses_send_saved_report');
-          echo '<input type="hidden" name="action" value="roxy_grosses_send_saved_report">';
-          echo '<input type="hidden" name="report_id" value="' . esc_attr((string) $selected_report['id']) . '">';
-          submit_button('Email This Saved Report', 'secondary', 'submit', false);
-          echo '</form>';
-        }
-      }
-
-      echo '<hr>';
-      echo '<h2>Saved Reports</h2>';
-      echo '<table class="widefat striped" style="max-width:980px"><thead><tr><th>ID</th><th>End Date</th><th>Status</th><th>Rows</th><th>Tickets</th><th>Gross</th><th>Created</th><th>Action</th></tr></thead><tbody>';
-      foreach ($saved_reports as $report_row) {
-        $view_url = add_query_arg([
-          'page' => 'roxy-grosses',
-          'tab' => 'reports',
-          'report_id' => (int) $report_row['id'],
-        ], admin_url('admin.php'));
-        echo '<tr>';
-        echo '<td>' . esc_html((string) $report_row['id']) . '</td>';
-        echo '<td>' . esc_html((string) $report_row['report_end_date']) . '</td>';
-        echo '<td>' . esc_html((string) $report_row['status']) . '</td>';
-        echo '<td>' . esc_html(number_format_i18n((int) $report_row['row_count'])) . '</td>';
-        echo '<td>' . esc_html(number_format_i18n((int) $report_row['summary_tickets'])) . '</td>';
-        echo '<td>$' . esc_html(number_format((float) $report_row['summary_gross'], 2)) . '</td>';
-        echo '<td>' . esc_html((string) $report_row['created_at']) . '</td>';
-        echo '<td><a class="button button-small" href="' . esc_url($view_url) . '">Review</a></td>';
-        echo '</tr>';
-      }
-      if (!$saved_reports) {
-        echo '<tr><td colspan="8">No saved reports yet.</td></tr>';
-      }
-      echo '</tbody></table>';
-    }
+    if(!current_user_can('manage_options')) return;
+    $status=self::get_status(); $timezone=new \DateTimeZone(self::get_report_timezone()); $default_date=wp_date('Y-m-d',null,$timezone);
+    $default_year=(int) wp_date('Y',null,$timezone); $default_advertiser_month=(new \DateTimeImmutable('first day of last month',$timezone))->format('Y-m');
+    $tab=self::current_tab(); $selected_report_id=isset($_GET['report_id'])?max(0,(int) $_GET['report_id']):0; $selected_report=$selected_report_id>0?Store::get_report($selected_report_id):null;
+    $saved_reports=Store::list_reports(50); $logs=Store::list_logs(100); $workbook_year=isset($_GET['workbook_year'])?max(2000,(int) $_GET['workbook_year']):$default_year;
+    echo '<div class="wrap"><h1>Roxy Grosses</h1><nav class="nav-tab-wrapper" style="margin-bottom:16px;">';
+    echo '<a class="nav-tab '.($tab==='reports'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=reports')).'">Reports</a>';
+    echo '<a class="nav-tab '.($tab==='workbook'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=workbook')).'">Workbook</a>';
+    echo '<a class="nav-tab '.($tab==='settings'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=settings')).'">Settings</a>';
+    echo '<a class="nav-tab '.($tab==='logs'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=logs')).'">Logs</a></nav>';
+    if(!empty($_GET['roxy_grosses_notice'])){ $notice=sanitize_text_field(wp_unslash((string) $_GET['roxy_grosses_notice'])); $message=isset($_GET['message'])?sanitize_text_field(wp_unslash((string) $_GET['message'])):''; echo '<div class="'.esc_attr($notice==='success'?'notice notice-success':'notice notice-error').'"><p>'.esc_html($message).'</p></div>'; }
+    if(!empty($status['sent_at'])){ echo '<div class="notice notice-info"><p>Last report: '.esc_html($status['report_date']?:'n/a').' | Sent at: '.esc_html($status['sent_at']).' | Mode: '.esc_html($status['mode']?:'n/a').' | Rows: '.esc_html((string) ($status['row_count']??0)).' | Gross: $'.esc_html(number_format((float) ($status['gross_total']??0),2)); if(!empty($status['message'])) echo ' | '.esc_html($status['message']); echo '</p></div>'; }
+    if($tab==='settings'){ echo '<form method="post" action="options.php">'; settings_fields(self::OPTION_KEY); do_settings_sections('roxy-grosses'); submit_button('Save Grosses Settings'); echo '</form>'; }
+    elseif($tab==='logs'){ self::render_logs_tab($logs); }
+    elseif($tab==='workbook'){ self::render_workbook_tab($workbook_year,$default_advertiser_month); }
+    else { self::render_reports_tab($default_date,$selected_report,$saved_reports); }
     echo '</div>';
   }
 
+  private static function render_logs_tab(array $logs): void {
+    echo '<h2>Run Log</h2><p>Review automatic runs, draft pulls, workbook downloads, advertiser sends, and failures.</p>';
+    echo '<table class="widefat striped" style="max-width:1100px"><thead><tr><th>Time</th><th>Event</th><th>Mode</th><th>Report ID</th><th>End Date</th><th>Result</th><th>Message</th></tr></thead><tbody>';
+    foreach($logs as $log_row){
+      echo '<tr><td>'.esc_html((string) $log_row['created_at']).'</td><td>'.esc_html((string) $log_row['event_type']).'</td><td>'.esc_html((string) $log_row['mode']).'</td><td>'.esc_html(!empty($log_row['report_id'])?(string) $log_row['report_id']:'-').'</td><td>'.esc_html((string) ($log_row['report_end_date']?:'-')).'</td><td>'.(!empty($log_row['success'])?'Success':'Failed').'</td><td>'.esc_html((string) $log_row['message']).'</td></tr>';
+    }
+    if(!$logs) echo '<tr><td colspan="7">No log entries yet.</td></tr>'; echo '</tbody></table>';
+  }
+
+  private static function render_workbook_tab(int $workbook_year,string $default_advertiser_month): void {
+    $summary=Workbook::dashboard_summary($workbook_year); $monthly_rows=Workbook::monthly_totals($workbook_year); $weekly_rows=Workbook::weekly_rows_for_year($workbook_year); $snapshot=Workbook::get_snapshot_status($workbook_year);
+    echo '<h2>Workbook Dashboard</h2><p>Review the yearly workbook data stored by the plugin, download the spreadsheet, and send the monthly advertiser summary.</p>';
+    echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'" style="margin-bottom:16px;"><input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="workbook"><label for="roxy-grosses-workbook-year" style="margin-right:8px;"><strong>Year</strong></label><input id="roxy-grosses-workbook-year" type="number" min="2000" max="2100" name="workbook_year" value="'.esc_attr((string) $workbook_year).'">';
+    submit_button('Load Year','secondary','',false,['style'=>'margin-left:8px;']); echo '</form><div style="display:flex; gap:16px; flex-wrap:wrap; margin:16px 0;">';
+    foreach([['Annual Admissions',number_format_i18n((int) ($summary['annual_admissions']??0))],['Annual Gross','$'.number_format((float) ($summary['annual_gross']??0),2)],['Weeks Entered',number_format_i18n((int) ($summary['weeks_entered']??0))],['Average Gross / Entered Week','$'.number_format((float) ($summary['average_gross']??0),2)]] as $card){
+      echo '<div style="min-width:220px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;"><div style="font-size:12px; color:#50575e; text-transform:uppercase;">'.esc_html($card[0]).'</div><div style="font-size:24px; font-weight:600; margin-top:8px;">'.esc_html($card[1]).'</div></div>';
+    }
+    echo '</div><p><strong>Last workbook refresh:</strong> '.esc_html((string) ($snapshot['refreshed_at']??'Never')).'</p><div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:24px;">';
+    echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">'; wp_nonce_field('roxy_grosses_refresh_workbook'); echo '<input type="hidden" name="action" value="roxy_grosses_refresh_workbook"><input type="hidden" name="year" value="'.esc_attr((string) $workbook_year).'">'; submit_button('Refresh Workbook Data','secondary','submit',false); echo '</form>';
+    echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">'; wp_nonce_field('roxy_grosses_download_workbook'); echo '<input type="hidden" name="action" value="roxy_grosses_download_workbook"><input type="hidden" name="year" value="'.esc_attr((string) $workbook_year).'">'; submit_button('Download Excel Workbook','primary','submit',false); echo '</form>';
+    echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:flex; gap:8px; align-items:flex-end;">'; wp_nonce_field('roxy_grosses_send_advertiser_summary'); echo '<input type="hidden" name="action" value="roxy_grosses_send_advertiser_summary"><div><label for="roxy-grosses-advertiser-month"><strong>Advertiser month</strong></label><br><input id="roxy-grosses-advertiser-month" type="month" name="advertiser_month" value="'.esc_attr($default_advertiser_month).'"></div>'; submit_button('Send Advertiser Summary Now','secondary','submit',false); echo '</form></div>';
+    echo '<h3>Monthly Totals</h3><table class="widefat striped" style="max-width:900px"><thead><tr><th>Month</th><th>Weeks</th><th>Admissions</th><th>Gross</th><th>Avg Gross / Week</th><th>Open Days</th></tr></thead><tbody>';
+    foreach($monthly_rows as $row){ echo '<tr><td>'.esc_html((string) ($row['month_name']??'')).'</td><td>'.esc_html(number_format_i18n((int) ($row['weeks']??0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['admissions']??0))).'</td><td>$'.esc_html(number_format((float) ($row['gross']??0),2)).'</td><td>$'.esc_html(number_format((float) ($row['average_gross']??0),2)).'</td><td>'.esc_html(number_format_i18n((int) ($row['open_days']??0))).'</td></tr>'; }
+    echo '</tbody></table><h3 style="margin-top:24px;">Weekly Log Preview</h3><table class="widefat striped"><thead><tr><th>Week</th><th>Week Of</th><th>Film Title</th><th>Studio</th><th>Admissions</th><th>Gross</th><th>Open Days</th></tr></thead><tbody>';
+    foreach($weekly_rows as $row){ echo '<tr><td>'.esc_html((string) ($row['week_number']??'')).'</td><td>'.esc_html((string) ($row['week_of']??'')).'</td><td>'.esc_html((string) ($row['film_title']??'')).'</td><td>'.esc_html((string) ($row['studio']??'')).'</td><td>'.esc_html(number_format_i18n((int) ($row['admissions']??0))).'</td><td>$'.esc_html(number_format((float) ($row['gross']??0),2)).'</td><td>'.esc_html(number_format_i18n((int) ($row['open_days']??0))).'</td></tr>'; }
+    if(!$weekly_rows) echo '<tr><td colspan="7">No yearly workbook rows have been stored yet.</td></tr>'; echo '</tbody></table>';
+  }
+
+  private static function render_reports_tab(string $default_date,?array $selected_report,array $saved_reports): void {
+    echo '<h2>Pull Report Data</h2><p>Generate a saved draft report, review it, and email it when it looks right.</p><form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
+    wp_nonce_field('roxy_grosses_pull_report'); echo '<input type="hidden" name="action" value="roxy_grosses_pull_report"><table class="form-table"><tbody><tr><th scope="row"><label for="roxy-grosses-report-date">Report end date</label></th><td><input id="roxy-grosses-report-date" type="date" name="report_date" value="'.esc_attr($default_date).'"></td></tr></tbody></table>'; submit_button('Pull And Save Draft','primary'); echo '</form>';
+    if($selected_report){ $summary=is_array($selected_report['summary']??null)?$selected_report['summary']:[]; echo '<hr><h2>Review Saved Report #'.esc_html((string) $selected_report['id']).'</h2><p>Created: '.esc_html((string) $selected_report['created_at']).' | Status: '.esc_html((string) $selected_report['status']).'</p><table class="widefat striped" style="max-width:980px"><thead><tr><th>Report Date</th><th>Show Time</th><th>Theater</th><th>Film Title</th><th>General</th><th>Discount</th><th>Group</th><th>Total Tickets</th><th>Gross</th></tr></thead><tbody>';
+      foreach((array) ($selected_report['rows']??[]) as $row){ echo '<tr><td>'.esc_html((string) ($row['report_date']??'')).'</td><td>'.esc_html((string) ($row['show_time']??'')).'</td><td>'.esc_html((string) ($row['theater_name']??'')).'</td><td>'.esc_html((string) ($row['film_title']??'')).'</td><td>'.esc_html(number_format_i18n((int) ($row['general_qty']??0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['discount_qty']??0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['group_qty']??0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['total_tickets']??0))).'</td><td>$'.esc_html(number_format((float) ($row['gross_total']??0),2)).'</td></tr>'; }
+      echo '</tbody></table><p style="margin-top:12px;"><strong>Total Gross:</strong> $'.esc_html(number_format((float) ($summary['gross_total']??0),2)).' | <strong>Total Tickets:</strong> '.esc_html(number_format_i18n((int) ($summary['total_tickets']??0))).'</p>';
+      if(($selected_report['status']??'')!=='emailed'){ echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="margin-top:12px;">'; wp_nonce_field('roxy_grosses_send_saved_report'); echo '<input type="hidden" name="action" value="roxy_grosses_send_saved_report"><input type="hidden" name="report_id" value="'.esc_attr((string) $selected_report['id']).'">'; submit_button('Email This Saved Report','secondary','submit',false); echo '</form>'; }
+    }
+    echo '<hr><h2>Saved Reports</h2><table class="widefat striped" style="max-width:980px"><thead><tr><th>ID</th><th>End Date</th><th>Status</th><th>Rows</th><th>Tickets</th><th>Gross</th><th>Created</th><th>Action</th></tr></thead><tbody>';
+    foreach($saved_reports as $report_row){ $view_url=add_query_arg(['page'=>'roxy-grosses','tab'=>'reports','report_id'=>(int) $report_row['id']],admin_url('admin.php')); echo '<tr><td>'.esc_html((string) $report_row['id']).'</td><td>'.esc_html((string) $report_row['report_end_date']).'</td><td>'.esc_html((string) $report_row['status']).'</td><td>'.esc_html(number_format_i18n((int) $report_row['row_count'])).'</td><td>'.esc_html(number_format_i18n((int) $report_row['summary_tickets'])).'</td><td>$'.esc_html(number_format((float) $report_row['summary_gross'],2)).'</td><td>'.esc_html((string) $report_row['created_at']).'</td><td><a class="button button-small" href="'.esc_url($view_url).'">Review</a></td></tr>'; }
+    if(!$saved_reports) echo '<tr><td colspan="8">No saved reports yet.</td></tr>'; echo '</tbody></table>';
+  }
+
   public static function sanitize_line_list(string $value): string {
-    $lines = preg_split('/[\r\n,]+/', $value);
-    $lines = array_filter(array_map(static function ($line): string {
-      return sanitize_text_field(trim((string) $line));
-    }, (array) $lines));
-
-    return implode("\n", array_values(array_unique($lines)));
+    $lines=preg_split('/[\r\n,]+/',$value); $lines=array_filter(array_map(static fn($line): string=>sanitize_text_field(trim((string) $line)),(array) $lines));
+    return implode("\n",array_values(array_unique($lines)));
   }
-
   public static function line_list(string $value): array {
-    $lines = preg_split('/[\r\n,]+/', $value);
-    return array_values(array_filter(array_map(static function ($line): string {
-      return trim((string) $line);
-    }, (array) $lines)));
+    $lines=preg_split('/[\r\n,]+/',$value);
+    return array_values(array_filter(array_map(static fn($line): string=>trim((string) $line),(array) $lines)));
   }
-
   public static function sanitize_email_list(string $value): string {
-    $emails = preg_split('/[\r\n,;]+/', $value);
-    $emails = array_filter(array_map(static function ($email): string {
-      return sanitize_email(trim((string) $email));
-    }, (array) $emails));
-
-    return implode(',', array_values(array_unique($emails)));
+    $emails=preg_split('/[\r\n,;]+/',$value); $emails=array_filter(array_map(static fn($email): string=>sanitize_email(trim((string) $email)),(array) $emails));
+    return implode(',',array_values(array_unique($emails)));
   }
-
-  public static function email_list(): array {
-    $emails = explode(',', (string) self::get('recipient_emails', ''));
-    return array_values(array_filter(array_map('sanitize_email', array_map('trim', $emails))));
-  }
-
+  public static function email_list(): array { return array_values(array_filter(array_map('sanitize_email',array_map('trim',explode(',',(string) self::get('recipient_emails','')))))); }
+  public static function advertiser_email_list(): array { return array_values(array_filter(array_map('sanitize_email',array_map('trim',explode(',',(string) self::get('advertiser_emails','')))))); }
   public static function sanitize_mappings(string $value): string {
-    $lines = preg_split('/\r\n|\r|\n/', $value);
-    $clean = [];
-
-    foreach ((array) $lines as $line) {
-      $parts = array_map('trim', explode('|', (string) $line));
-      if (count($parts) < 2 || $parts[0] === '' || $parts[1] === '') {
-        continue;
-      }
-
-      $clean[] = sanitize_text_field($parts[0]) . '|' . sanitize_text_field($parts[1]) . '|' . sanitize_text_field($parts[2] ?? '');
-    }
-
-    return implode("\n", $clean);
+    $clean=[]; foreach((array) preg_split('/\r\n|\r|\n/',$value) as $line){ $parts=array_map('trim',explode('|',(string) $line)); if(count($parts)<2||$parts[0]===''||$parts[1]==='') continue; $clean[]=sanitize_text_field($parts[0]).'|'.sanitize_text_field($parts[1]).'|'.sanitize_text_field($parts[2]??''); }
+    return implode("\n",$clean);
   }
-
   public static function mappings(): array {
-    $lines = preg_split('/\r\n|\r|\n/', (string) self::get('film_mappings', ''));
-    $mappings = [];
-
-    foreach ((array) $lines as $line) {
-      $parts = array_map('trim', explode('|', (string) $line));
-      if (count($parts) < 2 || $parts[0] === '' || $parts[1] === '') {
-        continue;
-      }
-
-      $mappings[] = [
-        'match' => mb_strtolower($parts[0]),
-        'title' => $parts[1],
-        'code' => $parts[2] ?? '',
-      ];
-    }
-
+    $mappings=[]; foreach((array) preg_split('/\r\n|\r|\n/',(string) self::get('film_mappings','')) as $line){ $parts=array_map('trim',explode('|',(string) $line)); if(count($parts)<2||$parts[0]===''||$parts[1]==='') continue; $mappings[]=['match'=>mb_strtolower($parts[0]),'title'=>$parts[1],'code'=>$parts[2]??'']; }
     return $mappings;
   }
-
+  public static function sanitize_studio_mappings(string $value): string {
+    $clean=[]; foreach((array) preg_split('/\r\n|\r|\n/',$value) as $line){ $parts=array_map('trim',explode('|',(string) $line)); if(count($parts)<2||$parts[0]===''||$parts[1]==='') continue; $clean[]=sanitize_text_field($parts[0]).'|'.sanitize_text_field($parts[1]); }
+    return implode("\n",$clean);
+  }
+  public static function studio_mappings(): array {
+    $mappings=[]; foreach((array) preg_split('/\r\n|\r|\n/',(string) self::get('studio_mappings','')) as $line){ $parts=array_map('trim',explode('|',(string) $line)); if(count($parts)<2||$parts[0]===''||$parts[1]==='') continue; $mappings[]=['match'=>mb_strtolower($parts[0]),'studio'=>$parts[1]]; }
+    return $mappings;
+  }
   public static function sanitize_days($days): array {
-    $allowed = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-    $days = is_array($days) ? $days : [];
-    $clean = [];
-
-    foreach ($days as $day) {
-      $day = strtolower(sanitize_text_field((string) $day));
-      if (in_array($day, $allowed, true)) {
-        $clean[] = $day;
-      }
-    }
-
-    return array_values(array_unique($clean));
+    $allowed=['mon','tue','wed','thu','fri','sat','sun']; $days=is_array($days)?$days:[]; $clean=[];
+    foreach($days as $day){ $day=strtolower(sanitize_text_field((string) $day)); if(in_array($day,$allowed,true)) $clean[]=$day; } return array_values(array_unique($clean));
   }
-
-  public static function sanitize_time(string $time): string {
-    return preg_match('/^\d{2}:\d{2}$/', $time) ? $time : '22:00';
-  }
-
+  public static function sanitize_time(string $time): string { return preg_match('/^\d{2}:\d{2}$/',$time)?$time:'22:00'; }
   public static function sanitize_timezone(string $timezone): string {
-    $timezone = sanitize_text_field($timezone);
-
-    try {
-      new \DateTimeZone($timezone);
-      return $timezone;
-    } catch (\Exception $e) {
-      return wp_timezone_string() ?: 'America/Los_Angeles';
-    }
+    $timezone=sanitize_text_field($timezone); try { new \DateTimeZone($timezone); return $timezone; } catch (\Exception $e) { return wp_timezone_string()?:'America/Los_Angeles'; }
   }
 }

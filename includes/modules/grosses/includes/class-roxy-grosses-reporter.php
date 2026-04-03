@@ -70,12 +70,17 @@ class Reporter {
         throw new \RuntimeException('No matching Square ticket sales were found for that report date or its configured lookback window.');
       }
 
+      Store::upsert_history_rows($reports, $mode, null);
+
       $send = self::send_email($reports, $summary);
       if (!$send['success']) {
         throw new \RuntimeException($send['message']);
       }
 
       $report_id = Store::create_report($report_date, max(0, (int) Settings::get('lookback_days', '0')), $mode, 'emailed', $summary, $reports);
+      if ($report_id > 0) {
+        Store::upsert_history_rows($reports, $mode, $report_id);
+      }
 
       $message = $send['message'];
       if ($report_id > 0) {
@@ -135,6 +140,8 @@ class Reporter {
         throw new \RuntimeException('Could not save the draft report.');
       }
 
+      Store::upsert_history_rows($reports, $mode, $report_id);
+
       Settings::set_status([
         'sent_at' => '',
         'report_date' => $report_date,
@@ -186,6 +193,8 @@ class Reporter {
         'message' => 'Saved report has no rows to email.',
       ];
     }
+
+    Store::upsert_history_rows($rows, 'saved-report', $report_id);
 
     $send = self::send_email($rows, $summary);
     if (!$send['success']) {
@@ -568,7 +577,7 @@ class Reporter {
     exit;
   }
 
-  private static function notify_admin_failure(string $subject, string $report_date, string $mode, string $message): void {
+  public static function notify_admin_failure(string $subject, string $report_date, string $mode, string $message): void {
     $to = sanitize_email((string) Settings::get('admin_email', get_option('admin_email')));
     if ($to === '') {
       return;
