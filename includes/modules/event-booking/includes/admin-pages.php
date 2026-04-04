@@ -7,7 +7,7 @@ function roxy_eb_register_admin_pages() {
 }
 
 function roxy_eb_admin_settings_page() {
-    if (!current_user_can('manage_options')) return;
+    if (!roxy_suite_user_can_access_admin()) return;
     $settings = roxy_eb_get_settings();
 
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -115,7 +115,7 @@ function roxy_eb_admin_settings_page() {
 }
 
 function roxy_eb_admin_blocks_page() {
-    if (!current_user_can('manage_options')) return;
+    if (!roxy_suite_user_can_access_admin()) return;
 
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['roxy_eb_add_block'])) {
         check_admin_referer('roxy_eb_add_block');
@@ -228,7 +228,7 @@ function roxy_eb_is_booking_archived($booking, ?DateTimeImmutable $now = null) {
 }
 
 function roxy_eb_admin_bookings_page() {
-    if (!current_user_can('manage_options')) return;
+    if (!roxy_suite_user_can_access_admin()) return;
 
     if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'retry_sling' && isset($_GET['booking_id'])) {
         $booking_id = intval($_GET['booking_id']);
@@ -495,7 +495,7 @@ if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'edit' && isse
 }
 
 function roxy_eb_admin_sling_logs_page() {
-    if (!current_user_can('manage_options')) return;
+    if (!roxy_suite_user_can_access_admin()) return;
     $booking_filter = isset($_GET['booking_id']) ? intval($_GET['booking_id']) : 0;
     $rows = roxy_eb_repo_list_sling_logs(200, $booking_filter);
     ?>

@@ -53,6 +53,9 @@ class Tickets {
   public static function enqueue_admin_assets(string $hook): void {
     $page = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : '';
     $tab  = isset($_GET['tab'])  ? sanitize_key(wp_unslash($_GET['tab']))  : '';
+    if ($page === 'roxy-ticket-ops' && $tab === '') {
+      $tab = 'door-mode';
+    }
 
     $is_ticket_ops = ($page === 'roxy-ticket-ops');
     $is_door_mode = (($page === 'roxy-show-tickets' || $is_ticket_ops) && $tab === 'door-mode');
@@ -67,8 +70,17 @@ class Tickets {
       return;
     }
 
-    wp_enqueue_style('roxy-st-door-mode', ROXY_ST_URL . 'assets/css/door-mode.css', [], ROXY_ST_VER);
-    wp_enqueue_script('roxy-st-door-mode', ROXY_ST_URL . 'assets/js/door-mode.js', ['jsqr'], ROXY_ST_VER, true);
+    $door_mode_css_ver = (string) @filemtime(ROXY_ST_PATH . 'assets/css/door-mode.css');
+    $door_mode_js_ver  = (string) @filemtime(ROXY_ST_PATH . 'assets/js/door-mode.js');
+    if ($door_mode_css_ver === '' || $door_mode_css_ver === '0') {
+      $door_mode_css_ver = ROXY_ST_VER;
+    }
+    if ($door_mode_js_ver === '' || $door_mode_js_ver === '0') {
+      $door_mode_js_ver = ROXY_ST_VER;
+    }
+
+    wp_enqueue_style('roxy-st-door-mode', ROXY_ST_URL . 'assets/css/door-mode.css', [], $door_mode_css_ver);
+    wp_enqueue_script('roxy-st-door-mode', ROXY_ST_URL . 'assets/js/door-mode.js', ['jsqr'], $door_mode_js_ver, true);
     wp_localize_script('roxy-st-door-mode', 'RoxyDoorMode', [
       'ajaxUrl' => admin_url('admin-ajax.php'),
       'nonce' => wp_create_nonce('roxy_st_door_mode'),
@@ -509,7 +521,7 @@ class Tickets {
   }
 
   public static function render_door_mode_page(bool $wrap = true): void {
-    if (!current_user_can('edit_posts')) {
+    if (!roxy_suite_user_can_access_admin()) {
       wp_die('You do not have permission to access this page.');
     }
 
@@ -537,7 +549,6 @@ class Tickets {
     echo '<h2>Scan Ticket</h2>';
     echo '<div class="roxy-door-camera-actions">';
     echo '<button type="button" class="button button-primary" id="roxy-door-start">Start Camera</button>';
-    echo '<button type="button" class="button" id="roxy-door-stop" hidden>Stop</button>';
     echo '<button type="button" class="button" id="roxy-door-torch" hidden aria-pressed="false">🔦 Light</button>';
     echo '</div>';
     echo '</div>';
@@ -696,7 +707,7 @@ class Tickets {
   }
 
   public static function render_checkin_page(bool $wrap = true): void {
-    if (!current_user_can('edit_posts')) {
+    if (!roxy_suite_user_can_access_admin()) {
       wp_die('You do not have permission to access this page.');
     }
 
@@ -930,7 +941,7 @@ class Tickets {
   private static function handle_checkin_action(bool $check_in): void {
     $ticket_id = isset($_GET['ticket_id']) ? (int) $_GET['ticket_id'] : 0;
     $action = $check_in ? 'roxy_st_check_in_ticket' : 'roxy_st_uncheck_in_ticket';
-    if ($ticket_id <= 0 || !current_user_can('edit_posts') || !check_admin_referer($action . '_' . $ticket_id)) {
+    if ($ticket_id <= 0 || !roxy_suite_user_can_access_admin() || !check_admin_referer($action . '_' . $ticket_id)) {
       wp_die('Invalid request.');
     }
 
@@ -1004,7 +1015,7 @@ class Tickets {
   }
 
   public static function ajax_door_validate(): void {
-    if (!current_user_can('edit_posts')) {
+    if (!roxy_suite_user_can_access_admin()) {
       wp_send_json_error(['message' => 'Permission denied.'], 403);
     }
     check_ajax_referer('roxy_st_door_mode', 'nonce');
@@ -1044,7 +1055,7 @@ class Tickets {
   }
 
   public static function ajax_door_checkin(): void {
-    if (!current_user_can('edit_posts')) {
+    if (!roxy_suite_user_can_access_admin()) {
       wp_send_json_error(['message' => 'Permission denied.'], 403);
     }
     check_ajax_referer('roxy_st_door_checkin', 'nonce');
@@ -1078,7 +1089,7 @@ class Tickets {
   }
 
   public static function ajax_door_stats(): void {
-    if (!current_user_can('edit_posts')) {
+    if (!roxy_suite_user_can_access_admin()) {
       wp_send_json_error(['message' => 'Permission denied.'], 403);
     }
     check_ajax_referer('roxy_st_door_mode', 'nonce');

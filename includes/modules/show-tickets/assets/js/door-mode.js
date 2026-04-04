@@ -2,7 +2,6 @@
   const cfg = window.RoxyDoorMode || {};
   const video = document.getElementById('roxy-door-video');
   const startBtn = document.getElementById('roxy-door-start');
-  const stopBtn = document.getElementById('roxy-door-stop');
   const torchBtn = document.getElementById('roxy-door-torch');
   const autoResume = document.getElementById('roxy-door-auto-resume');
   const note = document.getElementById('roxy-door-camera-note');
@@ -19,6 +18,17 @@
   let jsQRLib = null, nfcReader = null, wakeLock = null;
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', {willReadFrequently:true});
+  const defaultStartLabel = startBtn ? startBtn.textContent : 'Start Camera';
+
+  // Always enter Door Mode in normal admin layout until the camera is actually running.
+  document.body.classList.remove('roxy-door-camera-active');
+
+  function updateCameraButton(){
+    if (!startBtn) return;
+    const isActive = !!stream;
+    startBtn.textContent = isActive ? 'Stop Camera' : defaultStartLabel;
+    startBtn.classList.toggle('button-primary', !isActive);
+  }
 
   function setNote(msg){ if (note) note.textContent = msg; }
   function setOverlay(msg){ if (overlay) overlay.textContent = msg; }
@@ -280,7 +290,7 @@
     finally { busy = false; }
   }
   function pauseScanning(){ scanning = false; if (timer) { clearInterval(timer); timer = null; } }
-  function stopCamera(){ pauseScanning(); if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } video.srcObject = null; torchOn = false; updateTorchVisibility(); setOverlay('Camera stopped'); setNote('Camera stopped.'); releaseWakeLock(); document.body.classList.remove('roxy-door-camera-active'); if (startBtn) startBtn.hidden = false; if (stopBtn) stopBtn.hidden = true; }
+  function stopCamera(){ pauseScanning(); if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } video.srcObject = null; detector = null; torchOn = false; updateTorchVisibility(); setOverlay('Camera stopped'); setNote('Camera stopped.'); releaseWakeLock(); document.body.classList.remove('roxy-door-camera-active'); updateCameraButton(); }
   let scanCount = 0;
   function resumeScanning(){ if (!stream || (!detector && !jsQRLib)) return; if (scanning) return; scanning = true; scanCount = 0; setOverlay('Present ticket QR code'); setNote('Aim camera at the QR code.'); timer = setInterval(scanFrame, 650); }
   async function scanFrame(){
@@ -424,11 +434,15 @@
     startNfcIfAvailable();
     acquireWakeLock();
     document.body.classList.add('roxy-door-camera-active');
-    if (startBtn) startBtn.hidden = true;
-    if (stopBtn) stopBtn.hidden = false;
+    updateCameraButton();
   }
-  startBtn.addEventListener('click', startCamera);
-  if (stopBtn) stopBtn.addEventListener('click', stopCamera);
+  startBtn.addEventListener('click', () => {
+    if (stream) {
+      stopCamera();
+      return;
+    }
+    startCamera();
+  });
   if (torchBtn) torchBtn.addEventListener('click', toggleTorch);
   if (showingLock) {
     showingLock.addEventListener('change', () => {
@@ -454,7 +468,14 @@
     return '';
   }
   const manualToken = resultEl.dataset.manualToken;
+  updateCameraButton();
   refreshAttendance();
+  window.addEventListener('pageshow', () => {
+    if (!stream) {
+      document.body.classList.remove('roxy-door-camera-active');
+      updateCameraButton();
+    }
+  });
   if (manualToken) { showModal(); bindResultActions(); }
   else { idle(); }
 })();

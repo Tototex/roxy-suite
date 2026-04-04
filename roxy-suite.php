@@ -2,16 +2,37 @@
 /**
  * Plugin Name: Roxy Suite
  * Description: Unified management plugin for Newport Roxy — Show Tickets, Will Call, Event Booking, Member Check, Arcade, Legacy NFC Redirect, and Grosses.
- * Version: 1.0.8
+ * Version: 1.0.9
  * Author: Newport Roxy (AI Team)
  * Update URI: https://github.com/Tototex/roxy-suite
  */
 
 if (!defined('ABSPATH')) exit;
 
-define('ROXY_SUITE_VERSION', '1.0.8');
+define('ROXY_SUITE_VERSION', '1.0.9');
 define('ROXY_SUITE_PATH', plugin_dir_path(__FILE__));
 define('ROXY_SUITE_URL', plugin_dir_url(__FILE__));
+
+function roxy_suite_admin_capability(): string {
+    return 'roxy_suite_access';
+}
+
+function roxy_suite_user_can_access_admin(): bool {
+    return current_user_can(roxy_suite_admin_capability()) || current_user_can('manage_options') || current_user_can('manage_woocommerce');
+}
+
+function roxy_suite_grant_capabilities(): void {
+    foreach (['administrator', 'shop_manager'] as $role_name) {
+        $role = get_role($role_name);
+        if ($role && !$role->has_cap(roxy_suite_admin_capability())) {
+            $role->add_cap(roxy_suite_admin_capability());
+        }
+    }
+}
+
+add_action('init', 'roxy_suite_grant_capabilities');
+add_filter('option_page_capability_roxy_st_settings', fn() => roxy_suite_admin_capability());
+add_filter('option_page_capability_roxy_grosses_settings', fn() => roxy_suite_admin_capability());
 
 // ── Roxy Grosses constants ─────────────────────────────────────────────────────
 define('ROXY_GROSSES_VER',  '0.3.0');
@@ -32,7 +53,7 @@ add_action('wp_ajax_roxy_suite_run_tests', ['\\RoxySuite\\Health', 'ajax_run_tes
 // ── Module toggle AJAX ─────────────────────────────────────────────────────────
 add_action('wp_ajax_roxy_suite_toggle_module', function () {
     check_ajax_referer('roxy_suite_toggle_module', 'nonce');
-    if (!current_user_can('manage_options')) {
+    if (!roxy_suite_user_can_access_admin()) {
         wp_send_json_error('Insufficient permissions', 403);
     }
     $module  = sanitize_key((string) ($_POST['module'] ?? ''));
@@ -61,18 +82,18 @@ add_action('admin_menu', function () {
     add_menu_page(
         'Roxy Suite',
         'Roxy Suite',
-        'manage_options',
+        roxy_suite_admin_capability(),
         'roxy-suite',
         'roxy_suite_dashboard_page',
         'dashicons-tickets-alt',
         56
     );
     // Dashboard (first submenu = same slug as parent, renames it)
-    add_submenu_page('roxy-suite', 'Dashboard', 'Dashboard', 'manage_options', 'roxy-suite', 'roxy_suite_dashboard_page');
+    add_submenu_page('roxy-suite', 'Dashboard', 'Dashboard', roxy_suite_admin_capability(), 'roxy-suite', 'roxy_suite_dashboard_page');
 }, 5);
 
 function roxy_suite_dashboard_page() {
-    if (!current_user_can('manage_options')) return;
+    if (!roxy_suite_user_can_access_admin()) return;
     ?>
     <div class="wrap">
         <h1>Roxy Suite — Dashboard</h1>
@@ -145,6 +166,7 @@ if (roxy_suite_module_enabled('grosses')) {
 
 // ── Activation hook — consolidates all module DB/setup work ───────────────────
 register_activation_hook(__FILE__, function () {
+    roxy_suite_grant_capabilities();
     global $wpdb;
     require_once ABSPATH . 'wp-admin/includes/upgrade.php';
     $charset = $wpdb->get_charset_collate();

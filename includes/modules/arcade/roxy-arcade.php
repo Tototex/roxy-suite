@@ -428,11 +428,11 @@ class Roxy_Arcade {
   }
 
   public static function admin_menu() {
-    add_submenu_page('roxy-suite', 'Arcade', 'Arcade', 'manage_options', 'roxy-arcade-settings', [__CLASS__, 'settings_page']);
+    add_submenu_page('roxy-suite', 'Arcade', 'Arcade', roxy_suite_admin_capability(), 'roxy-arcade-settings', [__CLASS__, 'settings_page']);
   }
 
   public static function settings_page() {
-    if (!current_user_can('manage_options')) return;
+    if (!roxy_suite_user_can_access_admin()) return;
 
     $msg = '';
     if (isset($_POST['roxy_arcade_save']) && check_admin_referer('roxy_arcade_save_settings')) {

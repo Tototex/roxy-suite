@@ -56,28 +56,59 @@ function roxy_will_call_showing_product_ids(int $showing_id): array {
   return array_values($ids);
 }
 
+function roxy_will_call_showing_type_labels(int $showing_id): array {
+  $labels = [];
+  $types = [
+    'adult' => 'General',
+    'discount' => 'Discount',
+    'matinee' => 'Matinee',
+    'live1' => (string) (get_post_meta($showing_id, '_roxy_live_label_1', true) ?: 'Live 1'),
+    'live2' => (string) (get_post_meta($showing_id, '_roxy_live_label_2', true) ?: 'Live 2'),
+    'subscriber' => 'Subscriber',
+  ];
+
+  foreach ($types as $type => $label) {
+    $pid = (int) get_post_meta($showing_id, '_roxy_pid_' . $type, true);
+    if ($pid > 0) {
+      $labels[$pid] = $label;
+    }
+  }
+
+  return $labels;
+}
+
 function roxy_will_call_showing_label(int $showing_id): string {
   $title = get_the_title($showing_id) ?: ('Showing #' . $showing_id);
   $start = get_post_meta($showing_id, '_roxy_start', true);
   $date = '';
-  if ($start) {
-    $ts = strtotime((string) $start);
-    if ($ts) $date = ' — ' . wp_date('M j, Y g:ia', $ts);
+  $start_dt = roxy_will_call_parse_showing_start((string) $start);
+  if ($start_dt) {
+    $date = ' — ' . wp_date('M j, Y g:ia', $start_dt->getTimestamp(), wp_timezone());
   }
   return $title . $date . ' (#' . $showing_id . ')';
 }
 
+function roxy_will_call_parse_showing_start(string $start): ?DateTimeImmutable {
+  if ($start === '') {
+    return null;
+  }
+
+  try {
+    return new DateTimeImmutable($start, wp_timezone());
+  } catch (Exception $e) {
+    return null;
+  }
+}
+
 function roxy_will_call_showing_is_archived(int $showing_id): bool {
   $start = (string) get_post_meta($showing_id, '_roxy_start', true);
-  if ($start === '') {
+  $start_dt = roxy_will_call_parse_showing_start($start);
+  if (!$start_dt) {
     return false;
   }
-  $start_ts = strtotime($start);
-  if (!$start_ts) {
-    return false;
-  }
-  $cutoff = strtotime(current_time('Y-m-d') . 'T00:00');
-  return $start_ts < $cutoff;
+
+  $cutoff = new DateTimeImmutable('today', wp_timezone());
+  return $start_dt->getTimestamp() < $cutoff->getTimestamp();
 }
 
 function roxy_will_call_customer_key(string $name, string $email): string {
@@ -92,7 +123,7 @@ if (!defined('ROXY_SUITE_VERSION')) {
       'roxy-suite',
       'Will Call',
       'Will Call',
-      'manage_woocommerce',
+      roxy_suite_admin_capability(),
       'roxy-will-call',
       'roxy_will_call_admin_page'
     );
@@ -100,7 +131,7 @@ if (!defined('ROXY_SUITE_VERSION')) {
 }
 
 function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
-  if (!current_user_can('manage_woocommerce')) {
+  if (!roxy_suite_user_can_access_admin()) {
     wp_die('Not allowed.');
   }
 
@@ -113,6 +144,8 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
   $selected_product_id = isset($_GET['product_id']) ? absint($_GET['product_id']) : 0;
   $selected_showing_id = isset($_GET['showing_id']) ? absint($_GET['showing_id']) : 0;
   $show_archived = !empty($_GET['show_archived']);
+  $page_slug = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : 'roxy-will-call';
+  $tab_slug = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : '';
   if ($wrap) {
     echo '<div class="wrap">';
   }
@@ -122,7 +155,10 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
   ?>
 
     <form method="get" style="margin:12px 0;display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
-      <input type="hidden" name="page" value="<?php echo esc_attr(isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : 'roxy-will-call'); ?>" />
+      <input type="hidden" name="page" value="<?php echo esc_attr($page_slug); ?>" />
+      <?php if ($tab_slug !== ''): ?>
+        <input type="hidden" name="tab" value="<?php echo esc_attr($tab_slug); ?>" />
+      <?php endif; ?>
       <div>
         <label for="mode"><strong>Mode</strong></label><br />
         <select name="mode" id="mode">
@@ -202,6 +238,28 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
     .roxy-wc-summary .metric { min-width:160px; }
     .roxy-wc-summary .label { font-size:12px; color:#666; margin-bottom:2px; }
     .roxy-wc-summary .value { font-size:18px; font-weight:700; }
+    .roxy-wc-summary-breakdown {
+      width:100%;
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+      padding-top:4px;
+    }
+    .roxy-wc-summary-pill {
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      padding:6px 10px;
+      border-radius:999px;
+      border:1px solid #dcdcde;
+      background:#f6f7f7;
+      font-size:12px;
+      font-weight:600;
+    }
+    .roxy-wc-summary-pill strong {
+      font-size:13px;
+      font-weight:800;
+    }
 
     .roxy-wc-search-wrap,
     .roxy-wc-offline-bar {
@@ -216,6 +274,18 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
       font-size:12px;
       color:#666;
       margin-bottom:6px;
+    }
+    .roxy-wc-ticket-type {
+      display:inline-flex;
+      align-items:center;
+      gap:4px;
+      margin:0 6px 6px 0;
+      padding:4px 8px;
+      border:1px solid #dcdcde;
+      border-radius:999px;
+      background:#f6f7f7;
+      font-size:12px;
+      white-space:nowrap;
     }
     .roxy-wc-search {
       width:100%;
@@ -262,6 +332,7 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
       const checkedInEl = document.getElementById('roxy-wc-checked-in');
       const remainingEl = document.getElementById('roxy-wc-remaining');
       const soldEl = document.getElementById('roxy-wc-total-sold');
+      const typeBreakdownEl = document.getElementById('roxy-wc-type-breakdown');
       const offlineBar = document.getElementById('roxy-wc-offline-bar');
       const offlineStatus = document.getElementById('roxy-wc-offline-status');
       const offlineDetail = document.getElementById('roxy-wc-offline-detail');
@@ -364,19 +435,47 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
       function recalcAttendance() {
         let sold = 0;
         let checkedIn = 0;
+        const typeTotals = {};
 
         getRows().forEach((tr) => {
           const qty = parseInt(tr.getAttribute('data-qty') || '0', 10);
           const usedInput = tr.querySelector('input.roxy-used');
           const usedQty = parseInt((usedInput && usedInput.value) || '0', 10);
+          let remainingUsed = Number.isNaN(usedQty) ? 0 : usedQty;
+          let ticketTypes = {};
+
+          try {
+            ticketTypes = JSON.parse(tr.getAttribute('data-ticket-types') || '{}') || {};
+          } catch (e) {
+            ticketTypes = {};
+          }
+
           sold += qty;
           checkedIn += Number.isNaN(usedQty) ? 0 : usedQty;
+
+          Object.keys(ticketTypes).sort((a, b) => a.localeCompare(b)).forEach((label) => {
+            if (remainingUsed <= 0) return;
+            const alloc = Math.min(remainingUsed, parseInt(ticketTypes[label] || '0', 10) || 0);
+            if (alloc <= 0) return;
+            typeTotals[label] = (typeTotals[label] || 0) + alloc;
+            remainingUsed -= alloc;
+          });
         });
 
         const remaining = Math.max(0, sold - checkedIn);
         if (soldEl) soldEl.textContent = sold.toLocaleString();
         if (checkedInEl) checkedInEl.textContent = checkedIn.toLocaleString();
         if (remainingEl) remainingEl.textContent = remaining.toLocaleString();
+        if (typeBreakdownEl) {
+          const labels = Object.keys(typeTotals).sort((a, b) => a.localeCompare(b));
+          if (!labels.length) {
+            typeBreakdownEl.innerHTML = '<span class="roxy-wc-summary-pill">No ticket types checked in yet.</span>';
+          } else {
+            typeBreakdownEl.innerHTML = labels.map((label) => {
+              return '<span class="roxy-wc-summary-pill"><strong>' + Number(typeTotals[label] || 0).toLocaleString() + '</strong> ' + label + ' checked in</span>';
+            }).join('');
+          }
+        }
       }
 
       function applySearch() {
@@ -596,10 +695,10 @@ function roxy_will_call_showing_dropdown($selected, bool $show_archived = false)
 
 function roxy_will_call_get_showing_list($showing_id) {
   $product_ids = roxy_will_call_showing_product_ids((int) $showing_id);
-  return roxy_will_call_get_list($product_ids);
+  return roxy_will_call_get_list($product_ids, roxy_will_call_showing_type_labels((int) $showing_id));
 }
 
-function roxy_will_call_get_list($product_ids) {
+function roxy_will_call_get_list($product_ids, array $ticket_type_labels = []) {
   $product_ids = array_values(array_filter(array_map('intval', (array) $product_ids)));
   if (!$product_ids) {
     return [
@@ -659,12 +758,26 @@ function roxy_will_call_get_list($product_ids) {
           'name' => $name,
           'email' => $email,
           'qty' => 0,
+          'ticket_types' => [],
           'orders' => [],
           'latest_order_ts' => 0,
         ];
       }
 
       $agg[$customer_key]['qty'] += $qty;
+      $matched_product_id = isset($product_lookup[$pid]) ? $pid : $vid;
+      if ($matched_product_id <= 0) {
+        $matched_product_id = $pid;
+      }
+      $type_label = isset($ticket_type_labels[$matched_product_id]) ? (string) $ticket_type_labels[$matched_product_id] : '';
+      if ($type_label === '') {
+        $product = wc_get_product($matched_product_id);
+        $type_label = $product ? (string) $product->get_name() : 'Ticket';
+      }
+      if (!isset($agg[$customer_key]['ticket_types'][$type_label])) {
+        $agg[$customer_key]['ticket_types'][$type_label] = 0;
+      }
+      $agg[$customer_key]['ticket_types'][$type_label] += $qty;
       $date_created = $order->get_date_created();
       $ts = $date_created ? $date_created->getTimestamp() : 0;
       $agg[$customer_key]['orders'][(int) $oid] = $date_created ? $date_created->date('Y-m-d H:i:s') : '';
@@ -693,6 +806,49 @@ function roxy_will_call_get_list($product_ids) {
   ];
 }
 
+function roxy_will_call_checked_in_type_totals(array $rows, array $checkins): array {
+  $totals = [];
+
+  foreach ($rows as $row) {
+    $customer_key = isset($row['customer_key']) ? (string) $row['customer_key'] : '';
+    if ($customer_key === '') {
+      continue;
+    }
+
+    $used_qty = isset($checkins[$customer_key]['used_qty']) ? (int) $checkins[$customer_key]['used_qty'] : 0;
+    if ($used_qty <= 0) {
+      continue;
+    }
+
+    $ticket_types = isset($row['ticket_types']) && is_array($row['ticket_types']) ? $row['ticket_types'] : [];
+    if (!$ticket_types) {
+      $ticket_types = ['Ticket' => (int) ($row['qty'] ?? 0)];
+    }
+
+    ksort($ticket_types, SORT_NATURAL | SORT_FLAG_CASE);
+    $remaining = $used_qty;
+    foreach ($ticket_types as $label => $qty) {
+      if ($remaining <= 0) {
+        break;
+      }
+
+      $alloc = min($remaining, max(0, (int) $qty));
+      if ($alloc <= 0) {
+        continue;
+      }
+
+      if (!isset($totals[$label])) {
+        $totals[$label] = 0;
+      }
+      $totals[$label] += $alloc;
+      $remaining -= $alloc;
+    }
+  }
+
+  ksort($totals, SORT_NATURAL | SORT_FLAG_CASE);
+  return $totals;
+}
+
 function roxy_will_call_render_table($mode, $id, $rows, $totals) {
   $nonce = wp_create_nonce('roxy_will_call_save');
   $context_id = roxy_will_call_context_numeric_id($mode, (int) $id);
@@ -718,6 +874,7 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
     if ($used_qty > (int) $r['qty']) $used_qty = (int) $r['qty'];
     $checked_in_total += $used_qty;
   }
+  $checked_in_type_totals = roxy_will_call_checked_in_type_totals($rows, $checkins);
   $remaining_total = max(0, $total_qty - $checked_in_total);
 
   echo '<h2 style="margin-top:18px;">' . esc_html($title) . '</h2>';
@@ -739,6 +896,15 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
   echo '  <div class="metric"><div class="label">Remaining</div><div class="value" id="roxy-wc-remaining">' . esc_html(number_format_i18n($remaining_total)) . '</div></div>';
   echo '  <div class="metric"><div class="label">Total revenue</div><div class="value">' . wp_kses_post(wc_price($total_revenue)) . '</div></div>';
   echo '  <div class="metric"><div class="label">Matching orders</div><div class="value">' . esc_html(number_format_i18n($order_count)) . '</div></div>';
+  echo '  <div class="roxy-wc-summary-breakdown" id="roxy-wc-type-breakdown">';
+  if ($checked_in_type_totals) {
+    foreach ($checked_in_type_totals as $label => $qty) {
+      echo '<span class="roxy-wc-summary-pill"><strong>' . esc_html(number_format_i18n((int) $qty)) . '</strong> ' . esc_html((string) $label) . ' checked in</span>';
+    }
+  } else {
+    echo '<span class="roxy-wc-summary-pill">No ticket types checked in yet.</span>';
+  }
+  echo '  </div>';
   echo '</div>';
 
   echo '<div class="roxy-wc-search-wrap">';
@@ -754,6 +920,7 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
   echo '<th style="width:170px;">Orders</th>';
   echo '<th style="width:150px;">Order Date</th>';
   echo '<th style="width:90px;">Qty</th>';
+  echo '<th style="width:240px;">Ticket Types</th>';
   echo '<th style="width:90px;">Used</th>';
   echo '<th style="width:110px;">Checked In</th>';
   echo '<th style="width:170px;">Saved</th>';
@@ -788,15 +955,34 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
     if (!empty($r['latest_order_ts'])) {
       $latest_date = wp_date('Y-m-d g:ia', (int) $r['latest_order_ts']);
     }
-    $search_text = trim($r['name'] . ' ' . $r['email'] . ' ' . implode(' ', $order_ids_for_search));
+    $ticket_types = [];
+    if (!empty($r['ticket_types']) && is_array($r['ticket_types'])) {
+      foreach ($r['ticket_types'] as $label => $type_qty) {
+        $ticket_types[] = ['label' => (string) $label, 'qty' => (int) $type_qty];
+      }
+      usort($ticket_types, static function ($a, $b) {
+        return strcasecmp($a['label'], $b['label']);
+      });
+    }
+    $ticket_types_html = 'â€”';
+    $ticket_types_html = '&mdash;';
+    if ($ticket_types) {
+      $parts = [];
+      foreach ($ticket_types as $type_row) {
+        $parts[] = '<span class="roxy-wc-ticket-type"><strong>' . esc_html((string) $type_row['qty']) . '</strong> ' . esc_html($type_row['label']) . '</span>';
+      }
+      $ticket_types_html = implode(' ', $parts);
+    }
+    $search_text = trim($r['name'] . ' ' . $r['email'] . ' ' . implode(' ', $order_ids_for_search) . ' ' . implode(' ', array_keys((array) ($r['ticket_types'] ?? []))));
 
-    echo '<tr data-customer-key="' . esc_attr($key) . '" data-qty="' . esc_attr($qty) . '" data-search="' . esc_attr(strtolower($search_text)) . '">';
+    echo '<tr data-customer-key="' . esc_attr($key) . '" data-qty="' . esc_attr($qty) . '" data-ticket-types="' . esc_attr(wp_json_encode((array) ($r['ticket_types'] ?? []))) . '" data-search="' . esc_attr(strtolower($search_text)) . '">';
     echo '<td>' . esc_html($i) . '</td>';
     echo '<td><strong>' . esc_html($r['name']) . '</strong></td>';
     echo '<td>' . esc_html($r['email']) . '</td>';
     echo '<td>' . wp_kses_post($orders_html) . '</td>';
     echo '<td>' . esc_html($latest_date) . '</td>';
     echo '<td>' . esc_html($qty) . '</td>';
+    echo '<td>' . wp_kses_post($ticket_types_html) . '</td>';
     echo '<td><input class="roxy-used" type="number" min="0" max="' . esc_attr($qty) . '" value="' . esc_attr($used_qty) . '" /></td>';
     echo '<td><label><input class="roxy-checked" type="checkbox" ' . checked($checked, true, false) . ' /> yes</label></td>';
     echo '<td><span class="roxy-wc-saved">Saved ✓</span><span class="roxy-wc-queued">Queued ⏳</span><span class="roxy-wc-syncing">Syncing…</span><span class="roxy-wc-error">Sync failed</span></td>';
@@ -804,7 +990,7 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
   }
 
   if ($i === 0) {
-    echo '<tr><td colspan="9">No matching purchases found for this selection.</td></tr>';
+    echo '<tr><td colspan="10">No matching purchases found for this selection.</td></tr>';
   }
 
   echo '</tbody></table>';
@@ -914,7 +1100,7 @@ function roxy_will_call_apply_ticket_checkin_state(array $ticket_ids, int $used_
 }
 
 add_action('wp_ajax_roxy_will_call_save', function () {
-  if (!current_user_can('manage_woocommerce')) {
+  if (!roxy_suite_user_can_access_admin()) {
     wp_send_json_error(['message' => 'Not allowed']);
   }
 

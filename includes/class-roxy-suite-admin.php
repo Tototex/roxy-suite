@@ -21,7 +21,7 @@ class Admin {
                 'roxy-suite',
                 'Ticket Ops',
                 'Ticket Ops',
-                'edit_posts',
+                roxy_suite_admin_capability(),
                 'roxy-ticket-ops',
                 [__CLASS__, 'page_ticket_ops']
             );
@@ -32,7 +32,7 @@ class Admin {
                 'roxy-suite',
                 'Show Tickets',
                 'Show Tickets',
-                'manage_options',
+                roxy_suite_admin_capability(),
                 'roxy-show-tickets',
                 [__CLASS__, 'page_show_tickets']
             );
@@ -43,7 +43,7 @@ class Admin {
                 'roxy-suite',
                 'Event Booking',
                 'Event Booking',
-                'manage_options',
+                roxy_suite_admin_capability(),
                 'roxy-event-booking',
                 [__CLASS__, 'page_event_booking']
             );
@@ -54,7 +54,7 @@ class Admin {
                 'roxy-suite',
                 'Grosses',
                 'Grosses',
-                'manage_options',
+                roxy_suite_admin_capability(),
                 'roxy-grosses',
                 ['\\RoxyGrosses\\Settings', 'render_page']
             );
@@ -62,7 +62,7 @@ class Admin {
     }
 
     public static function page_ticket_ops(): void {
-        if (!current_user_can('edit_posts')) return;
+        if (!roxy_suite_user_can_access_admin()) return;
 
         $available_tabs = [];
 
@@ -70,7 +70,7 @@ class Admin {
             $available_tabs['door-mode'] = 'Door Mode';
         }
 
-        if (roxy_suite_module_enabled('will_call') && function_exists('roxy_will_call_admin_page') && current_user_can('manage_woocommerce')) {
+        if (roxy_suite_module_enabled('will_call') && function_exists('roxy_will_call_admin_page') && roxy_suite_user_can_access_admin()) {
             $available_tabs['will-call'] = 'Will Call';
         }
 
@@ -78,7 +78,7 @@ class Admin {
             roxy_suite_module_enabled('sub_check') &&
             class_exists('\\Roxy_Sub_Check') &&
             method_exists('\\Roxy_Sub_Check', 'render_scan_log_page') &&
-            (current_user_can('manage_woocommerce') || current_user_can('manage_options'))
+            roxy_suite_user_can_access_admin()
         ) {
             $available_tabs['member-check-log'] = 'Member Check Log';
         }
@@ -92,7 +92,13 @@ class Admin {
         }
 
         $default_tab = array_key_first($available_tabs);
-        $tab = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : $default_tab;
+        $raw_tab = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : '';
+        if ($raw_tab === '') {
+            wp_safe_redirect(add_query_arg(['page' => 'roxy-ticket-ops', 'tab' => $default_tab], admin_url('admin.php')));
+            exit;
+        }
+
+        $tab = $raw_tab;
         if (!isset($available_tabs[$tab])) {
             $tab = $default_tab;
         }
@@ -103,7 +109,7 @@ class Admin {
         echo '<h1>Ticket Ops</h1>';
         echo '<nav class="nav-tab-wrapper">';
         foreach ($available_tabs as $slug => $label) {
-            $url = $base . ($slug !== $default_tab ? '&tab=' . $slug : '');
+            $url = $base . '&tab=' . $slug;
             $active = ($tab === $slug) ? ' nav-tab-active' : '';
             echo '<a href="' . esc_url($url) . '" class="nav-tab' . esc_attr($active) . '">' . esc_html($label) . '</a>';
         }
@@ -128,7 +134,7 @@ class Admin {
     }
 
     public static function page_show_tickets(): void {
-        if (!current_user_can('manage_options')) return;
+        if (!roxy_suite_user_can_access_admin()) return;
 
         $base = admin_url('admin.php?page=roxy-show-tickets');
 
@@ -148,7 +154,7 @@ class Admin {
     }
 
     public static function page_event_booking(): void {
-        if (!current_user_can('manage_options')) return;
+        if (!roxy_suite_user_can_access_admin()) return;
 
         $tab  = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : 'bookings';
         $base = admin_url('admin.php?page=roxy-event-booking');

@@ -22,7 +22,7 @@ class Health {
 
     public static function ajax_run_tests(): void {
         check_ajax_referer('roxy_suite_run_tests', 'nonce');
-        if (!current_user_can('manage_options')) {
+        if (!roxy_suite_user_can_access_admin()) {
             wp_send_json_error('Insufficient permissions', 403);
         }
 

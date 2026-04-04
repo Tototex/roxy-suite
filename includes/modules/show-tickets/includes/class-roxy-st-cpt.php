@@ -393,7 +393,7 @@ class CPT {
   }
 
   public static function handle_duplicate_weekend(): void {
-    if (!current_user_can('edit_posts')) {
+    if (!roxy_suite_user_can_access_admin()) {
       wp_die('You do not have permission to duplicate weekends.');
     }
 
@@ -762,7 +762,7 @@ class CPT {
   }
 
   public static function maybe_run_one_time_cleanup(): void {
-    if (!current_user_can('manage_options')) {
+    if (!roxy_suite_user_can_access_admin()) {
       return;
     }
 

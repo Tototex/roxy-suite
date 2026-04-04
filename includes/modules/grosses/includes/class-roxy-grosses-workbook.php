@@ -15,7 +15,7 @@ class Workbook {
   }
 
   public static function handle_upload_template(): void {
-    if (!current_user_can('manage_options')) {
+    if (!roxy_suite_user_can_access_admin()) {
       wp_die('You do not have permission to upload workbook templates.');
     }
 
@@ -49,7 +49,7 @@ class Workbook {
   }
 
   public static function handle_refresh_workbook(): void {
-    if (!current_user_can('manage_options')) {
+    if (!roxy_suite_user_can_access_admin()) {
       wp_die('You do not have permission to refresh grosses workbooks.');
     }
 
@@ -67,7 +67,7 @@ class Workbook {
   }
 
   public static function handle_download_workbook(): void {
-    if (!current_user_can('manage_options')) {
+    if (!roxy_suite_user_can_access_admin()) {
       wp_die('You do not have permission to download grosses workbooks.');
     }
 
@@ -103,7 +103,7 @@ class Workbook {
   }
 
   public static function handle_send_advertiser_summary(): void {
-    if (!current_user_can('manage_options')) {
+    if (!roxy_suite_user_can_access_admin()) {
       wp_die('You do not have permission to email advertiser summaries.');
     }
 

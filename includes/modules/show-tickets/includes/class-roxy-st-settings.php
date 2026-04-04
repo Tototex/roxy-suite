@@ -121,7 +121,7 @@ class Settings {
   }
 
   public static function render_page(bool $wrap = true): void {
-    if (!current_user_can('manage_options')) return;
+    if (!roxy_suite_user_can_access_admin()) return;
     if ($wrap) echo '<div class="wrap"><h1>Show Tickets — Settings</h1>';
     echo '<form method="post" action="options.php">';
     settings_fields(self::OPTION_KEY);

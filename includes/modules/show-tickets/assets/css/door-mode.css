@@ -14,7 +14,7 @@
 .roxy-door-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:18px 0}.roxy-door-details div{background:rgba(255,255,255,.55);padding:12px;border-radius:14px}.roxy-door-details dt{font-size:12px;text-transform:uppercase;opacity:.75;font-weight:800;margin-bottom:4px}.roxy-door-details dd{margin:0;font-size:22px;font-weight:800}
 .roxy-door-meta{margin-top:8px;font-size:14px}.roxy-door-token{margin-top:12px;font-size:12px;word-break:break-all;opacity:.7}.roxy-door-result-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:auto;padding-top:18px}.roxy-door-result-actions .button{min-height:50px;display:inline-flex;align-items:center;justify-content:center;padding:0 18px;font-size:18px;font-weight:700}
 @media (max-width:900px){.roxy-door-grid{grid-template-columns:1fr}.roxy-door-title{font-size:34px}}
-@media (max-width:782px){#wpadminbar,#adminmenuwrap,#adminmenuback,#screen-meta-links,.wrap>h1:first-child{display:none!important}#wpcontent,#wpbody-content{margin-left:0!important;padding-left:0!important}.roxy-door-wrap{margin-left:0}.roxy-door-shell{min-height:100vh;padding:14px}.roxy-door-header h1{font-size:28px}.roxy-door-manual-form{grid-template-columns:1fr}.roxy-door-details{grid-template-columns:1fr}.roxy-door-title{font-size:30px}}
+@media (max-width:782px){.roxy-door-wrap{margin-left:0}.roxy-door-shell{padding:14px}.roxy-door-header h1{font-size:28px}.roxy-door-manual-form{grid-template-columns:1fr}.roxy-door-details{grid-template-columns:1fr}.roxy-door-title{font-size:30px}}
 
 
 .roxy-door-modal{position:fixed;inset:0;display:none;z-index:99999}
@@ -76,13 +76,16 @@ body.roxy-door-modal-open{overflow:hidden}
 .roxy-door-member-photo-wrap{text-align:center;margin:8px 0 14px}.roxy-door-member-photo{width:110px;height:110px;border-radius:16px;object-fit:cover;border:1px solid rgba(255,255,255,.15)}
 
 /* ── Always hide WP admin chrome — door mode is app-like ─────────────── */
-#wpadminbar,#adminmenuwrap,#adminmenuback,#screen-meta-links{display:none!important}
-html.wp-toolbar{padding-top:0!important}
-#wpcontent,#wpbody-content{margin-left:0!important;padding-left:0!important}
-.roxy-door-wrap{margin:0!important}
 
 /* ── Fullscreen camera mode (body.roxy-door-camera-active) ─────────────── */
 body.roxy-door-camera-active{overflow:hidden}
+body.roxy-door-camera-active #wpadminbar,
+body.roxy-door-camera-active #adminmenuwrap,
+body.roxy-door-camera-active #adminmenuback,
+body.roxy-door-camera-active #screen-meta-links{display:none!important}
+body.roxy-door-camera-active #wpcontent,
+body.roxy-door-camera-active #wpbody-content{margin-left:0!important;padding-left:0!important}
+body.roxy-door-camera-active .roxy-door-wrap{margin:0!important}
 body.roxy-door-camera-active .roxy-door-header,
 body.roxy-door-camera-active .roxy-door-recent-card,
 body.roxy-door-camera-active .roxy-door-controls-row,

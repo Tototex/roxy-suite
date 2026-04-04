@@ -76,7 +76,7 @@ class Roxy_Sub_Check {
   }
 
   private static function can_access_member_check(): bool {
-    return current_user_can('manage_woocommerce') || current_user_can('manage_options');
+    return roxy_suite_user_can_access_admin();
   }
 
   public static function template_redirect() {
@@ -380,14 +380,14 @@ class Roxy_Sub_Check {
       'roxy-suite',
       'Member Check',
       'Member Check',
-      'manage_options',
+      roxy_suite_admin_capability(),
       'roxy-scan-log',
       [__CLASS__, 'render_scan_log_page']
     );
   }
 
   public static function render_scan_log_page(bool $wrap = true, bool $show_title = true) {
-    if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
+    if (!roxy_suite_user_can_access_admin()) {
       wp_die('Insufficient permissions.');
     }
 
@@ -491,7 +491,7 @@ class Roxy_Sub_Check {
   }
 
   private static function export_scan_log_csv($filter_sub) {
-    if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
+    if (!roxy_suite_user_can_access_admin()) {
       wp_die('Insufficient permissions.');
     }
 

@@ -11,7 +11,7 @@ class Reporter {
   }
 
   public static function handle_manual_send(): void {
-    if (!current_user_can('manage_options')) {
+    if (!roxy_suite_user_can_access_admin()) {
       wp_die('You do not have permission to send grosses reports.');
     }
 
@@ -27,7 +27,7 @@ class Reporter {
   }
 
   public static function handle_pull_report(): void {
-    if (!current_user_can('manage_options')) {
+    if (!roxy_suite_user_can_access_admin()) {
       wp_die('You do not have permission to pull grosses reports.');
     }
 
@@ -47,7 +47,7 @@ class Reporter {
   }
 
   public static function handle_send_saved_report(): void {
-    if (!current_user_can('manage_options')) {
+    if (!roxy_suite_user_can_access_admin()) {
       wp_die('You do not have permission to send grosses reports.');
     }
 

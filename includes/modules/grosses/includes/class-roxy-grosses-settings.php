@@ -155,7 +155,7 @@ class Settings {
   }
 
   public static function render_page(): void {
-    if(!current_user_can('manage_options')) return;
+    if(!roxy_suite_user_can_access_admin()) return;
     $status=self::get_status(); $timezone=new \DateTimeZone(self::get_report_timezone()); $default_date=wp_date('Y-m-d',null,$timezone);
     $default_year=(int) wp_date('Y',null,$timezone); $default_advertiser_month=(new \DateTimeImmutable('first day of last month',$timezone))->format('Y-m');
     $tab=self::current_tab(); $selected_report_id=isset($_GET['report_id'])?max(0,(int) $_GET['report_id']):0; $selected_report=$selected_report_id>0?Store::get_report($selected_report_id):null;
