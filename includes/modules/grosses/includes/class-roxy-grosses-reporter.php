@@ -6,8 +6,56 @@ if (!defined('ABSPATH')) exit;
 class Reporter {
   public static function init(): void {
     add_action('admin_post_roxy_grosses_send_manual', [__CLASS__, 'handle_manual_send']);
+    add_action('admin_post_roxy_grosses_pull_database', [__CLASS__, 'handle_pull_database']);
+    add_action('admin_post_roxy_grosses_delete_entry', [__CLASS__, 'handle_delete_entry']);
     add_action('admin_post_roxy_grosses_pull_report', [__CLASS__, 'handle_pull_report']);
     add_action('admin_post_roxy_grosses_send_saved_report', [__CLASS__, 'handle_send_saved_report']);
+  }
+
+  public static function handle_pull_database(): void {
+    if (!roxy_suite_user_can_access_admin()) {
+      wp_die('You do not have permission to pull grosses data.');
+    }
+
+    check_admin_referer('roxy_grosses_pull_database');
+
+    $report_date = isset($_POST['report_date']) ? sanitize_text_field(wp_unslash((string) $_POST['report_date'])) : '';
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date)) {
+      self::redirect_with_notice('error', 'Choose a valid report date in YYYY-MM-DD format.', 'database');
+    }
+
+    $result = self::pull_into_database($report_date, 'manual-pull');
+    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'database');
+  }
+
+  public static function handle_delete_entry(): void {
+    if (!roxy_suite_user_can_access_admin()) {
+      wp_die('You do not have permission to delete grosses rows.');
+    }
+
+    check_admin_referer('roxy_grosses_delete_entry');
+
+    $entry_id = isset($_POST['entry_id']) ? max(0, (int) $_POST['entry_id']) : 0;
+    $extra = [
+      'search' => isset($_POST['search']) ? sanitize_text_field(wp_unslash((string) $_POST['search'])) : '',
+      'history_year' => isset($_POST['history_year']) ? max(0, (int) $_POST['history_year']) : 0,
+      'history_month' => isset($_POST['history_month']) ? sanitize_text_field(wp_unslash((string) $_POST['history_month'])) : '',
+      'history_day' => isset($_POST['history_day']) ? sanitize_text_field(wp_unslash((string) $_POST['history_day'])) : '',
+    ];
+
+    if ($entry_id <= 0) {
+      self::redirect_with_notice('error', 'Missing grosses row ID.', 'database', $extra);
+    }
+
+    $deleted = Store::delete_entry($entry_id);
+    if ($deleted) {
+      $message = 'Grosses row deleted.';
+      Store::insert_log('delete_entry', 'manual-cleanup', null, null, true, $message, ['entry_id' => $entry_id]);
+      self::redirect_with_notice('success', $message, 'database', $extra);
+    }
+
+    Store::insert_log('delete_entry', 'manual-cleanup', null, null, false, 'Could not delete grosses row.', ['entry_id' => $entry_id]);
+    self::redirect_with_notice('error', 'Could not delete grosses row.', 'database', $extra);
   }
 
   public static function handle_manual_send(): void {
@@ -18,12 +66,17 @@ class Reporter {
     check_admin_referer('roxy_grosses_send_manual');
 
     $report_date = isset($_POST['report_date']) ? sanitize_text_field(wp_unslash((string) $_POST['report_date'])) : '';
+    $return_tab = isset($_POST['return_tab']) ? sanitize_key((string) wp_unslash($_POST['return_tab'])) : 'database';
+    if (!in_array($return_tab, ['database', 'settings', 'logs', 'legacy-weekly'], true)) {
+      $return_tab = 'database';
+    }
+    $mode = !empty($_POST['test_send']) ? 'manual-test' : 'manual';
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date)) {
-      self::redirect_with_notice('error', 'Choose a valid report date in YYYY-MM-DD format.');
+      self::redirect_with_notice('error', 'Choose a valid report date in YYYY-MM-DD format.', $return_tab);
     }
 
-    $result = self::send_report($report_date, 'manual');
-    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message']);
+    $result = self::send_report($report_date, $mode);
+    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], $return_tab);
   }
 
   public static function handle_pull_report(): void {
@@ -35,7 +88,7 @@ class Reporter {
 
     $report_date = isset($_POST['report_date']) ? sanitize_text_field(wp_unslash((string) $_POST['report_date'])) : '';
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date)) {
-      self::redirect_with_notice('error', 'Choose a valid report date in YYYY-MM-DD format.', 'reports');
+      self::redirect_with_notice('error', 'Choose a valid report date in YYYY-MM-DD format.', 'database');
     }
 
     $result = self::save_report_draft($report_date, 'review');
@@ -43,7 +96,7 @@ class Reporter {
     if (!empty($result['report_id'])) {
       $extra['report_id'] = (int) $result['report_id'];
     }
-    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'reports', $extra);
+    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'database', $extra);
   }
 
   public static function handle_send_saved_report(): void {
@@ -55,11 +108,11 @@ class Reporter {
 
     $report_id = isset($_POST['report_id']) ? max(0, (int) $_POST['report_id']) : 0;
     if ($report_id <= 0) {
-      self::redirect_with_notice('error', 'Missing saved report ID.', 'reports');
+      self::redirect_with_notice('error', 'Missing saved report ID.', 'database');
     }
 
     $result = self::send_saved_report($report_id);
-    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'reports', ['report_id' => $report_id]);
+    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'database', ['report_id' => $report_id]);
   }
 
   public static function send_report(string $report_date, string $mode = 'scheduled'): array {
@@ -71,6 +124,7 @@ class Reporter {
       }
 
       Store::upsert_history_rows($reports, $mode, null);
+      Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, null), 'update');
 
       $send = self::send_email($reports, $summary);
       if (!$send['success']) {
@@ -80,6 +134,7 @@ class Reporter {
       $report_id = Store::create_report($report_date, max(0, (int) Settings::get('lookback_days', '0')), $mode, 'emailed', $summary, $reports);
       if ($report_id > 0) {
         Store::upsert_history_rows($reports, $mode, $report_id);
+        Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, $report_id), 'update');
       }
 
       $message = $send['message'];
@@ -127,6 +182,54 @@ class Reporter {
     }
   }
 
+  public static function pull_into_database(string $report_date, string $mode = 'manual-pull'): array {
+    try {
+      $reports = self::build_reports($report_date);
+      $summary = self::summarize_reports($reports);
+      if ((int) ($summary['total_tickets'] ?? 0) <= 0) {
+        throw new \RuntimeException('No matching Square ticket sales were found for that date.');
+      }
+
+      $entry_result = Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, null), 'update');
+      Store::upsert_history_rows($reports, $mode, null);
+      $message = sprintf(
+        'Pulled %d row(s) for %s. %d created, %d updated, %d skipped.',
+        count($reports),
+        $report_date,
+        (int) ($entry_result['created'] ?? 0),
+        (int) ($entry_result['updated'] ?? 0),
+        (int) ($entry_result['skipped'] ?? 0)
+      );
+
+      Store::insert_log('pull_database', $mode, null, $report_date, true, $message, [
+        'row_count' => count($reports),
+        'gross_total' => (float) ($summary['gross_total'] ?? 0),
+      ]);
+      Settings::set_status([
+        'sent_at' => wp_date('Y-m-d H:i:s', null, new \DateTimeZone(Settings::get_report_timezone())),
+        'report_date' => $report_date,
+        'mode' => $mode,
+        'message' => $message,
+        'row_count' => count($reports),
+        'gross_total' => (float) ($summary['gross_total'] ?? 0),
+      ]);
+
+      return [
+        'success' => true,
+        'message' => $message,
+        'rows' => $reports,
+        'summary' => $summary,
+      ];
+    } catch (\Throwable $e) {
+      Store::insert_log('pull_database', $mode, null, $report_date, false, $e->getMessage());
+      self::notify_admin_failure('Grosses database pull failed', $report_date, $mode, $e->getMessage());
+      return [
+        'success' => false,
+        'message' => $e->getMessage(),
+      ];
+    }
+  }
+
   public static function save_report_draft(string $report_date, string $mode = 'review'): array {
     try {
       $reports = self::build_reports($report_date);
@@ -141,6 +244,7 @@ class Reporter {
       }
 
       Store::upsert_history_rows($reports, $mode, $report_id);
+      Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, $report_id), 'update');
 
       Settings::set_status([
         'sent_at' => '',
@@ -195,6 +299,7 @@ class Reporter {
     }
 
     Store::upsert_history_rows($rows, 'saved-report', $report_id);
+    Store::upsert_entries(self::entries_from_report_rows($rows, 'saved_report', 'saved-report', $report_id), 'update');
 
     $send = self::send_email($rows, $summary);
     if (!$send['success']) {
@@ -264,6 +369,8 @@ class Reporter {
         'discount_gross' => 0.0,
         'group_qty' => 0,
         'group_gross' => 0.0,
+        'live_qty' => 0,
+        'live_gross' => 0.0,
         'total_tickets' => 0,
         'gross_total' => 0.0,
       ];
@@ -303,6 +410,7 @@ class Reporter {
       $report['general_gross'] = round((float) $report['general_gross'], 2);
       $report['discount_gross'] = round((float) $report['discount_gross'], 2);
       $report['group_gross'] = round((float) $report['group_gross'], 2);
+      $report['live_gross'] = round((float) $report['live_gross'], 2);
       $report['gross_total'] = round((float) $report['gross_total'], 2);
     }
     unset($report);
@@ -348,7 +456,7 @@ class Reporter {
     $name = strtolower(trim((string) ($line_item['name'] ?? '')));
     $value = $variation !== '' ? $variation : $name;
 
-    if ($value === 'general' || $value === 'prepaid - general') {
+    if (in_array($value, ['general', 'prepaid - general', 'adult', 'adults', 'prepaid - adult', 'prepaid - adults'], true)) {
       return 'general';
     }
 
@@ -361,6 +469,11 @@ class Reporter {
     }
 
     return '';
+  }
+
+  private static function is_movie_showing(int $post_id): bool {
+    $profile = (string) get_post_meta($post_id, '_roxy_pricing_profile', true);
+    return in_array($profile, ['movie_evening', 'movie_matinee'], true);
   }
 
   private static function showings_for_date(string $report_date): array {
@@ -393,6 +506,10 @@ class Reporter {
 
     $showings = [];
     foreach ((array) $posts as $post_id) {
+      if (!self::is_movie_showing((int) $post_id)) {
+        continue;
+      }
+
       $start_raw = (string) get_post_meta((int) $post_id, '_roxy_start', true);
       if ($start_raw === '') {
         continue;
@@ -461,6 +578,7 @@ class Reporter {
       'general' => (float) Settings::get('general_price', '12'),
       'discount' => (float) Settings::get('discount_price', '8'),
       'group' => (float) Settings::get('group_price', '5'),
+      'live' => 0.0,
     ];
   }
 
@@ -478,6 +596,32 @@ class Reporter {
 
     $summary['gross_total'] = round($summary['gross_total'], 2);
     return $summary;
+  }
+
+  private static function entries_from_report_rows(array $rows, string $source_type, string $source_ref, ?int $report_id): array {
+    $entries = [];
+    foreach ($rows as $row) {
+      $entries[] = [
+        'report_date' => (string) ($row['report_date'] ?? ''),
+        'movie_title' => (string) ($row['film_title'] ?? ''),
+        'show_time' => (string) ($row['show_time'] ?? ''),
+        'showing_id' => max(0, (int) ($row['showing_id'] ?? 0)),
+        'theater_name' => (string) ($row['theater_name'] ?? ''),
+        'general_qty' => max(0, (int) ($row['general_qty'] ?? 0)),
+        'discount_qty' => max(0, (int) ($row['discount_qty'] ?? 0)),
+        'group_qty' => max(0, (int) ($row['group_qty'] ?? 0)),
+        'subscriber_qty' => 0,
+        'live_qty' => max(0, (int) ($row['live_qty'] ?? 0)),
+        'other_qty' => 0,
+        'total_tickets' => max(0, (int) ($row['total_tickets'] ?? 0)),
+        'gross_total' => round((float) ($row['gross_total'] ?? 0), 2),
+        'source_type' => $source_type,
+        'source_ref' => $source_ref,
+        'source_report_id' => $report_id,
+        'notes' => 'Generated from Square daily grosses flow',
+      ];
+    }
+    return $entries;
   }
 
   private static function send_email(array $reports, array $summary): array {
@@ -564,7 +708,7 @@ class Reporter {
     return $path;
   }
 
-  private static function redirect_with_notice(string $status, string $message, string $tab = 'reports', array $extra = []): void {
+  private static function redirect_with_notice(string $status, string $message, string $tab = 'database', array $extra = []): void {
     $args = array_merge([
       'page' => 'roxy-grosses',
       'tab' => $tab,

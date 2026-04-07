@@ -22,7 +22,7 @@ class Workbook {
     check_admin_referer('roxy_grosses_upload_template');
 
     if (empty($_FILES['workbook_template']['name'])) {
-      self::redirect_with_notice('error', 'Choose an .xlsx workbook template to upload.');
+      self::redirect_with_notice('error', 'Choose an .xlsx workbook template to upload.', null, 'imports');
     }
 
     require_once ABSPATH . 'wp-admin/includes/file.php';
@@ -32,7 +32,7 @@ class Workbook {
     ]);
 
     if (!empty($uploaded['error'])) {
-      self::redirect_with_notice('error', (string) $uploaded['error']);
+      self::redirect_with_notice('error', (string) $uploaded['error'], null, 'imports');
     }
 
     self::set_uploaded_template([
@@ -45,7 +45,7 @@ class Workbook {
     Store::insert_log('upload_workbook_template', 'manual-template', null, null, true, 'Workbook template uploaded.', [
       'path' => (string) ($uploaded['file'] ?? ''),
     ]);
-    self::redirect_with_notice('success', 'Workbook template uploaded successfully.');
+    self::redirect_with_notice('success', 'Workbook template uploaded successfully.', null, 'imports');
   }
 
   public static function handle_refresh_workbook(): void {
@@ -58,11 +58,11 @@ class Workbook {
 
     try {
       $snapshot = self::refresh_snapshot($year, 'manual-refresh');
-      self::redirect_with_notice('success', 'Workbook refreshed for ' . $year . ' at ' . ($snapshot['refreshed_at'] ?? '') . '.', $year);
+      self::redirect_with_notice('success', 'Workbook refreshed for ' . $year . ' at ' . ($snapshot['refreshed_at'] ?? '') . '.', $year, 'imports');
     } catch (\Throwable $e) {
       Store::insert_log('refresh_workbook', 'manual-refresh', null, sprintf('%04d-12-31', $year), false, $e->getMessage());
       Reporter::notify_admin_failure('Grosses workbook refresh failed', sprintf('%04d-12-31', $year), 'manual-refresh', $e->getMessage());
-      self::redirect_with_notice('error', $e->getMessage(), $year);
+      self::redirect_with_notice('error', $e->getMessage(), $year, 'imports');
     }
   }
 
@@ -98,7 +98,7 @@ class Workbook {
     } catch (\Throwable $e) {
       Store::insert_log('download_workbook', 'manual-workbook', null, sprintf('%04d-12-31', $year), false, $e->getMessage());
       Reporter::notify_admin_failure('Grosses workbook generation failed', sprintf('%04d-12-31', $year), 'manual-workbook', $e->getMessage());
-      self::redirect_with_notice('error', $e->getMessage());
+      self::redirect_with_notice('error', $e->getMessage(), null, 'imports');
     }
   }
 
@@ -108,15 +108,34 @@ class Workbook {
     }
 
     check_admin_referer('roxy_grosses_send_advertiser_summary');
-    $month_value = isset($_POST['advertiser_month']) ? sanitize_text_field(wp_unslash((string) $_POST['advertiser_month'])) : '';
-    if (!preg_match('/^\d{4}-\d{2}$/', $month_value)) {
-      self::redirect_with_notice('error', 'Choose a valid advertiser month in YYYY-MM format.');
+    $return_tab = isset($_POST['return_tab']) ? sanitize_key((string) wp_unslash($_POST['return_tab'])) : 'settings';
+    if (!in_array($return_tab, ['database', 'settings', 'logs', 'legacy-weekly'], true)) {
+      $return_tab = 'settings';
+    }
+    $start_month_value = isset($_POST['advertiser_start_month']) ? sanitize_text_field(wp_unslash((string) $_POST['advertiser_start_month'])) : '';
+    $end_month_value = isset($_POST['advertiser_end_month']) ? sanitize_text_field(wp_unslash((string) $_POST['advertiser_end_month'])) : '';
+
+    if ($start_month_value === '' && $end_month_value === '') {
+      $month_value = isset($_POST['advertiser_month']) ? sanitize_text_field(wp_unslash((string) $_POST['advertiser_month'])) : '';
+      if ($month_value !== '') {
+        $start_month_value = $month_value;
+        $end_month_value = $month_value;
+      }
     }
 
-    $year = (int) substr($month_value, 0, 4);
-    $month = (int) substr($month_value, 5, 2);
-    $result = self::send_advertiser_summary($year, $month, 'manual-advertiser');
-    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], $year);
+    if (!preg_match('/^\d{4}-\d{2}$/', $start_month_value) || !preg_match('/^\d{4}-\d{2}$/', $end_month_value)) {
+      self::redirect_with_notice('error', 'Choose valid advertiser start and end months in YYYY-MM format.', null, $return_tab);
+    }
+
+    $start_year = (int) substr($start_month_value, 0, 4);
+    $start_month = (int) substr($start_month_value, 5, 2);
+    $end_year = (int) substr($end_month_value, 0, 4);
+    $end_month = (int) substr($end_month_value, 5, 2);
+    [$start_year, $start_month, $end_year, $end_month] = self::normalized_period($start_year, $start_month, $end_year, $end_month);
+
+    $mode = !empty($_POST['test_send']) ? 'manual-advertiser-test' : 'manual-advertiser';
+    $result = self::send_advertiser_summary($start_year, $start_month, $mode, $end_year, $end_month);
+    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], $start_year, $return_tab);
   }
 
   public static function dashboard_summary(int $year): array {
@@ -152,7 +171,7 @@ class Workbook {
       $key = sprintf('%04d-%02d', $year, $month);
       $months[$key] = [
         'month_key' => $key,
-        'month_name' => wp_date('F', strtotime($key . '-01')),
+        'month_name' => self::month_name($year, $month),
         'weeks' => 0,
         'admissions' => 0,
         'gross' => 0.0,
@@ -190,7 +209,7 @@ class Workbook {
   }
 
   public static function weekly_rows_for_year(int $year): array {
-    $history_rows = Store::history_rows_for_year($year);
+    $history_rows = Store::entry_rows_for_year($year);
     $grouped = [];
 
     foreach ($history_rows as $history_row) {
@@ -289,10 +308,15 @@ class Workbook {
     return array_values($grouped);
   }
 
-  public static function send_advertiser_summary(int $year, int $month, string $mode = 'scheduled-advertiser'): array {
+  public static function send_advertiser_summary(int $year, int $month, string $mode = 'scheduled-advertiser', ?int $end_year = null, ?int $end_month = null): array {
     $to = Settings::advertiser_email_list();
+    $end_year = $end_year ?? $year;
+    $end_month = $end_month ?? $month;
+    [$year, $month, $end_year, $end_month] = self::normalized_period($year, $month, $end_year, $end_month);
     $month_key = sprintf('%04d-%02d', $year, $month);
-    $report_date = $month_key . '-01';
+    $end_month_key = sprintf('%04d-%02d', $end_year, $end_month);
+    $report_date = $end_month_key . '-01';
+    $period_label = self::period_label($year, $month, $end_year, $end_month);
 
     if (!$to) {
       $message = 'No advertiser email addresses are configured.';
@@ -302,50 +326,90 @@ class Workbook {
     }
 
     try {
-      $rows = self::advertiser_rows_for_month($year, $month);
-      $monthly_totals = self::monthly_totals($year);
-      $month_total = null;
-      foreach ($monthly_totals as $monthly_row) {
-        if ((string) ($monthly_row['month_key'] ?? '') === $month_key) {
-          $month_total = $monthly_row;
-          break;
-        }
+      $rows = self::advertiser_rows_for_period($year, $month, $end_year, $end_month);
+      $period_totals = self::advertiser_totals_for_period($year, $month, $end_year, $end_month);
+
+      if ((int) ($period_totals['attendance_total'] ?? 0) <= 0) {
+        throw new \RuntimeException('No advertiser summary data is available for ' . $period_label . '.');
       }
 
-      if (!$month_total || (int) ($month_total['admissions'] ?? 0) <= 0) {
-        throw new \RuntimeException('No advertiser summary data is available for ' . wp_date('F Y', strtotime($month_key . '-01')) . '.');
-      }
-
-      $workbook_path = self::build_advertiser_workbook_file($year, $month, $rows);
+      $workbook_path = self::build_advertiser_workbook_file($year, $month, $end_year, $end_month, $rows);
 
       $tokens = [
-        '{month_name}' => (string) ($month_total['month_name'] ?? wp_date('F', strtotime($month_key . '-01'))),
+        '{month_name}' => (string) ($period_totals['month_name'] ?? self::month_name($year, $month)),
         '{month}' => $month_key,
         '{year}' => (string) $year,
-        '{attendance_total}' => number_format((int) ($month_total['admissions'] ?? 0)),
-        '{gross_total}' => number_format((float) ($month_total['gross'] ?? 0), 2),
+        '{theater_name}' => (string) Settings::get('theater_name', 'Newport Roxy Theater'),
+        '{attendance_total}' => number_format((int) ($period_totals['attendance_total'] ?? 0)),
+        '{gross_total}' => number_format((float) ($period_totals['gross_total'] ?? 0), 2),
+        '{period_label}' => $period_label,
+        '{start_month}' => $month_key,
+        '{end_month}' => $end_month_key,
       ];
-      $subject = strtr((string) Settings::get('advertiser_email_subject', ''), $tokens);
-      $body = strtr((string) Settings::get('advertiser_email_body', ''), $tokens);
+
+      $subject_template = (string) Settings::get('advertiser_email_subject', '');
+      $body_template = (string) Settings::get('advertiser_email_body', '');
+      if ($period_label !== self::month_name($year, $month) . ' ' . $year && trim($subject_template) === 'Roxy advertiser summary for {month_name} {year}') {
+        $subject_template = 'Roxy advertiser summary for {period_label}';
+      }
+      if ($period_label !== self::month_name($year, $month) . ' ' . $year && trim($body_template) === 'Attached is the advertiser summary workbook for {month_name} {year}.') {
+        $body_template = 'Attached is the advertiser summary workbook for {period_label}.';
+      }
+
+      $subject = strtr($subject_template, $tokens);
+      $body = strtr($body_template, $tokens);
       $body = str_replace('Please use the Advertiser Summary tab.', '', $body);
       $body = trim(preg_replace("/\n{3,}/", "\n\n", $body) ?? $body);
+      $body .= "\n\nAdvertiser summary\n";
+      foreach ($rows as $index => $row) {
+        if ($index === 0) {
+          continue;
+        }
+
+        $week_of = trim((string) ($row[1] ?? ''));
+        $movie = trim((string) ($row[2] ?? ''));
+        $attendance = trim((string) ($row[3] ?? ''));
+        if ($week_of === '' && $movie === '' && $attendance === '') {
+          continue;
+        }
+
+        if ($week_of === '' && $movie !== '') {
+          $body .= $movie . ': ' . $attendance . "\n";
+          continue;
+        }
+
+        $body .= sprintf(
+          "Week %s | %s | %s | Attendance %s\n",
+          (string) ($row[0] ?? ''),
+          $week_of,
+          $movie,
+          $attendance
+        );
+      }
+      if (stripos($body, 'Generated automatically by the Roxy Grosses plugin.') === false) {
+        $body .= "\nGenerated automatically by the Roxy Grosses plugin.";
+      }
 
       $sent = wp_mail($to, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$workbook_path]);
       if (!$sent) {
         throw new \RuntimeException('WordPress could not send the advertiser summary email.');
       }
 
-      $message = 'Advertiser summary sent to ' . implode(', ', $to) . ' for ' . $tokens['{month_name}'] . ' ' . $year . '.';
+      $message = 'Advertiser summary sent to ' . implode(', ', $to) . ' for ' . $period_label . '.';
       Store::insert_log('send_advertiser_summary', $mode, null, $report_date, true, $message, [
         'month' => $month_key,
-        'attendance_total' => (int) ($month_total['admissions'] ?? 0),
-        'gross_total' => (float) ($month_total['gross'] ?? 0),
+        'end_month' => $end_month_key,
+        'period_label' => $period_label,
+        'attendance_total' => (int) ($period_totals['attendance_total'] ?? 0),
+        'gross_total' => (float) ($period_totals['gross_total'] ?? 0),
       ]);
 
       return ['success' => true, 'message' => $message];
     } catch (\Throwable $e) {
       Store::insert_log('send_advertiser_summary', $mode, null, $report_date, false, $e->getMessage(), [
         'month' => $month_key,
+        'end_month' => $end_month_key,
+        'period_label' => $period_label,
       ]);
       Reporter::notify_admin_failure('Advertiser summary email failed', $report_date, $mode, $e->getMessage());
       return ['success' => false, 'message' => $e->getMessage()];
@@ -457,7 +521,7 @@ class Workbook {
 
   public static function advertiser_rows_for_month(int $year, int $month): array {
     $month_key = sprintf('%04d-%02d', $year, $month);
-    $month_name = wp_date('F', strtotime($month_key . '-01'));
+    $month_name = self::month_name($year, $month);
     $weekly_rows = array_values(array_filter(self::weekly_rows_for_year($year), static function (array $row) use ($month_key): bool {
       return str_starts_with((string) ($row['week_of'] ?? ''), $month_key);
     }));
@@ -472,23 +536,68 @@ class Workbook {
       'Week Of',
       'Movie',
       'Total Attendance',
-      'Month',
-      'Monthly Attendance',
     ]];
 
     foreach ($weekly_rows as $row) {
       $rows[] = [
-        (int) ($row['week_number'] ?? 0),
+        self::week_number_for_start((string) ($row['week_of'] ?? '')),
         (string) ($row['week_of'] ?? ''),
         (string) ($row['film_title'] ?? ''),
         (int) ($row['admissions'] ?? 0),
-        $month_name . ' ' . $year,
-        $month_total,
       ];
     }
 
     if (count($rows) === 1) {
-      $rows[] = ['', '', 'No attendance rows found for this month.', 0, $month_name . ' ' . $year, 0];
+      $rows[] = ['', '', 'No attendance rows found for this month.', 0];
+    } else {
+      $rows[] = ['', '', '', ''];
+      $rows[] = ['', '', $month_name . ' ' . $year . ' Total', $month_total];
+    }
+
+    return $rows;
+  }
+
+  public static function advertiser_rows_for_period(int $start_year, int $start_month, int $end_year, int $end_month): array {
+    [$start_year, $start_month, $end_year, $end_month] = self::normalized_period($start_year, $start_month, $end_year, $end_month);
+    if ($start_year === $end_year && $start_month === $end_month) {
+      return self::advertiser_rows_for_month($start_year, $start_month);
+    }
+
+    $rows = [[
+      'Week #',
+      'Week Of',
+      'Movie',
+      'Total Attendance',
+    ]];
+
+    $cursor = new \DateTimeImmutable(sprintf('%04d-%02d-01 12:00:00', $start_year, $start_month));
+    $end = new \DateTimeImmutable(sprintf('%04d-%02d-01 12:00:00', $end_year, $end_month));
+    $overall_total = 0;
+
+    while ($cursor <= $end) {
+      $year = (int) $cursor->format('Y');
+      $month = (int) $cursor->format('m');
+      $month_rows = self::advertiser_rows_for_month($year, $month);
+
+      foreach ($month_rows as $index => $row) {
+        if ($index === 0) {
+          continue;
+        }
+
+        $rows[] = $row;
+        if (($row[0] ?? '') !== '' && is_numeric($row[3] ?? null)) {
+          $overall_total += (int) ($row[3] ?? 0);
+        }
+      }
+
+      $cursor = $cursor->modify('first day of next month');
+    }
+
+    if (count($rows) === 1) {
+      $rows[] = ['', '', 'No attendance rows found for this period.', 0];
+    } else {
+      $rows[] = ['', '', '', ''];
+      $rows[] = ['', '', self::period_label($start_year, $start_month, $end_year, $end_month) . ' Total', $overall_total];
     }
 
     return $rows;
@@ -676,6 +785,11 @@ class Workbook {
     return $current->modify('-' . $offset . ' day')->format('Y-m-d');
   }
 
+  private static function month_name(int $year, int $month): string {
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    return (new \DateTimeImmutable(sprintf('%04d-%02d-15 12:00:00', $year, $month), $timezone))->format('F');
+  }
+
   private static function normalized_week_start_for_year(string $date, int $year): string {
     $week_start = self::week_start_for_date($date);
     if ((int) substr($week_start, 0, 4) < $year && (int) substr($date, 0, 4) === $year) {
@@ -698,19 +812,83 @@ class Workbook {
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $start = new \DateTimeImmutable($week_start . ' 00:00:00', $timezone);
     $year = (int) $start->format('Y');
-    $first = new \DateTimeImmutable($year . '-01-01 00:00:00', $timezone);
-    while ($first->format('D') !== 'Fri') {
-      $first = $first->modify('+1 day');
+    $first = new \DateTimeImmutable(self::week_start_for_date($year . '-01-01') . ' 00:00:00', $timezone);
+    if ((int) $first->format('Y') < $year) {
+      $first = $first->modify('+7 day');
     }
 
-    return max(1, (int) floor(($start->getTimestamp() - $first->getTimestamp()) / WEEK_IN_SECONDS) + 1);
+    $days = (int) $first->diff($start)->days;
+    return max(1, (int) floor($days / 7) + 1);
   }
 
-  private static function build_advertiser_workbook_file(int $year, int $month, array $rows): string {
+  private static function advertiser_totals_for_period(int $start_year, int $start_month, int $end_year, int $end_month): array {
+    [$start_year, $start_month, $end_year, $end_month] = self::normalized_period($start_year, $start_month, $end_year, $end_month);
+    $attendance_total = 0;
+    $gross_total = 0.0;
+    $cursor = new \DateTimeImmutable(sprintf('%04d-%02d-01 12:00:00', $start_year, $start_month));
+    $end = new \DateTimeImmutable(sprintf('%04d-%02d-01 12:00:00', $end_year, $end_month));
+
+    while ($cursor <= $end) {
+      $month_total = self::monthly_total_for_month((int) $cursor->format('Y'), (int) $cursor->format('m'));
+      $attendance_total += (int) ($month_total['admissions'] ?? 0);
+      $gross_total += (float) ($month_total['gross'] ?? 0);
+      $cursor = $cursor->modify('first day of next month');
+    }
+
+    return [
+      'attendance_total' => $attendance_total,
+      'gross_total' => round($gross_total, 2),
+      'month_name' => self::period_label($start_year, $start_month, $end_year, $end_month),
+    ];
+  }
+
+  private static function monthly_total_for_month(int $year, int $month): array {
+    foreach (self::monthly_totals($year) as $monthly_row) {
+      if ((string) ($monthly_row['month_key'] ?? '') === sprintf('%04d-%02d', $year, $month)) {
+        return $monthly_row;
+      }
+    }
+
+    return [
+      'month_key' => sprintf('%04d-%02d', $year, $month),
+      'month_name' => self::month_name($year, $month),
+      'admissions' => 0,
+      'gross' => 0.0,
+    ];
+  }
+
+  private static function normalized_period(int $start_year, int $start_month, int $end_year, int $end_month): array {
+    $start = new \DateTimeImmutable(sprintf('%04d-%02d-01 12:00:00', $start_year, max(1, min(12, $start_month))));
+    $end = new \DateTimeImmutable(sprintf('%04d-%02d-01 12:00:00', $end_year, max(1, min(12, $end_month))));
+    if ($start > $end) {
+      [$start, $end] = [$end, $start];
+    }
+
+    return [
+      (int) $start->format('Y'),
+      (int) $start->format('m'),
+      (int) $end->format('Y'),
+      (int) $end->format('m'),
+    ];
+  }
+
+  private static function period_label(int $start_year, int $start_month, int $end_year, int $end_month): string {
+    [$start_year, $start_month, $end_year, $end_month] = self::normalized_period($start_year, $start_month, $end_year, $end_month);
+    $start_label = self::month_name($start_year, $start_month) . ' ' . $start_year;
+    $end_label = self::month_name($end_year, $end_month) . ' ' . $end_year;
+
+    return $start_label === $end_label ? $start_label : $start_label . ' to ' . $end_label;
+  }
+
+  private static function build_advertiser_workbook_file(int $start_year, int $start_month, int $end_year, int $end_month, array $rows): string {
     $upload_dir = wp_upload_dir();
     $dir = trailingslashit($upload_dir['basedir']) . 'roxy-grosses/advertiser';
     wp_mkdir_p($dir);
-    $path = trailingslashit($dir) . 'advertiser-summary-' . sprintf('%04d-%02d', $year, $month) . '.xlsx';
+    $range_suffix = sprintf('%04d-%02d', $start_year, $start_month);
+    if ($start_year !== $end_year || $start_month !== $end_month) {
+      $range_suffix .= '-to-' . sprintf('%04d-%02d', $end_year, $end_month);
+    }
+    $path = trailingslashit($dir) . 'advertiser-summary-' . $range_suffix . '.xlsx';
     self::write_simple_xlsx($path, 'Advertiser Summary', $rows);
     return $path;
   }
@@ -783,10 +961,10 @@ class Workbook {
     return '';
   }
 
-  private static function redirect_with_notice(string $status, string $message, ?int $year = null): void {
+  private static function redirect_with_notice(string $status, string $message, ?int $year = null, string $tab = 'imports'): void {
     $url = add_query_arg([
       'page' => 'roxy-grosses',
-      'tab' => 'workbook',
+      'tab' => $tab,
       'workbook_year' => $year ?: null,
       'roxy_grosses_notice' => $status,
       'message' => $message,
