@@ -7,9 +7,12 @@ class Reporter {
   public static function init(): void {
     add_action('admin_post_roxy_grosses_send_manual', [__CLASS__, 'handle_manual_send']);
     add_action('admin_post_roxy_grosses_pull_database', [__CLASS__, 'handle_pull_database']);
-    add_action('admin_post_roxy_grosses_delete_entry', [__CLASS__, 'handle_delete_entry']);
+    add_action('admin_post_roxy_grosses_pull_live_database', [__CLASS__, 'handle_pull_live_database']);
     add_action('admin_post_roxy_grosses_pull_report', [__CLASS__, 'handle_pull_report']);
     add_action('admin_post_roxy_grosses_send_saved_report', [__CLASS__, 'handle_send_saved_report']);
+    add_action('admin_post_roxy_grosses_export_csv', [__CLASS__, 'handle_export_csv']);
+    add_action('admin_post_roxy_grosses_update_row', [__CLASS__, 'handle_update_row']);
+    add_action('admin_post_roxy_grosses_run_now', [__CLASS__, 'handle_run_now']);
   }
 
   public static function handle_pull_database(): void {
@@ -26,6 +29,91 @@ class Reporter {
 
     $result = self::pull_into_database($report_date, 'manual-pull');
     self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'database');
+  }
+
+  public static function handle_pull_live_database(): void {
+    if (!roxy_suite_user_can_access_admin()) {
+      wp_die('You do not have permission to pull live grosses data.');
+    }
+
+    check_admin_referer('roxy_grosses_pull_live_database');
+
+    $report_date = isset($_POST['report_date']) ? sanitize_text_field(wp_unslash((string) $_POST['report_date'])) : '';
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date)) {
+      self::redirect_with_notice('error', 'Choose a valid report date in YYYY-MM-DD format.', 'live-shows');
+    }
+
+    $result = self::pull_live_into_database($report_date, 'manual-live-pull');
+    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'live-shows');
+  }
+
+  public static function handle_backfill_free_tickets(): void {
+    if (!roxy_suite_user_can_access_admin()) {
+      wp_die('You do not have permission to backfill free tickets.');
+    }
+
+    check_admin_referer('roxy_grosses_backfill_free_tickets');
+
+    $filters = [
+      'search' => isset($_POST['search']) ? sanitize_text_field(wp_unslash((string) $_POST['search'])) : '',
+      'year' => isset($_POST['history_year']) ? max(0, (int) $_POST['history_year']) : 0,
+      'month' => isset($_POST['history_month']) ? sanitize_text_field(wp_unslash((string) $_POST['history_month'])) : '',
+      'day' => isset($_POST['history_day']) ? sanitize_text_field(wp_unslash((string) $_POST['history_day'])) : '',
+    ];
+
+    $result = self::backfill_free_tickets($filters, 'manual-free-backfill');
+    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'database', [
+      'search' => (string) ($filters['search'] ?? ''),
+      'history_year' => (int) ($filters['year'] ?? 0),
+      'history_month' => (string) ($filters['month'] ?? ''),
+      'history_day' => (string) ($filters['day'] ?? ''),
+    ]);
+  }
+
+  public static function handle_backfill_concessions(): void {
+    if (!roxy_suite_user_can_access_admin()) {
+      wp_die('You do not have permission to backfill concessions.');
+    }
+
+    check_admin_referer('roxy_grosses_backfill_concessions');
+
+    $filters = [
+      'search' => isset($_POST['search']) ? sanitize_text_field(wp_unslash((string) $_POST['search'])) : '',
+      'year' => isset($_POST['history_year']) ? max(0, (int) $_POST['history_year']) : 0,
+      'month' => isset($_POST['history_month']) ? sanitize_text_field(wp_unslash((string) $_POST['history_month'])) : '',
+      'day' => isset($_POST['history_day']) ? sanitize_text_field(wp_unslash((string) $_POST['history_day'])) : '',
+    ];
+
+    $result = self::backfill_movie_concessions($filters, 'manual-concessions-backfill');
+    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'database', [
+      'search' => (string) ($filters['search'] ?? ''),
+      'history_year' => (int) ($filters['year'] ?? 0),
+      'history_month' => (string) ($filters['month'] ?? ''),
+      'history_day' => (string) ($filters['day'] ?? ''),
+    ]);
+  }
+
+  public static function handle_backfill_live_concessions(): void {
+    if (!roxy_suite_user_can_access_admin()) {
+      wp_die('You do not have permission to backfill live concessions.');
+    }
+
+    check_admin_referer('roxy_grosses_backfill_live_concessions');
+
+    $filters = [
+      'search' => isset($_POST['live_search']) ? sanitize_text_field(wp_unslash((string) $_POST['live_search'])) : '',
+      'year' => isset($_POST['live_year']) ? max(0, (int) $_POST['live_year']) : 0,
+      'month' => isset($_POST['live_month']) ? sanitize_text_field(wp_unslash((string) $_POST['live_month'])) : '',
+      'day' => isset($_POST['live_day']) ? sanitize_text_field(wp_unslash((string) $_POST['live_day'])) : '',
+    ];
+
+    $result = self::backfill_live_concessions($filters, 'manual-live-concessions-backfill');
+    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'live-shows', [
+      'live_search' => (string) ($filters['search'] ?? ''),
+      'live_year' => (int) ($filters['year'] ?? 0),
+      'live_month' => (string) ($filters['month'] ?? ''),
+      'live_day' => (string) ($filters['day'] ?? ''),
+    ]);
   }
 
   public static function handle_delete_entry(): void {
@@ -113,6 +201,169 @@ class Reporter {
 
     $result = self::send_saved_report($report_id);
     self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'database', ['report_id' => $report_id]);
+  }
+
+  public static function handle_export_csv(): void {
+    if (!roxy_suite_user_can_access_admin()) {
+      wp_die('You do not have permission to export grosses data.');
+    }
+
+    check_admin_referer('roxy_grosses_export_csv');
+
+    $dataset = isset($_REQUEST['dataset']) ? sanitize_key((string) wp_unslash($_REQUEST['dataset'])) : 'movies';
+    $filters = self::filters_for_dataset($dataset, $_REQUEST);
+
+    switch ($dataset) {
+      case 'live':
+        $row_count = Store::count_live_entries($filters);
+        $rows = Store::list_live_entries($filters, max(1, $row_count), 0);
+        $header = ['Date', 'Show', 'Show Time', 'Total', 'Online Ticket', 'Door Ticket', 'Group/Subscriber', 'Gross', 'Concessions'];
+        $records = array_map(static function (array $row): array {
+          return [
+            (string) ($row['report_date'] ?? ''),
+            (string) ($row['show_title'] ?? ''),
+            (string) ($row['show_time'] ?? ''),
+            (int) ($row['total_tickets'] ?? 0),
+            (int) ($row['online_qty'] ?? 0),
+            (int) ($row['door_qty'] ?? 0),
+            (int) ($row['group_sub_qty'] ?? 0),
+            '$' . number_format((float) ($row['gross_total'] ?? 0), 2, '.', ''),
+            '$' . number_format((float) ($row['concessions_total'] ?? 0), 2, '.', ''),
+          ];
+        }, $rows);
+        break;
+      case 'rentals':
+        $row_count = Store::count_rental_entries($filters);
+        $rows = Store::list_rental_entries($filters, max(1, $row_count), 0);
+        $header = ['Date', 'Rental', 'Type', 'Customer', 'Status', 'Show Time', 'Invoice', 'Concessions', 'Notes'];
+        $records = array_map(static function (array $row): array {
+          return [
+            (string) ($row['report_date'] ?? ''),
+            (string) ($row['rental_title'] ?? ''),
+            (string) ($row['rental_type'] ?? ''),
+            (string) ($row['customer_name'] ?? ''),
+            (string) ($row['status'] ?? ''),
+            (string) ($row['show_time'] ?? ''),
+            '$' . number_format((float) ($row['invoice_amount'] ?? 0), 2, '.', ''),
+            '$' . number_format((float) ($row['concessions_total'] ?? 0), 2, '.', ''),
+            (string) ($row['notes'] ?? ''),
+          ];
+        }, $rows);
+        break;
+      case 'legacy':
+        $row_count = Store::count_legacy_weekly($filters);
+        $rows = Store::list_legacy_weekly($filters, max(1, $row_count), 0);
+        $header = ['Week Of', 'Week End', 'Movie', 'Rating', 'Weeks', 'General', 'Discount', 'Free', 'Total', 'Ticket Gross', 'Concessions'];
+        $records = array_map(static function (array $row): array {
+          return [
+            (string) ($row['week_start_date'] ?? ''),
+            (string) ($row['week_end_date'] ?? ''),
+            (string) ($row['movie_title'] ?? ''),
+            (string) ($row['rating'] ?? ''),
+            (string) ($row['weeks_run'] ?? ''),
+            (int) ($row['general_qty'] ?? 0),
+            (int) ($row['discount_qty'] ?? 0),
+            (int) ($row['free_qty'] ?? 0),
+            (int) ($row['total_attendance'] ?? 0),
+            '$' . number_format((float) ($row['gross_total'] ?? 0), 2, '.', ''),
+            '$' . number_format((float) ($row['concessions_total'] ?? 0), 2, '.', ''),
+          ];
+        }, $rows);
+        break;
+      default:
+        $dataset = 'movies';
+        $row_count = Store::count_entries($filters);
+        $rows = Store::list_entries($filters, max(1, $row_count), 0);
+        $header = ['Date', 'Movie', 'Show Time', 'Total', 'General', 'Discount', 'Group', 'Free', 'Gross', 'Concessions'];
+        $records = array_map(static function (array $row): array {
+          return [
+            (string) ($row['report_date'] ?? ''),
+            (string) ($row['movie_title'] ?? ''),
+            (string) ($row['show_time'] ?? ''),
+            (int) ($row['total_tickets'] ?? 0),
+            (int) ($row['general_qty'] ?? 0),
+            (int) ($row['discount_qty'] ?? 0),
+            (int) ($row['group_qty'] ?? 0),
+            (int) ($row['live_qty'] ?? 0),
+            '$' . number_format((float) ($row['gross_total'] ?? 0), 2, '.', ''),
+            '$' . number_format((float) ($row['concessions_total'] ?? 0), 2, '.', ''),
+          ];
+        }, $rows);
+        break;
+    }
+
+    $filename = 'roxy-grosses-' . $dataset . '-' . wp_date('Y-m-d-His') . '.csv';
+    nocache_headers();
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename=' . $filename);
+    $output = fopen('php://output', 'w');
+    if (!$output) {
+      wp_die('Could not open CSV export stream.');
+    }
+    fputcsv($output, $header);
+    foreach ($records as $record) {
+      fputcsv($output, $record);
+    }
+    fclose($output);
+    exit;
+  }
+
+  public static function handle_update_row(): void {
+    if (!roxy_suite_user_can_access_admin()) {
+      wp_die('You do not have permission to edit grosses rows.');
+    }
+
+    check_admin_referer('roxy_grosses_update_row');
+
+    $dataset = isset($_POST['dataset']) ? sanitize_key((string) wp_unslash($_POST['dataset'])) : 'movies';
+    $entry_id = isset($_POST['entry_id']) ? max(0, (int) $_POST['entry_id']) : 0;
+    if ($entry_id <= 0) {
+      self::redirect_with_notice('error', 'Missing row ID.', self::tab_for_dataset($dataset));
+    }
+
+    $extra = self::redirect_extra_for_dataset($dataset, $_POST);
+    $message = 'Row updated.';
+    $success = false;
+
+    switch ($dataset) {
+      case 'live':
+        $success = Store::update_live_entry($entry_id, $_POST);
+        break;
+      case 'rentals':
+        $success = Store::update_rental_entry($entry_id, $_POST);
+        break;
+      case 'legacy':
+        $success = Store::update_legacy_weekly($entry_id, $_POST);
+        break;
+      default:
+        $dataset = 'movies';
+        $success = Store::update_entry($entry_id, $_POST);
+        break;
+    }
+
+    if ($success) {
+      Store::insert_log('edit_row', 'manual-edit', null, null, true, $message, ['dataset' => $dataset, 'entry_id' => $entry_id]);
+      self::redirect_with_notice('success', $message, self::tab_for_dataset($dataset), $extra);
+    }
+
+    Store::insert_log('edit_row', 'manual-edit', null, null, false, 'Could not update row.', ['dataset' => $dataset, 'entry_id' => $entry_id]);
+    self::redirect_with_notice('error', 'Could not update row.', self::tab_for_dataset($dataset), $extra);
+  }
+
+  public static function handle_run_now(): void {
+    if (!roxy_suite_user_can_access_admin()) {
+      wp_die('You do not have permission to run the grosses automation.');
+    }
+
+    check_admin_referer('roxy_grosses_run_now');
+
+    $report_date = isset($_POST['report_date']) ? sanitize_text_field(wp_unslash((string) $_POST['report_date'])) : '';
+    if ($report_date !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date)) {
+      self::redirect_with_notice('error', 'Choose a valid run date in YYYY-MM-DD format.', 'settings');
+    }
+
+    $result = Scheduler::run_now($report_date ?: null);
+    self::redirect_with_notice(!empty($result['success']) ? 'success' : 'error', (string) ($result['message'] ?? 'Automation run finished.'), 'settings');
   }
 
   public static function send_report(string $report_date, string $mode = 'scheduled'): array {
@@ -230,6 +481,472 @@ class Reporter {
     }
   }
 
+  public static function pull_live_into_database(string $report_date, string $mode = 'manual-live-pull'): array {
+    try {
+      $rows = self::build_live_reports($report_date);
+      if (!$rows) {
+        throw new \RuntimeException('No live show rows were found for that date.');
+      }
+
+      $result = Store::upsert_live_entries($rows, 'update');
+      $gross_total = 0.0;
+      foreach ($rows as $row) {
+        $gross_total += (float) ($row['gross_total'] ?? 0);
+      }
+
+      $message = sprintf(
+        'Pulled %d live row(s) for %s. %d created, %d updated, %d skipped.',
+        count($rows),
+        $report_date,
+        (int) ($result['created'] ?? 0),
+        (int) ($result['updated'] ?? 0),
+        (int) ($result['skipped'] ?? 0)
+      );
+
+      Store::insert_log('pull_live_database', $mode, null, $report_date, true, $message, [
+        'row_count' => count($rows),
+        'gross_total' => round($gross_total, 2),
+      ]);
+      Settings::set_status([
+        'sent_at' => wp_date('Y-m-d H:i:s', null, new \DateTimeZone(Settings::get_report_timezone())),
+        'report_date' => $report_date,
+        'mode' => $mode,
+        'message' => $message,
+        'row_count' => count($rows),
+        'gross_total' => $gross_total,
+      ]);
+
+      return ['success' => true, 'message' => $message, 'rows' => $rows];
+    } catch (\Throwable $e) {
+      Store::insert_log('pull_live_database', $mode, null, $report_date, false, $e->getMessage());
+      self::notify_admin_failure('Live grosses database pull failed', $report_date, $mode, $e->getMessage());
+      return ['success' => false, 'message' => $e->getMessage()];
+    }
+  }
+
+  public static function sync_automatic_tables(string $report_date, string $mode = 'scheduled-sync'): array {
+    try {
+      $movie_rows = self::build_reports($report_date, true);
+      $live_rows = self::build_live_reports($report_date, true);
+
+      $movie_result = ['created' => 0, 'updated' => 0, 'skipped' => 0];
+      $live_result = ['created' => 0, 'updated' => 0, 'skipped' => 0];
+
+      if ($movie_rows) {
+        $movie_result = Store::upsert_entries(self::entries_from_report_rows($movie_rows, 'square_auto', $mode, null), 'update');
+      }
+
+      if ($live_rows) {
+        $live_result = Store::upsert_live_entries($live_rows, 'update');
+      }
+
+      $movie_paid_rows = 0;
+      foreach ($movie_rows as $row) {
+        if ((int) ($row['total_tickets'] ?? 0) > 0) {
+          $movie_paid_rows++;
+        }
+      }
+
+      $message = sprintf(
+        'Automatic sync updated Movies (%d row(s): %d created, %d updated) and Live Shows (%d row(s): %d created, %d updated) for %s.',
+        count($movie_rows),
+        (int) ($movie_result['created'] ?? 0),
+        (int) ($movie_result['updated'] ?? 0),
+        count($live_rows),
+        (int) ($live_result['created'] ?? 0),
+        (int) ($live_result['updated'] ?? 0),
+        $report_date
+      );
+
+      Store::insert_log('sync_tables', $mode, null, $report_date, true, $message, [
+        'movie_rows' => count($movie_rows),
+        'movie_paid_rows' => $movie_paid_rows,
+        'movie_created' => (int) ($movie_result['created'] ?? 0),
+        'movie_updated' => (int) ($movie_result['updated'] ?? 0),
+        'live_rows' => count($live_rows),
+        'live_created' => (int) ($live_result['created'] ?? 0),
+        'live_updated' => (int) ($live_result['updated'] ?? 0),
+      ]);
+      self::log_sync_anomalies($report_date, $mode, $movie_rows, $live_rows);
+
+      return [
+        'success' => true,
+        'message' => $message,
+        'movie_rows' => count($movie_rows),
+        'movie_paid_rows' => $movie_paid_rows,
+        'live_rows' => count($live_rows),
+        'movie_result' => $movie_result,
+        'live_result' => $live_result,
+      ];
+    } catch (\Throwable $e) {
+      Store::insert_log('sync_tables', $mode, null, $report_date, false, $e->getMessage());
+      self::notify_admin_failure('Grosses automatic sync failed', $report_date, $mode, $e->getMessage());
+      return [
+        'success' => false,
+        'message' => $e->getMessage(),
+        'movie_rows' => 0,
+        'movie_paid_rows' => 0,
+        'live_rows' => 0,
+        'movie_result' => ['created' => 0, 'updated' => 0, 'skipped' => 0],
+        'live_result' => ['created' => 0, 'updated' => 0, 'skipped' => 0],
+      ];
+    }
+  }
+
+  public static function backfill_free_tickets(array $filters = [], string $mode = 'manual-free-backfill'): array {
+    $dates = Store::distinct_entry_dates(array_filter([
+      'search' => (string) ($filters['search'] ?? ''),
+      'year' => !empty($filters['year']) ? (int) $filters['year'] : null,
+      'month' => (string) ($filters['month'] ?? ''),
+      'day' => (string) ($filters['day'] ?? ''),
+    ]));
+
+    if (!$dates) {
+      return [
+        'success' => false,
+        'message' => 'No database dates matched the current filters.',
+      ];
+    }
+
+    $date_count = 0;
+    $row_count = 0;
+    $created = 0;
+    $updated = 0;
+    $skipped = 0;
+    $free_total = 0;
+
+    foreach ($dates as $report_date) {
+      try {
+        $reports = self::build_free_ticket_backfill_rows_for_date($report_date);
+        if (!$reports) {
+          $skipped++;
+          continue;
+        }
+
+        $entry_result = Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, null), 'update');
+
+        $date_count++;
+        $row_count += count($reports);
+        $created += (int) ($entry_result['created'] ?? 0);
+        $updated += (int) ($entry_result['updated'] ?? 0);
+
+        foreach ($reports as $report) {
+          $free_total += max(0, (int) ($report['live_qty'] ?? 0));
+        }
+      } catch (\Throwable $e) {
+        $skipped++;
+      }
+    }
+
+    if ($date_count <= 0) {
+      $message = 'No Square movie rows were found for the selected dates.';
+      Store::insert_log('backfill_free_tickets', $mode, null, null, false, $message, ['dates' => count($dates)]);
+      return ['success' => false, 'message' => $message];
+    }
+
+    $message = sprintf(
+      'Backfilled free tickets across %d date(s). %d row(s) refreshed, %d created, %d updated, %d skipped, %d free tickets found.',
+      $date_count,
+      $row_count,
+      $created,
+      $updated,
+      $skipped,
+      $free_total
+    );
+    Store::insert_log('backfill_free_tickets', $mode, null, null, true, $message, [
+      'dates' => $date_count,
+      'rows' => $row_count,
+      'created' => $created,
+      'updated' => $updated,
+      'skipped' => $skipped,
+      'free_total' => $free_total,
+    ]);
+
+    return ['success' => true, 'message' => $message];
+  }
+
+  public static function backfill_movie_concessions(array $filters = [], string $mode = 'manual-concessions-backfill'): array {
+    $dates = Store::distinct_entry_dates(array_filter([
+      'search' => (string) ($filters['search'] ?? ''),
+      'year' => !empty($filters['year']) ? (int) $filters['year'] : null,
+      'month' => (string) ($filters['month'] ?? ''),
+      'day' => (string) ($filters['day'] ?? ''),
+    ]));
+
+    if (!$dates) {
+      return ['success' => false, 'message' => 'No movie database dates matched the current filters.'];
+    }
+
+    $date_count = 0;
+    $row_count = 0;
+    $created = 0;
+    $updated = 0;
+    $skipped = 0;
+    $concessions_total = 0.0;
+
+    foreach ($dates as $report_date) {
+      try {
+        $reports = self::build_concession_backfill_rows_for_date($report_date);
+        if (!$reports) {
+          $skipped++;
+          continue;
+        }
+
+        $entry_result = Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, null), 'update');
+        $date_count++;
+        $row_count += count($reports);
+        $created += (int) ($entry_result['created'] ?? 0);
+        $updated += (int) ($entry_result['updated'] ?? 0);
+        foreach ($reports as $report) {
+          $concessions_total += (float) ($report['concessions_total'] ?? 0);
+        }
+      } catch (\Throwable $e) {
+        $skipped++;
+      }
+    }
+
+    if ($date_count <= 0) {
+      $message = 'No concession rows were updated for the selected movie dates.';
+      Store::insert_log('backfill_concessions', $mode, null, null, false, $message, ['dates' => count($dates)]);
+      return ['success' => false, 'message' => $message];
+    }
+
+    $message = sprintf(
+      'Backfilled concessions across %d movie date(s). %d row(s) refreshed, %d created, %d updated, %d skipped, $%s concessions found.',
+      $date_count,
+      $row_count,
+      $created,
+      $updated,
+      $skipped,
+      number_format($concessions_total, 2)
+    );
+    Store::insert_log('backfill_concessions', $mode, null, null, true, $message, [
+      'dates' => $date_count,
+      'rows' => $row_count,
+      'created' => $created,
+      'updated' => $updated,
+      'skipped' => $skipped,
+      'concessions_total' => round($concessions_total, 2),
+    ]);
+
+    return ['success' => true, 'message' => $message];
+  }
+
+  public static function backfill_live_concessions(array $filters = [], string $mode = 'manual-live-concessions-backfill'): array {
+    $dates = Store::distinct_live_entry_dates(array_filter([
+      'search' => (string) ($filters['search'] ?? ''),
+      'year' => !empty($filters['year']) ? (int) $filters['year'] : null,
+      'month' => (string) ($filters['month'] ?? ''),
+      'day' => (string) ($filters['day'] ?? ''),
+    ]));
+
+    if (!$dates) {
+      return ['success' => false, 'message' => 'No live show dates matched the current filters.'];
+    }
+
+    $date_count = 0;
+    $row_count = 0;
+    $created = 0;
+    $updated = 0;
+    $skipped = 0;
+    $concessions_total = 0.0;
+
+    foreach ($dates as $report_date) {
+      try {
+        $rows = self::build_live_concession_backfill_rows_for_date($report_date);
+        if (!$rows) {
+          $skipped++;
+          continue;
+        }
+
+        $entry_result = Store::upsert_live_entries($rows, 'update');
+        $date_count++;
+        $row_count += count($rows);
+        $created += (int) ($entry_result['created'] ?? 0);
+        $updated += (int) ($entry_result['updated'] ?? 0);
+        foreach ($rows as $row) {
+          $concessions_total += (float) ($row['concessions_total'] ?? 0);
+        }
+      } catch (\Throwable $e) {
+        $skipped++;
+      }
+    }
+
+    if ($date_count <= 0) {
+      $message = 'No concession rows were updated for the selected live show dates.';
+      Store::insert_log('backfill_live_concessions', $mode, null, null, false, $message, ['dates' => count($dates)]);
+      return ['success' => false, 'message' => $message];
+    }
+
+    $message = sprintf(
+      'Backfilled concessions across %d live date(s). %d row(s) refreshed, %d created, %d updated, %d skipped, $%s concessions found.',
+      $date_count,
+      $row_count,
+      $created,
+      $updated,
+      $skipped,
+      number_format($concessions_total, 2)
+    );
+    Store::insert_log('backfill_live_concessions', $mode, null, null, true, $message, [
+      'dates' => $date_count,
+      'rows' => $row_count,
+      'created' => $created,
+      'updated' => $updated,
+      'skipped' => $skipped,
+      'concessions_total' => round($concessions_total, 2),
+    ]);
+
+    return ['success' => true, 'message' => $message];
+  }
+
+  private static function build_free_ticket_backfill_rows_for_date(string $report_date): array {
+    $existing_rows = Store::list_entries(['day' => $report_date], 500, 0);
+    if (!$existing_rows) {
+      return [];
+    }
+
+    $reports = [];
+    foreach ($existing_rows as $row) {
+      $start_at = self::start_at_for_entry_row($report_date, (string) ($row['show_time'] ?? ''));
+      $reports[(int) ($row['id'] ?? 0)] = [
+        'entry_id' => (int) ($row['id'] ?? 0),
+        'report_date' => $report_date,
+        'theater_name' => (string) ($row['theater_name'] ?? Settings::get('theater_name', 'Newport Roxy Theater')),
+        'showing_id' => max(0, (int) ($row['showing_id'] ?? 0)),
+        'film_title' => (string) ($row['movie_title'] ?? ''),
+        'show_time' => (string) ($row['show_time'] ?? ''),
+        'general_qty' => max(0, (int) ($row['general_qty'] ?? 0)),
+        'general_gross' => 0.0,
+        'discount_qty' => max(0, (int) ($row['discount_qty'] ?? 0)),
+        'discount_gross' => 0.0,
+        'group_qty' => max(0, (int) ($row['group_qty'] ?? 0)),
+        'group_gross' => 0.0,
+        'live_qty' => 0,
+        'live_gross' => 0.0,
+        'total_tickets' => max(0, (int) ($row['general_qty'] ?? 0)) + max(0, (int) ($row['discount_qty'] ?? 0)) + max(0, (int) ($row['group_qty'] ?? 0)),
+        'gross_total' => round((float) ($row['gross_total'] ?? 0), 2),
+        '_start_at' => $start_at,
+      ];
+    }
+
+    $orders = Square::fetch_orders_for_date($report_date);
+    foreach ($orders as $order) {
+      $order_closed_at = self::order_closed_at($order);
+      if (!$order_closed_at) {
+        continue;
+      }
+
+      foreach ((array) ($order['line_items'] ?? []) as $line_item) {
+        if (self::classify_ticket_variation($line_item) !== 'live') {
+          continue;
+        }
+
+        $qty = isset($line_item['quantity']) ? (int) round((float) $line_item['quantity']) : 0;
+        if ($qty <= 0) {
+          continue;
+        }
+
+        $candidate_ids = self::matching_entry_ids_for_order_time($order_closed_at, $reports);
+        if (!$candidate_ids) {
+          continue;
+        }
+
+        foreach (self::distribute_quantity_across_rows($qty, $candidate_ids, $reports) as $entry_id => $allocated_qty) {
+          if ($allocated_qty <= 0 || !isset($reports[$entry_id])) {
+            continue;
+          }
+          $reports[$entry_id]['live_qty'] += $allocated_qty;
+          $reports[$entry_id]['total_tickets'] += $allocated_qty;
+        }
+      }
+    }
+
+    foreach ($reports as &$report) {
+      unset($report['_start_at']);
+    }
+    unset($report);
+
+    return array_values($reports);
+  }
+
+  private static function build_concession_backfill_rows_for_date(string $report_date): array {
+    $existing_rows = Store::list_entries(['day' => $report_date], 500, 0);
+    if (!$existing_rows) {
+      return [];
+    }
+
+    $reports = [];
+    foreach ($existing_rows as $row) {
+      $start_at = self::start_at_for_entry_row($report_date, (string) ($row['show_time'] ?? ''));
+      $reports[(int) ($row['id'] ?? 0)] = [
+        'entry_id' => (int) ($row['id'] ?? 0),
+        'report_date' => $report_date,
+        'theater_name' => (string) ($row['theater_name'] ?? Settings::get('theater_name', 'Newport Roxy Theater')),
+        'showing_id' => max(0, (int) ($row['showing_id'] ?? 0)),
+        'film_title' => (string) ($row['movie_title'] ?? ''),
+        'show_time' => (string) ($row['show_time'] ?? ''),
+        'general_qty' => max(0, (int) ($row['general_qty'] ?? 0)),
+        'discount_qty' => max(0, (int) ($row['discount_qty'] ?? 0)),
+        'group_qty' => max(0, (int) ($row['group_qty'] ?? 0)),
+        'live_qty' => max(0, (int) ($row['live_qty'] ?? 0)),
+        'total_tickets' => max(0, (int) ($row['total_tickets'] ?? 0)),
+        'gross_total' => round((float) ($row['gross_total'] ?? 0), 2),
+        'concessions_total' => 0.0,
+        '_start_at' => $start_at,
+      ];
+    }
+
+    self::apply_concessions_to_reports($reports, $report_date);
+
+    foreach ($reports as &$report) {
+      unset($report['_start_at']);
+      $report['concessions_total'] = round((float) ($report['concessions_total'] ?? 0), 2);
+    }
+    unset($report);
+
+    return array_values($reports);
+  }
+
+  private static function build_live_concession_backfill_rows_for_date(string $report_date): array {
+    $existing_rows = Store::list_live_entries(['day' => $report_date], 500, 0);
+    if (!$existing_rows) {
+      return [];
+    }
+
+    $rows = [];
+    foreach ($existing_rows as $row) {
+      $start_at = self::start_at_for_entry_row($report_date, (string) ($row['show_time'] ?? ''));
+      $rows[(int) ($row['id'] ?? 0)] = [
+        'entry_id' => (int) ($row['id'] ?? 0),
+        'report_date' => $report_date,
+        'show_title' => (string) ($row['show_title'] ?? ''),
+        'show_time' => (string) ($row['show_time'] ?? ''),
+        'showing_id' => max(0, (int) ($row['showing_id'] ?? 0)),
+        'theater_name' => (string) ($row['theater_name'] ?? Settings::get('theater_name', 'Newport Roxy Theater')),
+        'online_qty' => max(0, (int) ($row['online_qty'] ?? 0)),
+        'door_qty' => max(0, (int) ($row['door_qty'] ?? 0)),
+        'group_sub_qty' => max(0, (int) ($row['group_sub_qty'] ?? 0)),
+        'total_tickets' => max(0, (int) ($row['total_tickets'] ?? 0)),
+        'gross_total' => round((float) ($row['gross_total'] ?? 0), 2),
+        'concessions_total' => 0.0,
+        'source_type' => (string) ($row['source_type'] ?? 'live_combined'),
+        'source_ref' => (string) ($row['source_ref'] ?? 'show_tickets+square'),
+        'notes' => (string) ($row['notes'] ?? ''),
+        '_start_at' => $start_at,
+      ];
+    }
+
+    self::apply_concessions_to_reports($rows, $report_date);
+
+    foreach ($rows as &$row) {
+      unset($row['_start_at']);
+      $row['concessions_total'] = round((float) ($row['concessions_total'] ?? 0), 2);
+    }
+    unset($row);
+
+    return array_values($rows);
+  }
+
   public static function save_report_draft(string $report_date, string $mode = 'review'): array {
     try {
       $reports = self::build_reports($report_date);
@@ -330,7 +1047,7 @@ class Reporter {
     ];
   }
 
-  public static function build_reports(string $report_date): array {
+  public static function build_reports(string $report_date, bool $include_empty = false): array {
     $reports = [];
     $showings_by_date = self::related_showings_by_date($report_date);
 
@@ -346,8 +1063,114 @@ class Reporter {
       return strcmp($left, $right);
     });
 
+    if ($include_empty) {
+      return array_values($reports);
+    }
+
     return array_values(array_filter($reports, static function (array $report): bool {
       return (int) ($report['total_tickets'] ?? 0) > 0;
+    }));
+  }
+
+  public static function build_live_reports(string $report_date, bool $include_empty = false): array {
+    $showings = self::showings_for_date($report_date, 'live');
+    if (!$showings) {
+      return [];
+    }
+
+    $rows = [];
+    foreach ($showings as $showing) {
+      $stats = class_exists('\\RoxyST\\Sales') ? \RoxyST\Sales::get_showing_stats((int) $showing['id']) : [];
+      $ticket_types = is_array($stats['ticket_types'] ?? null) ? $stats['ticket_types'] : [];
+      $online_qty = 0;
+      $group_sub_qty = max(0, (int) ($stats['subscriber_qty'] ?? 0));
+
+      foreach ($ticket_types as $type => $type_row) {
+        if ((string) $type === 'subscriber') {
+          continue;
+        }
+        $online_qty += max(0, (int) ($type_row['qty'] ?? 0));
+      }
+
+      $rows[(int) $showing['id']] = [
+        'report_date' => $report_date,
+        'show_title' => (string) $showing['title'],
+        'show_time' => (string) $showing['time_label'],
+        'showing_id' => (int) $showing['id'],
+        'theater_name' => (string) Settings::get('theater_name', 'Newport Roxy Theater'),
+        'online_qty' => $online_qty,
+        'door_qty' => 0,
+        'group_sub_qty' => $group_sub_qty,
+        'total_tickets' => $online_qty + $group_sub_qty,
+        'gross_total' => round((float) ($stats['gross_revenue'] ?? 0), 2),
+        'concessions_total' => 0.0,
+        'source_type' => 'live_combined',
+        'source_ref' => 'show_tickets+square',
+        'notes' => 'Online tickets from Show Tickets sales cache and door tickets from Square.',
+        '_start_at' => $showing['start_at'],
+      ];
+    }
+
+    foreach (Square::fetch_orders_for_date($report_date) as $order) {
+      $order_closed_at = self::order_closed_at($order);
+      if (!$order_closed_at) {
+        continue;
+      }
+
+      foreach ((array) ($order['line_items'] ?? []) as $line_item) {
+        if (!self::is_live_door_line_item($line_item, $showings)) {
+          continue;
+        }
+
+        $qty = isset($line_item['quantity']) ? (int) round((float) $line_item['quantity']) : 0;
+        if ($qty <= 0) {
+          continue;
+        }
+
+        $showing_id = self::matching_showing_id_for_order_time($order_closed_at, $showings);
+        if ($showing_id <= 0 || !isset($rows[$showing_id])) {
+          continue;
+        }
+
+        $line_total = self::square_line_item_total($line_item, $qty);
+        $rows[$showing_id]['door_qty'] += $qty;
+        $rows[$showing_id]['total_tickets'] += $qty;
+        $rows[$showing_id]['gross_total'] = round((float) $rows[$showing_id]['gross_total'] + $line_total, 2);
+        continue;
+      }
+
+      if (self::is_concession_line_item($line_item, $showings)) {
+        $line_total_cents = self::square_line_item_total_cents($line_item);
+        if ($line_total_cents <= 0) {
+          continue;
+        }
+
+        $candidate_ids = self::matching_entry_ids_for_order_time($order_closed_at, $rows);
+        if (!$candidate_ids) {
+          $candidate_ids = array_keys($rows);
+        }
+
+        foreach (self::distribute_amount_cents_across_rows($line_total_cents, $candidate_ids, $rows) as $showing_id => $allocated_cents) {
+          if ($allocated_cents <= 0 || !isset($rows[$showing_id])) {
+            continue;
+          }
+          $rows[$showing_id]['concessions_total'] = round((float) $rows[$showing_id]['concessions_total'] + ($allocated_cents / 100), 2);
+        }
+      }
+    }
+
+    foreach ($rows as &$row) {
+      unset($row['_start_at']);
+      $row['concessions_total'] = round((float) ($row['concessions_total'] ?? 0), 2);
+    }
+    unset($row);
+
+    if ($include_empty) {
+      return array_values($rows);
+    }
+
+    return array_values(array_filter($rows, static function (array $row): bool {
+      return (int) ($row['total_tickets'] ?? 0) > 0 || (float) ($row['gross_total'] ?? 0) > 0;
     }));
   }
 
@@ -373,6 +1196,8 @@ class Reporter {
         'live_gross' => 0.0,
         'total_tickets' => 0,
         'gross_total' => 0.0,
+        'concessions_total' => 0.0,
+        '_start_at' => $showing['start_at'],
       ];
     }
 
@@ -406,12 +1231,16 @@ class Reporter {
       }
     }
 
+    self::apply_concessions_to_reports($reports, $report_date, $showings);
+
     foreach ($reports as &$report) {
       $report['general_gross'] = round((float) $report['general_gross'], 2);
       $report['discount_gross'] = round((float) $report['discount_gross'], 2);
       $report['group_gross'] = round((float) $report['group_gross'], 2);
       $report['live_gross'] = round((float) $report['live_gross'], 2);
       $report['gross_total'] = round((float) $report['gross_total'], 2);
+      $report['concessions_total'] = round((float) ($report['concessions_total'] ?? 0), 2);
+      unset($report['_start_at']);
     }
     unset($report);
 
@@ -468,6 +1297,10 @@ class Reporter {
       return 'group';
     }
 
+    if (in_array($value, ['free', 'free ticket', 'prepaid - free', 'prepaid - free ticket'], true)) {
+      return 'live';
+    }
+
     return '';
   }
 
@@ -476,7 +1309,11 @@ class Reporter {
     return in_array($profile, ['movie_evening', 'movie_matinee'], true);
   }
 
-  private static function showings_for_date(string $report_date): array {
+  private static function is_live_showing(int $post_id): bool {
+    return (string) get_post_meta($post_id, '_roxy_pricing_profile', true) === 'live_event';
+  }
+
+  private static function showings_for_date(string $report_date, string $mode = 'movie'): array {
     if (!post_type_exists('roxy_showing')) {
       return [];
     }
@@ -506,11 +1343,13 @@ class Reporter {
 
     $showings = [];
     foreach ((array) $posts as $post_id) {
-      if (!self::is_movie_showing((int) $post_id)) {
+      $post_id = (int) $post_id;
+      $allowed = $mode === 'live' ? self::is_live_showing($post_id) : self::is_movie_showing($post_id);
+      if (!$allowed) {
         continue;
       }
 
-      $start_raw = (string) get_post_meta((int) $post_id, '_roxy_start', true);
+      $start_raw = (string) get_post_meta($post_id, '_roxy_start', true);
       if ($start_raw === '') {
         continue;
       }
@@ -522,10 +1361,12 @@ class Reporter {
       }
 
       $showings[] = [
-        'id' => (int) $post_id,
-        'title' => trim((string) get_the_title((int) $post_id)) ?: 'Unknown Film',
+        'id' => $post_id,
+        'title' => trim((string) get_the_title($post_id)) ?: ($mode === 'live' ? 'Unknown Live Show' : 'Unknown Film'),
         'start_at' => $start_at,
         'time_label' => $start_at->format('g:i A'),
+        'live_label_1' => (string) get_post_meta($post_id, '_roxy_live_label_1', true),
+        'live_label_2' => (string) get_post_meta($post_id, '_roxy_live_label_2', true),
       ];
     }
 
@@ -573,6 +1414,329 @@ class Reporter {
     return $best_id;
   }
 
+  private static function is_live_door_line_item(array $line_item, array $showings): bool {
+    $variation = strtolower(trim((string) ($line_item['variation_name'] ?? '')));
+    $name = strtolower(trim((string) ($line_item['name'] ?? '')));
+    $value = trim($variation !== '' ? $variation : $name);
+    if ($value === '') {
+      return false;
+    }
+
+    if (str_contains($value, 'subscriber') || str_contains($value, 'adult') || str_contains($value, 'discount') || str_contains($value, 'matinee') || str_contains($value, 'prepaid')) {
+      return false;
+    }
+
+    $labels = [];
+    foreach ($showings as $showing) {
+      foreach (['live_label_1', 'live_label_2'] as $key) {
+        $label = strtolower(trim((string) ($showing[$key] ?? '')));
+        if ($label !== '') {
+          $labels[$label] = true;
+        }
+      }
+    }
+
+    foreach (array_keys($labels) as $label) {
+      if ($label !== '' && ($value === $label || str_contains($value, $label) || str_contains($label, $value))) {
+        return true;
+      }
+    }
+
+    return str_contains($value, 'live') || str_contains($value, 'vip') || str_contains($value, 'general admission');
+  }
+
+  private static function square_line_item_total(array $line_item, int $qty): float {
+    foreach (['total_money', 'gross_sales_money', 'total_base_price_money'] as $money_key) {
+      $amount = isset($line_item[$money_key]['amount']) ? (int) $line_item[$money_key]['amount'] : null;
+      if ($amount !== null) {
+        $value = $money_key === 'total_base_price_money' ? ($amount / 100) * max(1, $qty) : ($amount / 100);
+        return round((float) $value, 2);
+      }
+    }
+
+    return 0.0;
+  }
+
+  private static function square_line_item_total_cents(array $line_item): int {
+    foreach (['total_money', 'gross_sales_money', 'total_base_price_money'] as $money_key) {
+      if (isset($line_item[$money_key]['amount'])) {
+        $amount = max(0, (int) $line_item[$money_key]['amount']);
+        if ($money_key === 'total_base_price_money') {
+          $qty = isset($line_item['quantity']) ? max(1, (int) round((float) $line_item['quantity'])) : 1;
+          return $amount * $qty;
+        }
+        return $amount;
+      }
+    }
+
+    return 0;
+  }
+
+  private static function square_line_item_concession_cents(array $line_item): int {
+    $gross_cents = max(0, (int) ($line_item['gross_sales_money']['amount'] ?? 0));
+    $tax_cents = max(0, (int) ($line_item['total_tax_money']['amount'] ?? 0));
+    if ($gross_cents > 0) {
+      return max(0, $gross_cents - $tax_cents);
+    }
+
+    return self::square_line_item_total_cents($line_item);
+  }
+
+  private static function is_concession_line_item(array $line_item, array $showings = [], array $category_map = []): bool {
+    $item_type = strtoupper(trim((string) ($line_item['item_type'] ?? '')));
+    if ($item_type !== 'ITEM') {
+      return false;
+    }
+
+    if (self::classify_ticket_variation($line_item) !== '') {
+      return false;
+    }
+
+    if ($showings && self::is_live_door_line_item($line_item, $showings)) {
+      return false;
+    }
+
+    $name = strtolower(trim((string) ($line_item['name'] ?? '')));
+    if ($name === 'tickets') {
+      return false;
+    }
+
+    $catalog_object_id = trim((string) ($line_item['catalog_object_id'] ?? ''));
+    if ($catalog_object_id !== '') {
+      return Square::is_in_store_purchase_item($catalog_object_id, $category_map)
+        && self::square_line_item_concession_cents($line_item) > 0;
+    }
+
+    return false;
+  }
+
+  private static function apply_concessions_to_reports(array &$reports, string $report_date, array $showings = []): void {
+    if (!$reports) {
+      return;
+    }
+
+    $orders = Square::fetch_orders_for_date($report_date);
+    $catalog_object_ids = [];
+    foreach ($orders as $order) {
+      foreach ((array) ($order['line_items'] ?? []) as $line_item) {
+        $catalog_object_id = trim((string) ($line_item['catalog_object_id'] ?? ''));
+        if ($catalog_object_id !== '') {
+          $catalog_object_ids[] = $catalog_object_id;
+        }
+      }
+    }
+    $category_map = Square::concession_reporting_categories($catalog_object_ids);
+
+    foreach ($orders as $order) {
+      $order_closed_at = self::order_closed_at($order);
+      foreach ((array) ($order['line_items'] ?? []) as $line_item) {
+        if (!self::is_concession_line_item($line_item, $showings, $category_map)) {
+          continue;
+        }
+
+        $line_total_cents = self::square_line_item_concession_cents($line_item);
+        if ($line_total_cents <= 0) {
+          continue;
+        }
+
+        $candidate_ids = $order_closed_at ? self::matching_entry_ids_for_order_time($order_closed_at, $reports) : [];
+        if (!$candidate_ids) {
+          $candidate_ids = array_keys($reports);
+        }
+
+        foreach (self::distribute_amount_cents_across_rows($line_total_cents, $candidate_ids, $reports) as $entry_id => $allocated_cents) {
+          if ($allocated_cents <= 0 || !isset($reports[$entry_id])) {
+            continue;
+          }
+          $reports[$entry_id]['concessions_total'] = round((float) ($reports[$entry_id]['concessions_total'] ?? 0) + ($allocated_cents / 100), 2);
+        }
+      }
+    }
+  }
+
+  private static function matching_entry_ids_for_order_time(\DateTimeImmutable $order_closed_at, array $reports): array {
+    $matches = [];
+    $best_distance = null;
+
+    foreach ($reports as $entry_id => $report) {
+      $start_at = $report['_start_at'] ?? null;
+      if (!$start_at instanceof \DateTimeImmutable) {
+        continue;
+      }
+
+      $window_start = $start_at->modify('-90 minutes');
+      $window_end = $start_at->modify('+90 minutes');
+      $order_local = $order_closed_at->setTimezone($start_at->getTimezone());
+      if ($order_local < $window_start || $order_local > $window_end) {
+        continue;
+      }
+
+      $distance = abs($order_local->getTimestamp() - $start_at->getTimestamp());
+      if ($best_distance === null || $distance < $best_distance) {
+        $best_distance = $distance;
+        $matches = [(int) $entry_id];
+      } elseif ($distance === $best_distance) {
+        $matches[] = (int) $entry_id;
+      }
+    }
+
+    if ($matches) {
+      return array_values(array_unique($matches));
+    }
+
+    $show_times = [];
+    foreach ($reports as $entry_id => $report) {
+      $show_time = trim((string) ($report['show_time'] ?? ''));
+      if ($show_time === '') {
+        continue;
+      }
+      $show_times[$show_time][] = (int) $entry_id;
+    }
+
+    if (count($show_times) === 1) {
+      return array_values(array_unique(reset($show_times) ?: []));
+    }
+
+    if (count($reports) === 1) {
+      return [(int) array_key_first($reports)];
+    }
+
+    return [];
+  }
+
+  private static function distribute_quantity_across_rows(int $qty, array $candidate_ids, array $reports): array {
+    $candidate_ids = array_values(array_filter(array_map('intval', $candidate_ids), static fn (int $id): bool => $id > 0 && isset($reports[$id])));
+    if ($qty <= 0 || !$candidate_ids) {
+      return [];
+    }
+
+    if (count($candidate_ids) === 1) {
+      return [$candidate_ids[0] => $qty];
+    }
+
+    $weights = [];
+    $weight_total = 0;
+    foreach ($candidate_ids as $entry_id) {
+      $weight = self::row_weight($reports[$entry_id]);
+      $weights[$entry_id] = $weight;
+      $weight_total += $weight;
+    }
+
+    if ($weight_total <= 0) {
+      $base = intdiv($qty, count($candidate_ids));
+      $remainder = $qty % count($candidate_ids);
+      $allocation = [];
+      foreach ($candidate_ids as $index => $entry_id) {
+        $allocation[$entry_id] = $base + ($index < $remainder ? 1 : 0);
+      }
+      return $allocation;
+    }
+
+    $allocation = [];
+    $assigned = 0;
+    $fractions = [];
+    foreach ($candidate_ids as $entry_id) {
+      $exact = ($qty * $weights[$entry_id]) / $weight_total;
+      $whole = (int) floor($exact);
+      $allocation[$entry_id] = $whole;
+      $assigned += $whole;
+      $fractions[$entry_id] = $exact - $whole;
+    }
+
+    $remainder = $qty - $assigned;
+    arsort($fractions);
+    foreach (array_keys($fractions) as $entry_id) {
+      if ($remainder <= 0) {
+        break;
+      }
+      $allocation[$entry_id]++;
+      $remainder--;
+    }
+
+    return $allocation;
+  }
+
+  private static function distribute_amount_cents_across_rows(int $amount_cents, array $candidate_ids, array $reports): array {
+    $candidate_ids = array_values(array_filter(array_map('intval', $candidate_ids), static fn (int $id): bool => $id > 0 && isset($reports[$id])));
+    if ($amount_cents <= 0 || !$candidate_ids) {
+      return [];
+    }
+
+    if (count($candidate_ids) === 1) {
+      return [$candidate_ids[0] => $amount_cents];
+    }
+
+    $weights = [];
+    $weight_total = 0;
+    foreach ($candidate_ids as $entry_id) {
+      $weight = self::row_weight($reports[$entry_id]);
+      $weights[$entry_id] = $weight;
+      $weight_total += $weight;
+    }
+
+    if ($weight_total <= 0) {
+      $base = intdiv($amount_cents, count($candidate_ids));
+      $remainder = $amount_cents % count($candidate_ids);
+      $allocation = [];
+      foreach ($candidate_ids as $index => $entry_id) {
+        $allocation[$entry_id] = $base + ($index < $remainder ? 1 : 0);
+      }
+      return $allocation;
+    }
+
+    $allocation = [];
+    $assigned = 0;
+    $fractions = [];
+    foreach ($candidate_ids as $entry_id) {
+      $exact = ($amount_cents * $weights[$entry_id]) / $weight_total;
+      $whole = (int) floor($exact);
+      $allocation[$entry_id] = $whole;
+      $assigned += $whole;
+      $fractions[$entry_id] = $exact - $whole;
+    }
+
+    $remainder = $amount_cents - $assigned;
+    arsort($fractions);
+    foreach (array_keys($fractions) as $entry_id) {
+      if ($remainder <= 0) {
+        break;
+      }
+      $allocation[$entry_id]++;
+      $remainder--;
+    }
+
+    return $allocation;
+  }
+
+  private static function row_weight(array $report): int {
+    if (array_key_exists('online_qty', $report) || array_key_exists('door_qty', $report) || array_key_exists('group_sub_qty', $report)) {
+      return max(0, (int) ($report['online_qty'] ?? 0))
+        + max(0, (int) ($report['door_qty'] ?? 0))
+        + max(0, (int) ($report['group_sub_qty'] ?? 0));
+    }
+
+    return max(0, (int) ($report['general_qty'] ?? 0))
+      + max(0, (int) ($report['discount_qty'] ?? 0))
+      + max(0, (int) ($report['group_qty'] ?? 0));
+  }
+
+  private static function start_at_for_entry_row(string $report_date, string $show_time): ?\DateTimeImmutable {
+    $show_time = trim($show_time);
+    if ($show_time === '') {
+      return null;
+    }
+
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    foreach (['Y-m-d g:i A', 'Y-m-d g:ia', 'Y-m-d H:i'] as $format) {
+      $start_at = \DateTimeImmutable::createFromFormat($format, $report_date . ' ' . $show_time, $timezone);
+      if ($start_at instanceof \DateTimeImmutable) {
+        return $start_at;
+      }
+    }
+
+    return null;
+  }
+
   private static function ticket_prices(): array {
     return [
       'general' => (float) Settings::get('general_price', '12'),
@@ -587,11 +1751,16 @@ class Reporter {
       'report_date' => $reports ? (string) $reports[count($reports) - 1]['report_date'] : '',
       'gross_total' => 0.0,
       'total_tickets' => 0,
+      'paid_tickets' => 0,
     ];
 
     foreach ($reports as $report) {
+      $paid_tickets = max(0, (int) ($report['general_qty'] ?? 0))
+        + max(0, (int) ($report['discount_qty'] ?? 0))
+        + max(0, (int) ($report['group_qty'] ?? 0));
       $summary['gross_total'] += (float) ($report['gross_total'] ?? 0);
       $summary['total_tickets'] += (int) ($report['total_tickets'] ?? 0);
+      $summary['paid_tickets'] += $paid_tickets;
     }
 
     $summary['gross_total'] = round($summary['gross_total'], 2);
@@ -615,6 +1784,7 @@ class Reporter {
         'other_qty' => 0,
         'total_tickets' => max(0, (int) ($row['total_tickets'] ?? 0)),
         'gross_total' => round((float) ($row['gross_total'] ?? 0), 2),
+        'concessions_total' => round((float) ($row['concessions_total'] ?? 0), 2),
         'source_type' => $source_type,
         'source_ref' => $source_ref,
         'source_report_id' => $report_id,
@@ -638,19 +1808,22 @@ class Reporter {
     $subject = self::expand_tokens((string) Settings::get('email_subject', ''), $summary);
     $body = self::expand_tokens((string) Settings::get('email_body', ''), $summary);
     $body .= "\n\nReport rows\n";
-    foreach ($reports as $report) {
-      $body .= sprintf(
-        "%s %s | %s | General %d | Discount %d | Group %d | Total %d | Gross $%s\n",
-        $report['report_date'],
-        $report['show_time'],
-        $report['film_title'],
-        (int) $report['general_qty'],
-        (int) $report['discount_qty'],
-        (int) $report['group_qty'],
-        (int) $report['total_tickets'],
-        number_format((float) $report['gross_total'], 2)
-      );
-    }
+      foreach ($reports as $report) {
+        $paid_tickets = max(0, (int) ($report['general_qty'] ?? 0))
+          + max(0, (int) ($report['discount_qty'] ?? 0))
+          + max(0, (int) ($report['group_qty'] ?? 0));
+        $body .= sprintf(
+          "%s %s | %s | General %d | Discount %d | Group %d | Total %d | Gross $%s\n",
+          $report['report_date'],
+          $report['show_time'],
+          $report['film_title'],
+          (int) $report['general_qty'],
+          (int) $report['discount_qty'],
+          (int) $report['group_qty'],
+          $paid_tickets,
+          number_format((float) $report['gross_total'], 2)
+        );
+      }
 
     $sent = wp_mail($to, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
     @unlink($attachment);
@@ -669,13 +1842,13 @@ class Reporter {
   }
 
   private static function expand_tokens(string $template, array $summary): string {
-    return strtr($template, [
-      '{report_date}' => (string) ($summary['report_date'] ?? ''),
-      '{theater_name}' => (string) Settings::get('theater_name', 'Newport Roxy Theater'),
-      '{gross_total}' => number_format((float) ($summary['gross_total'] ?? 0), 2),
-      '{ticket_total}' => number_format((int) ($summary['total_tickets'] ?? 0)),
-    ]);
-  }
+      return strtr($template, [
+        '{report_date}' => (string) ($summary['report_date'] ?? ''),
+        '{theater_name}' => (string) Settings::get('theater_name', 'Newport Roxy Theater'),
+        '{gross_total}' => number_format((float) ($summary['gross_total'] ?? 0), 2),
+        '{ticket_total}' => number_format((int) ($summary['paid_tickets'] ?? $summary['total_tickets'] ?? 0)),
+      ]);
+    }
 
   private static function write_csv(array $reports): string {
     $upload_dir = wp_upload_dir();
@@ -689,23 +1862,96 @@ class Reporter {
       throw new \RuntimeException('Unable to create the grosses CSV attachment.');
     }
 
+    $total_general = 0;
+    $total_discount = 0;
+    $total_group = 0;
+    $total_paid = 0;
+    $total_gross = 0.0;
+
     fputcsv($handle, ['Report Date', 'Show Time', 'Theater', 'Film Title', 'General', 'Discount', 'Group', 'Total Tickets', 'Gross']);
     foreach ($reports as $report) {
+      $general_qty = max(0, (int) ($report['general_qty'] ?? 0));
+      $discount_qty = max(0, (int) ($report['discount_qty'] ?? 0));
+      $group_qty = max(0, (int) ($report['group_qty'] ?? 0));
+      $paid_tickets = $general_qty + $discount_qty + $group_qty;
+      $gross_total = round((float) ($report['gross_total'] ?? 0), 2);
+
+      $total_general += $general_qty;
+      $total_discount += $discount_qty;
+      $total_group += $group_qty;
+      $total_paid += $paid_tickets;
+      $total_gross += $gross_total;
+
       fputcsv($handle, [
         $report['report_date'],
         $report['show_time'],
         $report['theater_name'],
         $report['film_title'],
-        $report['general_qty'],
-        $report['discount_qty'],
-        $report['group_qty'],
-        $report['total_tickets'],
-        number_format((float) $report['gross_total'], 2, '.', ''),
+        $general_qty,
+        $discount_qty,
+        $group_qty,
+        $paid_tickets,
+        '$' . number_format($gross_total, 2, '.', ''),
       ]);
     }
 
-    fclose($handle);
-    return $path;
+    fputcsv($handle, [
+      'Total',
+      '',
+      '',
+      '',
+      $total_general,
+      $total_discount,
+      $total_group,
+      $total_paid,
+      '$' . number_format($total_gross, 2, '.', ''),
+    ]);
+
+      fclose($handle);
+      return $path;
+    }
+
+  public static function reconciliation_rows(string $date_from, string $date_to): array {
+    $date_from = sanitize_text_field($date_from);
+    $date_to = sanitize_text_field($date_to);
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_from) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_to)) {
+      return [];
+    }
+
+    $start = new \DateTimeImmutable($date_from . ' 00:00:00', new \DateTimeZone(Settings::get_report_timezone()));
+    $end = new \DateTimeImmutable($date_to . ' 00:00:00', new \DateTimeZone(Settings::get_report_timezone()));
+    if ($end < $start) {
+      [$start, $end] = [$end, $start];
+    }
+
+    $assigned = Store::concessions_by_date($start->format('Y-m-d'), $end->format('Y-m-d'));
+    $rows = [];
+    for ($cursor = $start; $cursor <= $end; $cursor = $cursor->modify('+1 day')) {
+      $date_key = $cursor->format('Y-m-d');
+      $square_total = self::square_in_store_purchase_total_for_date($date_key);
+      $assigned_row = $assigned[$date_key] ?? ['movies' => 0.0, 'live' => 0.0, 'rentals' => 0.0, 'assigned_total' => 0.0];
+      $difference = round($square_total - (float) ($assigned_row['assigned_total'] ?? 0), 2);
+
+      if (abs($square_total) < 0.01 && abs($difference) < 0.01) {
+        continue;
+      }
+
+      $rows[] = [
+        'date' => $date_key,
+        'square_total' => round($square_total, 2),
+        'movies' => round((float) ($assigned_row['movies'] ?? 0), 2),
+        'live' => round((float) ($assigned_row['live'] ?? 0), 2),
+        'rentals' => round((float) ($assigned_row['rentals'] ?? 0), 2),
+        'assigned_total' => round((float) ($assigned_row['assigned_total'] ?? 0), 2),
+        'difference' => $difference,
+      ];
+    }
+
+    usort($rows, static function (array $left, array $right): int {
+      return strcmp((string) $right['date'], (string) $left['date']);
+    });
+
+    return $rows;
   }
 
   private static function redirect_with_notice(string $status, string $message, string $tab = 'database', array $extra = []): void {
@@ -734,5 +1980,229 @@ class Reporter {
       . "Error:\n" . $message . "\n";
 
     wp_mail($to, $subject, $body, ['Content-Type: text/plain; charset=UTF-8']);
+  }
+
+  private static function filters_for_dataset(string $dataset, array $source): array {
+    switch ($dataset) {
+      case 'live':
+        return array_filter([
+          'search' => isset($source['live_search']) ? sanitize_text_field(wp_unslash((string) $source['live_search'])) : '',
+          'year' => isset($source['live_year']) ? max(0, (int) $source['live_year']) : 0,
+          'month' => isset($source['live_month']) ? sanitize_text_field(wp_unslash((string) $source['live_month'])) : '',
+          'day' => isset($source['live_day']) ? sanitize_text_field(wp_unslash((string) $source['live_day'])) : '',
+          'date_from' => isset($source['live_from']) ? sanitize_text_field(wp_unslash((string) $source['live_from'])) : '',
+          'date_to' => isset($source['live_to']) ? sanitize_text_field(wp_unslash((string) $source['live_to'])) : '',
+        ]);
+      case 'rentals':
+        return array_filter([
+          'search' => isset($source['rental_search']) ? sanitize_text_field(wp_unslash((string) $source['rental_search'])) : '',
+          'year' => isset($source['rental_year']) ? max(0, (int) $source['rental_year']) : 0,
+          'month' => isset($source['rental_month']) ? sanitize_text_field(wp_unslash((string) $source['rental_month'])) : '',
+          'day' => isset($source['rental_day']) ? sanitize_text_field(wp_unslash((string) $source['rental_day'])) : '',
+          'date_from' => isset($source['rental_from']) ? sanitize_text_field(wp_unslash((string) $source['rental_from'])) : '',
+          'date_to' => isset($source['rental_to']) ? sanitize_text_field(wp_unslash((string) $source['rental_to'])) : '',
+        ]);
+      case 'legacy':
+        return array_filter([
+          'search' => isset($source['legacy_search']) ? sanitize_text_field(wp_unslash((string) $source['legacy_search'])) : '',
+          'year' => isset($source['legacy_year']) ? max(0, (int) $source['legacy_year']) : 0,
+          'month' => isset($source['legacy_month']) ? sanitize_text_field(wp_unslash((string) $source['legacy_month'])) : '',
+          'day' => isset($source['legacy_day']) ? sanitize_text_field(wp_unslash((string) $source['legacy_day'])) : '',
+          'date_from' => isset($source['legacy_from']) ? sanitize_text_field(wp_unslash((string) $source['legacy_from'])) : '',
+          'date_to' => isset($source['legacy_to']) ? sanitize_text_field(wp_unslash((string) $source['legacy_to'])) : '',
+        ]);
+      default:
+        return array_filter([
+          'search' => isset($source['search']) ? sanitize_text_field(wp_unslash((string) $source['search'])) : '',
+          'year' => isset($source['history_year']) ? max(0, (int) $source['history_year']) : 0,
+          'month' => isset($source['history_month']) ? sanitize_text_field(wp_unslash((string) $source['history_month'])) : '',
+          'day' => isset($source['history_day']) ? sanitize_text_field(wp_unslash((string) $source['history_day'])) : '',
+          'date_from' => isset($source['history_from']) ? sanitize_text_field(wp_unslash((string) $source['history_from'])) : '',
+          'date_to' => isset($source['history_to']) ? sanitize_text_field(wp_unslash((string) $source['history_to'])) : '',
+        ]);
+    }
+  }
+
+  private static function tab_for_dataset(string $dataset): string {
+    return match ($dataset) {
+      'live' => 'live-shows',
+      'rentals' => 'rentals',
+      'legacy' => 'legacy-weekly',
+      default => 'database',
+    };
+  }
+
+  private static function redirect_extra_for_dataset(string $dataset, array $source): array {
+    return match ($dataset) {
+      'live' => [
+        'live_search' => isset($source['live_search']) ? sanitize_text_field(wp_unslash((string) $source['live_search'])) : '',
+        'live_year' => isset($source['live_year']) ? max(0, (int) $source['live_year']) : 0,
+        'live_month' => isset($source['live_month']) ? sanitize_text_field(wp_unslash((string) $source['live_month'])) : '',
+        'live_day' => isset($source['live_day']) ? sanitize_text_field(wp_unslash((string) $source['live_day'])) : '',
+        'live_from' => isset($source['live_from']) ? sanitize_text_field(wp_unslash((string) $source['live_from'])) : '',
+        'live_to' => isset($source['live_to']) ? sanitize_text_field(wp_unslash((string) $source['live_to'])) : '',
+      ],
+      'rentals' => [
+        'rental_search' => isset($source['rental_search']) ? sanitize_text_field(wp_unslash((string) $source['rental_search'])) : '',
+        'rental_year' => isset($source['rental_year']) ? max(0, (int) $source['rental_year']) : 0,
+        'rental_month' => isset($source['rental_month']) ? sanitize_text_field(wp_unslash((string) $source['rental_month'])) : '',
+        'rental_day' => isset($source['rental_day']) ? sanitize_text_field(wp_unslash((string) $source['rental_day'])) : '',
+        'rental_from' => isset($source['rental_from']) ? sanitize_text_field(wp_unslash((string) $source['rental_from'])) : '',
+        'rental_to' => isset($source['rental_to']) ? sanitize_text_field(wp_unslash((string) $source['rental_to'])) : '',
+      ],
+      'legacy' => [
+        'legacy_search' => isset($source['legacy_search']) ? sanitize_text_field(wp_unslash((string) $source['legacy_search'])) : '',
+        'legacy_year' => isset($source['legacy_year']) ? max(0, (int) $source['legacy_year']) : 0,
+        'legacy_month' => isset($source['legacy_month']) ? sanitize_text_field(wp_unslash((string) $source['legacy_month'])) : '',
+        'legacy_day' => isset($source['legacy_day']) ? sanitize_text_field(wp_unslash((string) $source['legacy_day'])) : '',
+        'legacy_from' => isset($source['legacy_from']) ? sanitize_text_field(wp_unslash((string) $source['legacy_from'])) : '',
+        'legacy_to' => isset($source['legacy_to']) ? sanitize_text_field(wp_unslash((string) $source['legacy_to'])) : '',
+      ],
+      default => [
+        'search' => isset($source['search']) ? sanitize_text_field(wp_unslash((string) $source['search'])) : '',
+        'history_year' => isset($source['history_year']) ? max(0, (int) $source['history_year']) : 0,
+        'history_month' => isset($source['history_month']) ? sanitize_text_field(wp_unslash((string) $source['history_month'])) : '',
+        'history_day' => isset($source['history_day']) ? sanitize_text_field(wp_unslash((string) $source['history_day'])) : '',
+        'history_from' => isset($source['history_from']) ? sanitize_text_field(wp_unslash((string) $source['history_from'])) : '',
+        'history_to' => isset($source['history_to']) ? sanitize_text_field(wp_unslash((string) $source['history_to'])) : '',
+      ],
+    };
+  }
+
+  private static function log_sync_anomalies(string $report_date, string $mode, array $movie_rows, array $live_rows): void {
+    $movie_zero_rows = array_values(array_filter($movie_rows, static function (array $row): bool {
+      return (int) ($row['total_tickets'] ?? 0) === 0 && abs((float) ($row['concessions_total'] ?? 0)) < 0.01;
+    }));
+    if ($movie_zero_rows) {
+      Store::insert_log('anomaly', $mode, null, $report_date, true, sprintf(
+        'Movies sync found %d zero-activity row(s): %s',
+        count($movie_zero_rows),
+        implode(', ', array_map(static fn(array $row): string => trim(((string) ($row['film_title'] ?? '')) . ' ' . ((string) ($row['show_time'] ?? ''))), $movie_zero_rows))
+      ));
+    }
+
+    $movie_concession_only_rows = array_values(array_filter($movie_rows, static function (array $row): bool {
+      return (int) ($row['total_tickets'] ?? 0) === 0 && (float) ($row['concessions_total'] ?? 0) > 0;
+    }));
+    if ($movie_concession_only_rows) {
+      Store::insert_log('anomaly', $mode, null, $report_date, true, sprintf(
+        'Movies sync found %d concession-only row(s): %s',
+        count($movie_concession_only_rows),
+        implode(', ', array_map(static fn(array $row): string => trim(((string) ($row['film_title'] ?? '')) . ' ' . ((string) ($row['show_time'] ?? ''))), $movie_concession_only_rows))
+      ), [
+        'anomaly_type' => 'movie_concession_only',
+        'rows' => array_map(static fn(array $row): array => [
+          'title' => (string) ($row['film_title'] ?? ''),
+          'show_time' => (string) ($row['show_time'] ?? ''),
+          'concessions_total' => round((float) ($row['concessions_total'] ?? 0), 2),
+        ], $movie_concession_only_rows),
+      ]);
+    }
+
+    $live_zero_rows = array_values(array_filter($live_rows, static function (array $row): bool {
+      return (int) ($row['total_tickets'] ?? 0) === 0 && abs((float) ($row['concessions_total'] ?? 0)) < 0.01;
+    }));
+    if ($live_zero_rows) {
+      Store::insert_log('anomaly', $mode, null, $report_date, true, sprintf(
+        'Live Shows sync found %d zero-activity row(s): %s',
+        count($live_zero_rows),
+        implode(', ', array_map(static fn(array $row): string => trim(((string) ($row['show_title'] ?? '')) . ' ' . ((string) ($row['show_time'] ?? ''))), $live_zero_rows))
+      ));
+    }
+
+    $live_door_only_rows = array_values(array_filter($live_rows, static function (array $row): bool {
+      return (int) ($row['door_qty'] ?? 0) > 0 && (int) ($row['online_qty'] ?? 0) === 0;
+    }));
+    if ($live_door_only_rows) {
+      Store::insert_log('anomaly', $mode, null, $report_date, true, sprintf(
+        'Live Shows sync found %d door-only row(s): %s',
+        count($live_door_only_rows),
+        implode(', ', array_map(static fn(array $row): string => trim(((string) ($row['show_title'] ?? '')) . ' ' . ((string) ($row['show_time'] ?? ''))), $live_door_only_rows))
+      ), [
+        'anomaly_type' => 'live_door_only',
+        'rows' => array_map(static fn(array $row): array => [
+          'title' => (string) ($row['show_title'] ?? ''),
+          'show_time' => (string) ($row['show_time'] ?? ''),
+          'door_qty' => (int) ($row['door_qty'] ?? 0),
+        ], $live_door_only_rows),
+      ]);
+    }
+
+    $live_online_only_rows = array_values(array_filter($live_rows, static function (array $row): bool {
+      return (int) ($row['online_qty'] ?? 0) > 0 && (int) ($row['door_qty'] ?? 0) === 0 && (float) ($row['concessions_total'] ?? 0) <= 0;
+    }));
+    if ($live_online_only_rows) {
+      Store::insert_log('anomaly', $mode, null, $report_date, true, sprintf(
+        'Live Shows sync found %d online-only row(s) with no concessions: %s',
+        count($live_online_only_rows),
+        implode(', ', array_map(static fn(array $row): string => trim(((string) ($row['show_title'] ?? '')) . ' ' . ((string) ($row['show_time'] ?? ''))), $live_online_only_rows))
+      ), [
+        'anomaly_type' => 'live_online_only_no_concessions',
+      ]);
+    }
+
+    $square_total = self::square_in_store_purchase_total_for_date($report_date);
+    $assigned_total = 0.0;
+    foreach ($movie_rows as $row) {
+      $assigned_total += (float) ($row['concessions_total'] ?? 0);
+    }
+    foreach ($live_rows as $row) {
+      $assigned_total += (float) ($row['concessions_total'] ?? 0);
+    }
+    $difference = round($square_total - $assigned_total, 2);
+    if (abs($difference) >= 0.01) {
+      Store::insert_log('anomaly', $mode, null, $report_date, true, sprintf(
+        'Concessions mismatch on %s. Square shows $%s, assigned Movies + Live Shows total is $%s, difference $%s.',
+        $report_date,
+        number_format($square_total, 2),
+        number_format($assigned_total, 2),
+        number_format($difference, 2)
+      ), [
+        'anomaly_type' => 'concessions_mismatch',
+        'square_total' => round($square_total, 2),
+        'assigned_total' => round($assigned_total, 2),
+        'difference' => $difference,
+      ]);
+    }
+
+    if ($square_total > 0 && abs($assigned_total) < 0.01) {
+      Store::insert_log('anomaly', $mode, null, $report_date, true, sprintf(
+        'Square recorded $%s in concessions on %s, but nothing was assigned to Movies or Live Shows.',
+        number_format($square_total, 2),
+        $report_date
+      ), [
+        'anomaly_type' => 'unassigned_concessions_day',
+        'square_total' => round($square_total, 2),
+      ]);
+    }
+  }
+
+  private static function square_in_store_purchase_total_for_date(string $report_date): float {
+    $total_cents = 0;
+    $orders = Square::fetch_orders_for_date($report_date);
+    $catalog_ids = [];
+    foreach ($orders as $order) {
+      foreach ((array) ($order['line_items'] ?? []) as $line_item) {
+        $catalog_object_id = (string) ($line_item['catalog_object_id'] ?? '');
+        if ($catalog_object_id !== '') {
+          $catalog_ids[] = $catalog_object_id;
+        }
+      }
+    }
+    $category_map = Square::concession_reporting_categories($catalog_ids);
+
+    foreach ($orders as $order) {
+      foreach ((array) ($order['line_items'] ?? []) as $line_item) {
+        $catalog_object_id = (string) ($line_item['catalog_object_id'] ?? '');
+        if ($catalog_object_id === '' || !Square::is_in_store_purchase_item($catalog_object_id, $category_map)) {
+          continue;
+        }
+        $gross_sales = (int) ($line_item['gross_sales_money']['amount'] ?? 0);
+        $total_tax = (int) ($line_item['total_tax_money']['amount'] ?? 0);
+        $total_cents += max(0, $gross_sales - $total_tax);
+      }
+    }
+
+    return round($total_cents / 100, 2);
   }
 }

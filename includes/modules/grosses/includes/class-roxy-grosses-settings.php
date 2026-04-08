@@ -11,7 +11,7 @@ class Settings {
   }
   public static function current_tab(): string {
     $tab=isset($_GET['tab'])?sanitize_key((string) wp_unslash($_GET['tab'])):'database';
-    return in_array($tab,['database','legacy-weekly','settings','logs'],true)?$tab:'database';
+    return in_array($tab,['database','live-shows','rentals','legacy-weekly','settings','logs'],true)?$tab:'database';
   }
   public static function defaults(): array {
     return [
@@ -26,7 +26,7 @@ class Settings {
       'advertiser_email_body'=>"Attached is the advertiser summary workbook for {month_name} {year}.",
       'theater_name'=>'Newport Roxy Theater','general_price'=>'12','discount_price'=>'8','group_price'=>'5','lookback_days'=>'0',
       'workbook_template_path'=>'I:\\My Drive\\Grosses\\Roxy_Box_Office_{year}.xlsx',
-      'schedule_enabled'=>'1','schedule_days'=>['fri','sat','sun'],'schedule_time'=>'20:00',
+      'schedule_enabled'=>'1','schedule_time'=>'20:00',
       'advertiser_schedule_enabled'=>'1','advertiser_schedule_day'=>'1','advertiser_schedule_time'=>'09:00',
     ];
   }
@@ -35,8 +35,7 @@ class Settings {
   }
   public static function get_all(): array {
     $saved=get_option(self::OPTION_KEY,[]); if(!is_array($saved)) $saved=[];
-    $all=wp_parse_args($saved,self::defaults()); $all['schedule_days']=self::sanitize_days($all['schedule_days']??[]);
-    return $all;
+    return wp_parse_args($saved,self::defaults());
   }
   public static function get(string $key,$default=''){ $all=self::get_all(); return array_key_exists($key,$all)?$all[$key]:$default; }
   public static function get_report_timezone(): string {
@@ -59,7 +58,7 @@ class Settings {
     register_setting(self::OPTION_KEY,self::OPTION_KEY,['type'=>'array','sanitize_callback'=>[__CLASS__,'sanitize'],'default'=>self::defaults()]);
     add_settings_section('roxy_grosses_square','Square',fn()=>print('<p>Connect to Square and define how ticket line items should be recognized.</p>'),'roxy-grosses');
     add_settings_section('roxy_grosses_email','Email',fn()=>print('<p>Choose recipients and the contents of the generated daily and monthly email messages.</p>'),'roxy-grosses');
-    add_settings_section('roxy_grosses_schedule','Schedule',fn()=>print('<p>Pick the automatic report days and send times. Use the manual forms for odd schedules.</p>'),'roxy-grosses');
+    add_settings_section('roxy_grosses_schedule','Schedule',fn()=>print('<p>Grosses automation runs every day at the selected time. Use the manual forms only for one-off testing or backfills.</p>'),'roxy-grosses');
     $fields=[
       'square_environment'=>['Square environment','roxy_grosses_square'],'square_access_token'=>['Square access token','roxy_grosses_square'],
       'square_location_ids'=>['Square location IDs','roxy_grosses_square'],'report_timezone'=>['Report timezone','roxy_grosses_square'],
@@ -70,8 +69,8 @@ class Settings {
       'general_price'=>['General ticket price','roxy_grosses_email'],'discount_price'=>['Discount ticket price','roxy_grosses_email'],
       'group_price'=>['Group ticket price','roxy_grosses_email'],'lookback_days'=>['Previous days to include','roxy_grosses_email'],
       'advertiser_emails'=>['Advertiser emails','roxy_grosses_email'],'advertiser_email_subject'=>['Advertiser email subject','roxy_grosses_email'],
-      'advertiser_email_body'=>['Advertiser email body','roxy_grosses_email'],'schedule_enabled'=>['Enable automatic grosses sends','roxy_grosses_schedule'],
-      'schedule_days'=>['Automatic grosses days','roxy_grosses_schedule'],'schedule_time'=>['Automatic grosses send time','roxy_grosses_schedule'],
+      'advertiser_email_body'=>['Advertiser email body','roxy_grosses_email'],'schedule_enabled'=>['Enable automatic grosses sync and sends','roxy_grosses_schedule'],
+      'schedule_time'=>['Automatic grosses run time','roxy_grosses_schedule'],
       'advertiser_schedule_enabled'=>['Enable monthly advertiser email','roxy_grosses_schedule'],'advertiser_schedule_day'=>['Monthly advertiser send day','roxy_grosses_schedule'],'advertiser_schedule_time'=>['Monthly advertiser send time','roxy_grosses_schedule'],
     ];
     foreach($fields as $key=>$field){ add_settings_field($key,$field[0],[__CLASS__,'render_field'],'roxy-grosses',$field[1],['key'=>$key]); }
@@ -100,7 +99,7 @@ class Settings {
       'discount_price'=>wc_format_decimal((string) ($input['discount_price']??$d['discount_price'])),
       'group_price'=>wc_format_decimal((string) ($input['group_price']??$d['group_price'])),
       'lookback_days'=>(string) max(0,(int) ($input['lookback_days']??$d['lookback_days'])),
-      'schedule_enabled'=>!empty($input['schedule_enabled'])?'1':'0','schedule_days'=>self::sanitize_days($input['schedule_days']??$d['schedule_days']),
+      'schedule_enabled'=>!empty($input['schedule_enabled'])?'1':'0',
       'schedule_time'=>self::sanitize_time((string) ($input['schedule_time']??$d['schedule_time'])),
       'advertiser_schedule_enabled'=>!empty($input['advertiser_schedule_enabled'])?'1':'0',
       'advertiser_schedule_day'=>(string) min(31,max(1,(int) ($input['advertiser_schedule_day']??$d['advertiser_schedule_day']))),
@@ -140,12 +139,8 @@ class Settings {
       case 'general_price': case 'discount_price': case 'group_price':
         echo '<input type="number" min="0" step="0.01" class="regular-text" name="'.esc_attr($name).'" value="'.esc_attr((string) $value).'">'; return;
       case 'schedule_enabled': case 'advertiser_schedule_enabled':
-        $label=$key==='schedule_enabled'?'Send grosses reports automatically':'Send advertiser summary automatically each month';
+        $label=$key==='schedule_enabled'?'Run grosses automation automatically every day':'Send advertiser summary automatically each month';
         echo '<label><input type="checkbox" name="'.esc_attr($name).'" value="1" '.checked($value,'1',false).'> '.esc_html($label).'</label>'; return;
-      case 'schedule_days':
-        $days=is_array($value)?$value:[]; foreach(['mon'=>'Mon','tue'=>'Tue','wed'=>'Wed','thu'=>'Thu','fri'=>'Fri','sat'=>'Sat','sun'=>'Sun'] as $day=>$label){
-          echo '<label style="display:inline-block; margin-right:12px;"><input type="checkbox" name="'.esc_attr($name).'[]" value="'.esc_attr($day).'" '.checked(in_array($day,$days,true),true,false).'> '.esc_html($label).'</label>';
-        } return;
       case 'schedule_time': case 'advertiser_schedule_time':
         echo '<input type="time" name="'.esc_attr($name).'" value="'.esc_attr((string) $value).'">'; return;
     }
@@ -156,13 +151,17 @@ class Settings {
     $status=self::get_status(); $timezone=new \DateTimeZone(self::get_report_timezone()); $default_date=wp_date('Y-m-d',null,$timezone); $default_advertiser_date=wp_date('Y-m-d',null,$timezone);
     $tab=self::current_tab(); $logs=Store::list_logs(100);
     echo '<div class="wrap"><h1>Roxy Grosses</h1><nav class="nav-tab-wrapper" style="margin-bottom:16px;">';
-    echo '<a class="nav-tab '.($tab==='database'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=database')).'">Database</a>';
-    echo '<a class="nav-tab '.($tab==='legacy-weekly'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=legacy-weekly')).'">Legacy Weekly</a>';
+    echo '<a class="nav-tab '.($tab==='database'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=database')).'">Movies</a>';
+    echo '<a class="nav-tab '.($tab==='live-shows'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=live-shows')).'">Live Shows</a>';
+    echo '<a class="nav-tab '.($tab==='rentals'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=rentals')).'">Rentals</a>';
+    echo '<a class="nav-tab '.($tab==='legacy-weekly'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=legacy-weekly')).'">Legacy Movies</a>';
     echo '<a class="nav-tab '.($tab==='settings'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=settings')).'">Settings</a>';
     echo '<a class="nav-tab '.($tab==='logs'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=logs')).'">Logs</a></nav>';
     if(!empty($_GET['roxy_grosses_notice'])){ $notice=sanitize_text_field(wp_unslash((string) $_GET['roxy_grosses_notice'])); $message=isset($_GET['message'])?sanitize_text_field(wp_unslash((string) $_GET['message'])):''; echo '<div class="'.esc_attr($notice==='success'?'notice notice-success':'notice notice-error').'"><p>'.esc_html($message).'</p></div>'; }
-    if(!empty($status['sent_at'])){ echo '<div class="notice notice-info"><p>Last activity: '.esc_html($status['report_date']?:'n/a').' | Time: '.esc_html($status['sent_at']).' | Mode: '.esc_html($status['mode']?:'n/a').' | Rows: '.esc_html((string) ($status['row_count']??0)).' | Gross: $'.esc_html(number_format((float) ($status['gross_total']??0),2)); if(!empty($status['message'])) echo ' | '.esc_html($status['message']); echo '</p></div>'; }
+    self::render_dashboard_summary($default_date);
     if($tab==='settings'){ echo '<form method="post" action="options.php">'; settings_fields(self::OPTION_KEY); do_settings_sections('roxy-grosses'); submit_button('Save Grosses Settings'); echo '</form>'; self::render_test_tools($default_date,$default_advertiser_date); }
+    elseif($tab==='live-shows'){ self::render_live_shows_tab($default_date); }
+    elseif($tab==='rentals'){ self::render_rentals_tab(); }
     elseif($tab==='logs'){ self::render_logs_tab($logs); }
     elseif($tab==='legacy-weekly'){ self::render_legacy_weekly_tab(); }
     else { self::render_database_tab($default_date); }
@@ -170,21 +169,28 @@ class Settings {
   }
 
   private static function render_database_tab(string $default_date): void {
+    $per_page = 100;
     $search = isset($_GET['search']) ? sanitize_text_field(wp_unslash((string) $_GET['search'])) : '';
     $year = isset($_GET['history_year']) ? max(0, (int) $_GET['history_year']) : 0;
     $month = isset($_GET['history_month']) ? sanitize_text_field(wp_unslash((string) $_GET['history_month'])) : '';
     $day = isset($_GET['history_day']) ? sanitize_text_field(wp_unslash((string) $_GET['history_day'])) : '';
+    $date_from = isset($_GET['history_from']) ? sanitize_text_field(wp_unslash((string) $_GET['history_from'])) : '';
+    $date_to = isset($_GET['history_to']) ? sanitize_text_field(wp_unslash((string) $_GET['history_to'])) : '';
+    $page_number = isset($_GET['movie_paged']) ? max(1, (int) $_GET['movie_paged']) : 1;
     $filters = array_filter([
       'search' => $search,
       'year' => $year ?: null,
       'month' => $month,
       'day' => $day,
+      'date_from' => $date_from,
+      'date_to' => $date_to,
     ]);
-    $rows = Store::list_entries($filters, 200, 0);
     $summary = Store::entries_summary($filters);
+    $rows = Store::list_entries($filters, $per_page, ($page_number - 1) * $per_page);
     $years = Store::distinct_years();
+    $edit_id = self::editing_row_id('movies');
 
-    echo '<h2>Database</h2><p>The grosses database is the source of truth. Pull from Square, then search by movie title, year, month, or day.</p>';
+    echo '<h2>Movies</h2><p>The movie grosses database is the source of truth. Pull from Square, then search by movie title, year, month, or day.</p>';
     echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
     wp_nonce_field('roxy_grosses_pull_database');
     echo '<input type="hidden" name="action" value="roxy_grosses_pull_database">';
@@ -195,6 +201,8 @@ class Settings {
     echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
     echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="database">';
     echo '<div><label><strong>Search</strong></label><br><input type="text" class="regular-text" name="search" value="'.esc_attr($search).'" placeholder="Movie title"></div>';
+    echo '<div><label><strong>From</strong></label><br><input type="date" name="history_from" value="'.esc_attr($date_from).'"></div>';
+    echo '<div><label><strong>To</strong></label><br><input type="date" name="history_to" value="'.esc_attr($date_to).'"></div>';
     echo '<div><label><strong>Year</strong></label><br><select name="history_year"><option value="0">All years</option>';
     foreach ($years as $option_year) { echo '<option value="'.esc_attr((string) $option_year).'" '.selected($year, $option_year, false).'>'.esc_html((string) $option_year).'</option>'; }
     echo '</select></div>';
@@ -202,64 +210,278 @@ class Settings {
     echo '<div><label><strong>Day</strong></label><br><input type="date" name="history_day" value="'.esc_attr($day).'"></div>';
     submit_button('Filter','secondary','',false);
     echo '</form>';
+    self::render_filter_presets('movies', [
+      'tab' => 'database',
+      'search' => $search,
+    ]);
+    self::render_export_form('movies', [
+      'search' => $search,
+      'history_from' => $date_from,
+      'history_to' => $date_to,
+      'history_year' => $year,
+      'history_month' => $month,
+      'history_day' => $day,
+    ]);
 
     echo '<div style="display:flex; gap:16px; flex-wrap:wrap; margin:16px 0;">';
     foreach ([
       ['Rows', number_format_i18n((int) ($summary['row_count'] ?? 0))],
       ['Admissions', number_format_i18n((int) ($summary['admissions'] ?? 0))],
-      ['Gross', '$' . number_format((float) ($summary['gross'] ?? 0), 2)],
-      ['Avg Gross / Row', '$' . number_format((float) ($summary['average_gross'] ?? 0), 2)],
+      ['Ticket Gross', '$' . number_format((float) ($summary['gross'] ?? 0), 2)],
+      ['Concessions Gross', '$' . number_format((float) ($summary['concessions'] ?? 0), 2)],
+      ['Avg Ticket Gross / Row', '$' . number_format((float) ($summary['average_gross'] ?? 0), 2)],
+      ['Avg Concessions / Row', '$' . number_format((float) ($summary['average_concessions'] ?? 0), 2)],
     ] as $card) {
       echo '<div style="min-width:200px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;"><div style="font-size:12px; color:#50575e; text-transform:uppercase;">'.esc_html($card[0]).'</div><div style="font-size:24px; font-weight:600; margin-top:8px;">'.esc_html($card[1]).'</div></div>';
     }
     echo '</div>';
 
-    echo '<table class="widefat striped"><thead><tr><th>Date</th><th>Movie</th><th>Show Time</th><th>Total</th><th>General</th><th>Discount</th><th>Group</th><th>Live</th><th>Gross</th><th>Updated</th></tr></thead><tbody>';
+    echo '<table class="widefat striped"><thead><tr><th>Date</th><th>Movie</th><th>Show Time</th><th>Total</th><th>General</th><th>Discount</th><th>Group</th><th>Free</th><th>Gross</th><th>Concessions</th><th>Actions</th></tr></thead><tbody>';
     foreach ($rows as $row) {
-      echo '<tr><td>'.esc_html((string) ($row['report_date'] ?? '')).'</td><td>'.esc_html((string) ($row['movie_title'] ?? '')).'</td><td>'.esc_html((string) ($row['show_time'] ?? '—')).'</td><td>'.esc_html(number_format_i18n((int) ($row['total_tickets'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['general_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['discount_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['group_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['live_qty'] ?? 0))).'</td><td>$'.esc_html(number_format((float) ($row['gross_total'] ?? 0), 2)).'</td><td>'.esc_html((string) ($row['updated_at'] ?? '')).'</td></tr>';
-    }
-    if (!$rows) echo '<tr><td colspan="10">No grosses rows match the current filters.</td></tr>';
-    echo '</tbody></table>';
-
-    if ($rows) {
-      echo '<h3 style="margin-top:24px;">Cleanup</h3><p>Delete individual rows when you spot a duplicate or bad import.</p>';
-      echo '<table class="widefat striped" style="max-width:980px"><thead><tr><th>ID</th><th>Date</th><th>Movie</th><th>Show Time</th><th>Source</th><th>Action</th></tr></thead><tbody>';
-      foreach ($rows as $row) {
-        echo '<tr><td>'.esc_html((string) ($row['id'] ?? 0)).'</td><td>'.esc_html((string) ($row['report_date'] ?? '')).'</td><td>'.esc_html((string) ($row['movie_title'] ?? '')).'</td><td>'.esc_html((string) ($row['show_time'] ?? '-')).'</td><td>'.esc_html((string) ($row['source_type'] ?? '')).'</td><td>';
-        echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" onsubmit="return window.confirm(\'Delete this grosses row?\');" style="margin:0;">';
-        wp_nonce_field('roxy_grosses_delete_entry');
-        echo '<input type="hidden" name="action" value="roxy_grosses_delete_entry">';
-        echo '<input type="hidden" name="entry_id" value="'.esc_attr((string) ($row['id'] ?? 0)).'">';
-        echo '<input type="hidden" name="search" value="'.esc_attr($search).'">';
-        echo '<input type="hidden" name="history_year" value="'.esc_attr((string) $year).'">';
-        echo '<input type="hidden" name="history_month" value="'.esc_attr($month).'">';
-        echo '<input type="hidden" name="history_day" value="'.esc_attr($day).'">';
-        submit_button('Delete','link-delete','submit',false);
-        echo '</form></td></tr>';
+      $row_id = (int) ($row['id'] ?? 0);
+      echo '<tr><td>'.esc_html((string) ($row['report_date'] ?? '')).'</td><td>'.esc_html((string) ($row['movie_title'] ?? '')).'</td><td>'.esc_html((string) ($row['show_time'] ?? '')).'</td><td>'.esc_html(number_format_i18n((int) ($row['total_tickets'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['general_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['discount_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['group_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['live_qty'] ?? 0))).'</td><td>$'.esc_html(number_format((float) ($row['gross_total'] ?? 0), 2)).'</td><td>$'.esc_html(number_format((float) ($row['concessions_total'] ?? 0), 2)).'</td><td><a class="button button-small" href="'.esc_url(self::edit_url('movies', $row_id, [
+        'tab' => 'database',
+        'search' => $search,
+        'history_from' => $date_from,
+        'history_to' => $date_to,
+        'history_year' => $year ?: null,
+        'history_month' => $month,
+        'history_day' => $day,
+      ])).'">Edit</a></td></tr>';
+      if ($edit_id === $row_id) {
+        self::render_movie_edit_row($row, $search, $year, $month, $day, $date_from, $date_to);
       }
-      echo '</tbody></table>';
     }
+    if (!$rows) echo '<tr><td colspan="11">No grosses rows match the current filters.</td></tr>';
+    echo '</tbody></table>';
+    self::render_pagination($summary['row_count'] ?? 0, $per_page, $page_number, 'movie_paged', [
+      'page' => 'roxy-grosses',
+      'tab' => 'database',
+      'search' => $search,
+      'history_from' => $date_from,
+      'history_to' => $date_to,
+      'history_year' => $year ?: null,
+      'history_month' => $month,
+      'history_day' => $day,
+    ]);
   }
 
-  private static function render_legacy_weekly_tab(): void {
-    $search = isset($_GET['legacy_search']) ? sanitize_text_field(wp_unslash((string) $_GET['legacy_search'])) : '';
-    $year = isset($_GET['legacy_year']) ? max(0, (int) $_GET['legacy_year']) : 0;
-    $month = isset($_GET['legacy_month']) ? sanitize_text_field(wp_unslash((string) $_GET['legacy_month'])) : '';
-    $day = isset($_GET['legacy_day']) ? sanitize_text_field(wp_unslash((string) $_GET['legacy_day'])) : '';
+  private static function render_live_shows_tab(string $default_date): void {
+    $per_page = 100;
+    $search = isset($_GET['live_search']) ? sanitize_text_field(wp_unslash((string) $_GET['live_search'])) : '';
+    $year = isset($_GET['live_year']) ? max(0, (int) $_GET['live_year']) : 0;
+    $month = isset($_GET['live_month']) ? sanitize_text_field(wp_unslash((string) $_GET['live_month'])) : '';
+    $day = isset($_GET['live_day']) ? sanitize_text_field(wp_unslash((string) $_GET['live_day'])) : '';
+    $date_from = isset($_GET['live_from']) ? sanitize_text_field(wp_unslash((string) $_GET['live_from'])) : '';
+    $date_to = isset($_GET['live_to']) ? sanitize_text_field(wp_unslash((string) $_GET['live_to'])) : '';
+    $page_number = isset($_GET['live_paged']) ? max(1, (int) $_GET['live_paged']) : 1;
     $filters = array_filter([
       'search' => $search,
       'year' => $year ?: null,
       'month' => $month,
       'day' => $day,
+      'date_from' => $date_from,
+      'date_to' => $date_to,
     ]);
-    $rows = Store::list_legacy_weekly($filters, 250, 0);
+    $summary = Store::live_entries_summary($filters);
+    $rows = Store::list_live_entries($filters, $per_page, ($page_number - 1) * $per_page);
+    $years = Store::distinct_live_years();
+    $edit_id = self::editing_row_id('live');
+
+    echo '<h2>Live Shows</h2><p>Track live show attendance and gross with online tickets from Show Tickets and door tickets from Square.</p>';
+    echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
+    wp_nonce_field('roxy_grosses_pull_live_database');
+    echo '<input type="hidden" name="action" value="roxy_grosses_pull_live_database">';
+    echo '<div><label for="roxy-grosses-live-pull-date"><strong>Manual pull date</strong></label><br><input id="roxy-grosses-live-pull-date" type="date" name="report_date" value="'.esc_attr($default_date).'"></div>';
+    submit_button('Pull Live Shows','primary','submit',false);
+    echo '</form>';
+
+    echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
+    echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="live-shows">';
+    echo '<div><label><strong>Search</strong></label><br><input type="text" class="regular-text" name="live_search" value="'.esc_attr($search).'" placeholder="Show title"></div>';
+    echo '<div><label><strong>From</strong></label><br><input type="date" name="live_from" value="'.esc_attr($date_from).'"></div>';
+    echo '<div><label><strong>To</strong></label><br><input type="date" name="live_to" value="'.esc_attr($date_to).'"></div>';
+    echo '<div><label><strong>Year</strong></label><br><select name="live_year"><option value="0">All years</option>';
+    foreach ($years as $option_year) { echo '<option value="'.esc_attr((string) $option_year).'" '.selected($year, $option_year, false).'>'.esc_html((string) $option_year).'</option>'; }
+    echo '</select></div>';
+    echo '<div><label><strong>Month</strong></label><br><input type="month" name="live_month" value="'.esc_attr($month).'"></div>';
+    echo '<div><label><strong>Day</strong></label><br><input type="date" name="live_day" value="'.esc_attr($day).'"></div>';
+    submit_button('Filter','secondary','',false);
+    echo '</form>';
+    self::render_filter_presets('live', [
+      'tab' => 'live-shows',
+      'live_search' => $search,
+    ]);
+    self::render_export_form('live', [
+      'live_search' => $search,
+      'live_from' => $date_from,
+      'live_to' => $date_to,
+      'live_year' => $year,
+      'live_month' => $month,
+      'live_day' => $day,
+    ]);
+
+    echo '<div style="display:flex; gap:16px; flex-wrap:wrap; margin:16px 0;">';
+    foreach ([
+      ['Rows', number_format_i18n((int) ($summary['row_count'] ?? 0))],
+      ['Attendance', number_format_i18n((int) ($summary['admissions'] ?? 0))],
+      ['Ticket Gross', '$' . number_format((float) ($summary['gross'] ?? 0), 2)],
+      ['Concessions Gross', '$' . number_format((float) ($summary['concessions'] ?? 0), 2)],
+      ['Avg Ticket Gross / Row', '$' . number_format((float) ($summary['average_gross'] ?? 0), 2)],
+      ['Avg Concessions / Row', '$' . number_format((float) ($summary['average_concessions'] ?? 0), 2)],
+    ] as $card) {
+      echo '<div style="min-width:200px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;"><div style="font-size:12px; color:#50575e; text-transform:uppercase;">'.esc_html($card[0]).'</div><div style="font-size:24px; font-weight:600; margin-top:8px;">'.esc_html($card[1]).'</div></div>';
+    }
+    echo '</div>';
+
+    echo '<table class="widefat striped"><thead><tr><th>Date</th><th>Show</th><th>Show Time</th><th>Total</th><th>Online Ticket</th><th>Door Ticket</th><th>Group/Subscriber</th><th>Gross</th><th>Concessions</th><th>Actions</th></tr></thead><tbody>';
+    foreach ($rows as $row) {
+      $row_id = (int) ($row['id'] ?? 0);
+      echo '<tr><td>'.esc_html((string) ($row['report_date'] ?? '')).'</td><td>'.esc_html((string) ($row['show_title'] ?? '')).'</td><td>'.esc_html((string) ($row['show_time'] ?? '')).'</td><td>'.esc_html(number_format_i18n((int) ($row['total_tickets'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['online_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['door_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['group_sub_qty'] ?? 0))).'</td><td>$'.esc_html(number_format((float) ($row['gross_total'] ?? 0), 2)).'</td><td>$'.esc_html(number_format((float) ($row['concessions_total'] ?? 0), 2)).'</td><td><a class="button button-small" href="'.esc_url(self::edit_url('live', $row_id, [
+        'tab' => 'live-shows',
+        'live_search' => $search,
+        'live_from' => $date_from,
+        'live_to' => $date_to,
+        'live_year' => $year ?: null,
+        'live_month' => $month,
+        'live_day' => $day,
+      ])).'">Edit</a></td></tr>';
+      if ($edit_id === $row_id) {
+        self::render_live_edit_row($row, $search, $year, $month, $day, $date_from, $date_to);
+      }
+    }
+    if (!$rows) echo '<tr><td colspan="10">No live show rows match the current filters.</td></tr>';
+    echo '</tbody></table>';
+    self::render_pagination($summary['row_count'] ?? 0, $per_page, $page_number, 'live_paged', [
+      'page' => 'roxy-grosses',
+      'tab' => 'live-shows',
+      'live_search' => $search,
+      'live_from' => $date_from,
+      'live_to' => $date_to,
+      'live_year' => $year ?: null,
+      'live_month' => $month,
+      'live_day' => $day,
+    ]);
+  }
+
+  private static function render_rentals_tab(): void {
+    $per_page = 100;
+    $search = isset($_GET['rental_search']) ? sanitize_text_field(wp_unslash((string) $_GET['rental_search'])) : '';
+    $year = isset($_GET['rental_year']) ? max(0, (int) $_GET['rental_year']) : 0;
+    $month = isset($_GET['rental_month']) ? sanitize_text_field(wp_unslash((string) $_GET['rental_month'])) : '';
+    $day = isset($_GET['rental_day']) ? sanitize_text_field(wp_unslash((string) $_GET['rental_day'])) : '';
+    $date_from = isset($_GET['rental_from']) ? sanitize_text_field(wp_unslash((string) $_GET['rental_from'])) : '';
+    $date_to = isset($_GET['rental_to']) ? sanitize_text_field(wp_unslash((string) $_GET['rental_to'])) : '';
+    $page_number = isset($_GET['rental_paged']) ? max(1, (int) $_GET['rental_paged']) : 1;
+    $filters = array_filter([
+      'search' => $search,
+      'year' => $year ?: null,
+      'month' => $month,
+      'day' => $day,
+      'date_from' => $date_from,
+      'date_to' => $date_to,
+    ]);
+    $rows = Store::list_rental_entries($filters, $per_page, ($page_number - 1) * $per_page);
+    $summary = Store::rental_entries_summary($filters);
+    $years = Store::distinct_rental_years();
+    $edit_id = self::editing_row_id('rentals');
+
+    echo '<h2>Rentals</h2><p>This tab stores private rentals, field trips, reward days, and other invoice-backed special bookings separately from movies and public live shows.</p>';
+    echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
+    echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="rentals">';
+    echo '<div><label><strong>Search</strong></label><br><input type="text" class="regular-text" name="rental_search" value="'.esc_attr($search).'" placeholder="Rental title or customer"></div>';
+    echo '<div><label><strong>From</strong></label><br><input type="date" name="rental_from" value="'.esc_attr($date_from).'"></div>';
+    echo '<div><label><strong>To</strong></label><br><input type="date" name="rental_to" value="'.esc_attr($date_to).'"></div>';
+    echo '<div><label><strong>Year</strong></label><br><select name="rental_year"><option value="0">All years</option>';
+    foreach ($years as $option_year) { echo '<option value="'.esc_attr((string) $option_year).'" '.selected($year, $option_year, false).'>'.esc_html((string) $option_year).'</option>'; }
+    echo '</select></div>';
+    echo '<div><label><strong>Month</strong></label><br><input type="month" name="rental_month" value="'.esc_attr($month).'"></div>';
+    echo '<div><label><strong>Day</strong></label><br><input type="date" name="rental_day" value="'.esc_attr($day).'"></div>';
+    submit_button('Filter','secondary','',false);
+    echo '</form>';
+    self::render_filter_presets('rentals', [
+      'tab' => 'rentals',
+      'rental_search' => $search,
+    ]);
+    self::render_export_form('rentals', [
+      'rental_search' => $search,
+      'rental_from' => $date_from,
+      'rental_to' => $date_to,
+      'rental_year' => $year,
+      'rental_month' => $month,
+      'rental_day' => $day,
+    ]);
+
+    echo '<div style="display:flex; gap:16px; flex-wrap:wrap; margin:16px 0;">';
+    foreach ([
+      ['Rows', number_format_i18n((int) ($summary['row_count'] ?? 0))],
+      ['Invoice Gross', '$' . number_format((float) ($summary['invoice_total'] ?? 0), 2)],
+      ['Concessions Gross', '$' . number_format((float) ($summary['concessions'] ?? 0), 2)],
+      ['Avg Invoice / Row', '$' . number_format((float) ($summary['average_invoice'] ?? 0), 2)],
+      ['Avg Concessions / Row', '$' . number_format((float) ($summary['average_concessions'] ?? 0), 2)],
+    ] as $card) {
+      echo '<div style="min-width:200px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;"><div style="font-size:12px; color:#50575e; text-transform:uppercase;">'.esc_html($card[0]).'</div><div style="font-size:24px; font-weight:600; margin-top:8px;">'.esc_html($card[1]).'</div></div>';
+    }
+    echo '</div>';
+
+    echo '<table class="widefat striped"><thead><tr><th>Date</th><th>Rental</th><th>Type</th><th>Customer</th><th>Status</th><th>Invoice</th><th>Concessions</th><th>Notes</th><th>Actions</th></tr></thead><tbody>';
+    foreach ($rows as $row) {
+      $row_id = (int) ($row['id'] ?? 0);
+      echo '<tr><td>'.esc_html((string) ($row['report_date'] ?? '')).'</td><td>'.esc_html((string) ($row['rental_title'] ?? '')).'</td><td>'.esc_html((string) ($row['rental_type'] ?? '')).'</td><td>'.esc_html((string) ($row['customer_name'] ?? '')).'</td><td>'.esc_html((string) ($row['status'] ?? '')).'</td><td>$'.esc_html(number_format((float) ($row['invoice_amount'] ?? 0), 2)).'</td><td>$'.esc_html(number_format((float) ($row['concessions_total'] ?? 0), 2)).'</td><td>'.esc_html((string) ($row['notes'] ?? '')).'</td><td><a class="button button-small" href="'.esc_url(self::edit_url('rentals', $row_id, [
+        'tab' => 'rentals',
+        'rental_search' => $search,
+        'rental_from' => $date_from,
+        'rental_to' => $date_to,
+        'rental_year' => $year ?: null,
+        'rental_month' => $month,
+        'rental_day' => $day,
+      ])).'">Edit</a></td></tr>';
+      if ($edit_id === $row_id) {
+        self::render_rental_edit_row($row, $search, $year, $month, $day, $date_from, $date_to);
+      }
+    }
+    if (!$rows) echo '<tr><td colspan="9">No rentals match the current filters.</td></tr>';
+    echo '</tbody></table>';
+    self::render_pagination($summary['row_count'] ?? 0, $per_page, $page_number, 'rental_paged', [
+      'page' => 'roxy-grosses',
+      'tab' => 'rentals',
+      'rental_search' => $search,
+      'rental_from' => $date_from,
+      'rental_to' => $date_to,
+      'rental_year' => $year ?: null,
+      'rental_month' => $month,
+      'rental_day' => $day,
+    ]);
+  }
+
+  private static function render_legacy_weekly_tab(): void {
+    $per_page = 100;
+    $search = isset($_GET['legacy_search']) ? sanitize_text_field(wp_unslash((string) $_GET['legacy_search'])) : '';
+    $year = isset($_GET['legacy_year']) ? max(0, (int) $_GET['legacy_year']) : 0;
+    $month = isset($_GET['legacy_month']) ? sanitize_text_field(wp_unslash((string) $_GET['legacy_month'])) : '';
+    $day = isset($_GET['legacy_day']) ? sanitize_text_field(wp_unslash((string) $_GET['legacy_day'])) : '';
+    $date_from = isset($_GET['legacy_from']) ? sanitize_text_field(wp_unslash((string) $_GET['legacy_from'])) : '';
+    $date_to = isset($_GET['legacy_to']) ? sanitize_text_field(wp_unslash((string) $_GET['legacy_to'])) : '';
+    $page_number = isset($_GET['legacy_paged']) ? max(1, (int) $_GET['legacy_paged']) : 1;
+    $filters = array_filter([
+      'search' => $search,
+      'year' => $year ?: null,
+      'month' => $month,
+      'day' => $day,
+      'date_from' => $date_from,
+      'date_to' => $date_to,
+    ]);
+    $rows = Store::list_legacy_weekly($filters, $per_page, ($page_number - 1) * $per_page);
     $summary = Store::legacy_weekly_summary($filters);
     $years = Store::distinct_legacy_weekly_years();
+    $edit_id = self::editing_row_id('legacy');
 
-    echo '<h2>Legacy Weekly</h2><p>This tab stores the previous owner\'s weekly attendance workbook as a separate historical dataset. It is weekly, multi-theater legacy data and does not affect the modern daily movie database.</p>';
+    echo '<h2>Legacy Movies</h2><p>This tab stores the previous owner\'s weekly attendance workbook as a separate historical dataset. It is weekly, multi-theater legacy data and does not affect the modern daily movie database.</p>';
     echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
     echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="legacy-weekly">';
     echo '<div><label><strong>Search</strong></label><br><input type="text" class="regular-text" name="legacy_search" value="'.esc_attr($search).'" placeholder="Movie title"></div>';
+    echo '<div><label><strong>From</strong></label><br><input type="date" name="legacy_from" value="'.esc_attr($date_from).'"></div>';
+    echo '<div><label><strong>To</strong></label><br><input type="date" name="legacy_to" value="'.esc_attr($date_to).'"></div>';
     echo '<div><label><strong>Year</strong></label><br><select name="legacy_year"><option value="0">All years</option>';
     foreach ($years as $option_year) { echo '<option value="'.esc_attr((string) $option_year).'" '.selected($year, $option_year, false).'>'.esc_html((string) $option_year).'</option>'; }
     echo '</select></div>';
@@ -267,28 +489,106 @@ class Settings {
     echo '<div><label><strong>Week Of</strong></label><br><input type="date" name="legacy_day" value="'.esc_attr($day).'"></div>';
     submit_button('Filter','secondary','',false);
     echo '</form>';
+    self::render_filter_presets('legacy', [
+      'tab' => 'legacy-weekly',
+      'legacy_search' => $search,
+    ]);
+    self::render_export_form('legacy', [
+      'legacy_search' => $search,
+      'legacy_from' => $date_from,
+      'legacy_to' => $date_to,
+      'legacy_year' => $year,
+      'legacy_month' => $month,
+      'legacy_day' => $day,
+    ]);
 
     echo '<div style="display:flex; gap:16px; flex-wrap:wrap; margin:16px 0;">';
     foreach ([
       ['Rows', number_format_i18n((int) ($summary['row_count'] ?? 0))],
       ['Attendance', number_format_i18n((int) ($summary['attendance'] ?? 0))],
-      ['Paid', number_format_i18n((int) ($summary['paid'] ?? 0))],
-      ['Free', number_format_i18n((int) ($summary['free'] ?? 0))],
+      ['Ticket Gross', '$' . number_format((float) ($summary['gross'] ?? 0), 2)],
+      ['Concessions Gross', '$' . number_format((float) ($summary['concessions'] ?? 0), 2)],
+      ['Avg Ticket Gross / Row', '$' . number_format((float) ($summary['average_gross'] ?? 0), 2)],
+      ['Avg Concessions / Row', '$' . number_format((float) ($summary['average_concessions'] ?? 0), 2)],
     ] as $card) {
       echo '<div style="min-width:200px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;"><div style="font-size:12px; color:#50575e; text-transform:uppercase;">'.esc_html($card[0]).'</div><div style="font-size:24px; font-weight:600; margin-top:8px;">'.esc_html($card[1]).'</div></div>';
     }
     echo '</div>';
 
-    echo '<table class="widefat striped"><thead><tr><th>Week Of</th><th>Week End</th><th>Movie</th><th>Rating</th><th>Weeks</th><th>General</th><th>Discount</th><th>Free</th><th>Total</th></tr></thead><tbody>';
+    echo '<table class="widefat striped"><thead><tr><th>Week Of</th><th>Week End</th><th>Movie</th><th>Rating</th><th>Weeks</th><th>General</th><th>Discount</th><th>Free</th><th>Total</th><th>Ticket Gross</th><th>Concessions</th><th>Actions</th></tr></thead><tbody>';
     foreach ($rows as $row) {
-      echo '<tr><td>'.esc_html((string) ($row['week_start_date'] ?? '')).'</td><td>'.esc_html((string) ($row['week_end_date'] ?? '')).'</td><td>'.esc_html((string) ($row['movie_title'] ?? '')).'</td><td>'.esc_html((string) ($row['rating'] ?? '')).'</td><td>'.esc_html((string) ($row['weeks_run'] ?? '')).'</td><td>'.esc_html(number_format_i18n((int) ($row['general_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['discount_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['free_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['total_attendance'] ?? 0))).'</td></tr>';
+      $row_id = (int) ($row['id'] ?? 0);
+      echo '<tr><td>'.esc_html((string) ($row['week_start_date'] ?? '')).'</td><td>'.esc_html((string) ($row['week_end_date'] ?? '')).'</td><td>'.esc_html((string) ($row['movie_title'] ?? '')).'</td><td>'.esc_html((string) ($row['rating'] ?? '')).'</td><td>'.esc_html((string) ($row['weeks_run'] ?? '')).'</td><td>'.esc_html(number_format_i18n((int) ($row['general_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['discount_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['free_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['total_attendance'] ?? 0))).'</td><td>$'.esc_html(number_format((float) ($row['gross_total'] ?? 0), 2)).'</td><td>$'.esc_html(number_format((float) ($row['concessions_total'] ?? 0), 2)).'</td><td><a class="button button-small" href="'.esc_url(self::edit_url('legacy', $row_id, [
+        'tab' => 'legacy-weekly',
+        'legacy_search' => $search,
+        'legacy_from' => $date_from,
+        'legacy_to' => $date_to,
+        'legacy_year' => $year ?: null,
+        'legacy_month' => $month,
+        'legacy_day' => $day,
+      ])).'">Edit</a></td></tr>';
+      if ($edit_id === $row_id) {
+        self::render_legacy_edit_row($row, $search, $year, $month, $day, $date_from, $date_to);
+      }
     }
-    if (!$rows) echo '<tr><td colspan="9">No legacy weekly rows match the current filters.</td></tr>';
+    if (!$rows) echo '<tr><td colspan="12">No legacy weekly rows match the current filters.</td></tr>';
     echo '</tbody></table>';
+    self::render_pagination($summary['row_count'] ?? 0, $per_page, $page_number, 'legacy_paged', [
+      'page' => 'roxy-grosses',
+      'tab' => 'legacy-weekly',
+      'legacy_search' => $search,
+      'legacy_from' => $date_from,
+      'legacy_to' => $date_to,
+      'legacy_year' => $year ?: null,
+      'legacy_month' => $month,
+      'legacy_day' => $day,
+    ]);
+  }
+
+  private static function render_pagination(int $total_rows, int $per_page, int $current_page, string $page_key, array $query_args): void {
+    $total_pages = max(1, (int) ceil($total_rows / max(1, $per_page)));
+    if ($total_pages <= 1) {
+      return;
+    }
+
+    $base_args = array_filter($query_args, static function ($value) {
+      return $value !== null && $value !== '';
+    });
+    unset($base_args[$page_key]);
+
+    echo '<div class="tablenav"><div class="tablenav-pages" style="margin:12px 0 0 auto;">';
+    echo paginate_links([
+      'base' => add_query_arg(array_merge($base_args, [$page_key => '%#%']), admin_url('admin.php')),
+      'format' => '',
+      'prev_text' => '&laquo;',
+      'next_text' => '&raquo;',
+      'current' => $current_page,
+      'total' => $total_pages,
+    ]);
+    echo '</div></div>';
   }
 
   private static function render_logs_tab(array $logs): void {
-    echo '<h2>Logs</h2><p>Review database pulls, daily email sends, advertiser sends, and any errors.</p>';
+    $timezone = new \DateTimeZone(self::get_report_timezone());
+    $default_to = wp_date('Y-m-d', null, $timezone);
+    $default_from = wp_date('Y-m-d', time() - (29 * DAY_IN_SECONDS), $timezone);
+    $rec_from = isset($_GET['reconciliation_from']) ? sanitize_text_field(wp_unslash((string) $_GET['reconciliation_from'])) : $default_from;
+    $rec_to = isset($_GET['reconciliation_to']) ? sanitize_text_field(wp_unslash((string) $_GET['reconciliation_to'])) : $default_to;
+    $reconciliation = Reporter::reconciliation_rows($rec_from, $rec_to);
+    echo '<h2>Logs</h2><p>Review database pulls, daily email sends, advertiser sends, anomalies, and reconciliation gaps.</p>';
+    echo '<h3>Reconciliation</h3><p>Compare Square In Store Purchase totals against the concessions currently assigned across Movies, Live Shows, and Rentals.</p>';
+    echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
+    echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="logs">';
+    echo '<div><label><strong>From</strong></label><br><input type="date" name="reconciliation_from" value="'.esc_attr($rec_from).'"></div>';
+    echo '<div><label><strong>To</strong></label><br><input type="date" name="reconciliation_to" value="'.esc_attr($rec_to).'"></div>';
+    submit_button('Run Reconciliation','secondary','',false);
+    echo '</form>';
+    echo '<table class="widefat striped" style="margin-bottom:24px;"><thead><tr><th>Date</th><th>Square</th><th>Movies</th><th>Live Shows</th><th>Rentals</th><th>Assigned</th><th>Difference</th></tr></thead><tbody>';
+    foreach ($reconciliation as $row) {
+      echo '<tr><td>'.esc_html((string) $row['date']).'</td><td>$'.esc_html(number_format((float) $row['square_total'], 2)).'</td><td>$'.esc_html(number_format((float) $row['movies'], 2)).'</td><td>$'.esc_html(number_format((float) $row['live'], 2)).'</td><td>$'.esc_html(number_format((float) $row['rentals'], 2)).'</td><td>$'.esc_html(number_format((float) $row['assigned_total'], 2)).'</td><td>$'.esc_html(number_format((float) $row['difference'], 2)).'</td></tr>';
+    }
+    if(!$reconciliation) echo '<tr><td colspan="7">No reconciliation differences were found in this date range.</td></tr>';
+    echo '</tbody></table>';
     echo '<table class="widefat striped" style="max-width:1100px"><thead><tr><th>Time</th><th>Event</th><th>Mode</th><th>Report ID</th><th>End Date</th><th>Result</th><th>Message</th></tr></thead><tbody>';
     foreach($logs as $log_row){
       echo '<tr><td>'.esc_html((string) $log_row['created_at']).'</td><td>'.esc_html((string) $log_row['event_type']).'</td><td>'.esc_html((string) $log_row['mode']).'</td><td>'.esc_html(!empty($log_row['report_id'])?(string) $log_row['report_id']:'-').'</td><td>'.esc_html((string) ($log_row['report_end_date']?:'-')).'</td><td>'.(!empty($log_row['success'])?'Success':'Failed').'</td><td>'.esc_html((string) $log_row['message']).'</td></tr>';
@@ -361,6 +661,239 @@ class Settings {
     if(!$saved_reports) echo '<tr><td colspan="8">No saved reports yet.</td></tr>'; echo '</tbody></table>';
   }
 
+  private static function render_dashboard_summary(string $default_date): void {
+    $scope = isset($_GET['dashboard_scope']) ? sanitize_key((string) wp_unslash($_GET['dashboard_scope'])) : 'last12';
+    if (!in_array($scope, ['all', 'last12', 'year'], true)) {
+      $scope = 'last12';
+    }
+    $dashboard_year = isset($_GET['dashboard_year']) ? max(0, (int) $_GET['dashboard_year']) : (int) wp_date('Y');
+    $snapshot = Store::dashboard_snapshot($scope, $dashboard_year);
+    $year_options = Store::distinct_years();
+    $current_tab = self::current_tab();
+    echo '<div style="margin:16px 0 24px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;">';
+    echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
+    echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="'.esc_attr($current_tab).'">';
+    echo '<div><label><strong>Dashboard Window</strong></label><br><select name="dashboard_scope">';
+    foreach (['all' => 'All time', 'last12' => 'Last 12 months', 'year' => 'Specific year'] as $value => $label) {
+      echo '<option value="'.esc_attr($value).'" '.selected($scope, $value, false).'>'.esc_html($label).'</option>';
+    }
+    echo '</select></div>';
+    echo '<div><label><strong>Year</strong></label><br><select name="dashboard_year"><option value="0">Select year</option>';
+    foreach ($year_options as $year_option) {
+      echo '<option value="'.esc_attr((string) $year_option).'" '.selected($dashboard_year, (int) $year_option, false).'>'.esc_html((string) $year_option).'</option>';
+    }
+    echo '</select></div>';
+    submit_button('Apply Dashboard Range', 'secondary', '', false);
+    echo '</form>';
+    echo '<div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; justify-content:space-between;">';
+    echo '<div style="display:flex; gap:16px; flex-wrap:wrap;">';
+    foreach ([
+      ['Movies Ticket Gross', '$' . number_format((float) ($snapshot['movies']['gross'] ?? 0), 2)],
+      ['Movies Concessions', '$' . number_format((float) ($snapshot['movies']['concessions'] ?? 0), 2)],
+      ['Live Ticket Gross', '$' . number_format((float) ($snapshot['live']['gross'] ?? 0), 2)],
+      ['Live Concessions', '$' . number_format((float) ($snapshot['live']['concessions'] ?? 0), 2)],
+      ['Rentals Invoice', '$' . number_format((float) ($snapshot['rentals']['invoice_total'] ?? 0), 2)],
+      ['Rentals Concessions', '$' . number_format((float) ($snapshot['rentals']['concessions'] ?? 0), 2)],
+      ['Legacy Ticket Gross', '$' . number_format((float) ($snapshot['legacy']['gross'] ?? 0), 2)],
+      ['Legacy Concessions', '$' . number_format((float) ($snapshot['legacy']['concessions'] ?? 0), 2)],
+    ] as $card) {
+      echo '<div style="min-width:170px;"><div style="font-size:12px; color:#50575e; text-transform:uppercase;">'.esc_html($card[0]).'</div><div style="font-size:22px; font-weight:600; margin-top:6px;">'.esc_html($card[1]).'</div></div>';
+    }
+    echo '</div><div style="min-width:260px;">';
+    echo '<p style="margin-top:0;"><strong>Last Sync:</strong> '.esc_html((string) ($snapshot['last_sync']['created_at'] ?? 'Never')).'</p>';
+    echo '<p><strong>Last Grosses Email:</strong> '.esc_html((string) ($snapshot['last_grosses_email']['created_at'] ?? 'Never')).'</p>';
+    echo '<p><strong>Last Advertiser Email:</strong> '.esc_html((string) ($snapshot['last_advertiser_email']['created_at'] ?? 'Never')).'</p>';
+    echo '<p><strong>Recent Anomalies (30 days):</strong> '.esc_html(number_format_i18n((int) ($snapshot['recent_anomalies'] ?? 0))).'</p>';
+    echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="margin-top:12px;">';
+    wp_nonce_field('roxy_grosses_run_now');
+    echo '<input type="hidden" name="action" value="roxy_grosses_run_now">';
+    echo '<label for="roxy-grosses-run-now-date"><strong>Run automation now</strong></label><br><input id="roxy-grosses-run-now-date" type="date" name="report_date" value="'.esc_attr($default_date).'"> ';
+    submit_button('Run Now','secondary','submit',false);
+    echo '</form></div></div>';
+    echo '<div style="margin-top:20px;"><h2 style="margin:0 0 12px;">Top Performers</h2><p style="margin-top:0;">Based on: '.esc_html((string) ($snapshot['top_window_label'] ?? '')).'.</p><div style="display:flex; gap:16px; flex-wrap:wrap;">';
+    self::render_top_performer_list('Movies By Ticket Gross', (array) ($snapshot['top_movies_by_gross'] ?? []), 'movie_title', 'Ticket Gross', 'gross', 'Concessions', 'concessions');
+    self::render_top_performer_list('Movies By Concessions', (array) ($snapshot['top_movies_by_concessions'] ?? []), 'movie_title', 'Concessions', 'concessions', 'Ticket Gross', 'gross');
+    self::render_top_performer_list('Live Shows By Ticket Gross', (array) ($snapshot['top_live_by_gross'] ?? []), 'show_title', 'Ticket Gross', 'gross', 'Concessions', 'concessions');
+    self::render_top_performer_list('Rentals By Concessions', (array) ($snapshot['top_rentals_by_concessions'] ?? []), 'rental_title', 'Concessions', 'concessions', 'Invoice', 'invoice_total');
+    echo '</div></div></div>';
+  }
+
+  private static function render_top_performer_list(string $title, array $rows, string $label_key, string $primary_label, string $primary_key, string $secondary_label, string $secondary_key): void {
+    echo '<div style="min-width:260px; flex:1; padding:14px; background:#fff; border:1px solid #dcdcde; border-radius:4px;"><h3 style="margin-top:0;">'.esc_html($title).'</h3><ol style="margin:0; padding-left:20px;">';
+    foreach ($rows as $row) {
+      $label = (string) ($row[$label_key] ?? '');
+      $primary = '$' . number_format((float) ($row[$primary_key] ?? 0), 2);
+      $secondary = '$' . number_format((float) ($row[$secondary_key] ?? 0), 2);
+      echo '<li style="margin-bottom:8px;"><strong>'.esc_html($label !== '' ? $label : 'Untitled').'</strong><br><span style="color:#50575e;">'.esc_html($primary_label).' '.esc_html($primary).' | '.esc_html($secondary_label).' '.esc_html($secondary).'</span></li>';
+    }
+    if (!$rows) {
+      echo '<li>No rows yet.</li>';
+    }
+    echo '</ol></div>';
+  }
+
+  private static function render_filter_presets(string $dataset, array $base_query): void {
+    $timezone = new \DateTimeZone(self::get_report_timezone());
+    $today = new \DateTimeImmutable('now', $timezone);
+    $presets = [
+      'This Month' => [$today->format('Y-m-01'), $today->format('Y-m-d')],
+      'Last Month' => [$today->modify('first day of last month')->format('Y-m-d'), $today->modify('last day of last month')->format('Y-m-d')],
+      'Current Year' => [$today->format('Y-01-01'), $today->format('Y-m-d')],
+      'Last 12 Months' => [$today->modify('first day of -11 months')->format('Y-m-d'), $today->format('Y-m-d')],
+    ];
+    echo '<div style="display:flex; gap:8px; flex-wrap:wrap; margin:-4px 0 16px;">';
+    foreach ($presets as $label => [$from, $to]) {
+      $query = $base_query;
+      switch ($dataset) {
+        case 'live':
+          $query['live_from'] = $from;
+          $query['live_to'] = $to;
+          $query['live_year'] = null;
+          $query['live_month'] = '';
+          $query['live_day'] = '';
+          break;
+        case 'rentals':
+          $query['rental_from'] = $from;
+          $query['rental_to'] = $to;
+          $query['rental_year'] = null;
+          $query['rental_month'] = '';
+          $query['rental_day'] = '';
+          break;
+        case 'legacy':
+          $query['legacy_from'] = $from;
+          $query['legacy_to'] = $to;
+          $query['legacy_year'] = null;
+          $query['legacy_month'] = '';
+          $query['legacy_day'] = '';
+          break;
+        default:
+          $query['history_from'] = $from;
+          $query['history_to'] = $to;
+          $query['history_year'] = null;
+          $query['history_month'] = '';
+          $query['history_day'] = '';
+          break;
+      }
+      $query = array_filter(array_merge(['page' => 'roxy-grosses'], $query), static fn($value) => $value !== null && $value !== '');
+      echo '<a class="button button-secondary" href="'.esc_url(add_query_arg($query, admin_url('admin.php'))).'">'.esc_html($label).'</a>';
+    }
+    echo '</div>';
+  }
+
+  private static function render_export_form(string $dataset, array $hidden_fields): void {
+    echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="margin:-4px 0 16px;">';
+    wp_nonce_field('roxy_grosses_export_csv');
+    echo '<input type="hidden" name="action" value="roxy_grosses_export_csv"><input type="hidden" name="dataset" value="'.esc_attr($dataset).'">';
+    foreach ($hidden_fields as $key => $value) {
+      if ($value === null || $value === '' || $value === 0) {
+        continue;
+      }
+      echo '<input type="hidden" name="'.esc_attr((string) $key).'" value="'.esc_attr((string) $value).'">';
+    }
+    submit_button('Export CSV', 'secondary', 'submit', false);
+    echo '</form>';
+  }
+
+  private static function editing_row_id(string $dataset): int {
+    $requested_dataset = isset($_GET['edit_dataset']) ? sanitize_key((string) wp_unslash($_GET['edit_dataset'])) : '';
+    if ($requested_dataset !== $dataset) {
+      return 0;
+    }
+    return isset($_GET['edit_id']) ? max(0, (int) $_GET['edit_id']) : 0;
+  }
+
+  private static function edit_url(string $dataset, int $row_id, array $query): string {
+    $args = array_filter(array_merge([
+      'page' => 'roxy-grosses',
+      'edit_dataset' => $dataset,
+      'edit_id' => $row_id,
+    ], $query), static fn($value) => $value !== null && $value !== '');
+    return add_query_arg($args, admin_url('admin.php'));
+  }
+
+  private static function render_movie_edit_row(array $row, string $search, int $year, string $month, string $day, string $date_from = '', string $date_to = ''): void {
+    echo '<tr><td colspan="11"><form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">';
+    wp_nonce_field('roxy_grosses_update_row');
+    echo '<input type="hidden" name="action" value="roxy_grosses_update_row"><input type="hidden" name="dataset" value="movies"><input type="hidden" name="entry_id" value="'.esc_attr((string) ($row['id'] ?? 0)).'">';
+    echo '<input type="hidden" name="search" value="'.esc_attr($search).'"><input type="hidden" name="history_from" value="'.esc_attr($date_from).'"><input type="hidden" name="history_to" value="'.esc_attr($date_to).'"><input type="hidden" name="history_year" value="'.esc_attr((string) $year).'"><input type="hidden" name="history_month" value="'.esc_attr($month).'"><input type="hidden" name="history_day" value="'.esc_attr($day).'">';
+    self::text_input('report_date', 'Date', (string) ($row['report_date'] ?? ''), 'date');
+    self::text_input('movie_title', 'Movie', (string) ($row['movie_title'] ?? ''));
+    self::text_input('show_time', 'Show Time', (string) ($row['show_time'] ?? ''));
+    self::number_input('general_qty', 'General', (int) ($row['general_qty'] ?? 0));
+    self::number_input('discount_qty', 'Discount', (int) ($row['discount_qty'] ?? 0));
+    self::number_input('group_qty', 'Group', (int) ($row['group_qty'] ?? 0));
+    self::number_input('live_qty', 'Free', (int) ($row['live_qty'] ?? 0));
+    self::number_input('total_tickets', 'Total', (int) ($row['total_tickets'] ?? 0));
+    self::text_input('gross_total', 'Ticket Gross', (string) ($row['gross_total'] ?? '0.00'), 'number', '0.01');
+    self::text_input('concessions_total', 'Concessions', (string) ($row['concessions_total'] ?? '0.00'), 'number', '0.01');
+    submit_button('Save Row', 'primary', 'submit', false);
+    echo '</form></td></tr>';
+  }
+
+  private static function render_live_edit_row(array $row, string $search, int $year, string $month, string $day, string $date_from = '', string $date_to = ''): void {
+    echo '<tr><td colspan="10"><form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">';
+    wp_nonce_field('roxy_grosses_update_row');
+    echo '<input type="hidden" name="action" value="roxy_grosses_update_row"><input type="hidden" name="dataset" value="live"><input type="hidden" name="entry_id" value="'.esc_attr((string) ($row['id'] ?? 0)).'">';
+    echo '<input type="hidden" name="live_search" value="'.esc_attr($search).'"><input type="hidden" name="live_from" value="'.esc_attr($date_from).'"><input type="hidden" name="live_to" value="'.esc_attr($date_to).'"><input type="hidden" name="live_year" value="'.esc_attr((string) $year).'"><input type="hidden" name="live_month" value="'.esc_attr($month).'"><input type="hidden" name="live_day" value="'.esc_attr($day).'">';
+    self::text_input('report_date', 'Date', (string) ($row['report_date'] ?? ''), 'date');
+    self::text_input('show_title', 'Show', (string) ($row['show_title'] ?? ''));
+    self::text_input('show_time', 'Show Time', (string) ($row['show_time'] ?? ''));
+    self::number_input('online_qty', 'Online', (int) ($row['online_qty'] ?? 0));
+    self::number_input('door_qty', 'Door', (int) ($row['door_qty'] ?? 0));
+    self::number_input('group_sub_qty', 'Group/Sub', (int) ($row['group_sub_qty'] ?? 0));
+    self::number_input('total_tickets', 'Total', (int) ($row['total_tickets'] ?? 0));
+    self::text_input('gross_total', 'Ticket Gross', (string) ($row['gross_total'] ?? '0.00'), 'number', '0.01');
+    self::text_input('concessions_total', 'Concessions', (string) ($row['concessions_total'] ?? '0.00'), 'number', '0.01');
+    submit_button('Save Row', 'primary', 'submit', false);
+    echo '</form></td></tr>';
+  }
+
+  private static function render_rental_edit_row(array $row, string $search, int $year, string $month, string $day, string $date_from = '', string $date_to = ''): void {
+    echo '<tr><td colspan="9"><form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">';
+    wp_nonce_field('roxy_grosses_update_row');
+    echo '<input type="hidden" name="action" value="roxy_grosses_update_row"><input type="hidden" name="dataset" value="rentals"><input type="hidden" name="entry_id" value="'.esc_attr((string) ($row['id'] ?? 0)).'">';
+    echo '<input type="hidden" name="rental_search" value="'.esc_attr($search).'"><input type="hidden" name="rental_from" value="'.esc_attr($date_from).'"><input type="hidden" name="rental_to" value="'.esc_attr($date_to).'"><input type="hidden" name="rental_year" value="'.esc_attr((string) $year).'"><input type="hidden" name="rental_month" value="'.esc_attr($month).'"><input type="hidden" name="rental_day" value="'.esc_attr($day).'">';
+    self::text_input('report_date', 'Date', (string) ($row['report_date'] ?? ''), 'date');
+    self::text_input('rental_title', 'Rental', (string) ($row['rental_title'] ?? ''));
+    self::text_input('rental_type', 'Type', (string) ($row['rental_type'] ?? ''));
+    self::text_input('customer_name', 'Customer', (string) ($row['customer_name'] ?? ''));
+    self::text_input('status', 'Status', (string) ($row['status'] ?? ''));
+    self::text_input('show_time', 'Show Time', (string) ($row['show_time'] ?? ''));
+    self::text_input('invoice_amount', 'Invoice', (string) ($row['invoice_amount'] ?? '0.00'), 'number', '0.01');
+    self::text_input('concessions_total', 'Concessions', (string) ($row['concessions_total'] ?? '0.00'), 'number', '0.01');
+    self::text_input('notes', 'Notes', (string) ($row['notes'] ?? ''));
+    submit_button('Save Row', 'primary', 'submit', false);
+    echo '</form></td></tr>';
+  }
+
+  private static function render_legacy_edit_row(array $row, string $search, int $year, string $month, string $day, string $date_from = '', string $date_to = ''): void {
+    echo '<tr><td colspan="12"><form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">';
+    wp_nonce_field('roxy_grosses_update_row');
+    echo '<input type="hidden" name="action" value="roxy_grosses_update_row"><input type="hidden" name="dataset" value="legacy"><input type="hidden" name="entry_id" value="'.esc_attr((string) ($row['id'] ?? 0)).'">';
+    echo '<input type="hidden" name="legacy_search" value="'.esc_attr($search).'"><input type="hidden" name="legacy_from" value="'.esc_attr($date_from).'"><input type="hidden" name="legacy_to" value="'.esc_attr($date_to).'"><input type="hidden" name="legacy_year" value="'.esc_attr((string) $year).'"><input type="hidden" name="legacy_month" value="'.esc_attr($month).'"><input type="hidden" name="legacy_day" value="'.esc_attr($day).'">';
+    self::text_input('week_start_date', 'Week Of', (string) ($row['week_start_date'] ?? ''), 'date');
+    self::text_input('week_end_date', 'Week End', (string) ($row['week_end_date'] ?? ''), 'date');
+    self::text_input('movie_title', 'Movie', (string) ($row['movie_title'] ?? ''));
+    self::text_input('rating', 'Rating', (string) ($row['rating'] ?? ''));
+    self::text_input('weeks_run', 'Weeks', (string) ($row['weeks_run'] ?? ''));
+    self::number_input('general_qty', 'General', (int) ($row['general_qty'] ?? 0));
+    self::number_input('discount_qty', 'Discount', (int) ($row['discount_qty'] ?? 0));
+    self::number_input('free_qty', 'Free', (int) ($row['free_qty'] ?? 0));
+    self::number_input('total_attendance', 'Total', (int) ($row['total_attendance'] ?? 0));
+    self::text_input('gross_total', 'Ticket Gross', (string) ($row['gross_total'] ?? '0.00'), 'number', '0.01');
+    self::text_input('concessions_total', 'Concessions', (string) ($row['concessions_total'] ?? '0.00'), 'number', '0.01');
+    submit_button('Save Row', 'primary', 'submit', false);
+    echo '</form></td></tr>';
+  }
+
+  private static function text_input(string $name, string $label, string $value, string $type = 'text', string $step = ''): void {
+    echo '<div><label><strong>'.esc_html($label).'</strong></label><br><input type="'.esc_attr($type).'" name="'.esc_attr($name).'" value="'.esc_attr($value).'"'.($step !== '' ? ' step="'.esc_attr($step).'"' : '').'></div>';
+  }
+
+  private static function number_input(string $name, string $label, int $value): void {
+    echo '<div><label><strong>'.esc_html($label).'</strong></label><br><input type="number" min="0" step="1" name="'.esc_attr($name).'" value="'.esc_attr((string) $value).'"></div>';
+  }
+
   public static function sanitize_line_list(string $value): string {
     $lines=preg_split('/[\r\n,]+/',$value); $lines=array_filter(array_map(static fn($line): string=>sanitize_text_field(trim((string) $line)),(array) $lines));
     return implode("\n",array_values(array_unique($lines)));
@@ -391,12 +924,11 @@ class Settings {
     $mappings=[]; foreach((array) preg_split('/\r\n|\r|\n/',(string) self::get('studio_mappings','')) as $line){ $parts=array_map('trim',explode('|',(string) $line)); if(count($parts)<2||$parts[0]===''||$parts[1]==='') continue; $mappings[]=['match'=>mb_strtolower($parts[0]),'studio'=>$parts[1]]; }
     return $mappings;
   }
-  public static function sanitize_days($days): array {
-    $allowed=['mon','tue','wed','thu','fri','sat','sun']; $days=is_array($days)?$days:[]; $clean=[];
-    foreach($days as $day){ $day=strtolower(sanitize_text_field((string) $day)); if(in_array($day,$allowed,true)) $clean[]=$day; } return array_values(array_unique($clean));
-  }
   public static function sanitize_time(string $time): string { return preg_match('/^\d{2}:\d{2}$/',$time)?$time:'20:00'; }
   public static function sanitize_timezone(string $timezone): string {
     $timezone=sanitize_text_field($timezone); try { new \DateTimeZone($timezone); return $timezone; } catch (\Exception $e) { return wp_timezone_string()?:'America/Los_Angeles'; }
   }
 }
+
+
+

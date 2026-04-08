@@ -2,14 +2,14 @@
 /**
  * Plugin Name: Roxy Suite
  * Description: Unified management plugin for Newport Roxy — Show Tickets, Will Call, Event Booking, Member Check, Arcade, Legacy NFC Redirect, and Grosses.
- * Version: 1.0.9
+ * Version: 1.0.10
  * Author: Newport Roxy (AI Team)
  * Update URI: https://github.com/Tototex/roxy-suite
  */
 
 if (!defined('ABSPATH')) exit;
 
-define('ROXY_SUITE_VERSION', '1.0.9');
+define('ROXY_SUITE_VERSION', '1.0.10');
 define('ROXY_SUITE_PATH', plugin_dir_path(__FILE__));
 define('ROXY_SUITE_URL', plugin_dir_url(__FILE__));
 
@@ -35,7 +35,7 @@ add_filter('option_page_capability_roxy_st_settings', fn() => roxy_suite_admin_c
 add_filter('option_page_capability_roxy_grosses_settings', fn() => roxy_suite_admin_capability());
 
 // ── Roxy Grosses constants ─────────────────────────────────────────────────────
-define('ROXY_GROSSES_VER',  '0.4.1');
+define('ROXY_GROSSES_VER',  '0.4.6');
 define('ROXY_GROSSES_PATH', ROXY_SUITE_PATH . 'includes/modules/grosses/');
 define('ROXY_GROSSES_URL',  ROXY_SUITE_URL  . 'includes/modules/grosses/');
 

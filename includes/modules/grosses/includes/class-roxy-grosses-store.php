@@ -8,6 +8,8 @@ class Store {
   public const LOG_TABLE = 'roxy_grosses_logs';
   public const HISTORY_TABLE = 'roxy_grosses_history';
   public const ENTRY_TABLE = 'roxy_grosses_entries';
+  public const LIVE_ENTRY_TABLE = 'roxy_grosses_live_entries';
+  public const RENTAL_ENTRY_TABLE = 'roxy_grosses_rental_entries';
   public const LEGACY_WEEKLY_TABLE = 'roxy_grosses_legacy_weekly';
   public const IMPORT_BATCH_TABLE = 'roxy_grosses_import_batches';
   public const IMPORT_FILE_TABLE = 'roxy_grosses_import_files';
@@ -38,6 +40,16 @@ class Store {
   public static function legacy_weekly_table_name(): string {
     global $wpdb;
     return $wpdb->prefix . self::LEGACY_WEEKLY_TABLE;
+  }
+
+  public static function live_entries_table_name(): string {
+    global $wpdb;
+    return $wpdb->prefix . self::LIVE_ENTRY_TABLE;
+  }
+
+  public static function rental_entries_table_name(): string {
+    global $wpdb;
+    return $wpdb->prefix . self::RENTAL_ENTRY_TABLE;
   }
 
   public static function import_batch_table_name(): string {
@@ -133,6 +145,7 @@ class Store {
       other_qty INT UNSIGNED NOT NULL DEFAULT 0,
       total_tickets INT UNSIGNED NOT NULL DEFAULT 0,
       gross_total DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      concessions_total DECIMAL(12,2) NOT NULL DEFAULT 0.00,
       source_type VARCHAR(32) NOT NULL DEFAULT '',
       source_ref VARCHAR(64) NOT NULL DEFAULT '',
       source_file VARCHAR(255) NOT NULL DEFAULT '',
@@ -145,6 +158,56 @@ class Store {
       KEY report_date (report_date),
       KEY normalized_title (normalized_title(100)),
       KEY source_batch_id (source_batch_id),
+      KEY source_type (source_type)
+    ) {$charset};");
+
+    dbDelta("CREATE TABLE " . self::live_entries_table_name() . " (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      created_at DATETIME NOT NULL,
+      updated_at DATETIME NOT NULL,
+      report_date DATE NOT NULL,
+      show_title VARCHAR(190) NOT NULL DEFAULT '',
+      normalized_title VARCHAR(190) NOT NULL DEFAULT '',
+      show_time VARCHAR(32) NOT NULL DEFAULT '',
+      showing_id BIGINT UNSIGNED NULL,
+      theater_name VARCHAR(190) NOT NULL DEFAULT '',
+      online_qty INT UNSIGNED NOT NULL DEFAULT 0,
+      door_qty INT UNSIGNED NOT NULL DEFAULT 0,
+      group_sub_qty INT UNSIGNED NOT NULL DEFAULT 0,
+      total_tickets INT UNSIGNED NOT NULL DEFAULT 0,
+      gross_total DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      concessions_total DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      source_type VARCHAR(32) NOT NULL DEFAULT '',
+      source_ref VARCHAR(64) NOT NULL DEFAULT '',
+      notes TEXT NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY day_title_time (report_date, normalized_title(100), show_time),
+      KEY report_date (report_date),
+      KEY normalized_title (normalized_title(100)),
+      KEY source_type (source_type)
+    ) {$charset};");
+
+    dbDelta("CREATE TABLE " . self::rental_entries_table_name() . " (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      created_at DATETIME NOT NULL,
+      updated_at DATETIME NOT NULL,
+      report_date DATE NOT NULL,
+      rental_title VARCHAR(190) NOT NULL DEFAULT '',
+      normalized_title VARCHAR(190) NOT NULL DEFAULT '',
+      rental_type VARCHAR(64) NOT NULL DEFAULT '',
+      show_time VARCHAR(32) NOT NULL DEFAULT '',
+      customer_name VARCHAR(190) NOT NULL DEFAULT '',
+      status VARCHAR(32) NOT NULL DEFAULT '',
+      invoice_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      concessions_total DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      source_type VARCHAR(32) NOT NULL DEFAULT '',
+      source_ref VARCHAR(64) NOT NULL DEFAULT '',
+      notes TEXT NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY day_title_time (report_date, normalized_title(100), show_time),
+      KEY report_date (report_date),
+      KEY normalized_title (normalized_title(100)),
+      KEY rental_type (rental_type),
       KEY source_type (source_type)
     ) {$charset};");
 
@@ -163,6 +226,8 @@ class Store {
       discount_qty INT UNSIGNED NOT NULL DEFAULT 0,
       free_qty INT UNSIGNED NOT NULL DEFAULT 0,
       total_attendance INT UNSIGNED NOT NULL DEFAULT 0,
+      gross_total DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      concessions_total DECIMAL(12,2) NOT NULL DEFAULT 0.00,
       source_type VARCHAR(32) NOT NULL DEFAULT '',
       source_file VARCHAR(255) NOT NULL DEFAULT '',
       notes TEXT NULL,
@@ -512,6 +577,7 @@ class Store {
         'other_qty' => max(0, (int) ($row['other_qty'] ?? 0)),
         'total_tickets' => max(0, (int) ($row['total_tickets'] ?? 0)),
         'gross_total' => round((float) ($row['gross_total'] ?? 0), 2),
+        'concessions_total' => round((float) ($row['concessions_total'] ?? 0), 2),
         'source_type' => sanitize_text_field((string) ($row['source_type'] ?? 'manual_entry')),
         'source_ref' => sanitize_text_field((string) ($row['source_ref'] ?? '')),
         'source_file' => sanitize_text_field((string) ($row['source_file'] ?? '')),
@@ -595,19 +661,68 @@ class Store {
     return $deleted !== false && $deleted > 0;
   }
 
+  public static function get_entry(int $entry_id): ?array {
+    global $wpdb;
+    if ($entry_id <= 0) {
+      return null;
+    }
+
+    $row = $wpdb->get_row($wpdb->prepare(
+      'SELECT * FROM ' . self::entries_table_name() . ' WHERE id = %d LIMIT 1',
+      $entry_id
+    ), ARRAY_A);
+
+    return is_array($row) ? $row : null;
+  }
+
+  public static function update_entry(int $entry_id, array $data): bool {
+    global $wpdb;
+    $existing = self::get_entry($entry_id);
+    if (!$existing) {
+      return false;
+    }
+
+    $movie_title = sanitize_text_field((string) ($data['movie_title'] ?? $existing['movie_title']));
+    $payload = [
+      'updated_at' => current_time('mysql'),
+      'report_date' => sanitize_text_field((string) ($data['report_date'] ?? $existing['report_date'])),
+      'movie_title' => $movie_title,
+      'normalized_title' => self::normalize_title($movie_title),
+      'show_time' => sanitize_text_field((string) ($data['show_time'] ?? $existing['show_time'])),
+      'general_qty' => max(0, (int) ($data['general_qty'] ?? $existing['general_qty'])),
+      'discount_qty' => max(0, (int) ($data['discount_qty'] ?? $existing['discount_qty'])),
+      'group_qty' => max(0, (int) ($data['group_qty'] ?? $existing['group_qty'])),
+      'live_qty' => max(0, (int) ($data['live_qty'] ?? $existing['live_qty'])),
+      'total_tickets' => max(0, (int) ($data['total_tickets'] ?? $existing['total_tickets'])),
+      'gross_total' => round((float) ($data['gross_total'] ?? $existing['gross_total']), 2),
+      'concessions_total' => round((float) ($data['concessions_total'] ?? $existing['concessions_total']), 2),
+      'notes' => isset($data['notes']) ? sanitize_text_field((string) $data['notes']) : (string) ($existing['notes'] ?? ''),
+    ];
+
+    $updated = $wpdb->update(self::entries_table_name(), $payload, ['id' => $entry_id]);
+    return $updated !== false;
+  }
+
   public static function entries_summary(array $filters = []): array {
     global $wpdb;
     [$where, $params] = self::entry_where_sql($filters);
-    $sql = 'SELECT COUNT(*) AS row_count, COALESCE(SUM(total_tickets),0) AS admissions, COALESCE(SUM(gross_total),0) AS gross FROM ' . self::entries_table_name() . ' ' . $where;
+    $sql = 'SELECT COUNT(*) AS row_count,
+                   COALESCE(SUM(total_tickets),0) AS admissions,
+                   COALESCE(SUM(gross_total),0) AS gross,
+                   COALESCE(SUM(concessions_total),0) AS concessions
+            FROM ' . self::entries_table_name() . ' ' . $where;
     $row = $wpdb->get_row(self::prepare_query($sql, $params), ARRAY_A);
     $row_count = (int) ($row['row_count'] ?? 0);
     $admissions = (int) ($row['admissions'] ?? 0);
     $gross = round((float) ($row['gross'] ?? 0), 2);
+    $concessions = round((float) ($row['concessions'] ?? 0), 2);
     return [
       'row_count' => $row_count,
       'admissions' => $admissions,
       'gross' => $gross,
+      'concessions' => $concessions,
       'average_gross' => $row_count > 0 ? round($gross / $row_count, 2) : 0.0,
+      'average_concessions' => $row_count > 0 ? round($concessions / $row_count, 2) : 0.0,
       'average_admissions' => $row_count > 0 ? round($admissions / $row_count, 1) : 0.0,
     ];
   }
@@ -653,6 +768,43 @@ class Store {
     if (!empty($filters['source_batch_id'])) {
       $where[] = 'source_batch_id = %d';
       $params[] = (int) $filters['source_batch_id'];
+    }
+
+    return ['WHERE ' . implode(' AND ', $where), $params];
+  }
+
+  private static function live_entry_where_sql(array $filters): array {
+    global $wpdb;
+
+    $where = ['1=1'];
+    $params = [];
+
+    if (!empty($filters['search'])) {
+      $like = '%' . $wpdb->esc_like((string) $filters['search']) . '%';
+      $where[] = '(show_title LIKE %s OR theater_name LIKE %s)';
+      $params[] = $like;
+      $params[] = $like;
+    }
+    if (!empty($filters['date_from'])) {
+      $where[] = 'report_date >= %s';
+      $params[] = (string) $filters['date_from'];
+    }
+    if (!empty($filters['date_to'])) {
+      $where[] = 'report_date <= %s';
+      $params[] = (string) $filters['date_to'];
+    }
+    if (!empty($filters['year'])) {
+      $where[] = 'YEAR(report_date) = %d';
+      $params[] = (int) $filters['year'];
+    }
+    if (!empty($filters['month'])) {
+      $where[] = 'DATE_FORMAT(report_date, %s) = %s';
+      $params[] = '%Y-%m';
+      $params[] = (string) $filters['month'];
+    }
+    if (!empty($filters['day'])) {
+      $where[] = 'report_date = %s';
+      $params[] = (string) $filters['day'];
     }
 
     return ['WHERE ' . implode(' AND ', $where), $params];
@@ -707,10 +859,379 @@ class Store {
     return is_array($rows) ? $rows : [];
   }
 
+  public static function top_movie_titles(array $filters = [], int $limit = 5, string $order_by = 'gross'): array {
+    global $wpdb;
+    [$where, $params] = self::entry_where_sql($filters);
+    $params[] = max(1, min(25, $limit));
+    $order_sql = $order_by === 'concessions'
+      ? 'concessions DESC, gross DESC, admissions DESC'
+      : 'gross DESC, concessions DESC, admissions DESC';
+    $sql = 'SELECT movie_title,
+                   COUNT(*) AS row_count,
+                   COALESCE(SUM(total_tickets),0) AS admissions,
+                   COALESCE(SUM(gross_total),0) AS gross,
+                   COALESCE(SUM(concessions_total),0) AS concessions
+            FROM ' . self::entries_table_name() . ' ' . $where . '
+            GROUP BY normalized_title, movie_title
+            ORDER BY ' . $order_sql . '
+            LIMIT %d';
+    $rows = $wpdb->get_results(self::prepare_query($sql, $params), ARRAY_A);
+    return is_array($rows) ? $rows : [];
+  }
+
   public static function distinct_years(): array {
     global $wpdb;
     $years = $wpdb->get_col('SELECT DISTINCT YEAR(report_date) AS y FROM ' . self::entries_table_name() . ' ORDER BY y DESC');
     return array_values(array_filter(array_map('intval', (array) $years)));
+  }
+
+  public static function list_live_entries(array $filters = [], int $limit = 100, int $offset = 0): array {
+    global $wpdb;
+    [$where, $params] = self::live_entry_where_sql($filters);
+    $params[] = max(1, min(1000, $limit));
+    $params[] = max(0, $offset);
+    $sql = 'SELECT * FROM ' . self::live_entries_table_name() . ' ' . $where . ' ORDER BY report_date DESC, show_time DESC, show_title ASC LIMIT %d OFFSET %d';
+    $rows = $wpdb->get_results(self::prepare_query($sql, $params), ARRAY_A);
+    return is_array($rows) ? $rows : [];
+  }
+
+  public static function live_entries_summary(array $filters = []): array {
+    global $wpdb;
+    [$where, $params] = self::live_entry_where_sql($filters);
+    $sql = 'SELECT COUNT(*) AS row_count,
+                   COALESCE(SUM(total_tickets),0) AS admissions,
+                   COALESCE(SUM(gross_total),0) AS gross,
+                   COALESCE(SUM(concessions_total),0) AS concessions
+            FROM ' . self::live_entries_table_name() . ' ' . $where;
+    $row = $wpdb->get_row(self::prepare_query($sql, $params), ARRAY_A);
+    $row_count = (int) ($row['row_count'] ?? 0);
+    $admissions = (int) ($row['admissions'] ?? 0);
+    $gross = round((float) ($row['gross'] ?? 0), 2);
+    $concessions = round((float) ($row['concessions'] ?? 0), 2);
+    return [
+      'row_count' => $row_count,
+      'admissions' => $admissions,
+      'gross' => $gross,
+      'concessions' => $concessions,
+      'average_gross' => $row_count > 0 ? round($gross / $row_count, 2) : 0.0,
+      'average_concessions' => $row_count > 0 ? round($concessions / $row_count, 2) : 0.0,
+    ];
+  }
+
+  public static function distinct_live_years(): array {
+    global $wpdb;
+    $years = $wpdb->get_col('SELECT DISTINCT YEAR(report_date) AS y FROM ' . self::live_entries_table_name() . ' ORDER BY y DESC');
+    return array_values(array_filter(array_map('intval', (array) $years)));
+  }
+
+  public static function count_live_entries(array $filters = []): int {
+    global $wpdb;
+    [$where, $params] = self::live_entry_where_sql($filters);
+    $sql = 'SELECT COUNT(*) FROM ' . self::live_entries_table_name() . ' ' . $where;
+    return (int) $wpdb->get_var(self::prepare_query($sql, $params));
+  }
+
+  public static function top_live_titles(array $filters = [], int $limit = 5, string $order_by = 'gross'): array {
+    global $wpdb;
+    [$where, $params] = self::live_entry_where_sql($filters);
+    $params[] = max(1, min(25, $limit));
+    $order_sql = $order_by === 'concessions'
+      ? 'concessions DESC, gross DESC, admissions DESC'
+      : 'gross DESC, concessions DESC, admissions DESC';
+    $sql = 'SELECT show_title,
+                   COUNT(*) AS row_count,
+                   COALESCE(SUM(total_tickets),0) AS admissions,
+                   COALESCE(SUM(gross_total),0) AS gross,
+                   COALESCE(SUM(concessions_total),0) AS concessions
+            FROM ' . self::live_entries_table_name() . ' ' . $where . '
+            GROUP BY normalized_title, show_title
+            ORDER BY ' . $order_sql . '
+            LIMIT %d';
+    $rows = $wpdb->get_results(self::prepare_query($sql, $params), ARRAY_A);
+    return is_array($rows) ? $rows : [];
+  }
+
+  public static function get_live_entry(int $entry_id): ?array {
+    global $wpdb;
+    if ($entry_id <= 0) {
+      return null;
+    }
+
+    $row = $wpdb->get_row($wpdb->prepare(
+      'SELECT * FROM ' . self::live_entries_table_name() . ' WHERE id = %d LIMIT 1',
+      $entry_id
+    ), ARRAY_A);
+
+    return is_array($row) ? $row : null;
+  }
+
+  public static function update_live_entry(int $entry_id, array $data): bool {
+    global $wpdb;
+    $existing = self::get_live_entry($entry_id);
+    if (!$existing) {
+      return false;
+    }
+
+    $show_title = sanitize_text_field((string) ($data['show_title'] ?? $existing['show_title']));
+    $payload = [
+      'updated_at' => current_time('mysql'),
+      'report_date' => sanitize_text_field((string) ($data['report_date'] ?? $existing['report_date'])),
+      'show_title' => $show_title,
+      'normalized_title' => self::normalize_title($show_title),
+      'show_time' => sanitize_text_field((string) ($data['show_time'] ?? $existing['show_time'])),
+      'online_qty' => max(0, (int) ($data['online_qty'] ?? $existing['online_qty'])),
+      'door_qty' => max(0, (int) ($data['door_qty'] ?? $existing['door_qty'])),
+      'group_sub_qty' => max(0, (int) ($data['group_sub_qty'] ?? $existing['group_sub_qty'])),
+      'total_tickets' => max(0, (int) ($data['total_tickets'] ?? $existing['total_tickets'])),
+      'gross_total' => round((float) ($data['gross_total'] ?? $existing['gross_total']), 2),
+      'concessions_total' => round((float) ($data['concessions_total'] ?? $existing['concessions_total']), 2),
+      'notes' => isset($data['notes']) ? sanitize_text_field((string) $data['notes']) : (string) ($existing['notes'] ?? ''),
+    ];
+
+    $updated = $wpdb->update(self::live_entries_table_name(), $payload, ['id' => $entry_id]);
+    return $updated !== false;
+  }
+
+  public static function upsert_live_entries(array $rows, string $mode = 'update'): array {
+    global $wpdb;
+
+    $created = 0;
+    $updated = 0;
+    $skipped = 0;
+    $table = self::live_entries_table_name();
+    $now = current_time('mysql');
+
+    foreach ($rows as $row) {
+      $report_date = sanitize_text_field((string) ($row['report_date'] ?? ''));
+      $show_title = sanitize_text_field((string) ($row['show_title'] ?? ''));
+      if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date) || $show_title === '') {
+        $skipped++;
+        continue;
+      }
+
+      $show_time = sanitize_text_field((string) ($row['show_time'] ?? ''));
+      $normalized_title = self::normalize_title($show_title);
+      $existing = self::find_existing_live_entry($report_date, $normalized_title, $show_time);
+
+      $payload = [
+        'updated_at' => $now,
+        'report_date' => $report_date,
+        'show_title' => $show_title,
+        'normalized_title' => $normalized_title,
+        'show_time' => $show_time,
+        'showing_id' => !empty($row['showing_id']) ? (int) $row['showing_id'] : null,
+        'theater_name' => sanitize_text_field((string) ($row['theater_name'] ?? '')),
+        'online_qty' => max(0, (int) ($row['online_qty'] ?? 0)),
+        'door_qty' => max(0, (int) ($row['door_qty'] ?? 0)),
+        'group_sub_qty' => max(0, (int) ($row['group_sub_qty'] ?? 0)),
+        'total_tickets' => max(0, (int) ($row['total_tickets'] ?? 0)),
+        'gross_total' => round((float) ($row['gross_total'] ?? 0), 2),
+        'concessions_total' => round((float) ($row['concessions_total'] ?? 0), 2),
+        'source_type' => sanitize_text_field((string) ($row['source_type'] ?? '')),
+        'source_ref' => sanitize_text_field((string) ($row['source_ref'] ?? '')),
+        'notes' => isset($row['notes']) ? sanitize_text_field((string) $row['notes']) : '',
+      ];
+
+      if ($existing) {
+        if ($mode === 'skip') {
+          $skipped++;
+          continue;
+        }
+        $ok = $wpdb->update($table, $payload, ['id' => (int) $existing['id']]);
+        if ($ok !== false) {
+          $updated++;
+        }
+        continue;
+      }
+
+      $payload['created_at'] = $now;
+      $ok = $wpdb->insert($table, $payload);
+      if ($ok !== false) {
+        $created++;
+      }
+    }
+
+    return ['created' => $created, 'updated' => $updated, 'skipped' => $skipped];
+  }
+
+  private static function find_existing_live_entry(string $report_date, string $normalized_title, string $show_time): ?array {
+    global $wpdb;
+    $row = $wpdb->get_row($wpdb->prepare(
+      'SELECT id FROM ' . self::live_entries_table_name() . ' WHERE report_date = %s AND normalized_title = %s AND show_time = %s LIMIT 1',
+      $report_date,
+      $normalized_title,
+      $show_time
+    ), ARRAY_A);
+    return $row ?: null;
+  }
+
+  public static function distinct_entry_dates(array $filters = []): array {
+    global $wpdb;
+    [$where, $params] = self::entry_where_sql($filters);
+    $sql = 'SELECT DISTINCT report_date FROM ' . self::entries_table_name() . ' ' . $where . ' ORDER BY report_date ASC';
+    $dates = $wpdb->get_col(self::prepare_query($sql, $params));
+    return array_values(array_filter(array_map('strval', (array) $dates)));
+  }
+
+  public static function distinct_live_entry_dates(array $filters = []): array {
+    global $wpdb;
+    [$where, $params] = self::live_entry_where_sql($filters);
+    $sql = 'SELECT DISTINCT report_date FROM ' . self::live_entries_table_name() . ' ' . $where . ' ORDER BY report_date ASC';
+    $dates = $wpdb->get_col(self::prepare_query($sql, $params));
+    return array_values(array_filter(array_map('strval', (array) $dates)));
+  }
+
+  public static function list_rental_entries(array $filters = [], int $limit = 100, int $offset = 0): array {
+    global $wpdb;
+    [$where, $params] = self::rental_entry_where_sql($filters);
+    $params[] = max(1, min(1000, $limit));
+    $params[] = max(0, $offset);
+    $sql = 'SELECT * FROM ' . self::rental_entries_table_name() . ' ' . $where . ' ORDER BY report_date DESC, show_time DESC, rental_title ASC LIMIT %d OFFSET %d';
+    $rows = $wpdb->get_results(self::prepare_query($sql, $params), ARRAY_A);
+    return is_array($rows) ? $rows : [];
+  }
+
+  public static function rental_entries_summary(array $filters = []): array {
+    global $wpdb;
+    [$where, $params] = self::rental_entry_where_sql($filters);
+    $sql = 'SELECT COUNT(*) AS row_count,
+                   COALESCE(SUM(invoice_amount),0) AS invoice_total,
+                   COALESCE(SUM(concessions_total),0) AS concessions
+            FROM ' . self::rental_entries_table_name() . ' ' . $where;
+    $row = $wpdb->get_row(self::prepare_query($sql, $params), ARRAY_A);
+    $row_count = (int) ($row['row_count'] ?? 0);
+    $invoice_total = round((float) ($row['invoice_total'] ?? 0), 2);
+    $concessions = round((float) ($row['concessions'] ?? 0), 2);
+    return [
+      'row_count' => $row_count,
+      'invoice_total' => $invoice_total,
+      'concessions' => $concessions,
+      'average_invoice' => $row_count > 0 ? round($invoice_total / $row_count, 2) : 0.0,
+      'average_concessions' => $row_count > 0 ? round($concessions / $row_count, 2) : 0.0,
+    ];
+  }
+
+  public static function distinct_rental_years(): array {
+    global $wpdb;
+    $years = $wpdb->get_col('SELECT DISTINCT YEAR(report_date) AS y FROM ' . self::rental_entries_table_name() . ' ORDER BY y DESC');
+    return array_values(array_filter(array_map('intval', (array) $years)));
+  }
+
+  public static function count_rental_entries(array $filters = []): int {
+    global $wpdb;
+    [$where, $params] = self::rental_entry_where_sql($filters);
+    $sql = 'SELECT COUNT(*) FROM ' . self::rental_entries_table_name() . ' ' . $where;
+    return (int) $wpdb->get_var(self::prepare_query($sql, $params));
+  }
+
+  public static function get_rental_entry(int $entry_id): ?array {
+    global $wpdb;
+    if ($entry_id <= 0) {
+      return null;
+    }
+
+    $row = $wpdb->get_row($wpdb->prepare(
+      'SELECT * FROM ' . self::rental_entries_table_name() . ' WHERE id = %d LIMIT 1',
+      $entry_id
+    ), ARRAY_A);
+
+    return is_array($row) ? $row : null;
+  }
+
+  public static function update_rental_entry(int $entry_id, array $data): bool {
+    global $wpdb;
+    $existing = self::get_rental_entry($entry_id);
+    if (!$existing) {
+      return false;
+    }
+
+    $rental_title = sanitize_text_field((string) ($data['rental_title'] ?? $existing['rental_title']));
+    $payload = [
+      'updated_at' => current_time('mysql'),
+      'report_date' => sanitize_text_field((string) ($data['report_date'] ?? $existing['report_date'])),
+      'rental_title' => $rental_title,
+      'normalized_title' => self::normalize_title($rental_title),
+      'rental_type' => sanitize_text_field((string) ($data['rental_type'] ?? $existing['rental_type'])),
+      'show_time' => sanitize_text_field((string) ($data['show_time'] ?? $existing['show_time'])),
+      'customer_name' => sanitize_text_field((string) ($data['customer_name'] ?? $existing['customer_name'])),
+      'status' => sanitize_text_field((string) ($data['status'] ?? $existing['status'])),
+      'invoice_amount' => round((float) ($data['invoice_amount'] ?? $existing['invoice_amount']), 2),
+      'concessions_total' => round((float) ($data['concessions_total'] ?? $existing['concessions_total']), 2),
+      'notes' => isset($data['notes']) ? sanitize_text_field((string) $data['notes']) : (string) ($existing['notes'] ?? ''),
+    ];
+
+    $updated = $wpdb->update(self::rental_entries_table_name(), $payload, ['id' => $entry_id]);
+    return $updated !== false;
+  }
+
+  public static function upsert_rental_entries(array $rows, string $mode = 'update'): array {
+    global $wpdb;
+
+    $created = 0;
+    $updated = 0;
+    $skipped = 0;
+    $table = self::rental_entries_table_name();
+    $now = current_time('mysql');
+
+    foreach ($rows as $row) {
+      $report_date = sanitize_text_field((string) ($row['report_date'] ?? ''));
+      $rental_title = sanitize_text_field((string) ($row['rental_title'] ?? ''));
+      if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date) || $rental_title === '') {
+        $skipped++;
+        continue;
+      }
+
+      $show_time = sanitize_text_field((string) ($row['show_time'] ?? ''));
+      $normalized_title = self::normalize_title($rental_title);
+      $existing = self::find_existing_rental_entry($report_date, $normalized_title, $show_time);
+
+      $payload = [
+        'updated_at' => $now,
+        'report_date' => $report_date,
+        'rental_title' => $rental_title,
+        'normalized_title' => $normalized_title,
+        'rental_type' => sanitize_text_field((string) ($row['rental_type'] ?? '')),
+        'show_time' => $show_time,
+        'customer_name' => sanitize_text_field((string) ($row['customer_name'] ?? '')),
+        'status' => sanitize_text_field((string) ($row['status'] ?? '')),
+        'invoice_amount' => round((float) ($row['invoice_amount'] ?? 0), 2),
+        'concessions_total' => round((float) ($row['concessions_total'] ?? 0), 2),
+        'source_type' => sanitize_text_field((string) ($row['source_type'] ?? 'invoice_import')),
+        'source_ref' => sanitize_text_field((string) ($row['source_ref'] ?? '')),
+        'notes' => isset($row['notes']) ? sanitize_text_field((string) $row['notes']) : '',
+      ];
+
+      if ($existing) {
+        if ($mode === 'skip') {
+          $skipped++;
+          continue;
+        }
+        $ok = $wpdb->update($table, $payload, ['id' => (int) $existing['id']]);
+        if ($ok !== false) {
+          $updated++;
+        }
+        continue;
+      }
+
+      $payload['created_at'] = $now;
+      $ok = $wpdb->insert($table, $payload);
+      if ($ok !== false) {
+        $created++;
+      }
+    }
+
+    return ['created' => $created, 'updated' => $updated, 'skipped' => $skipped];
+  }
+
+  private static function find_existing_rental_entry(string $report_date, string $normalized_title, string $show_time): ?array {
+    global $wpdb;
+    $row = $wpdb->get_row($wpdb->prepare(
+      'SELECT id FROM ' . self::rental_entries_table_name() . ' WHERE report_date = %s AND normalized_title = %s AND show_time = %s LIMIT 1',
+      $report_date,
+      $normalized_title,
+      $show_time
+    ), ARRAY_A);
+    return $row ?: null;
   }
 
   public static function upsert_legacy_weekly(array $rows, string $mode = 'update'): array {
@@ -745,6 +1266,8 @@ class Store {
         'discount_qty' => max(0, (int) ($row['discount_qty'] ?? 0)),
         'free_qty' => max(0, (int) ($row['free_qty'] ?? 0)),
         'total_attendance' => max(0, (int) ($row['total_attendance'] ?? 0)),
+        'gross_total' => round((float) ($row['gross_total'] ?? 0), 2),
+        'concessions_total' => round((float) ($row['concessions_total'] ?? 0), 2),
         'source_type' => sanitize_text_field((string) ($row['source_type'] ?? 'legacy_weekly_import')),
         'source_file' => sanitize_text_field((string) ($row['source_file'] ?? '')),
         'notes' => isset($row['notes']) ? sanitize_text_field((string) $row['notes']) : '',
@@ -795,18 +1318,30 @@ class Store {
   public static function legacy_weekly_summary(array $filters = []): array {
     global $wpdb;
     [$where, $params] = self::legacy_weekly_where_sql($filters);
-    $sql = 'SELECT COUNT(*) AS row_count, COALESCE(SUM(total_attendance),0) AS attendance, COALESCE(SUM(general_qty + discount_qty),0) AS paid, COALESCE(SUM(free_qty),0) AS free FROM ' . self::legacy_weekly_table_name() . ' ' . $where;
+    $sql = 'SELECT COUNT(*) AS row_count,
+                   COALESCE(SUM(total_attendance),0) AS attendance,
+                   COALESCE(SUM(general_qty + discount_qty),0) AS paid,
+                   COALESCE(SUM(free_qty),0) AS free,
+                   COALESCE(SUM(gross_total),0) AS gross,
+                   COALESCE(SUM(concessions_total),0) AS concessions
+            FROM ' . self::legacy_weekly_table_name() . ' ' . $where;
     $row = $wpdb->get_row(self::prepare_query($sql, $params), ARRAY_A);
     $row_count = (int) ($row['row_count'] ?? 0);
     $attendance = (int) ($row['attendance'] ?? 0);
     $paid = (int) ($row['paid'] ?? 0);
     $free = (int) ($row['free'] ?? 0);
+    $gross = round((float) ($row['gross'] ?? 0), 2);
+    $concessions = round((float) ($row['concessions'] ?? 0), 2);
     return [
       'row_count' => $row_count,
       'attendance' => $attendance,
       'paid' => $paid,
       'free' => $free,
+      'gross' => $gross,
+      'concessions' => $concessions,
       'average_attendance' => $row_count > 0 ? round($attendance / $row_count, 1) : 0.0,
+      'average_gross' => $row_count > 0 ? round($gross / $row_count, 2) : 0.0,
+      'average_concessions' => $row_count > 0 ? round($concessions / $row_count, 2) : 0.0,
     ];
   }
 
@@ -822,6 +1357,14 @@ class Store {
       $params[] = $like;
       $params[] = $like;
       $params[] = $like;
+    }
+    if (!empty($filters['date_from'])) {
+      $where[] = 'week_start_date >= %s';
+      $params[] = (string) $filters['date_from'];
+    }
+    if (!empty($filters['date_to'])) {
+      $where[] = 'week_start_date <= %s';
+      $params[] = (string) $filters['date_to'];
     }
     if (!empty($filters['year'])) {
       $where[] = 'YEAR(week_start_date) = %d';
@@ -846,10 +1389,138 @@ class Store {
     return array_values(array_filter(array_map('intval', (array) $years)));
   }
 
+  public static function count_legacy_weekly(array $filters = []): int {
+    global $wpdb;
+    [$where, $params] = self::legacy_weekly_where_sql($filters);
+    $sql = 'SELECT COUNT(*) FROM ' . self::legacy_weekly_table_name() . ' ' . $where;
+    return (int) $wpdb->get_var(self::prepare_query($sql, $params));
+  }
+
+  public static function top_legacy_titles(array $filters = [], int $limit = 5, string $order_by = 'gross'): array {
+    global $wpdb;
+    [$where, $params] = self::legacy_weekly_where_sql($filters);
+    $params[] = max(1, min(25, $limit));
+    $order_sql = $order_by === 'concessions'
+      ? 'concessions DESC, gross DESC, attendance DESC'
+      : 'gross DESC, concessions DESC, attendance DESC';
+    $sql = 'SELECT movie_title,
+                   COUNT(*) AS row_count,
+                   COALESCE(SUM(total_attendance),0) AS attendance,
+                   COALESCE(SUM(gross_total),0) AS gross,
+                   COALESCE(SUM(concessions_total),0) AS concessions
+            FROM ' . self::legacy_weekly_table_name() . ' ' . $where . '
+            GROUP BY normalized_title, movie_title
+            ORDER BY ' . $order_sql . '
+            LIMIT %d';
+    $rows = $wpdb->get_results(self::prepare_query($sql, $params), ARRAY_A);
+    return is_array($rows) ? $rows : [];
+  }
+
+  public static function get_legacy_weekly(int $entry_id): ?array {
+    global $wpdb;
+    if ($entry_id <= 0) {
+      return null;
+    }
+
+    $row = $wpdb->get_row($wpdb->prepare(
+      'SELECT * FROM ' . self::legacy_weekly_table_name() . ' WHERE id = %d LIMIT 1',
+      $entry_id
+    ), ARRAY_A);
+
+    return is_array($row) ? $row : null;
+  }
+
+  public static function update_legacy_weekly(int $entry_id, array $data): bool {
+    global $wpdb;
+    $existing = self::get_legacy_weekly($entry_id);
+    if (!$existing) {
+      return false;
+    }
+
+    $movie_title = sanitize_text_field((string) ($data['movie_title'] ?? $existing['movie_title']));
+    $payload = [
+      'updated_at' => current_time('mysql'),
+      'week_start_date' => sanitize_text_field((string) ($data['week_start_date'] ?? $existing['week_start_date'])),
+      'week_end_date' => sanitize_text_field((string) ($data['week_end_date'] ?? $existing['week_end_date'])),
+      'movie_title' => $movie_title,
+      'normalized_title' => self::normalize_title($movie_title),
+      'rating' => sanitize_text_field((string) ($data['rating'] ?? $existing['rating'])),
+      'weeks_run' => sanitize_text_field((string) ($data['weeks_run'] ?? $existing['weeks_run'])),
+      'general_qty' => max(0, (int) ($data['general_qty'] ?? $existing['general_qty'])),
+      'discount_qty' => max(0, (int) ($data['discount_qty'] ?? $existing['discount_qty'])),
+      'free_qty' => max(0, (int) ($data['free_qty'] ?? $existing['free_qty'])),
+      'total_attendance' => max(0, (int) ($data['total_attendance'] ?? $existing['total_attendance'])),
+      'gross_total' => round((float) ($data['gross_total'] ?? $existing['gross_total']), 2),
+      'concessions_total' => round((float) ($data['concessions_total'] ?? $existing['concessions_total']), 2),
+      'notes' => isset($data['notes']) ? sanitize_text_field((string) $data['notes']) : (string) ($existing['notes'] ?? ''),
+    ];
+
+    $updated = $wpdb->update(self::legacy_weekly_table_name(), $payload, ['id' => $entry_id]);
+    return $updated !== false;
+  }
+
+  private static function rental_entry_where_sql(array $filters): array {
+    global $wpdb;
+
+    $where = ['1=1'];
+    $params = [];
+
+    if (!empty($filters['search'])) {
+      $like = '%' . $wpdb->esc_like((string) $filters['search']) . '%';
+      $where[] = '(rental_title LIKE %s OR customer_name LIKE %s OR rental_type LIKE %s OR notes LIKE %s)';
+      $params[] = $like;
+      $params[] = $like;
+      $params[] = $like;
+      $params[] = $like;
+    }
+    if (!empty($filters['date_from'])) {
+      $where[] = 'report_date >= %s';
+      $params[] = (string) $filters['date_from'];
+    }
+    if (!empty($filters['date_to'])) {
+      $where[] = 'report_date <= %s';
+      $params[] = (string) $filters['date_to'];
+    }
+    if (!empty($filters['year'])) {
+      $where[] = 'YEAR(report_date) = %d';
+      $params[] = (int) $filters['year'];
+    }
+    if (!empty($filters['month'])) {
+      $where[] = 'DATE_FORMAT(report_date, %s) = %s';
+      $params[] = '%Y-%m';
+      $params[] = (string) $filters['month'];
+    }
+    if (!empty($filters['day'])) {
+      $where[] = 'report_date = %s';
+      $params[] = (string) $filters['day'];
+    }
+
+    return ['WHERE ' . implode(' AND ', $where), $params];
+  }
+
   public static function distinct_source_types(): array {
     global $wpdb;
     $values = $wpdb->get_col('SELECT DISTINCT source_type FROM ' . self::entries_table_name() . ' WHERE source_type <> "" ORDER BY source_type ASC');
     return array_values(array_filter(array_map('strval', (array) $values)));
+  }
+
+  public static function top_rentals(array $filters = [], int $limit = 5, string $order_by = 'concessions'): array {
+    global $wpdb;
+    [$where, $params] = self::rental_entry_where_sql($filters);
+    $params[] = max(1, min(25, $limit));
+    $order_sql = $order_by === 'invoice'
+      ? 'invoice_total DESC, concessions DESC, row_count DESC'
+      : 'concessions DESC, invoice_total DESC, row_count DESC';
+    $sql = 'SELECT rental_title,
+                   COUNT(*) AS row_count,
+                   COALESCE(SUM(invoice_amount),0) AS invoice_total,
+                   COALESCE(SUM(concessions_total),0) AS concessions
+            FROM ' . self::rental_entries_table_name() . ' ' . $where . '
+            GROUP BY normalized_title, rental_title
+            ORDER BY ' . $order_sql . '
+            LIMIT %d';
+    $rows = $wpdb->get_results(self::prepare_query($sql, $params), ARRAY_A);
+    return is_array($rows) ? $rows : [];
   }
 
   public static function create_import_batch(string $source_kind, string $label): int {
@@ -915,6 +1586,130 @@ class Store {
     global $wpdb;
     $row = $wpdb->get_row('SELECT * FROM ' . self::import_batch_table_name() . ' ORDER BY id DESC LIMIT 1', ARRAY_A);
     return $row ?: null;
+  }
+
+  public static function latest_log(array $event_types = [], ?bool $success = null): ?array {
+    global $wpdb;
+    $where = ['1=1'];
+    $params = [];
+
+    if ($event_types) {
+      $placeholders = implode(',', array_fill(0, count($event_types), '%s'));
+      $where[] = 'event_type IN (' . $placeholders . ')';
+      foreach ($event_types as $event_type) {
+        $params[] = (string) $event_type;
+      }
+    }
+    if ($success !== null) {
+      $where[] = 'success = %d';
+      $params[] = $success ? 1 : 0;
+    }
+
+    $sql = 'SELECT * FROM ' . self::log_table_name() . ' WHERE ' . implode(' AND ', $where) . ' ORDER BY created_at DESC LIMIT 1';
+    $row = $wpdb->get_row(self::prepare_query($sql, $params), ARRAY_A);
+    return is_array($row) ? $row : null;
+  }
+
+  public static function count_logs_by_type(string $event_type, int $days = 30): int {
+    global $wpdb;
+    $days = max(1, $days);
+    $threshold = gmdate('Y-m-d H:i:s', time() - ($days * DAY_IN_SECONDS));
+    return (int) $wpdb->get_var($wpdb->prepare(
+      'SELECT COUNT(*) FROM ' . self::log_table_name() . ' WHERE event_type = %s AND created_at >= %s',
+      $event_type,
+      $threshold
+    ));
+  }
+
+  public static function dashboard_snapshot(string $scope = 'last12', int $year = 0): array {
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $today = new \DateTimeImmutable('now', $timezone);
+    $filters = [];
+    $label = 'All time';
+
+    if ($scope === 'year' && $year > 0) {
+      $filters = ['year' => $year];
+      $label = (string) $year;
+    } elseif ($scope === 'last12') {
+      $filters = [
+        'date_from' => $today->modify('first day of -11 months')->format('Y-m-d'),
+        'date_to' => $today->format('Y-m-d'),
+      ];
+      $label = $filters['date_from'] . ' to ' . $filters['date_to'];
+    }
+
+    return [
+      'movies' => self::entries_summary($filters),
+      'live' => self::live_entries_summary($filters),
+      'rentals' => self::rental_entries_summary($filters),
+      'legacy' => self::legacy_weekly_summary($filters),
+      'last_sync' => self::latest_log(['sync_tables', 'scheduled_sync'], true),
+      'last_grosses_email' => self::latest_log(['send_report'], true),
+      'last_advertiser_email' => self::latest_log(['send_advertiser_summary'], true),
+      'recent_anomalies' => self::count_logs_by_type('anomaly', 30),
+      'top_movies_by_gross' => self::top_movie_titles($filters, 5, 'gross'),
+      'top_movies_by_concessions' => self::top_movie_titles($filters, 5, 'concessions'),
+      'top_live_by_gross' => self::top_live_titles($filters, 5, 'gross'),
+      'top_rentals_by_concessions' => self::top_rentals($filters, 5, 'concessions'),
+      'top_window_label' => $label,
+      'scope' => $scope,
+      'year' => $year,
+    ];
+  }
+
+  public static function concessions_by_date(string $date_from, string $date_to): array {
+    global $wpdb;
+    $totals = [];
+
+    $movie_rows = $wpdb->get_results($wpdb->prepare(
+      'SELECT report_date AS date_key, COALESCE(SUM(concessions_total),0) AS total
+       FROM ' . self::entries_table_name() . '
+       WHERE report_date BETWEEN %s AND %s
+       GROUP BY report_date',
+      $date_from,
+      $date_to
+    ), ARRAY_A);
+    foreach ((array) $movie_rows as $row) {
+      $totals[(string) $row['date_key']]['movies'] = round((float) ($row['total'] ?? 0), 2);
+    }
+
+    $live_rows = $wpdb->get_results($wpdb->prepare(
+      'SELECT report_date AS date_key, COALESCE(SUM(concessions_total),0) AS total
+       FROM ' . self::live_entries_table_name() . '
+       WHERE report_date BETWEEN %s AND %s
+       GROUP BY report_date',
+      $date_from,
+      $date_to
+    ), ARRAY_A);
+    foreach ((array) $live_rows as $row) {
+      $totals[(string) $row['date_key']]['live'] = round((float) ($row['total'] ?? 0), 2);
+    }
+
+    $rental_rows = $wpdb->get_results($wpdb->prepare(
+      'SELECT report_date AS date_key, COALESCE(SUM(concessions_total),0) AS total
+       FROM ' . self::rental_entries_table_name() . '
+       WHERE report_date BETWEEN %s AND %s
+       GROUP BY report_date',
+      $date_from,
+      $date_to
+    ), ARRAY_A);
+    foreach ((array) $rental_rows as $row) {
+      $totals[(string) $row['date_key']]['rentals'] = round((float) ($row['total'] ?? 0), 2);
+    }
+
+    foreach ($totals as $date_key => $row) {
+      $movies = (float) ($row['movies'] ?? 0);
+      $live = (float) ($row['live'] ?? 0);
+      $rentals = (float) ($row['rentals'] ?? 0);
+      $totals[$date_key] = [
+        'movies' => $movies,
+        'live' => $live,
+        'rentals' => $rentals,
+        'assigned_total' => round($movies + $live + $rentals, 2),
+      ];
+    }
+
+    return $totals;
   }
 
   public static function list_import_batches(int $limit = 25): array {

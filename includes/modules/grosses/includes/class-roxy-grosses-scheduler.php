@@ -53,21 +53,19 @@ class Scheduler {
 
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $now = new \DateTimeImmutable('now', $timezone);
-    $day = strtolower(substr($now->format('D'), 0, 3));
     $report_date = $now->format('Y-m-d');
-
-    if (!in_array($day, (array) ($settings['schedule_days'] ?? []), true)) {
-      return;
-    }
 
     if (get_option(self::LAST_AUTO_DATE_KEY) === $report_date) {
       return;
     }
 
-    $result = Reporter::send_report($report_date, 'scheduled');
-    if (!empty($result['success'])) {
-      update_option(self::LAST_AUTO_DATE_KEY, $report_date);
-    }
+    self::run_for_date($report_date, 'scheduled-sync', true);
+  }
+
+  public static function run_now(?string $report_date = null): array {
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $report_date = $report_date ?: (new \DateTimeImmutable('now', $timezone))->format('Y-m-d');
+    return self::run_for_date($report_date, 'run-now', true);
   }
 
   public static function run_monthly_advertiser_send(): void {
@@ -108,5 +106,44 @@ class Scheduler {
     }
 
     return $next->getTimestamp();
+  }
+
+  private static function run_for_date(string $report_date, string $mode, bool $mark_complete): array {
+    $sync_result = Reporter::sync_automatic_tables($report_date, $mode);
+    if (empty($sync_result['success'])) {
+      return $sync_result;
+    }
+
+    if (($sync_result['movie_paid_rows'] ?? 0) > 0) {
+      $result = Reporter::send_report($report_date, $mode === 'scheduled-sync' ? 'scheduled' : $mode);
+      if (!empty($result['success']) && $mark_complete) {
+        update_option(self::LAST_AUTO_DATE_KEY, $report_date);
+      }
+      return $result;
+    }
+
+    $message = sprintf(
+      'Automatic sync completed for %s. Movies: %d row(s), Live Shows: %d row(s). No paid movie ticket rows were found, so no grosses email was sent.',
+      $report_date,
+      (int) ($sync_result['movie_rows'] ?? 0),
+      (int) ($sync_result['live_rows'] ?? 0)
+    );
+
+    Store::insert_log('scheduled_sync', $mode, null, $report_date, true, $message, [
+      'movie_rows' => (int) ($sync_result['movie_rows'] ?? 0),
+      'movie_paid_rows' => (int) ($sync_result['movie_paid_rows'] ?? 0),
+      'live_rows' => (int) ($sync_result['live_rows'] ?? 0),
+    ]);
+    if ($mark_complete) {
+      update_option(self::LAST_AUTO_DATE_KEY, $report_date);
+    }
+
+    return [
+      'success' => true,
+      'message' => $message,
+      'movie_rows' => (int) ($sync_result['movie_rows'] ?? 0),
+      'movie_paid_rows' => (int) ($sync_result['movie_paid_rows'] ?? 0),
+      'live_rows' => (int) ($sync_result['live_rows'] ?? 0),
+    ];
   }
 }

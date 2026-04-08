@@ -230,7 +230,6 @@ class Health {
         $settings       = get_option('roxy_grosses_settings', []);
         $has_token      = !empty($settings['square_access_token']);
         $sched_enabled  = ($settings['schedule_enabled'] ?? '0') === '1';
-        $sched_days     = is_array($settings['schedule_days'] ?? null) ? implode(', ', $settings['schedule_days']) : 'none';
 
         return self::module('Grosses', admin_url('admin.php?page=roxy-grosses'), [
             self::item($t_reports, $t_r_ok ? 'Exists' : 'Missing',
@@ -242,7 +241,7 @@ class Health {
             self::item('Square access token', $has_token ? 'Configured' : 'Not set',
                 $has_token ? self::PASS : self::WARN,
                 $has_token ? '' : 'Add a Square token in Grosses → Settings'),
-            self::item('Auto-send schedule', $sched_enabled ? "Enabled ($sched_days)" : 'Disabled',
+            self::item('Auto-send schedule', $sched_enabled ? 'Enabled (daily at configured time)' : 'Disabled',
                 $sched_enabled ? self::PASS : self::WARN,
                 $sched_enabled ? '' : 'Auto-send is off — configure in Grosses → Settings'),
         ], 'grosses');
