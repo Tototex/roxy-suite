@@ -134,6 +134,8 @@ class Store {
       report_date DATE NOT NULL,
       movie_title VARCHAR(190) NOT NULL DEFAULT '',
       normalized_title VARCHAR(190) NOT NULL DEFAULT '',
+      studio VARCHAR(190) NOT NULL DEFAULT '',
+      genre VARCHAR(190) NOT NULL DEFAULT '',
       show_time VARCHAR(32) NOT NULL DEFAULT '',
       showing_id BIGINT UNSIGNED NULL,
       theater_name VARCHAR(190) NOT NULL DEFAULT '',
@@ -157,6 +159,8 @@ class Store {
       UNIQUE KEY day_title_time (report_date, normalized_title(100), show_time),
       KEY report_date (report_date),
       KEY normalized_title (normalized_title(100)),
+      KEY studio (studio(100)),
+      KEY genre (genre(100)),
       KEY source_batch_id (source_batch_id),
       KEY source_type (source_type)
     ) {$charset};");
@@ -560,12 +564,20 @@ class Store {
       $show_time = sanitize_text_field((string) ($row['show_time'] ?? ''));
       $normalized_title = self::normalize_title($movie_title);
       $existing = self::find_existing_entry($report_date, $normalized_title, $show_time);
+      $enriched_row = Metadata::enrich_movie_row([
+        'report_date' => $report_date,
+        'movie_title' => $movie_title,
+        'studio' => (string) ($row['studio'] ?? ($existing['studio'] ?? '')),
+        'genre' => (string) ($row['genre'] ?? ($existing['genre'] ?? '')),
+      ]);
 
       $payload = [
         'updated_at' => $now,
         'report_date' => $report_date,
         'movie_title' => $movie_title,
         'normalized_title' => $normalized_title,
+        'studio' => sanitize_text_field((string) ($enriched_row['studio'] ?? ($existing['studio'] ?? ''))),
+        'genre' => sanitize_text_field((string) ($enriched_row['genre'] ?? ($existing['genre'] ?? ''))),
         'show_time' => $show_time,
         'showing_id' => !empty($row['showing_id']) ? max(0, (int) $row['showing_id']) : null,
         'theater_name' => sanitize_text_field((string) ($row['theater_name'] ?? 'Newport Roxy Theater')),
@@ -683,11 +695,19 @@ class Store {
     }
 
     $movie_title = sanitize_text_field((string) ($data['movie_title'] ?? $existing['movie_title']));
+    $enriched_row = Metadata::enrich_movie_row([
+      'report_date' => sanitize_text_field((string) ($data['report_date'] ?? $existing['report_date'])),
+      'movie_title' => $movie_title,
+      'studio' => (string) ($data['studio'] ?? $existing['studio'] ?? ''),
+      'genre' => (string) ($data['genre'] ?? $existing['genre'] ?? ''),
+    ]);
     $payload = [
       'updated_at' => current_time('mysql'),
       'report_date' => sanitize_text_field((string) ($data['report_date'] ?? $existing['report_date'])),
       'movie_title' => $movie_title,
       'normalized_title' => self::normalize_title($movie_title),
+      'studio' => sanitize_text_field((string) ($enriched_row['studio'] ?? '')),
+      'genre' => sanitize_text_field((string) ($enriched_row['genre'] ?? '')),
       'show_time' => sanitize_text_field((string) ($data['show_time'] ?? $existing['show_time'])),
       'general_qty' => max(0, (int) ($data['general_qty'] ?? $existing['general_qty'])),
       'discount_qty' => max(0, (int) ($data['discount_qty'] ?? $existing['discount_qty'])),
@@ -735,7 +755,9 @@ class Store {
 
     if (!empty($filters['search'])) {
       $like = '%' . $wpdb->esc_like((string) $filters['search']) . '%';
-      $where[] = '(movie_title LIKE %s OR theater_name LIKE %s OR source_file LIKE %s)';
+      $where[] = '(movie_title LIKE %s OR studio LIKE %s OR genre LIKE %s OR theater_name LIKE %s OR source_file LIKE %s)';
+      $params[] = $like;
+      $params[] = $like;
       $params[] = $like;
       $params[] = $like;
       $params[] = $like;
@@ -1621,6 +1643,212 @@ class Store {
     ));
   }
 
+  public static function backfill_movie_metadata(int $limit = 500, bool $force = false): array {
+    global $wpdb;
+    $limit = max(1, min(5000, $limit));
+    $where = $force ? '1=1' : "(studio = '' OR genre = '' OR studio IS NULL OR genre IS NULL)";
+    $rows = $wpdb->get_results($wpdb->prepare(
+      'SELECT id, report_date, movie_title, studio, genre FROM ' . self::entries_table_name() . ' WHERE ' . $where . ' ORDER BY report_date DESC, id DESC LIMIT %d',
+      $limit
+    ), ARRAY_A);
+
+    $updated = 0;
+    $skipped = 0;
+    foreach ((array) $rows as $row) {
+      $enriched = Metadata::enrich_movie_row($row, $force);
+      $studio = sanitize_text_field((string) ($enriched['studio'] ?? ''));
+      $genre = sanitize_text_field((string) ($enriched['genre'] ?? ''));
+      $current_studio = (string) ($row['studio'] ?? '');
+      $current_genre = (string) ($row['genre'] ?? '');
+      if ($studio === $current_studio && $genre === $current_genre) {
+        $skipped++;
+        continue;
+      }
+
+      $result = $wpdb->update(
+        self::entries_table_name(),
+        [
+          'updated_at' => current_time('mysql'),
+          'studio' => $studio,
+          'genre' => $genre,
+        ],
+        ['id' => (int) $row['id']]
+      );
+      if ($result !== false) {
+        $updated++;
+      } else {
+        $skipped++;
+      }
+    }
+
+    return [
+      'processed' => count((array) $rows),
+      'updated' => $updated,
+      'skipped' => $skipped,
+    ];
+  }
+
+  public static function top_movie_group_average(array $filters, string $group_by, string $metric): ?array {
+    global $wpdb;
+    if ($group_by === 'genre') {
+      return self::top_movie_genre_average($filters, $metric);
+    }
+
+    if ($group_by !== 'studio') {
+      return null;
+    }
+
+    $metric_column = $metric === 'concessions' ? 'concessions_total' : 'gross_total';
+    [$where, $params] = self::entry_where_sql($filters);
+    $sql = 'SELECT ' . $group_by . ' AS label,
+                   COUNT(*) AS row_count,
+                   COALESCE(AVG(' . $metric_column . '),0) AS average_value,
+                   COALESCE(SUM(' . $metric_column . '),0) AS total_value
+            FROM ' . self::entries_table_name() . ' ' . $where . '
+              AND ' . $group_by . " <> ''
+            GROUP BY " . $group_by . '
+            ORDER BY average_value DESC, total_value DESC, row_count DESC
+            LIMIT 1';
+    $row = $wpdb->get_row(self::prepare_query($sql, $params), ARRAY_A);
+    return is_array($row) ? $row : null;
+  }
+
+  public static function top_movie_groups(array $filters, string $group_by, int $limit = 5, string $metric = 'gross'): array {
+    if ($group_by === 'genre') {
+      return self::top_movie_genre_groups($filters, $limit, $metric);
+    }
+
+    if ($group_by !== 'studio') {
+      return [];
+    }
+
+    global $wpdb;
+    $limit = max(1, min(20, $limit));
+    $metric_column = $metric === 'concessions' ? 'concessions_total' : 'gross_total';
+    $secondary_column = $metric === 'concessions' ? 'gross_total' : 'concessions_total';
+    [$where, $params] = self::entry_where_sql($filters);
+    $sql = 'SELECT studio AS label,
+                   COUNT(*) AS row_count,
+                   COALESCE(SUM(' . $metric_column . '),0) AS primary_total,
+                   COALESCE(SUM(' . $secondary_column . '),0) AS secondary_total
+            FROM ' . self::entries_table_name() . ' ' . $where . '
+              AND studio <> ""
+            GROUP BY studio
+            ORDER BY primary_total DESC, secondary_total DESC, row_count DESC
+            LIMIT %d';
+    $params[] = $limit;
+    $rows = $wpdb->get_results(self::prepare_query($sql, $params), ARRAY_A);
+    return array_values(array_filter(array_map(static function ($row) {
+      return is_array($row) ? $row : null;
+    }, (array) $rows)));
+  }
+
+  private static function top_movie_genre_average(array $filters, string $metric): ?array {
+    $rows = self::list_entries($filters, 5000, 0);
+    if (!$rows) {
+      return null;
+    }
+
+    $metric_key = $metric === 'concessions' ? 'concessions_total' : 'gross_total';
+    $genres = [];
+    foreach ($rows as $row) {
+      $genre_value = trim((string) ($row['genre'] ?? ''));
+      if ($genre_value === '') {
+        continue;
+      }
+
+      $tokens = array_values(array_filter(array_map('trim', explode(',', $genre_value))));
+      if (!$tokens) {
+        continue;
+      }
+
+      $value = (float) ($row[$metric_key] ?? 0);
+      foreach ($tokens as $token) {
+        if (!isset($genres[$token])) {
+          $genres[$token] = [
+            'label' => $token,
+            'row_count' => 0,
+            'average_value' => 0.0,
+            'total_value' => 0.0,
+          ];
+        }
+        $genres[$token]['row_count']++;
+        $genres[$token]['total_value'] += $value;
+      }
+    }
+
+    if (!$genres) {
+      return null;
+    }
+
+    foreach ($genres as &$genre_row) {
+      $genre_row['average_value'] = $genre_row['row_count'] > 0
+        ? $genre_row['total_value'] / $genre_row['row_count']
+        : 0.0;
+    }
+    unset($genre_row);
+
+    uasort($genres, static function (array $a, array $b): int {
+      return [$b['average_value'], $b['total_value'], $b['row_count'], $a['label']]
+        <=> [$a['average_value'], $a['total_value'], $a['row_count'], $b['label']];
+    });
+
+    $top = reset($genres);
+    return is_array($top) ? $top : null;
+  }
+
+  private static function top_movie_genre_groups(array $filters, int $limit = 5, string $metric = 'gross'): array {
+    $rows = self::list_entries($filters, 5000, 0);
+    if (!$rows) {
+      return [];
+    }
+
+    $primary_key = $metric === 'concessions' ? 'concessions_total' : 'gross_total';
+    $secondary_key = $metric === 'concessions' ? 'gross_total' : 'concessions_total';
+    $genres = [];
+    foreach ($rows as $row) {
+      $genre_value = trim((string) ($row['genre'] ?? ''));
+      if ($genre_value === '') {
+        continue;
+      }
+
+      $tokens = array_values(array_filter(array_map('trim', explode(',', $genre_value))));
+      if (!$tokens) {
+        continue;
+      }
+
+      $primary_value = (float) ($row[$primary_key] ?? 0);
+      $secondary_value = (float) ($row[$secondary_key] ?? 0);
+      foreach ($tokens as $token) {
+        if (!isset($genres[$token])) {
+          $genres[$token] = [
+            'label' => $token,
+            'row_count' => 0,
+            'primary_total' => 0.0,
+            'secondary_total' => 0.0,
+          ];
+        }
+        $genres[$token]['row_count']++;
+        $genres[$token]['primary_total'] += $primary_value;
+        $genres[$token]['secondary_total'] += $secondary_value;
+      }
+    }
+
+    uasort($genres, static function (array $a, array $b): int {
+      $cmp = $b['primary_total'] <=> $a['primary_total'];
+      if ($cmp !== 0) {
+        return $cmp;
+      }
+      $cmp = $b['secondary_total'] <=> $a['secondary_total'];
+      if ($cmp !== 0) {
+        return $cmp;
+      }
+      return $b['row_count'] <=> $a['row_count'];
+    });
+
+    return array_slice(array_values($genres), 0, max(1, min(20, $limit)));
+  }
+
   public static function dashboard_snapshot(string $scope = 'last12', int $year = 0): array {
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $today = new \DateTimeImmutable('now', $timezone);
@@ -1649,8 +1877,16 @@ class Store {
       'recent_anomalies' => self::count_logs_by_type('anomaly', 30),
       'top_movies_by_gross' => self::top_movie_titles($filters, 5, 'gross'),
       'top_movies_by_concessions' => self::top_movie_titles($filters, 5, 'concessions'),
+      'top_studios_by_gross' => self::top_movie_groups($filters, 'studio', 5, 'gross'),
+      'top_studios_by_concessions' => self::top_movie_groups($filters, 'studio', 5, 'concessions'),
+      'top_genres_by_gross' => self::top_movie_groups($filters, 'genre', 5, 'gross'),
+      'top_genres_by_concessions' => self::top_movie_groups($filters, 'genre', 5, 'concessions'),
       'top_live_by_gross' => self::top_live_titles($filters, 5, 'gross'),
       'top_rentals_by_concessions' => self::top_rentals($filters, 5, 'concessions'),
+      'studio_avg_gross' => self::top_movie_group_average($filters, 'studio', 'gross'),
+      'studio_avg_concessions' => self::top_movie_group_average($filters, 'studio', 'concessions'),
+      'genre_avg_gross' => self::top_movie_group_average($filters, 'genre', 'gross'),
+      'genre_avg_concessions' => self::top_movie_group_average($filters, 'genre', 'concessions'),
       'top_window_label' => $label,
       'scope' => $scope,
       'year' => $year,
@@ -1744,6 +1980,48 @@ class Store {
     }
 
     delete_option('roxy_grosses_workbook_snapshots');
+  }
+
+  public static function backup_table_names(): array {
+    return [
+      self::entries_table_name(),
+      self::live_entries_table_name(),
+      self::rental_entries_table_name(),
+      self::legacy_weekly_table_name(),
+      self::log_table_name(),
+      self::table_name(),
+      self::history_table_name(),
+      self::import_batch_table_name(),
+      self::import_file_table_name(),
+    ];
+  }
+
+  public static function unresolved_movie_metadata_count(): int {
+    global $wpdb;
+    return (int) $wpdb->get_var(
+      'SELECT COUNT(*) FROM ' . self::entries_table_name() . " WHERE studio = '' OR studio IS NULL OR genre = '' OR genre IS NULL"
+    );
+  }
+
+  public static function unresolved_movie_metadata_titles(int $limit = 100): array {
+    global $wpdb;
+    $limit = max(1, min(500, $limit));
+    $rows = $wpdb->get_results($wpdb->prepare(
+      "SELECT
+        movie_title,
+        COUNT(*) AS row_count,
+        MIN(report_date) AS first_date,
+        MAX(report_date) AS last_date,
+        MAX(CASE WHEN studio = '' OR studio IS NULL THEN 1 ELSE 0 END) AS missing_studio,
+        MAX(CASE WHEN genre = '' OR genre IS NULL THEN 1 ELSE 0 END) AS missing_genre
+      FROM " . self::entries_table_name() . "
+      WHERE studio = '' OR studio IS NULL OR genre = '' OR genre IS NULL
+      GROUP BY movie_title
+      ORDER BY last_date DESC, movie_title ASC
+      LIMIT %d",
+      $limit
+    ), ARRAY_A);
+    return is_array($rows) ? $rows : [];
   }
 
   private static function prepare_query(string $sql, array $params): string {

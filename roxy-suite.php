@@ -35,7 +35,7 @@ add_filter('option_page_capability_roxy_st_settings', fn() => roxy_suite_admin_c
 add_filter('option_page_capability_roxy_grosses_settings', fn() => roxy_suite_admin_capability());
 
 // ── Roxy Grosses constants ─────────────────────────────────────────────────────
-define('ROXY_GROSSES_VER',  '0.4.6');
+define('ROXY_GROSSES_VER',  '0.4.7');
 define('ROXY_GROSSES_PATH', ROXY_SUITE_PATH . 'includes/modules/grosses/');
 define('ROXY_GROSSES_URL',  ROXY_SUITE_URL  . 'includes/modules/grosses/');
 

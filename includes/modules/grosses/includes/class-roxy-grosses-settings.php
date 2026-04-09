@@ -63,7 +63,7 @@ class Settings {
       'square_environment'=>['Square environment','roxy_grosses_square'],'square_access_token'=>['Square access token','roxy_grosses_square'],
       'square_location_ids'=>['Square location IDs','roxy_grosses_square'],'report_timezone'=>['Report timezone','roxy_grosses_square'],
       'ticket_keywords'=>['Ticket keywords','roxy_grosses_square'],'exclude_keywords'=>['Exclude keywords','roxy_grosses_square'],
-      'film_mappings'=>['Film mappings','roxy_grosses_square'],'recipient_emails'=>['Recipient emails','roxy_grosses_email'],
+      'film_mappings'=>['Film mappings','roxy_grosses_square'],'studio_mappings'=>['Studio overrides','roxy_grosses_square'],'recipient_emails'=>['Recipient emails','roxy_grosses_email'],
       'admin_email'=>['Admin alert email','roxy_grosses_email'],'email_subject'=>['Email subject','roxy_grosses_email'],
       'email_body'=>['Email body','roxy_grosses_email'],'theater_name'=>['Theater name','roxy_grosses_email'],
       'general_price'=>['General ticket price','roxy_grosses_email'],'discount_price'=>['Discount ticket price','roxy_grosses_email'],
@@ -117,13 +117,14 @@ class Settings {
         echo '</select><p class="description">Use sandbox only for testing with a Square sandbox token.</p>'; return;
       case 'square_access_token':
         echo '<input type="password" class="regular-text code" name="'.esc_attr($name).'" value="'.esc_attr((string) $value).'" autocomplete="off"><p class="description">Personal access token or OAuth token with Orders read access.</p>'; return;
-      case 'square_location_ids': case 'ticket_keywords': case 'exclude_keywords': case 'film_mappings': case 'email_body': case 'advertiser_email_body':
+      case 'square_location_ids': case 'ticket_keywords': case 'exclude_keywords': case 'film_mappings': case 'studio_mappings': case 'email_body': case 'advertiser_email_body':
         $rows=$key==='film_mappings'?'8':'5';
         echo '<textarea class="large-text code" rows="'.esc_attr($rows).'" name="'.esc_attr($name).'">'.esc_textarea((string) $value).'</textarea>';
         if($key==='square_location_ids') echo '<p class="description">One Square location ID per line. Square requires at least one location ID for order searches.</p>';
         elseif($key==='ticket_keywords') echo '<p class="description">One keyword per line. A line item must match at least one keyword to count as a ticket.</p>';
         elseif($key==='exclude_keywords') echo '<p class="description">One keyword per line. Matching line items are always ignored.</p>';
         elseif($key==='film_mappings') echo '<p class="description">One mapping per line in the format: match text|Comscore title|Film code.</p>';
+        elseif($key==='studio_mappings') echo '<p class="description">Optional overrides in the format: match text|Studio. Overrides looked-up studio values.</p>';
         elseif($key==='email_body') echo '<p class="description">You can use {report_date}, {theater_name}, {gross_total}, and {ticket_total}.</p>';
           else echo '<p class="description">You can use {theater_name}, {month_name}, {month}, {year}, {attendance_total}, {gross_total}, {period_label}, {start_month}, and {end_month}.</p>';
         return;
@@ -158,8 +159,7 @@ class Settings {
     echo '<a class="nav-tab '.($tab==='settings'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=settings')).'">Settings</a>';
     echo '<a class="nav-tab '.($tab==='logs'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=logs')).'">Logs</a></nav>';
     if(!empty($_GET['roxy_grosses_notice'])){ $notice=sanitize_text_field(wp_unslash((string) $_GET['roxy_grosses_notice'])); $message=isset($_GET['message'])?sanitize_text_field(wp_unslash((string) $_GET['message'])):''; echo '<div class="'.esc_attr($notice==='success'?'notice notice-success':'notice notice-error').'"><p>'.esc_html($message).'</p></div>'; }
-    self::render_dashboard_summary($default_date);
-    if($tab==='settings'){ echo '<form method="post" action="options.php">'; settings_fields(self::OPTION_KEY); do_settings_sections('roxy-grosses'); submit_button('Save Grosses Settings'); echo '</form>'; self::render_test_tools($default_date,$default_advertiser_date); }
+    if($tab==='settings'){ echo '<form method="post" action="options.php">'; settings_fields(self::OPTION_KEY); do_settings_sections('roxy-grosses'); submit_button('Save Grosses Settings'); echo '</form>'; self::render_test_tools($default_date,$default_advertiser_date); self::render_documentation_panel(); }
     elseif($tab==='live-shows'){ self::render_live_shows_tab($default_date); }
     elseif($tab==='rentals'){ self::render_rentals_tab(); }
     elseif($tab==='logs'){ self::render_logs_tab($logs); }
@@ -190,7 +190,7 @@ class Settings {
     $years = Store::distinct_years();
     $edit_id = self::editing_row_id('movies');
 
-    echo '<h2>Movies</h2><p>The movie grosses database is the source of truth. Pull from Square, then search by movie title, year, month, or day.</p>';
+    echo '<h2>Movies</h2><p>The movie grosses database is the source of truth. Pull from Square, then search by movie title, studio, genre, year, month, or day.</p>';
     echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
     wp_nonce_field('roxy_grosses_pull_database');
     echo '<input type="hidden" name="action" value="roxy_grosses_pull_database">';
@@ -200,7 +200,7 @@ class Settings {
 
     echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
     echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="database">';
-    echo '<div><label><strong>Search</strong></label><br><input type="text" class="regular-text" name="search" value="'.esc_attr($search).'" placeholder="Movie title"></div>';
+    echo '<div><label><strong>Search</strong></label><br><input type="text" class="regular-text" name="search" value="'.esc_attr($search).'" placeholder="Movie, studio, or genre"></div>';
     echo '<div><label><strong>From</strong></label><br><input type="date" name="history_from" value="'.esc_attr($date_from).'"></div>';
     echo '<div><label><strong>To</strong></label><br><input type="date" name="history_to" value="'.esc_attr($date_to).'"></div>';
     echo '<div><label><strong>Year</strong></label><br><select name="history_year"><option value="0">All years</option>';
@@ -236,10 +236,10 @@ class Settings {
     }
     echo '</div>';
 
-    echo '<table class="widefat striped"><thead><tr><th>Date</th><th>Movie</th><th>Show Time</th><th>Total</th><th>General</th><th>Discount</th><th>Group</th><th>Free</th><th>Gross</th><th>Concessions</th><th>Actions</th></tr></thead><tbody>';
+    echo '<table class="widefat striped"><thead><tr><th>Date</th><th>Movie</th><th>Studio</th><th>Genre</th><th>Show Time</th><th>Total</th><th>General</th><th>Discount</th><th>Group</th><th>Free</th><th>Gross</th><th>Concessions</th><th>Actions</th></tr></thead><tbody>';
     foreach ($rows as $row) {
       $row_id = (int) ($row['id'] ?? 0);
-      echo '<tr><td>'.esc_html((string) ($row['report_date'] ?? '')).'</td><td>'.esc_html((string) ($row['movie_title'] ?? '')).'</td><td>'.esc_html((string) ($row['show_time'] ?? '')).'</td><td>'.esc_html(number_format_i18n((int) ($row['total_tickets'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['general_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['discount_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['group_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['live_qty'] ?? 0))).'</td><td>$'.esc_html(number_format((float) ($row['gross_total'] ?? 0), 2)).'</td><td>$'.esc_html(number_format((float) ($row['concessions_total'] ?? 0), 2)).'</td><td><a class="button button-small" href="'.esc_url(self::edit_url('movies', $row_id, [
+      echo '<tr><td>'.esc_html((string) ($row['report_date'] ?? '')).'</td><td>'.esc_html((string) ($row['movie_title'] ?? '')).'</td><td>'.esc_html((string) ($row['studio'] ?? '')).'</td><td>'.esc_html((string) ($row['genre'] ?? '')).'</td><td>'.esc_html((string) ($row['show_time'] ?? '')).'</td><td>'.esc_html(number_format_i18n((int) ($row['total_tickets'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['general_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['discount_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['group_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['live_qty'] ?? 0))).'</td><td>$'.esc_html(number_format((float) ($row['gross_total'] ?? 0), 2)).'</td><td>$'.esc_html(number_format((float) ($row['concessions_total'] ?? 0), 2)).'</td><td><a class="button button-small" href="'.esc_url(self::edit_url('movies', $row_id, [
         'tab' => 'database',
         'search' => $search,
         'history_from' => $date_from,
@@ -252,7 +252,7 @@ class Settings {
         self::render_movie_edit_row($row, $search, $year, $month, $day, $date_from, $date_to);
       }
     }
-    if (!$rows) echo '<tr><td colspan="11">No grosses rows match the current filters.</td></tr>';
+    if (!$rows) echo '<tr><td colspan="13">No grosses rows match the current filters.</td></tr>';
     echo '</tbody></table>';
     self::render_pagination($summary['row_count'] ?? 0, $per_page, $page_number, 'movie_paged', [
       'page' => 'roxy-grosses',
@@ -628,6 +628,23 @@ class Settings {
     echo '</div>';
   }
 
+  private static function render_documentation_panel(): void {
+    echo '<hr><h2>Grosses Notes</h2>';
+    echo '<div style="display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap;">';
+    echo '<div style="min-width:360px; flex:1 1 420px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;">';
+    echo '<h3 style="margin-top:0;">Operating Rules</h3>';
+    echo '<ul style="list-style:disc; padding-left:20px; margin:0;">';
+    echo '<li>Movies sync from the Showings plugin plus Square every day at the scheduled run time.</li>';
+    echo '<li>Movie gross uses configured ticket prices, not Square dollar amounts.</li>';
+    echo '<li>Free tickets are tracked in the database, included in advertiser attendance, and excluded from daily grosses totals.</li>';
+    echo '<li>Movie and live-show concessions use Square <code>In Store Purchase</code> values.</li>';
+    echo '<li>Live Shows combine online tickets from Show Tickets with door tickets from Square. Square prepaid lines are not counted as door sales.</li>';
+    echo '<li>Rentals stay manual for now and can be imported periodically until that workflow is automated.</li>';
+    echo '</ul>';
+    echo '</div>';
+    echo '</div>';
+  }
+
   private static function render_workbook_tab(int $workbook_year,string $default_advertiser_month): void {
     $summary=Workbook::dashboard_summary($workbook_year); $monthly_rows=Workbook::monthly_totals($workbook_year); $weekly_rows=Workbook::weekly_rows_for_year($workbook_year); $snapshot=Workbook::get_snapshot_status($workbook_year); $template=Workbook::template_status();
     echo '<h2>Workbook Dashboard</h2><p>Review the yearly workbook data stored by the plugin, download the spreadsheet, and send the monthly advertiser summary.</p>';
@@ -661,24 +678,29 @@ class Settings {
     if(!$saved_reports) echo '<tr><td colspan="8">No saved reports yet.</td></tr>'; echo '</tbody></table>';
   }
 
-  private static function render_dashboard_summary(string $default_date): void {
-    $scope = isset($_GET['dashboard_scope']) ? sanitize_key((string) wp_unslash($_GET['dashboard_scope'])) : 'last12';
+  public static function render_dashboard_panel(string $page_slug = 'roxy-suite', ?string $page_tab = null): void {
+    $timezone = new \DateTimeZone(self::get_report_timezone());
+    $default_date = wp_date('Y-m-d', null, $timezone);
+    $scope = isset($_GET['grosses_dashboard_scope']) ? sanitize_key((string) wp_unslash($_GET['grosses_dashboard_scope'])) : 'last12';
     if (!in_array($scope, ['all', 'last12', 'year'], true)) {
       $scope = 'last12';
     }
-    $dashboard_year = isset($_GET['dashboard_year']) ? max(0, (int) $_GET['dashboard_year']) : (int) wp_date('Y');
+    $dashboard_year = isset($_GET['grosses_dashboard_year']) ? max(0, (int) $_GET['grosses_dashboard_year']) : (int) wp_date('Y');
     $snapshot = Store::dashboard_snapshot($scope, $dashboard_year);
     $year_options = Store::distinct_years();
-    $current_tab = self::current_tab();
     echo '<div style="margin:16px 0 24px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;">';
+    echo '<h2 style="margin-top:0;">Grosses Dashboard</h2>';
     echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
-    echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="'.esc_attr($current_tab).'">';
-    echo '<div><label><strong>Dashboard Window</strong></label><br><select name="dashboard_scope">';
+    echo '<input type="hidden" name="page" value="'.esc_attr($page_slug).'">';
+    if ($page_tab !== null && $page_tab !== '') {
+      echo '<input type="hidden" name="tab" value="'.esc_attr($page_tab).'">';
+    }
+    echo '<div><label><strong>Dashboard Window</strong></label><br><select name="grosses_dashboard_scope">';
     foreach (['all' => 'All time', 'last12' => 'Last 12 months', 'year' => 'Specific year'] as $value => $label) {
       echo '<option value="'.esc_attr($value).'" '.selected($scope, $value, false).'>'.esc_html($label).'</option>';
     }
     echo '</select></div>';
-    echo '<div><label><strong>Year</strong></label><br><select name="dashboard_year"><option value="0">Select year</option>';
+    echo '<div><label><strong>Year</strong></label><br><select name="grosses_dashboard_year"><option value="0">Select year</option>';
     foreach ($year_options as $year_option) {
       echo '<option value="'.esc_attr((string) $year_option).'" '.selected($dashboard_year, (int) $year_option, false).'>'.esc_html((string) $year_option).'</option>';
     }
@@ -699,6 +721,17 @@ class Settings {
     ] as $card) {
       echo '<div style="min-width:170px;"><div style="font-size:12px; color:#50575e; text-transform:uppercase;">'.esc_html($card[0]).'</div><div style="font-size:22px; font-weight:600; margin-top:6px;">'.esc_html($card[1]).'</div></div>';
     }
+    foreach ([
+      ['Avg Ticket Gross / Studio', (array) ($snapshot['studio_avg_gross'] ?? [])],
+      ['Avg Concessions / Studio', (array) ($snapshot['studio_avg_concessions'] ?? [])],
+      ['Avg Ticket Gross / Genre', (array) ($snapshot['genre_avg_gross'] ?? [])],
+      ['Avg Concessions / Genre', (array) ($snapshot['genre_avg_concessions'] ?? [])],
+    ] as $card) {
+      $label = (string) ($card[1]['label'] ?? '');
+      $average = '$' . number_format((float) ($card[1]['average_value'] ?? 0), 2);
+      $note = $label !== '' ? $label . ' • ' . number_format_i18n((int) ($card[1]['row_count'] ?? 0)) . ' rows' : 'No movie metadata yet';
+      echo '<div style="min-width:170px;"><div style="font-size:12px; color:#50575e; text-transform:uppercase;">'.esc_html($card[0]).'</div><div style="font-size:22px; font-weight:600; margin-top:6px;">'.esc_html($average).'</div><div style="margin-top:4px; color:#646970; font-size:12px;">'.esc_html($note).'</div></div>';
+    }
     echo '</div><div style="min-width:260px;">';
     echo '<p style="margin-top:0;"><strong>Last Sync:</strong> '.esc_html((string) ($snapshot['last_sync']['created_at'] ?? 'Never')).'</p>';
     echo '<p><strong>Last Grosses Email:</strong> '.esc_html((string) ($snapshot['last_grosses_email']['created_at'] ?? 'Never')).'</p>';
@@ -713,6 +746,10 @@ class Settings {
     echo '<div style="margin-top:20px;"><h2 style="margin:0 0 12px;">Top Performers</h2><p style="margin-top:0;">Based on: '.esc_html((string) ($snapshot['top_window_label'] ?? '')).'.</p><div style="display:flex; gap:16px; flex-wrap:wrap;">';
     self::render_top_performer_list('Movies By Ticket Gross', (array) ($snapshot['top_movies_by_gross'] ?? []), 'movie_title', 'Ticket Gross', 'gross', 'Concessions', 'concessions');
     self::render_top_performer_list('Movies By Concessions', (array) ($snapshot['top_movies_by_concessions'] ?? []), 'movie_title', 'Concessions', 'concessions', 'Ticket Gross', 'gross');
+    self::render_top_performer_list('Studios By Ticket Gross', (array) ($snapshot['top_studios_by_gross'] ?? []), 'label', 'Ticket Gross', 'primary_total', 'Concessions', 'secondary_total');
+    self::render_top_performer_list('Studios By Concessions', (array) ($snapshot['top_studios_by_concessions'] ?? []), 'label', 'Concessions', 'primary_total', 'Ticket Gross', 'secondary_total');
+    self::render_top_performer_list('Genres By Ticket Gross', (array) ($snapshot['top_genres_by_gross'] ?? []), 'label', 'Ticket Gross', 'primary_total', 'Concessions', 'secondary_total');
+    self::render_top_performer_list('Genres By Concessions', (array) ($snapshot['top_genres_by_concessions'] ?? []), 'label', 'Concessions', 'primary_total', 'Ticket Gross', 'secondary_total');
     self::render_top_performer_list('Live Shows By Ticket Gross', (array) ($snapshot['top_live_by_gross'] ?? []), 'show_title', 'Ticket Gross', 'gross', 'Concessions', 'concessions');
     self::render_top_performer_list('Rentals By Concessions', (array) ($snapshot['top_rentals_by_concessions'] ?? []), 'rental_title', 'Concessions', 'concessions', 'Invoice', 'invoice_total');
     echo '</div></div></div>';
@@ -812,12 +849,14 @@ class Settings {
   }
 
   private static function render_movie_edit_row(array $row, string $search, int $year, string $month, string $day, string $date_from = '', string $date_to = ''): void {
-    echo '<tr><td colspan="11"><form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">';
+    echo '<tr><td colspan="13"><form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">';
     wp_nonce_field('roxy_grosses_update_row');
     echo '<input type="hidden" name="action" value="roxy_grosses_update_row"><input type="hidden" name="dataset" value="movies"><input type="hidden" name="entry_id" value="'.esc_attr((string) ($row['id'] ?? 0)).'">';
     echo '<input type="hidden" name="search" value="'.esc_attr($search).'"><input type="hidden" name="history_from" value="'.esc_attr($date_from).'"><input type="hidden" name="history_to" value="'.esc_attr($date_to).'"><input type="hidden" name="history_year" value="'.esc_attr((string) $year).'"><input type="hidden" name="history_month" value="'.esc_attr($month).'"><input type="hidden" name="history_day" value="'.esc_attr($day).'">';
     self::text_input('report_date', 'Date', (string) ($row['report_date'] ?? ''), 'date');
     self::text_input('movie_title', 'Movie', (string) ($row['movie_title'] ?? ''));
+    self::text_input('studio', 'Studio', (string) ($row['studio'] ?? ''));
+    self::text_input('genre', 'Genre', (string) ($row['genre'] ?? ''));
     self::text_input('show_time', 'Show Time', (string) ($row['show_time'] ?? ''));
     self::number_input('general_qty', 'General', (int) ($row['general_qty'] ?? 0));
     self::number_input('discount_qty', 'Discount', (int) ($row['discount_qty'] ?? 0));

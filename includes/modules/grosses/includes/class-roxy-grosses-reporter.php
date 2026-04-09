@@ -274,11 +274,13 @@ class Reporter {
         $dataset = 'movies';
         $row_count = Store::count_entries($filters);
         $rows = Store::list_entries($filters, max(1, $row_count), 0);
-        $header = ['Date', 'Movie', 'Show Time', 'Total', 'General', 'Discount', 'Group', 'Free', 'Gross', 'Concessions'];
+        $header = ['Date', 'Movie', 'Studio', 'Genre', 'Show Time', 'Total', 'General', 'Discount', 'Group', 'Free', 'Gross', 'Concessions'];
         $records = array_map(static function (array $row): array {
           return [
             (string) ($row['report_date'] ?? ''),
             (string) ($row['movie_title'] ?? ''),
+            (string) ($row['studio'] ?? ''),
+            (string) ($row['genre'] ?? ''),
             (string) ($row['show_time'] ?? ''),
             (int) ($row['total_tickets'] ?? 0),
             (int) ($row['general_qty'] ?? 0),
