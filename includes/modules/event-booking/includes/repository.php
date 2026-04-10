@@ -59,6 +59,7 @@ function roxy_eb_repo_insert_booking($data) {
         'bulk_concessions_total' => 0,
         'total_price' => 0,
         'woo_order_id' => null,
+        'woo_adjustment_order_ids' => null,
         'sling_shift_ids' => null,
         'sling_status' => null,
         'sling_error' => null,

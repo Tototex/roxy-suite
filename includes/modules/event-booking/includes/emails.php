@@ -47,7 +47,7 @@ function roxy_eb_email_pizza_reminder($booking) {
     if (!$booking) return;
     $to = implode(',', roxy_eb_pizza_notification_emails());
     $subject = 'PIZZA NOT MARKED HANDLED — Booking #' . intval($booking['id']) . ' — ' . date_i18n('M j, Y g:i A', strtotime($booking['doors_open_at']));
-    $admin_link = admin_url('admin.php?page=roxy-eb&roxy_eb_action=edit&booking_id=' . intval($booking['id']));
+    $admin_link = admin_url('admin.php?page=roxy-event-booking&roxy_eb_action=edit&booking_id=' . intval($booking['id']));
     $body = "Pizza has not been marked handled yet.\n\n"
           . "Booking ID: #" . intval($booking['id']) . "\n"
           . "Customer: " . trim($booking['customer_first_name'] . ' ' . $booking['customer_last_name']) . "\n"
@@ -179,7 +179,7 @@ function roxy_eb_email_customer_booking_updated($booking_before, $booking_after)
     $lines = [];
     $lines[] = "Hi " . ($booking_after['customer_first_name'] ?: 'there') . ",";
     $lines[] = "";
-    $lines[] = "Your booking was updated by our staff. Here are the details:";
+    $lines[] = "Your booking was updated. Here are the details:";
     $lines[] = "";
     foreach (roxy_eb_booking_rows_for_email($booking_after) as $row) {
         $lines[] = $row[0] . ': ' . preg_replace('/\s+/', ' ', trim((string)$row[1]));
@@ -192,6 +192,70 @@ function roxy_eb_email_customer_booking_updated($booking_before, $booking_after)
 
     $body = implode("\n", $lines);
     wp_mail($to, $subject, $body, ['Content-Type: text/plain; charset=UTF-8']);
+}
+
+function roxy_eb_email_internal_booking_pizza_changed($booking_before, $booking_after, $context = 'customer_update') {
+    if (!$booking_after) return;
+    $settings = roxy_eb_get_settings();
+    $to = $settings['internal_email'] ?: get_option('admin_email');
+    $subject = 'Booking pizza updated - #' . intval($booking_after['id']) . ' - ' . date_i18n('M j, Y g:i A', strtotime($booking_after['doors_open_at']));
+
+    $before_qty = intval($booking_before['pizza_quantity'] ?? 0);
+    $after_qty = intval($booking_after['pizza_quantity'] ?? 0);
+    $before_total = floatval($booking_before['pizza_total'] ?? 0);
+    $after_total = floatval($booking_after['pizza_total'] ?? 0);
+    $delta = floatval($booking_after['pizza_total'] ?? 0) - floatval($booking_before['pizza_total'] ?? 0);
+
+    $lines = [];
+    $lines[] = 'A booking pizza request was updated.';
+    $lines[] = '';
+    $lines[] = 'Context: ' . sanitize_text_field($context);
+    $lines[] = 'Booking ID: #' . intval($booking_after['id']);
+    $lines[] = 'Customer: ' . trim(($booking_after['customer_first_name'] ?? '') . ' ' . ($booking_after['customer_last_name'] ?? ''));
+    $lines[] = 'Email: ' . ($booking_after['customer_email'] ?? '');
+    $lines[] = 'Doors open: ' . ($booking_after['doors_open_at'] ?? '');
+    $lines[] = '';
+    $lines[] = 'Before: ' . (!empty($booking_before['pizza_requested']) ? ($before_qty . ' pizza(s), $' . number_format($before_total, 2)) : 'No pizza');
+    $lines[] = 'After: ' . (!empty($booking_after['pizza_requested']) ? ($after_qty . ' pizza(s), $' . number_format($after_total, 2)) : 'No pizza');
+    $lines[] = 'Delta: $' . number_format($delta, 2);
+    if (!empty($booking_after['pizza_requested'])) {
+        $lines[] = '';
+        $lines[] = 'Pizza order:';
+        $lines[] = (string) ($booking_after['pizza_order_details'] ?? '—');
+    }
+
+    wp_mail($to, $subject, implode("\n", $lines), ['Content-Type: text/plain; charset=UTF-8']);
+}
+
+function roxy_eb_email_internal_booking_order_changed($booking_before, $booking_after, $context = 'customer_update') {
+    if (!$booking_after) return;
+    $settings = roxy_eb_get_settings();
+    $to = $settings['internal_email'] ?: get_option('admin_email');
+    $subject = 'Booking updated - #' . intval($booking_after['id']) . ' - ' . date_i18n('M j, Y g:i A', strtotime($booking_after['doors_open_at']));
+
+    $before_total = floatval($booking_before['total_price'] ?? 0);
+    $after_total = floatval($booking_after['total_price'] ?? 0);
+    $delta = $after_total - $before_total;
+
+    $lines = [];
+    $lines[] = 'A booking was updated.';
+    $lines[] = '';
+    $lines[] = 'Context: ' . sanitize_text_field($context);
+    $lines[] = 'Booking ID: #' . intval($booking_after['id']);
+    $lines[] = 'Customer: ' . trim(($booking_after['customer_first_name'] ?? '') . ' ' . ($booking_after['customer_last_name'] ?? ''));
+    $lines[] = 'Email: ' . ($booking_after['customer_email'] ?? '');
+    $lines[] = 'Doors open: ' . ($booking_after['doors_open_at'] ?? '');
+    $lines[] = '';
+    $lines[] = 'Before total: $' . number_format($before_total, 2);
+    $lines[] = 'After total: $' . number_format($after_total, 2);
+    $lines[] = 'Delta: $' . number_format($delta, 2);
+    $lines[] = '';
+    $lines[] = 'Updated details:';
+    foreach (roxy_eb_booking_rows_for_email($booking_after) as $row) {
+        $lines[] = $row[0] . ': ' . preg_replace('/\s+/', ' ', trim((string) $row[1]));
+    }
+
+    wp_mail($to, $subject, implode("\n", $lines), ['Content-Type: text/plain; charset=UTF-8']);
 }
 
 function roxy_eb_render_email_booking_summary($booking, $order = null, $internal = false) {

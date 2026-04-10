@@ -2,14 +2,14 @@
 /**
  * Plugin Name: Roxy Suite
  * Description: Unified management plugin for Newport Roxy — Show Tickets, Will Call, Event Booking, Member Check, Arcade, Legacy NFC Redirect, and Grosses.
- * Version: 1.0.10
+ * Version: 1.0.11
  * Author: Newport Roxy (AI Team)
  * Update URI: https://github.com/Tototex/roxy-suite
  */
 
 if (!defined('ABSPATH')) exit;
 
-define('ROXY_SUITE_VERSION', '1.0.10');
+define('ROXY_SUITE_VERSION', '1.0.11');
 define('ROXY_SUITE_PATH', plugin_dir_path(__FILE__));
 define('ROXY_SUITE_URL', plugin_dir_url(__FILE__));
 
@@ -49,6 +49,9 @@ require_once ROXY_SUITE_PATH . 'includes/class-roxy-suite-admin.php';
 // ── Health check ───────────────────────────────────────────────────────────────
 require_once ROXY_SUITE_PATH . 'includes/class-roxy-suite-health.php';
 add_action('wp_ajax_roxy_suite_run_tests', ['\\RoxySuite\\Health', 'ajax_run_tests']);
+
+// ── Membership dashboard ───────────────────────────────────────────────────────
+require_once ROXY_SUITE_PATH . 'includes/class-roxy-suite-members-dashboard.php';
 
 // ── Module toggle AJAX ─────────────────────────────────────────────────────────
 add_action('wp_ajax_roxy_suite_toggle_module', function () {
@@ -94,10 +97,39 @@ add_action('admin_menu', function () {
 
 function roxy_suite_dashboard_page() {
     if (!roxy_suite_user_can_access_admin()) return;
+    $tabs = [
+        'membership' => 'Membership Dashboard',
+        'grosses' => 'Grosses Dashboard',
+        'status' => 'Plugin Status',
+    ];
+    $active_tab = isset($_GET['tab']) ? sanitize_key((string) wp_unslash($_GET['tab'])) : 'membership';
+    if (!isset($tabs[$active_tab])) {
+        $active_tab = 'membership';
+    }
+    $base_url = admin_url('admin.php?page=roxy-suite');
     ?>
     <div class="wrap">
-        <h1>Roxy Suite — Dashboard</h1>
-        <?php \RoxySuite\Health::render(); ?>
+        <h1>Roxy Suite Dashboard</h1>
+        <nav class="nav-tab-wrapper" style="margin-bottom:16px;">
+            <?php foreach ($tabs as $slug => $label): ?>
+                <a class="nav-tab<?php echo $active_tab === $slug ? ' nav-tab-active' : ''; ?>" href="<?php echo esc_url(add_query_arg('tab', $slug, $base_url)); ?>"><?php echo esc_html($label); ?></a>
+            <?php endforeach; ?>
+        </nav>
+        <?php if ($active_tab === 'membership'): ?>
+            <?php if (function_exists('roxy_suite_module_enabled') && roxy_suite_module_enabled('sub_check')): ?>
+                <?php \RoxySuite\Members_Dashboard::render(); ?>
+            <?php else: ?>
+                <div class="notice notice-warning"><p>Membership tools are disabled.</p></div>
+            <?php endif; ?>
+        <?php elseif ($active_tab === 'grosses'): ?>
+            <?php if (function_exists('roxy_suite_module_enabled') && roxy_suite_module_enabled('grosses') && class_exists('\\RoxyGrosses\\Settings')): ?>
+                <?php \RoxyGrosses\Settings::render_dashboard_panel('roxy-suite', 'grosses'); ?>
+            <?php else: ?>
+                <div class="notice notice-warning"><p>Grosses tools are disabled.</p></div>
+            <?php endif; ?>
+        <?php else: ?>
+            <?php \RoxySuite\Health::render(); ?>
+        <?php endif; ?>
     </div>
     <?php
 }

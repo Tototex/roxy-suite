@@ -67,6 +67,7 @@ function roxy_eb_install_schema() {
         bulk_concessions_total INT NOT NULL DEFAULT 0,
         total_price INT NOT NULL DEFAULT 0,
         woo_order_id BIGINT UNSIGNED NULL,
+        woo_adjustment_order_ids LONGTEXT NULL,
         sling_shift_ids TEXT NULL,
         sling_status VARCHAR(32) NULL,
         sling_error TEXT NULL,

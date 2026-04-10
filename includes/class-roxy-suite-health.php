@@ -478,10 +478,6 @@ class Health {
     public static function render(): void {
         $modules = self::run_structural();
 
-        if (function_exists('roxy_suite_module_enabled') && roxy_suite_module_enabled('grosses') && class_exists('\\RoxyGrosses\\Settings')) {
-            \RoxyGrosses\Settings::render_dashboard_panel('roxy-suite');
-        }
-
         $enabled_modules = array_filter($modules, fn($m) => $m['enabled'] ?? true);
         $pass_count = count(array_filter($enabled_modules, fn($m) => $m['overall'] === self::PASS));
         $total      = count($enabled_modules);

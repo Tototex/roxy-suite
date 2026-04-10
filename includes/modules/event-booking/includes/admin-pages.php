@@ -230,6 +230,8 @@ function roxy_eb_is_booking_archived($booking, ?DateTimeImmutable $now = null) {
 function roxy_eb_admin_bookings_page() {
     if (!roxy_suite_user_can_access_admin()) return;
 
+    $keep_create_panel_open = false;
+
     if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'retry_sling' && isset($_GET['booking_id'])) {
         $booking_id = intval($_GET['booking_id']);
         $nonce = sanitize_text_field($_GET['_wpnonce'] ?? '');
@@ -253,6 +255,121 @@ function roxy_eb_admin_bookings_page() {
         check_admin_referer('roxy_eb_toggle_pizza_' . $booking_id);
         roxy_eb_mark_pizza_handled($booking_id, !empty($_POST['pizza_handled']));
         echo '<div class="notice notice-success"><p>Pizza status updated.</p></div>';
+    }
+
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['roxy_eb_create_booking'])) {
+        check_admin_referer('roxy_eb_admin_create_booking');
+
+        $first_name = sanitize_text_field($_POST['first_name'] ?? '');
+        $last_name = sanitize_text_field($_POST['last_name'] ?? '');
+        $email = sanitize_email($_POST['email'] ?? '');
+        $phone = sanitize_text_field($_POST['phone'] ?? '');
+        $customer_type = sanitize_text_field($_POST['customer_type'] ?? 'personal');
+        $business_name = sanitize_text_field($_POST['business_name'] ?? '');
+        $payment_method = sanitize_text_field($_POST['payment_method'] ?? 'pay_now');
+        $event_format = sanitize_text_field($_POST['event_format'] ?? 'movie');
+        $visibility = sanitize_text_field($_POST['visibility'] ?? 'private');
+        $movie_title = sanitize_text_field($_POST['movie_title'] ?? '');
+        $live_description = sanitize_textarea_field($_POST['live_description'] ?? '');
+        $notes = sanitize_textarea_field($_POST['notes_admin_create'] ?? '');
+        $guest_count = max(1, intval($_POST['guest_count'] ?? 1));
+        $duration_hours = max(2, intval($_POST['duration_hours'] ?? 2));
+        $date = sanitize_text_field($_POST['doors_open_date'] ?? '');
+        $time = sanitize_text_field($_POST['doors_open_time'] ?? '');
+        $send_email = !empty($_POST['email_customer']);
+        $settings_now = roxy_eb_get_settings();
+
+        if (!in_array($customer_type, ['personal', 'business'], true)) $customer_type = 'personal';
+        if ($customer_type !== 'business') {
+            $business_name = '';
+            $payment_method = 'pay_now';
+        }
+        if (!in_array($payment_method, ['pay_now', 'invoice'], true)) $payment_method = 'pay_now';
+        if (!in_array($event_format, ['movie', 'live'], true)) $event_format = 'movie';
+        if (!in_array($visibility, ['private', 'public'], true)) $visibility = 'private';
+
+        $pizza_requested = !empty($_POST['pizza_requested']) ? 1 : 0;
+        $pizza_quantity = $pizza_requested ? max(1, intval($_POST['pizza_quantity'] ?? 1)) : 0;
+        $pizza_order_details = $pizza_requested ? sanitize_textarea_field($_POST['pizza_order_details'] ?? '') : '';
+        $bulk_concessions_requested = !empty($_POST['bulk_concessions_requested']) ? 1 : 0;
+        $bulk_popcorn_qty = $bulk_concessions_requested ? intval($_POST['bulk_popcorn_qty'] ?? 0) : 0;
+        $bulk_soda_qty = $bulk_concessions_requested ? intval($_POST['bulk_soda_qty'] ?? 0) : 0;
+
+        $errors = [];
+        if ($first_name === '') $errors[] = 'First name is required.';
+        if ($last_name === '') $errors[] = 'Last name is required.';
+        if (!$email || !is_email($email)) $errors[] = 'Valid email is required.';
+        if ($phone === '') $errors[] = 'Phone number is required.';
+        if ($customer_type === 'business' && $business_name === '') $errors[] = 'Business name is required for invoice bookings.';
+        if ($event_format === 'movie' && $movie_title === '') $errors[] = 'Movie title is required.';
+        if ($event_format === 'live' && $live_description === '') $errors[] = 'Live event description is required.';
+        if ($pizza_requested && $pizza_order_details === '') $errors[] = 'Pizza order details are required.';
+        if ($bulk_concessions_requested && (!roxy_eb_valid_bulk_qty($bulk_popcorn_qty) || !roxy_eb_valid_bulk_qty($bulk_soda_qty))) {
+            $errors[] = 'Bulk concessions must be 0, or between 25 and 250 for each item.';
+        }
+
+        $tz = wp_timezone();
+        $dt = DateTimeImmutable::createFromFormat('Y-m-d H:i', $date . ' ' . $time, $tz);
+        if (!$dt) {
+            $errors[] = 'Invalid date/time.';
+        } else {
+            $extra_hours = max(0, $duration_hours - 2);
+            $times = roxy_eb_calc_times($dt, $extra_hours);
+            if (!roxy_eb_time_within_operating_hours($dt, intval($times['guest_hours']))) {
+                $errors[] = 'Selected time is outside operating hours.';
+            }
+            if (!roxy_eb_is_slot_available($times['reserved_start'], $times['reserved_end'])) {
+                $errors[] = 'That time conflicts with another booking or blocked event.';
+            }
+        }
+
+        if ($errors) {
+            $keep_create_panel_open = true;
+            echo '<div class="notice notice-error"><p>' . esc_html(implode(' ', $errors)) . '</p></div>';
+        } else {
+            $payload = [
+                'first_name' => $first_name,
+                'last_name' => $last_name,
+                'email' => $email,
+                'phone' => $phone,
+                'customer_type' => $customer_type,
+                'business_name' => $business_name,
+                'payment_method' => $payment_method,
+                'event_format' => $event_format,
+                'movie_title' => $movie_title,
+                'live_description' => $live_description,
+                'visibility' => $visibility,
+                'guest_count' => $guest_count,
+                'extra_hours' => max(0, $duration_hours - 2),
+                'doors_open_at' => $dt->format('Y-m-d H:i:s'),
+                'pizza_requested' => $pizza_requested,
+                'pizza_quantity' => $pizza_quantity,
+                'pizza_order_details' => $pizza_order_details,
+                'bulk_concessions_requested' => $bulk_concessions_requested,
+                'bulk_popcorn_qty' => $bulk_popcorn_qty,
+                'bulk_soda_qty' => $bulk_soda_qty,
+                'notes' => $notes,
+                'wp_user_id' => email_exists($email) ? intval(email_exists($email)) : null,
+            ];
+            $booking_data = roxy_eb_normalize_booking_payload($payload);
+            $status = ($payment_method === 'invoice') ? 'pending_invoice' : 'confirmed';
+            $booking_id = roxy_eb_create_booking_from_payload($booking_data, null, $status);
+
+            if (is_wp_error($booking_id)) {
+                $keep_create_panel_open = true;
+                echo '<div class="notice notice-error"><p>' . esc_html($booking_id->get_error_message()) . '</p></div>';
+            } else {
+                $booking_created = roxy_eb_repo_get_booking($booking_id);
+                if ($payment_method === 'invoice') {
+                    roxy_eb_email_internal_invoice_booking($booking_created);
+                    if ($send_email) roxy_eb_email_customer_invoice_booking($booking_created);
+                } else {
+                    roxy_eb_email_internal_booking_confirmed(null, $booking_id);
+                    if ($send_email) roxy_eb_email_customer_booking_confirmed(null, $booking_id);
+                }
+                echo '<div class="notice notice-success"><p>Booking created.</p></div>';
+            }
+        }
     }
 
     if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'update' && isset($_GET['booking_id'])) {
@@ -378,10 +495,51 @@ function roxy_eb_admin_bookings_page() {
         if (!$show_archived && $booking['_is_archived']) continue;
         $display_rows[] = $booking;
     }
+    $show_create_panel = ($keep_create_panel_open || !empty($_GET['roxy_eb_create']));
     ?>
     <div class="wrap">
         <h1>Bookings</h1>
         <p>Confirmed and invoice-pending bookings. Pizza reminders run until pizza is marked handled. Bookings are hidden from this list 4 hours after doors close unless you show archived.</p>
+        <style>
+            .roxy-eb-admin-create-toggle { margin: 12px 0 16px; }
+        </style>
+
+        <div class="roxy-eb-admin-create-toggle">
+            <button type="button" class="button button-primary" id="roxy-eb-toggle-create-booking" aria-expanded="<?php echo $show_create_panel ? 'true' : 'false'; ?>">Create Booking</button>
+        </div>
+
+        <div class="card" id="roxy-eb-admin-create-panel" style="max-width:980px; padding:16px; margin:16px 0; display: <?php echo $show_create_panel ? 'block' : 'none'; ?>;"<?php echo $show_create_panel ? '' : ' hidden'; ?>>
+            <h2 style="margin-top:0;">Create Booking</h2>
+            <form method="post">
+                <?php wp_nonce_field('roxy_eb_admin_create_booking'); ?>
+                <table class="form-table">
+                    <tr><th scope="row"><label for="eb_create_first_name">First name</label></th><td><input type="text" id="eb_create_first_name" name="first_name" class="regular-text" required></td></tr>
+                    <tr><th scope="row"><label for="eb_create_last_name">Last name</label></th><td><input type="text" id="eb_create_last_name" name="last_name" class="regular-text" required></td></tr>
+                    <tr><th scope="row"><label for="eb_create_email">Email</label></th><td><input type="email" id="eb_create_email" name="email" class="regular-text" required></td></tr>
+                    <tr><th scope="row"><label for="eb_create_phone">Phone</label></th><td><input type="text" id="eb_create_phone" name="phone" class="regular-text" required></td></tr>
+                    <tr><th scope="row"><label for="eb_create_customer_type">Customer type</label></th><td><select id="eb_create_customer_type" name="customer_type"><option value="personal">Personal</option><option value="business">Business</option></select></td></tr>
+                    <tr><th scope="row"><label for="eb_create_business_name">Business name</label></th><td><input type="text" id="eb_create_business_name" name="business_name" class="regular-text"></td></tr>
+                    <tr><th scope="row"><label for="eb_create_payment_method">Payment method</label></th><td><select id="eb_create_payment_method" name="payment_method"><option value="pay_now">Paid / card</option><option value="invoice">Invoice</option></select></td></tr>
+                    <tr><th scope="row"><label for="eb_create_event_format">Event format</label></th><td><select id="eb_create_event_format" name="event_format"><option value="movie">Movie</option><option value="live">Live</option></select></td></tr>
+                    <tr><th scope="row"><label for="eb_create_visibility">Visibility</label></th><td><select id="eb_create_visibility" name="visibility"><option value="private">Private</option><option value="public">Public</option></select></td></tr>
+                    <tr><th scope="row"><label for="eb_create_movie_title">Movie title</label></th><td><input type="text" id="eb_create_movie_title" name="movie_title" class="regular-text"></td></tr>
+                    <tr><th scope="row"><label for="eb_create_live_description">Live event details</label></th><td><textarea id="eb_create_live_description" name="live_description" rows="3" class="large-text"></textarea></td></tr>
+                    <tr><th scope="row"><label for="eb_create_date">Date</label></th><td><input type="date" id="eb_create_date" name="doors_open_date" required></td></tr>
+                    <tr><th scope="row"><label for="eb_create_time">Doors open time</label></th><td><input type="time" id="eb_create_time" name="doors_open_time" required></td></tr>
+                    <tr><th scope="row"><label for="eb_create_guests">Guests</label></th><td><input type="number" min="1" max="250" id="eb_create_guests" name="guest_count" value="1" required></td></tr>
+                    <tr><th scope="row"><label for="eb_create_duration">Duration (hours)</label></th><td><select id="eb_create_duration" name="duration_hours"><?php for ($h=2; $h<=8; $h++): ?><option value="<?php echo esc_attr($h); ?>"><?php echo esc_html($h); ?> hours</option><?php endfor; ?></select></td></tr>
+                    <tr><th scope="row">Pizza requested</th><td><label><input type="checkbox" name="pizza_requested" value="1"> Pizza included</label></td></tr>
+                    <tr><th scope="row"><label for="eb_create_pizza_quantity">Pizza quantity</label></th><td><input type="number" min="0" id="eb_create_pizza_quantity" name="pizza_quantity" value="0"></td></tr>
+                    <tr><th scope="row"><label for="eb_create_pizza_order">Pizza order</label></th><td><textarea id="eb_create_pizza_order" name="pizza_order_details" rows="3" class="large-text"></textarea></td></tr>
+                    <tr><th scope="row">Bulk concessions requested</th><td><label><input type="checkbox" name="bulk_concessions_requested" value="1"> Bulk concessions included</label><p class="description">Each item must be 0, or 25 to 250.</p></td></tr>
+                    <tr><th scope="row"><label for="eb_create_bulk_popcorn">Bulk popcorn qty</label></th><td><input type="number" min="0" max="250" id="eb_create_bulk_popcorn" name="bulk_popcorn_qty" value="0"></td></tr>
+                    <tr><th scope="row"><label for="eb_create_bulk_soda">Bulk soda qty</label></th><td><input type="number" min="0" max="250" id="eb_create_bulk_soda" name="bulk_soda_qty" value="0"></td></tr>
+                    <tr><th scope="row"><label for="eb_create_notes">Notes</label></th><td><textarea id="eb_create_notes" name="notes_admin_create" rows="3" class="large-text"></textarea></td></tr>
+                    <tr><th scope="row">Notify customer</th><td><label><input type="checkbox" name="email_customer" value="1"> Send confirmation email</label></td></tr>
+                </table>
+                <p><button type="submit" class="button button-primary" name="roxy_eb_create_booking" value="1">Submit</button> <button type="button" class="button" id="roxy-eb-close-create-booking">Done</button></p>
+            </form>
+        </div>
 
         <form method="get" style="margin:12px 0 16px;">
             <input type="hidden" name="page" value="roxy-event-booking" />
@@ -490,6 +648,27 @@ if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'edit' && isse
                 <?php endforeach; endif; ?>
             </tbody>
         </table>
+        <script>
+            (function() {
+                const toggle = document.getElementById('roxy-eb-toggle-create-booking');
+                const close = document.getElementById('roxy-eb-close-create-booking');
+                const panel = document.getElementById('roxy-eb-admin-create-panel');
+                if (!toggle || !panel) return;
+                function setPanel(open) {
+                    panel.hidden = !open;
+                    panel.style.display = open ? 'block' : 'none';
+                    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+                }
+                toggle.addEventListener('click', function() {
+                    setPanel(panel.style.display === 'none');
+                });
+                if (close) {
+                    close.addEventListener('click', function() {
+                        setPanel(false);
+                    });
+                }
+            })();
+        </script>
     </div>
     <?php
 }

@@ -107,3 +107,15 @@
   color:#111 !important;
   border-color:#111 !important;
 }
+
+.roxy-eb-account-bookings .roxy-eb-modal__dialog {
+  background:#fff !important;
+  color:#111 !important;
+}
+
+.roxy-eb-account-bookings .roxy-eb-modal__dialog input,
+.roxy-eb-account-bookings .roxy-eb-modal__dialog select,
+.roxy-eb-account-bookings .roxy-eb-modal__dialog textarea {
+  background:#fff !important;
+  color:#111 !important;
+}
