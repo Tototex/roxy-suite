@@ -34,6 +34,49 @@ add_action('init', 'roxy_suite_grant_capabilities');
 add_filter('option_page_capability_roxy_st_settings', fn() => roxy_suite_admin_capability());
 add_filter('option_page_capability_roxy_grosses_settings', fn() => roxy_suite_admin_capability());
 
+add_action('wp_enqueue_scripts', function () {
+    if (!function_exists('is_checkout') || !is_checkout()) return;
+    if (function_exists('is_order_received_page') && is_order_received_page()) return;
+
+    wp_enqueue_script('jquery');
+    wp_add_inline_script('jquery', <<<'JS'
+(function () {
+    var touchedKey = 'roxyNewsletterTouched';
+
+    function customerTouchedNewsletter() {
+        try {
+            window.sessionStorage.setItem(touchedKey, '1');
+        } catch (error) {}
+    }
+
+    function shouldSkipDefault() {
+        try {
+            return window.sessionStorage.getItem(touchedKey) === '1';
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function checkNewsletterByDefault() {
+        if (shouldSkipDefault()) return;
+
+        var checkbox = document.querySelector('input[name="mailchimp_woocommerce_newsletter"]');
+        if (!checkbox) return;
+
+        checkbox.checked = true;
+        if (checkbox.dataset.roxyNewsletterBound === '1') return;
+        checkbox.dataset.roxyNewsletterBound = '1';
+        checkbox.addEventListener('change', customerTouchedNewsletter, { once: true });
+    }
+
+    document.addEventListener('DOMContentLoaded', checkNewsletterByDefault);
+    if (window.jQuery) {
+        window.jQuery(document.body).on('updated_checkout', checkNewsletterByDefault);
+    }
+})();
+JS);
+}, 20);
+
 // ── Roxy Grosses constants ─────────────────────────────────────────────────────
 define('ROXY_GROSSES_VER',  '0.4.7');
 define('ROXY_GROSSES_PATH', ROXY_SUITE_PATH . 'includes/modules/grosses/');
@@ -239,11 +282,16 @@ register_activation_hook(__FILE__, function () {
         user_id BIGINT UNSIGNED NULL,
         status VARCHAR(50) NULL,
         is_active TINYINT(1) NOT NULL DEFAULT 0,
+        showing_id BIGINT UNSIGNED NULL,
+        source VARCHAR(60) NOT NULL DEFAULT 'nfc_scan',
+        quantity INT NOT NULL DEFAULT 1,
         ip VARCHAR(45) NULL,
         user_agent TEXT NULL,
         PRIMARY KEY (id),
         KEY subscription_id (subscription_id),
-        KEY scanned_at (scanned_at)
+        KEY scanned_at (scanned_at),
+        KEY showing_id (showing_id),
+        KEY source (source)
     ) $charset;");
 
     // Will Call checkins table

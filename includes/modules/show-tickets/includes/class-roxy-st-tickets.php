@@ -29,6 +29,8 @@ class Tickets {
     add_action('wp_ajax_roxy_st_door_validate', [__CLASS__, 'ajax_door_validate']);
     add_action('wp_ajax_roxy_st_door_checkin', [__CLASS__, 'ajax_door_checkin']);
     add_action('wp_ajax_roxy_st_door_stats', [__CLASS__, 'ajax_door_stats']);
+    add_action('wp_ajax_roxy_st_member_admit', [__CLASS__, 'ajax_member_admit']);
+    add_action('admin_post_roxy_st_manual_member_admit', [__CLASS__, 'handle_manual_member_admit']);
     add_action('wp_ajax_roxy_st_qr', [__CLASS__, 'ajax_qr']);
     add_action('wp_ajax_nopriv_roxy_st_qr', [__CLASS__, 'ajax_qr']);
 
@@ -341,8 +343,13 @@ class Tickets {
   private static function door_stats_payload(int $showing_id): array {
     $capacity = Capacity::capacity_limit_for_showing($showing_id);
     $sold = Sales::sold_qty_for_showing($showing_id);
-    $checked_in = self::count_checked_in_for_showing($showing_id);
+    $member_walkups = self::member_walkup_count_for_showing($showing_id);
+    $ticket_checked_in = self::count_checked_in_for_showing($showing_id);
+    $checked_in = $ticket_checked_in + $member_walkups;
     $remaining = Capacity::remaining_seats_for_showing($showing_id);
+    if (!is_null($remaining)) {
+      $remaining = max(0, (int) $remaining - (int) $member_walkups);
+    }
 
     return [
       'showing_id' => $showing_id,
@@ -351,7 +358,8 @@ class Tickets {
       'sold' => (int) $sold,
       'checked_in' => (int) $checked_in,
       'remaining' => is_null($remaining) ? null : (int) $remaining,
-      'not_checked_in' => max(0, (int) $sold - (int) $checked_in),
+      'not_checked_in' => max(0, (int) $sold - (int) $ticket_checked_in),
+      'member_walkups' => (int) $member_walkups,
     ];
   }
 
@@ -504,20 +512,47 @@ class Tickets {
     foreach ($ticket_ids as $ticket_id) {
       $token = (string) get_post_meta($ticket_id, self::META_TOKEN, true);
       $showing_title = (string) get_post_meta($ticket_id, '_roxy_ticket_showing_title', true);
+      $showing_id = (int) get_post_meta($ticket_id, self::META_SHOWING_ID, true);
+      $showing_start = $showing_id > 0 ? (string) get_post_meta($showing_id, '_roxy_start', true) : '';
+      $showing_when = self::ticket_showing_when_label($showing_start);
       $ticket_label = (string) get_post_meta($ticket_id, '_roxy_ticket_ticket_label', true);
+      $customer_name = (string) get_post_meta($ticket_id, '_roxy_ticket_customer_name', true);
+      if ($customer_name === '') {
+        $customer_name = trim((string) $order->get_formatted_billing_full_name());
+      }
       $state = (string) get_post_meta($ticket_id, self::META_STATE, true);
       $checked_in = (int) get_post_meta($ticket_id, self::META_CHECKED_IN, true) === 1;
       $qr_url = self::qr_image_url($token);
 
-      echo '<div style="border:1px solid #ddd;border-radius:12px;padding:14px;text-align:center">';
-      echo '<div style="font-weight:700;margin-bottom:4px">' . esc_html($showing_title) . '</div>';
-      echo '<div style="opacity:.8;margin-bottom:10px">' . esc_html($ticket_label) . '</div>';
+      echo '<div style="border:1px solid #ddd;border-radius:12px;padding:16px;text-align:center">';
+      echo '<div style="font-weight:800;font-size:18px;line-height:1.25;margin-bottom:4px">' . esc_html($showing_title) . '</div>';
+      if ($showing_when !== '') {
+        echo '<div style="font-weight:700;opacity:.9;margin-bottom:6px">' . esc_html($showing_when) . '</div>';
+      }
+      echo '<div style="opacity:.8;margin-bottom:12px">' . esc_html($ticket_label) . '</div>';
       echo '<img src="' . esc_url($qr_url) . '" alt="Ticket QR" style="width:200px;height:200px;max-width:100%;margin:0 auto 10px;display:block" />';
+      echo '<div style="font-size:16px;font-weight:800;margin-bottom:4px">' . esc_html($customer_name !== '' ? $customer_name : 'Guest') . '</div>';
+      echo '<div style="font-size:13px;opacity:.85;margin-bottom:8px">Order #' . esc_html((string) $order_id) . '</div>';
       echo '<div style="font-size:12px;word-break:break-all;opacity:.8;margin-bottom:8px">' . esc_html($token) . '</div>';
       echo '<div style="font-weight:700;color:' . esc_attr(self::state_color($state, $checked_in)) . '">' . esc_html(self::state_label($state, $checked_in)) . '</div>';
       echo '</div>';
     }
     echo '</div></section>';
+  }
+
+  private static function ticket_showing_when_label(string $start): string {
+    $start = trim($start);
+    if ($start === '') {
+      return '';
+    }
+
+    try {
+      $dt = new \DateTimeImmutable($start, wp_timezone());
+    } catch (\Exception $e) {
+      return $start;
+    }
+
+    return wp_date('l, F j, Y \\a\\t g:i A', $dt->getTimestamp(), wp_timezone());
   }
 
   public static function render_door_mode_page(bool $wrap = true): void {
@@ -713,6 +748,8 @@ class Tickets {
 
     $token = isset($_GET['ticket_token']) ? sanitize_text_field(wp_unslash($_GET['ticket_token'])) : '';
     $search = isset($_GET['s']) ? sanitize_text_field(wp_unslash($_GET['s'])) : '';
+    $member_search = isset($_GET['member_s']) ? sanitize_text_field(wp_unslash($_GET['member_s'])) : '';
+    $selected_showing_id = isset($_GET['door_showing_id']) ? max(0, (int) $_GET['door_showing_id']) : self::get_default_door_mode_showing_id();
     $results = [];
     if ($token !== '') {
       $ticket = self::get_ticket_by_token($token);
@@ -720,6 +757,8 @@ class Tickets {
     } elseif ($search !== '') {
       $results = self::search_tickets($search);
     }
+    $member_results = (class_exists('\Roxy_Sub_Check') && method_exists('\Roxy_Sub_Check', 'search_members') && $member_search !== '') ? \Roxy_Sub_Check::search_members($member_search) : [];
+    $door_showings = self::get_door_mode_showings();
 
     if ($wrap) echo '<div class="wrap"><h1>Roxy Check-In</h1>';
     echo '<p>Scan or paste a ticket token, or search by order #, name, or email.</p>';
@@ -736,6 +775,69 @@ class Tickets {
     echo '<span id="roxy-st-scan-status" style="margin-left:8px;opacity:.85">Manual search always works if camera scan is unavailable.</span>';
     echo '<video id="roxy-st-scan-video" autoplay playsinline muted style="display:none;width:100%;max-width:520px;margin-top:12px;border-radius:12px;background:#000"></video>';
     echo '</div></div>';
+
+    if (isset($_GET['member_notice'])) {
+      if ($_GET['member_notice'] === 'admitted') {
+        echo '<div class="notice notice-success"><p>Subscriber admitted and logged.</p></div>';
+      } elseif ($_GET['member_notice'] === 'error') {
+        $message = isset($_GET['member_error']) ? sanitize_text_field(wp_unslash($_GET['member_error'])) : 'Unable to admit subscriber.';
+        echo '<div class="notice notice-error"><p>' . esc_html($message) . '</p></div>';
+      }
+    }
+
+    echo '<div style="max-width:900px;background:#fff;border:1px solid #dcdcde;border-radius:14px;padding:16px;margin:16px 0">';
+    echo '<h2 style="margin-top:0">Manual Member Admit</h2>';
+    echo '<p>Use this when an NFC card is missing or the scanner is not cooperating. Manual admit requires a selected showing.</p>';
+    echo '<form method="get" action="" style="display:grid;gap:12px;grid-template-columns:1fr 1fr auto;align-items:end">';
+    echo '<input type="hidden" name="page" value="roxy-ticket-ops">';
+    echo '<input type="hidden" name="tab" value="manual-checkin">';
+    echo '<label><strong>Showing</strong><br><select name="door_showing_id" style="width:100%">';
+    echo '<option value="0"' . selected($selected_showing_id, 0, false) . '>Select a showing</option>';
+    foreach ($door_showings as $door_showing) {
+      echo '<option value="' . esc_attr((string) $door_showing['id']) . '"' . selected($selected_showing_id, (int) $door_showing['id'], false) . '>' . esc_html((string) $door_showing['label']) . '</option>';
+    }
+    echo '</select></label>';
+    echo '<label><strong>Member search</strong><br><input type="text" name="member_s" value="' . esc_attr($member_search) . '" placeholder="Name, email, or subscription #" style="width:100%"></label>';
+    echo '<button type="submit" class="button button-primary" style="height:32px">Search Members</button>';
+    echo '</form>';
+
+    if ($member_search !== '') {
+      if (!$member_results) {
+        echo '<p style="margin-bottom:0">No active subscribers found.</p>';
+      } else {
+        echo '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:14px">';
+        foreach ($member_results as $member) {
+          $sub_id = (int) ($member['subscription_id'] ?? 0);
+          $max_qty = max(1, (int) ($member['membership_qty'] ?? 1));
+          echo '<div style="border:1px solid #dcdcde;border-radius:12px;padding:12px;background:#f6f7f7">';
+          echo '<div style="display:flex;gap:12px;align-items:center">';
+          if (!empty($member['photo_url'])) {
+            echo '<img src="' . esc_url((string) $member['photo_url']) . '" alt="" style="width:56px;height:56px;border-radius:10px;object-fit:cover">';
+          } else {
+            echo '<div style="width:56px;height:56px;border-radius:10px;border:1px dashed #999;display:flex;align-items:center;justify-content:center;font-size:11px;color:#666">No photo</div>';
+          }
+          echo '<div><strong>' . esc_html((string) ($member['member_name'] ?? 'Subscriber')) . '</strong><br>';
+          echo '<span style="color:#646970">' . esc_html((string) ($member['customer_email'] ?? '')) . '</span><br>';
+          echo '<span style="color:#646970">Sub #' . esc_html((string) $sub_id) . ' | Qty ' . esc_html((string) $max_qty) . '</span></div>';
+          echo '</div>';
+          echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="display:flex;gap:8px;align-items:end;margin-top:12px">';
+          echo '<input type="hidden" name="action" value="roxy_st_manual_member_admit">';
+          echo '<input type="hidden" name="subscription_id" value="' . esc_attr((string) $sub_id) . '">';
+          echo '<input type="hidden" name="showing_id" value="' . esc_attr((string) $selected_showing_id) . '">';
+          echo '<input type="hidden" name="member_s" value="' . esc_attr($member_search) . '">';
+          wp_nonce_field('roxy_st_manual_member_admit_' . $sub_id);
+          echo '<label><strong>Qty</strong><br><input type="number" name="quantity" min="1" max="' . esc_attr((string) $max_qty) . '" value="1" style="width:70px"></label>';
+          echo '<button type="submit" class="button button-primary"' . disabled($selected_showing_id <= 0, true, false) . '>Admit</button>';
+          echo '</form>';
+          if ($selected_showing_id <= 0) {
+            echo '<p style="color:#b32d2e;margin-bottom:0">Select a showing before admitting.</p>';
+          }
+          echo '</div>';
+        }
+        echo '</div>';
+      }
+    }
+    echo '</div>';
 
     if ($results) {
       echo '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">';
@@ -1009,9 +1111,132 @@ class Tickets {
         'token' => $value,
       ];
     }
-    $payload = \Roxy_Sub_Check::get_member_payload($sub_id, true);
+    $payload = \Roxy_Sub_Check::get_member_payload($sub_id, false);
     $payload['token'] = $value;
     return $payload;
+  }
+
+  private static function member_walkup_count_for_showing(int $showing_id): int {
+    if ($showing_id <= 0 || !class_exists('\Roxy_Sub_Check') || !method_exists('\Roxy_Sub_Check', 'showing_admit_rows')) {
+      return 0;
+    }
+    $total = 0;
+    foreach ((array) \Roxy_Sub_Check::showing_admit_rows($showing_id) as $row) {
+      $total += max(0, (int) ($row['qty'] ?? 0));
+    }
+    return $total;
+  }
+
+  private static function find_reserved_subscriber_tickets(int $showing_id, array $member_payload): array {
+    if ($showing_id <= 0) return [];
+    $email = strtolower(trim((string) ($member_payload['customer_email'] ?? '')));
+    $name = strtolower(trim((string) ($member_payload['member_name'] ?? $member_payload['customer_name'] ?? '')));
+    if ($email === '' && $name === '') return [];
+
+    $ticket_ids = get_posts([
+      'post_type' => self::POST_TYPE,
+      'post_status' => 'publish',
+      'numberposts' => -1,
+      'fields' => 'ids',
+      'meta_query' => [
+        ['key' => self::META_SHOWING_ID, 'value' => $showing_id],
+        ['key' => self::META_TICKET_TYPE, 'value' => 'subscriber'],
+      ],
+      'orderby' => 'ID',
+      'order' => 'ASC',
+      'no_found_rows' => true,
+    ]);
+
+    $matches = [];
+    foreach ((array) $ticket_ids as $ticket_id) {
+      $ticket_email = strtolower(trim((string) get_post_meta((int) $ticket_id, '_roxy_ticket_customer_email', true)));
+      $ticket_name = strtolower(trim((string) get_post_meta((int) $ticket_id, '_roxy_ticket_customer_name', true)));
+      if (($email !== '' && $ticket_email === $email) || ($email === '' && $name !== '' && $ticket_name === $name)) {
+        $matches[] = (int) $ticket_id;
+      }
+    }
+    return $matches;
+  }
+
+  private static function member_admission_payload(int $sub_id, int $showing_id, int $quantity, string $source_prefix): array {
+    if (!class_exists('\Roxy_Sub_Check') || !method_exists('\Roxy_Sub_Check', 'get_member_payload')) {
+      return ['ok' => false, 'message' => 'Membership tools are unavailable.'];
+    }
+    if ($showing_id <= 0 || get_post_type($showing_id) !== CPT::POST_TYPE) {
+      return ['ok' => false, 'message' => 'Select a showing before admitting a member.'];
+    }
+
+    $member_payload = \Roxy_Sub_Check::get_member_payload($sub_id, false);
+    if (empty($member_payload['found']) || ($member_payload['status'] ?? '') !== 'valid') {
+      return ['ok' => false, 'message' => (string) ($member_payload['error'] ?? 'Membership is not active.'), 'payload' => $member_payload];
+    }
+
+    $max_qty = max(1, (int) ($member_payload['membership_qty'] ?? 1));
+    $quantity = max(1, min($quantity, $max_qty));
+    $reserved_tickets = self::find_reserved_subscriber_tickets($showing_id, $member_payload);
+    $source = $source_prefix . '_walkup';
+    $reserved_changed = 0;
+    $reserved_count = count($reserved_tickets);
+
+    if ($reserved_tickets) {
+      $source = $source_prefix . '_reserved';
+      $target = min($quantity, $reserved_count);
+      $already_checked = 0;
+      $available = 0;
+      foreach ($reserved_tickets as $ticket_id) {
+        if ((int) get_post_meta($ticket_id, self::META_CHECKED_IN, true) === 1) {
+          $already_checked++;
+          continue;
+        }
+        if ($available >= $target) break;
+        if (self::check_in_ticket($ticket_id, get_current_user_id())) {
+          $reserved_changed++;
+          $available++;
+        }
+      }
+      if ($reserved_changed <= 0 && $already_checked >= $target) {
+        $member_payload['admitted'] = false;
+        $member_payload['already_admitted'] = true;
+        $member_payload['admit_quantity'] = $already_checked;
+        $member_payload['admit_source'] = $source;
+        $member_payload['admit_reserved_count'] = $reserved_count;
+        $member_payload['admit_reserved_changed'] = 0;
+        $member_payload['admit_showing_id'] = $showing_id;
+        $member_payload['showing_title'] = get_the_title($showing_id);
+        $member_payload['attendance'] = self::door_stats_payload($showing_id);
+        return ['ok' => false, 'message' => 'This subscriber reservation is already marked arrived.', 'payload' => $member_payload];
+      }
+    } elseif (method_exists('\Roxy_Sub_Check', 'admitted_quantity_for_showing')) {
+      $already_walkup = \Roxy_Sub_Check::admitted_quantity_for_showing($sub_id, $showing_id, '%_walkup');
+      if ($already_walkup >= $max_qty) {
+        $member_payload['admitted'] = false;
+        $member_payload['already_admitted'] = true;
+        $member_payload['admit_quantity'] = $already_walkup;
+        $member_payload['admit_source'] = $source;
+        $member_payload['admit_showing_id'] = $showing_id;
+        $member_payload['showing_title'] = get_the_title($showing_id);
+        $member_payload['attendance'] = self::door_stats_payload($showing_id);
+        return ['ok' => false, 'message' => 'This subscriber is already admitted for this showing.', 'payload' => $member_payload];
+      }
+      $quantity = min($quantity, max(1, $max_qty - $already_walkup));
+    }
+
+    $visit = \Roxy_Sub_Check::log_member_visit($sub_id, $showing_id, $quantity, $source);
+    $payload = is_array($visit['payload'] ?? null) ? $visit['payload'] : $member_payload;
+    $payload['admitted'] = !empty($visit['ok']);
+    $payload['admit_quantity'] = $quantity;
+    $payload['admit_source'] = $source;
+    $payload['admit_reserved_count'] = $reserved_count;
+    $payload['admit_reserved_changed'] = $reserved_changed;
+    $payload['admit_showing_id'] = $showing_id;
+    $payload['showing_title'] = get_the_title($showing_id);
+    $payload['attendance'] = self::door_stats_payload($showing_id);
+
+    return [
+      'ok' => !empty($visit['ok']),
+      'message' => !empty($visit['ok']) ? ($reserved_count ? 'Member reservation marked arrived.' : 'Member admitted as walk-up subscriber.') : (string) ($visit['message'] ?? 'Unable to admit member.'),
+      'payload' => $payload,
+    ];
   }
 
   public static function ajax_door_validate(): void {
@@ -1028,6 +1253,21 @@ class Tickets {
 
     $member_payload = self::member_payload_from_value($token);
     if (is_array($member_payload)) {
+      if ($lock_showing_id > 0 && !empty($member_payload['subscription_id']) && ($member_payload['status'] ?? '') === 'valid') {
+        $admit = self::member_admission_payload((int) $member_payload['subscription_id'], $lock_showing_id, 1, 'nfc_admit');
+        if (!empty($admit['ok'])) {
+          wp_send_json_success($admit['payload']);
+        }
+        if (is_array($admit['payload'] ?? null)) {
+          $member_payload = $admit['payload'];
+        }
+        $member_payload['admit_error'] = (string) ($admit['message'] ?? 'Unable to admit member.');
+      } elseif ($lock_showing_id <= 0 && !empty($member_payload['subscription_id']) && class_exists('\Roxy_Sub_Check') && method_exists('\Roxy_Sub_Check', 'log_member_visit')) {
+        \Roxy_Sub_Check::log_member_visit((int) $member_payload['subscription_id'], 0, 1, 'nfc_scan');
+      }
+      if ($lock_showing_id > 0) {
+        $member_payload['attendance'] = self::door_stats_payload($lock_showing_id);
+      }
       wp_send_json_success($member_payload);
     }
 
@@ -1086,6 +1326,54 @@ class Tickets {
       $payload['attendance'] = self::door_stats_payload($lock_showing_id);
     }
     wp_send_json_success($payload);
+  }
+
+  public static function ajax_member_admit(): void {
+    if (!roxy_suite_user_can_access_admin()) {
+      wp_send_json_error(['message' => 'Permission denied.'], 403);
+    }
+    check_ajax_referer('roxy_st_door_checkin', 'nonce');
+
+    $sub_id = isset($_POST['subscription_id']) ? max(0, (int) $_POST['subscription_id']) : 0;
+    $showing_id = isset($_POST['showing_id']) ? max(0, (int) $_POST['showing_id']) : 0;
+    $quantity = isset($_POST['quantity']) ? max(1, (int) $_POST['quantity']) : 1;
+    if ($sub_id <= 0) {
+      wp_send_json_error(['message' => 'Missing subscription.'], 400);
+    }
+
+    $admit = self::member_admission_payload($sub_id, $showing_id, $quantity, 'manual_admit');
+    if (empty($admit['ok'])) {
+      wp_send_json_error(['message' => (string) ($admit['message'] ?? 'Unable to admit member.'), 'payload' => $admit['payload'] ?? null], 400);
+    }
+    wp_send_json_success($admit['payload']);
+  }
+
+  public static function handle_manual_member_admit(): void {
+    if (!roxy_suite_user_can_access_admin()) {
+      wp_die('Invalid request.');
+    }
+
+    $sub_id = isset($_POST['subscription_id']) ? max(0, (int) $_POST['subscription_id']) : 0;
+    if ($sub_id <= 0 || !check_admin_referer('roxy_st_manual_member_admit_' . $sub_id)) {
+      wp_die('Invalid request.');
+    }
+
+    $showing_id = isset($_POST['showing_id']) ? max(0, (int) $_POST['showing_id']) : 0;
+    $quantity = isset($_POST['quantity']) ? max(1, (int) $_POST['quantity']) : 1;
+    $search = isset($_POST['member_s']) ? sanitize_text_field(wp_unslash($_POST['member_s'])) : '';
+    $admit = self::member_admission_payload($sub_id, $showing_id, $quantity, 'manual_admit');
+    $args = [
+      'page' => 'roxy-ticket-ops',
+      'tab' => 'manual-checkin',
+      'member_s' => $search,
+      'door_showing_id' => $showing_id,
+      'member_notice' => !empty($admit['ok']) ? 'admitted' : 'error',
+    ];
+    if (empty($admit['ok'])) {
+      $args['member_error'] = rawurlencode((string) ($admit['message'] ?? 'Unable to admit member.'));
+    }
+    wp_safe_redirect(add_query_arg($args, admin_url('admin.php')));
+    exit;
   }
 
   public static function ajax_door_stats(): void {

@@ -175,6 +175,7 @@ class Store {
       show_time VARCHAR(32) NOT NULL DEFAULT '',
       showing_id BIGINT UNSIGNED NULL,
       theater_name VARCHAR(190) NOT NULL DEFAULT '',
+      presale_qty INT UNSIGNED NOT NULL DEFAULT 0,
       online_qty INT UNSIGNED NOT NULL DEFAULT 0,
       door_qty INT UNSIGNED NOT NULL DEFAULT 0,
       group_sub_qty INT UNSIGNED NOT NULL DEFAULT 0,
@@ -286,6 +287,18 @@ class Store {
     if (get_option(self::SCHEMA_OPTION) !== ROXY_GROSSES_VER) {
       self::install_schema();
     }
+    self::ensure_live_presale_column();
+  }
+
+  private static function ensure_live_presale_column(): void {
+    global $wpdb;
+    $table = self::live_entries_table_name();
+    $column = $wpdb->get_var("SHOW COLUMNS FROM {$table} LIKE 'presale_qty'");
+    if ($column) {
+      return;
+    }
+
+    $wpdb->query("ALTER TABLE {$table} ADD presale_qty INT UNSIGNED NOT NULL DEFAULT 0 AFTER theater_name");
   }
 
   public static function maybe_backfill_history(): void {
@@ -562,8 +575,9 @@ class Store {
       }
 
       $show_time = sanitize_text_field((string) ($row['show_time'] ?? ''));
+      $showing_id = !empty($row['showing_id']) ? max(0, (int) $row['showing_id']) : 0;
       $normalized_title = self::normalize_title($movie_title);
-      $existing = self::find_existing_entry($report_date, $normalized_title, $show_time);
+      $existing = self::find_existing_entry($report_date, $normalized_title, $show_time, $showing_id);
       $enriched_row = Metadata::enrich_movie_row([
         'report_date' => $report_date,
         'movie_title' => $movie_title,
@@ -579,7 +593,7 @@ class Store {
         'studio' => sanitize_text_field((string) ($enriched_row['studio'] ?? ($existing['studio'] ?? ''))),
         'genre' => sanitize_text_field((string) ($enriched_row['genre'] ?? ($existing['genre'] ?? ''))),
         'show_time' => $show_time,
-        'showing_id' => !empty($row['showing_id']) ? max(0, (int) $row['showing_id']) : null,
+        'showing_id' => $showing_id > 0 ? $showing_id : null,
         'theater_name' => sanitize_text_field((string) ($row['theater_name'] ?? 'Newport Roxy Theater')),
         'general_qty' => max(0, (int) ($row['general_qty'] ?? 0)),
         'discount_qty' => max(0, (int) ($row['discount_qty'] ?? 0)),
@@ -621,12 +635,23 @@ class Store {
     return ['created' => $created, 'updated' => $updated, 'skipped' => $skipped];
   }
 
-  private static function find_existing_entry(string $report_date, string $normalized_title, string $show_time = ''): ?array {
+  private static function find_existing_entry(string $report_date, string $normalized_title, string $show_time = '', int $showing_id = 0): ?array {
     global $wpdb;
+
+    if ($showing_id > 0) {
+      $row = $wpdb->get_row($wpdb->prepare(
+        'SELECT id, studio, genre FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND showing_id = %d LIMIT 1',
+        $report_date,
+        $showing_id
+      ), ARRAY_A);
+      if ($row) {
+        return $row;
+      }
+    }
 
     if ($show_time !== '') {
       $row = $wpdb->get_row($wpdb->prepare(
-        'SELECT id FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND normalized_title = %s AND show_time = %s LIMIT 1',
+        'SELECT id, studio, genre FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND normalized_title = %s AND show_time = %s LIMIT 1',
         $report_date,
         $normalized_title,
         $show_time
@@ -637,7 +662,7 @@ class Store {
     }
 
     $row = $wpdb->get_row($wpdb->prepare(
-      'SELECT id FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND normalized_title = %s AND show_time = %s LIMIT 1',
+      'SELECT id, studio, genre FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND normalized_title = %s AND show_time = %s LIMIT 1',
       $report_date,
       $normalized_title,
       ''
@@ -1001,6 +1026,7 @@ class Store {
       'show_title' => $show_title,
       'normalized_title' => self::normalize_title($show_title),
       'show_time' => sanitize_text_field((string) ($data['show_time'] ?? $existing['show_time'])),
+      'presale_qty' => max(0, (int) ($data['presale_qty'] ?? $existing['presale_qty'] ?? 0)),
       'online_qty' => max(0, (int) ($data['online_qty'] ?? $existing['online_qty'])),
       'door_qty' => max(0, (int) ($data['door_qty'] ?? $existing['door_qty'])),
       'group_sub_qty' => max(0, (int) ($data['group_sub_qty'] ?? $existing['group_sub_qty'])),
@@ -1032,8 +1058,9 @@ class Store {
       }
 
       $show_time = sanitize_text_field((string) ($row['show_time'] ?? ''));
+      $showing_id = !empty($row['showing_id']) ? (int) $row['showing_id'] : 0;
       $normalized_title = self::normalize_title($show_title);
-      $existing = self::find_existing_live_entry($report_date, $normalized_title, $show_time);
+      $existing = self::find_existing_live_entry($report_date, $normalized_title, $show_time, $showing_id);
 
       $payload = [
         'updated_at' => $now,
@@ -1041,8 +1068,9 @@ class Store {
         'show_title' => $show_title,
         'normalized_title' => $normalized_title,
         'show_time' => $show_time,
-        'showing_id' => !empty($row['showing_id']) ? (int) $row['showing_id'] : null,
+        'showing_id' => $showing_id > 0 ? $showing_id : null,
         'theater_name' => sanitize_text_field((string) ($row['theater_name'] ?? '')),
+        'presale_qty' => max(0, (int) ($row['presale_qty'] ?? 0)),
         'online_qty' => max(0, (int) ($row['online_qty'] ?? 0)),
         'door_qty' => max(0, (int) ($row['door_qty'] ?? 0)),
         'group_sub_qty' => max(0, (int) ($row['group_sub_qty'] ?? 0)),
@@ -1076,8 +1104,19 @@ class Store {
     return ['created' => $created, 'updated' => $updated, 'skipped' => $skipped];
   }
 
-  private static function find_existing_live_entry(string $report_date, string $normalized_title, string $show_time): ?array {
+  private static function find_existing_live_entry(string $report_date, string $normalized_title, string $show_time, int $showing_id = 0): ?array {
     global $wpdb;
+    if ($showing_id > 0) {
+      $row = $wpdb->get_row($wpdb->prepare(
+        'SELECT id FROM ' . self::live_entries_table_name() . ' WHERE report_date = %s AND showing_id = %d LIMIT 1',
+        $report_date,
+        $showing_id
+      ), ARRAY_A);
+      if ($row) {
+        return $row;
+      }
+    }
+
     $row = $wpdb->get_row($wpdb->prepare(
       'SELECT id FROM ' . self::live_entries_table_name() . ' WHERE report_date = %s AND normalized_title = %s AND show_time = %s LIMIT 1',
       $report_date,

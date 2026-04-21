@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Roxy Event Booking (WooCommerce + Sling)
  * Description: Private/Public event booking calendar for Newport Roxy. Customers can book time slots, pay via WooCommerce, request invoicing for business bookings, order pizza, and automatically create staffing shifts in Sling.
- * Version: 1.4.7
+ * Version: 1.4.8
  * Author: Newport Roxy (AI Team)
  * Text Domain: roxy-event-booking
  * Update URI: https://github.com/Tototex/roxy-event-booking
@@ -10,10 +10,12 @@
 
 if (!defined('ABSPATH')) exit;
 
-define('ROXY_EB_VERSION', '1.4.7');
+define('ROXY_EB_VERSION', '1.4.8');
 define('ROXY_EB_PLUGIN_FILE', __FILE__);
 define('ROXY_EB_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ROXY_EB_PLUGIN_URL', plugin_dir_url(__FILE__));
+define('ROXY_EB_ASSETS_URL', defined('ROXY_SUITE_URL') ? ROXY_SUITE_URL . 'assets/event-booking/' : ROXY_EB_PLUGIN_URL . 'assets/');
+define('ROXY_EB_ASSETS_DIR', defined('ROXY_SUITE_PATH') ? ROXY_SUITE_PATH . 'assets/event-booking/' : ROXY_EB_PLUGIN_DIR . 'assets/');
 
 require_once ROXY_EB_PLUGIN_DIR . 'includes/schema.php';
 require_once ROXY_EB_PLUGIN_DIR . 'includes/settings.php';

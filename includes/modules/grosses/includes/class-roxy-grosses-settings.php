@@ -334,10 +334,10 @@ class Settings {
     }
     echo '</div>';
 
-    echo '<table class="widefat striped"><thead><tr><th>Date</th><th>Show</th><th>Show Time</th><th>Total</th><th>Online Ticket</th><th>Door Ticket</th><th>Group/Subscriber</th><th>Gross</th><th>Concessions</th><th>Actions</th></tr></thead><tbody>';
+    echo '<table class="widefat striped"><thead><tr><th>Date</th><th>Show</th><th>Show Time</th><th>Total</th><th>Presale Tickets</th><th>Online Ticket</th><th>Door Ticket</th><th>Group/Subscriber</th><th>Gross</th><th>Concessions</th><th>Actions</th></tr></thead><tbody>';
     foreach ($rows as $row) {
       $row_id = (int) ($row['id'] ?? 0);
-      echo '<tr><td>'.esc_html((string) ($row['report_date'] ?? '')).'</td><td>'.esc_html((string) ($row['show_title'] ?? '')).'</td><td>'.esc_html((string) ($row['show_time'] ?? '')).'</td><td>'.esc_html(number_format_i18n((int) ($row['total_tickets'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['online_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['door_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['group_sub_qty'] ?? 0))).'</td><td>$'.esc_html(number_format((float) ($row['gross_total'] ?? 0), 2)).'</td><td>$'.esc_html(number_format((float) ($row['concessions_total'] ?? 0), 2)).'</td><td><a class="button button-small" href="'.esc_url(self::edit_url('live', $row_id, [
+      echo '<tr><td>'.esc_html((string) ($row['report_date'] ?? '')).'</td><td>'.esc_html((string) ($row['show_title'] ?? '')).'</td><td>'.esc_html((string) ($row['show_time'] ?? '')).'</td><td>'.esc_html(number_format_i18n((int) ($row['total_tickets'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['presale_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['online_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['door_qty'] ?? 0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['group_sub_qty'] ?? 0))).'</td><td>$'.esc_html(number_format((float) ($row['gross_total'] ?? 0), 2)).'</td><td>$'.esc_html(number_format((float) ($row['concessions_total'] ?? 0), 2)).'</td><td><a class="button button-small" href="'.esc_url(self::edit_url('live', $row_id, [
         'tab' => 'live-shows',
         'live_search' => $search,
         'live_from' => $date_from,
@@ -350,7 +350,7 @@ class Settings {
         self::render_live_edit_row($row, $search, $year, $month, $day, $date_from, $date_to);
       }
     }
-    if (!$rows) echo '<tr><td colspan="10">No live show rows match the current filters.</td></tr>';
+    if (!$rows) echo '<tr><td colspan="11">No live show rows match the current filters.</td></tr>';
     echo '</tbody></table>';
     self::render_pagination($summary['row_count'] ?? 0, $per_page, $page_number, 'live_paged', [
       'page' => 'roxy-grosses',
@@ -600,7 +600,8 @@ class Settings {
     $timezone = new \DateTimeZone(self::get_report_timezone());
     $default_advertiser_end = (new \DateTimeImmutable($default_advertiser_date . ' 00:00:00', $timezone))->modify('first day of last month')->format('Y-m');
     $default_advertiser_start = $default_advertiser_end;
-    echo '<hr><h2>Email Tests</h2><p>Send a test email using the currently configured recipients and templates, as if the selected date were being processed normally.</p>';
+    $live_rows = Store::list_live_entries([], 200, 0);
+    echo '<hr><h2>Email Tests</h2><p>Send one-off test emails for daily grosses, advertiser summaries, and live-show grosses.</p>';
     echo '<div style="display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap;">';
 
     echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="min-width:320px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;">';
@@ -623,6 +624,24 @@ class Settings {
     echo '<p><label for="roxy-grosses-advertiser-start-month"><strong>Start month</strong></label><br><input id="roxy-grosses-advertiser-start-month" type="month" name="advertiser_start_month" value="'.esc_attr($default_advertiser_start).'"></p>';
     echo '<p><label for="roxy-grosses-advertiser-end-month"><strong>End month</strong></label><br><input id="roxy-grosses-advertiser-end-month" type="month" name="advertiser_end_month" value="'.esc_attr($default_advertiser_end).'"></p>';
     submit_button('Send Advertiser Email','secondary','submit',false);
+    echo '</form>';
+
+    echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="min-width:380px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;">';
+    wp_nonce_field('roxy_grosses_send_live_email');
+    echo '<input type="hidden" name="action" value="roxy_grosses_send_live_email">';
+    echo '<h3 style="margin-top:0;">Send Live Grosses Email</h3>';
+    echo '<p>Select a live show row, enter recipients, and choose whether concessions should be included.</p>';
+    echo '<p><label for="roxy-grosses-live-email-show"><strong>Live show</strong></label><br><select id="roxy-grosses-live-email-show" name="live_entry_id" style="width:100%; max-width:420px;">';
+    echo '<option value="">Select a live show</option>';
+    foreach ($live_rows as $row) {
+      $label = trim((string) ($row['report_date'] ?? '') . ' ' . (string) ($row['show_time'] ?? '') . ' - ' . (string) ($row['show_title'] ?? ''));
+      $label .= ' | Tickets ' . number_format_i18n((int) ($row['total_tickets'] ?? 0)) . ' | Gross $' . number_format((float) ($row['gross_total'] ?? 0), 2);
+      echo '<option value="'.esc_attr((string) ($row['id'] ?? 0)).'">'.esc_html($label).'</option>';
+    }
+    echo '</select></p>';
+    echo '<p><label for="roxy-grosses-live-email-recipients"><strong>Recipients</strong></label><br><input id="roxy-grosses-live-email-recipients" class="regular-text code" type="text" name="live_email_recipients" placeholder="name@example.com, another@example.com"></p>';
+    echo '<p><label><input type="checkbox" name="include_concessions" value="1"> Include concession sales</label></p>';
+    submit_button('Send Live Grosses Email','secondary','submit',false);
     echo '</form>';
 
     echo '</div>';
@@ -870,13 +889,14 @@ class Settings {
   }
 
   private static function render_live_edit_row(array $row, string $search, int $year, string $month, string $day, string $date_from = '', string $date_to = ''): void {
-    echo '<tr><td colspan="10"><form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">';
+    echo '<tr><td colspan="11"><form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">';
     wp_nonce_field('roxy_grosses_update_row');
     echo '<input type="hidden" name="action" value="roxy_grosses_update_row"><input type="hidden" name="dataset" value="live"><input type="hidden" name="entry_id" value="'.esc_attr((string) ($row['id'] ?? 0)).'">';
     echo '<input type="hidden" name="live_search" value="'.esc_attr($search).'"><input type="hidden" name="live_from" value="'.esc_attr($date_from).'"><input type="hidden" name="live_to" value="'.esc_attr($date_to).'"><input type="hidden" name="live_year" value="'.esc_attr((string) $year).'"><input type="hidden" name="live_month" value="'.esc_attr($month).'"><input type="hidden" name="live_day" value="'.esc_attr($day).'">';
     self::text_input('report_date', 'Date', (string) ($row['report_date'] ?? ''), 'date');
     self::text_input('show_title', 'Show', (string) ($row['show_title'] ?? ''));
     self::text_input('show_time', 'Show Time', (string) ($row['show_time'] ?? ''));
+    self::number_input('presale_qty', 'Presale', (int) ($row['presale_qty'] ?? 0));
     self::number_input('online_qty', 'Online', (int) ($row['online_qty'] ?? 0));
     self::number_input('door_qty', 'Door', (int) ($row['door_qty'] ?? 0));
     self::number_input('group_sub_qty', 'Group/Sub', (int) ($row['group_sub_qty'] ?? 0));

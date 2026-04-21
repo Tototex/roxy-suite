@@ -19,6 +19,7 @@ class CPT {
     add_filter('post_row_actions', [__CLASS__, 'row_actions'], 10, 2);
     add_action('admin_action_roxy_duplicate_weekend', [__CLASS__, 'handle_duplicate_weekend']);
     add_action('admin_notices', [__CLASS__, 'admin_notices']);
+    add_action('admin_notices', [__CLASS__, 'render_admin_tabs']);
   }
 
   public static function register(): void {
@@ -63,6 +64,18 @@ class CPT {
       'normal',
       'high'
     );
+  }
+
+  public static function render_admin_tabs(): void {
+    $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+    if (!$screen || $screen->id !== 'edit-' . self::POST_TYPE) {
+      return;
+    }
+
+    echo '<nav class="nav-tab-wrapper" style="margin:12px 0 16px;">';
+    echo '<a href="' . esc_url(admin_url('edit.php?post_type=' . self::POST_TYPE)) . '" class="nav-tab nav-tab-active">Showings</a>';
+    echo '<a href="' . esc_url(admin_url('admin.php?page=roxy-show-tickets&tab=settings')) . '" class="nav-tab">Settings</a>';
+    echo '</nav>';
   }
 
   public static function render_metabox($post): void {
@@ -163,10 +176,6 @@ class CPT {
     echo '<label><strong>Trailer / Media URL</strong></label>';
     echo '<input name="roxy_trailer_url" type="url" placeholder="https://www.youtube.com/watch?v=..." value="' . esc_attr((string) $trailer_url) . '">';
     echo '<div class="roxy-help">Optional. Supports YouTube or Vimeo embeds on the public event page.</div>';
-
-    echo '<label><strong>Legacy Product IDs</strong></label>';
-    echo '<textarea name="roxy_legacy_product_ids" rows="4" placeholder="One WooCommerce product ID per line" style="width:100%;max-width:480px">' . esc_textarea($legacy_product_ids) . '</textarea>';
-    echo '<div class="roxy-help">Optional bridge for already-sold legacy event products. These sales count toward this showing&#8217;s sold, revenue, and remaining seats, but the public event page will still only sell the new Roxy ticket products.</div>';
 
     if ($is_new_showing) {
       echo '<div id="roxy-schedule-builder-wrap" class="roxy-schedule-wrap"' . ($use_schedule_builder ? '' : ' hidden') . '>';
@@ -343,7 +352,6 @@ class CPT {
       '_roxy_live_future_price_2' => sanitize_text_field($_POST['roxy_live_future_price_2'] ?? ''),
       '_roxy_live_change_at_2' => sanitize_text_field($_POST['roxy_live_change_at_2'] ?? ''),
       '_roxy_trailer_url' => esc_url_raw($_POST['roxy_trailer_url'] ?? ''),
-      '_roxy_legacy_product_ids' => self::sanitize_legacy_product_ids($_POST['roxy_legacy_product_ids'] ?? ''),
     ];
 
     foreach ($shared_meta as $meta_key => $meta_value) {

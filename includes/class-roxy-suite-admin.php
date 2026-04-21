@@ -13,6 +13,8 @@ class Admin {
 
     public static function init(): void {
         add_action('admin_menu', [__CLASS__, 'admin_menu'], 10);
+        add_filter('parent_file', [__CLASS__, 'showings_parent_file']);
+        add_filter('submenu_file', [__CLASS__, 'showings_submenu_file']);
     }
 
     public static function admin_menu(): void {
@@ -30,8 +32,8 @@ class Admin {
         if (roxy_suite_module_enabled('show_tickets')) {
             add_submenu_page(
                 'roxy-suite',
-                'Show Tickets',
-                'Show Tickets',
+                'Showings',
+                'Showings',
                 roxy_suite_admin_capability(),
                 'roxy-show-tickets',
                 [__CLASS__, 'page_show_tickets']
@@ -136,14 +138,20 @@ class Admin {
     public static function page_show_tickets(): void {
         if (!roxy_suite_user_can_access_admin()) return;
 
-        $base = admin_url('admin.php?page=roxy-show-tickets');
+        $tab = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : '';
+        if ($tab !== 'settings') {
+            wp_safe_redirect(admin_url('edit.php?post_type=roxy_showing'));
+            exit;
+        }
+
+        $base = admin_url('admin.php?page=roxy-show-tickets&tab=settings');
 
         echo '<div class="wrap">';
-        echo '<h1>Show Tickets</h1>';
+        echo '<h1>Showings Settings</h1>';
 
         echo '<nav class="nav-tab-wrapper">';
+        echo '<a href="' . esc_url(admin_url('edit.php?post_type=roxy_showing')) . '" class="nav-tab">Showings</a>';
         echo '<a href="' . esc_url($base) . '" class="nav-tab nav-tab-active">Settings</a>';
-        echo '<a href="' . esc_url(admin_url('edit.php?post_type=roxy_showing')) . '" class="nav-tab">Showings ↗</a>';
         echo '</nav>';
 
         echo '<div class="roxy-suite-tab-content">';
@@ -151,6 +159,24 @@ class Admin {
         echo '</div>';
 
         echo '</div>';
+    }
+
+    public static function showings_parent_file($parent_file) {
+        $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+        if ($screen && $screen->post_type === 'roxy_showing') {
+            return 'roxy-suite';
+        }
+
+        return $parent_file;
+    }
+
+    public static function showings_submenu_file($submenu_file) {
+        $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+        if ($screen && $screen->post_type === 'roxy_showing') {
+            return 'roxy-show-tickets';
+        }
+
+        return $submenu_file;
     }
 
     public static function page_event_booking(): void {

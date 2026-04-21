@@ -56,11 +56,16 @@ class Roxy_Sub_Check {
       user_id BIGINT UNSIGNED NULL,
       status VARCHAR(50) NULL,
       is_active TINYINT(1) NOT NULL DEFAULT 0,
+      showing_id BIGINT UNSIGNED NULL,
+      source VARCHAR(60) NOT NULL DEFAULT 'nfc_scan',
+      quantity INT NOT NULL DEFAULT 1,
       ip VARCHAR(45) NULL,
       user_agent TEXT NULL,
       PRIMARY KEY (id),
       KEY subscription_id (subscription_id),
-      KEY scanned_at (scanned_at)
+      KEY scanned_at (scanned_at),
+      KEY showing_id (showing_id),
+      KEY source (source)
     ) {$charset};";
 
     dbDelta($sql);
@@ -132,6 +137,7 @@ class Roxy_Sub_Check {
       'subline' => !empty($result['active']) ? 'Friends of the Roxy membership verified.' : 'This membership is not currently active.',
       'member_name' => (string) ($result['name'] ?? ''),
       'customer_name' => (string) ($result['name'] ?? ''),
+      'customer_email' => (string) ($result['email'] ?? ''),
       'subscription_id' => $sub_id,
       'membership_qty' => (int) ($result['membership_qty'] ?? 0),
       'member_since' => (string) ($result['member_since'] ?? ''),
@@ -150,7 +156,10 @@ class Roxy_Sub_Check {
         $sub_id,
         !empty($result['user_id']) ? absint($result['user_id']) : null,
         !empty($result['status']) ? (string)$result['status'] : null,
-        !empty($result['active']) ? 1 : 0
+        !empty($result['active']) ? 1 : 0,
+        0,
+        'nfc_scan',
+        1
       );
       $payload['last_visit'] = self::get_last_visit($sub_id);
     }
@@ -252,10 +261,11 @@ class Roxy_Sub_Check {
     echo '</div></div></body></html>';
   }
 
-  private static function check_subscription($sub_id) {
+  public static function check_subscription($sub_id) {
     $out = [
       'active' => false,
       'name' => '',
+      'email' => '',
       'user_id' => 0,
       'status' => '',
       'next_payment' => '',
@@ -289,6 +299,7 @@ class Roxy_Sub_Check {
     }
 
     $out['user_id'] = (int)$user->ID;
+    $out['email'] = (string)$user->user_email;
 
     $first = get_user_meta($user->ID, 'first_name', true);
     $last  = get_user_meta($user->ID, 'last_name', true);
@@ -324,7 +335,139 @@ class Roxy_Sub_Check {
     return $out;
   }
 
-  private static function log_scan($sub_id, $user_id, $status, $is_active) {
+  public static function log_member_visit(int $sub_id, int $showing_id = 0, int $quantity = 1, string $source = 'manual_admit'): array {
+    $result = self::check_subscription($sub_id);
+    if (!empty($result['error'])) {
+      return ['ok' => false, 'message' => (string) $result['error'], 'payload' => self::get_member_payload($sub_id, false)];
+    }
+
+    if (empty($result['active'])) {
+      return ['ok' => false, 'message' => 'Membership is not active.', 'payload' => self::get_member_payload($sub_id, false)];
+    }
+
+    $max_qty = max(1, (int) ($result['membership_qty'] ?? 1));
+    $quantity = max(1, min($quantity, $max_qty));
+    self::log_scan(
+      $sub_id,
+      !empty($result['user_id']) ? absint($result['user_id']) : null,
+      !empty($result['status']) ? (string) $result['status'] : null,
+      !empty($result['active']) ? 1 : 0,
+      $showing_id,
+      $source,
+      $quantity
+    );
+
+    $payload = self::get_member_payload($sub_id, false);
+    $payload['admitted'] = true;
+    $payload['admit_quantity'] = $quantity;
+    $payload['admit_source'] = $source;
+    $payload['admit_showing_id'] = $showing_id;
+
+    return ['ok' => true, 'message' => 'Member admitted.', 'payload' => $payload];
+  }
+
+  public static function search_members(string $term, int $limit = 20): array {
+    $term = strtolower(trim($term));
+    if ($term === '') return [];
+    $limit = max(1, min(50, $limit));
+
+    if (!function_exists('wcs_get_subscriptions')) {
+      return [];
+    }
+
+    $subscriptions = wcs_get_subscriptions([
+      'subscription_status' => ['active', 'pending-cancel'],
+      'subscriptions_per_page' => -1,
+      'orderby' => 'ID',
+      'order' => 'DESC',
+    ]);
+
+    $matches = [];
+    foreach ((array) $subscriptions as $sub_id => $sub) {
+      $id = is_object($sub) && method_exists($sub, 'get_id') ? (int) $sub->get_id() : (int) $sub_id;
+      if ($id <= 0) continue;
+
+      $payload = self::get_member_payload($id, false);
+      $haystack = strtolower(trim(
+        (string) ($payload['member_name'] ?? '') . ' ' .
+        (string) ($payload['customer_email'] ?? '') . ' ' .
+        (string) ($payload['subscription_id'] ?? '')
+      ));
+      if ($haystack === '' || strpos($haystack, $term) === false) {
+        continue;
+      }
+      $matches[] = $payload;
+      if (count($matches) >= $limit) break;
+    }
+
+    return $matches;
+  }
+
+  public static function showing_admit_rows(int $showing_id): array {
+    if ($showing_id <= 0) return [];
+    global $wpdb;
+    self::create_log_table();
+    $table = self::table_name();
+
+    $rows = $wpdb->get_results(
+      $wpdb->prepare(
+        "SELECT subscription_id, user_id, MAX(scanned_at) AS scanned_at, SUM(quantity) AS quantity
+         FROM {$table}
+         WHERE showing_id = %d
+           AND is_active = 1
+           AND source IN ('manual_admit_walkup', 'nfc_admit_walkup')
+         GROUP BY subscription_id, user_id
+         ORDER BY scanned_at ASC",
+        $showing_id
+      ),
+      ARRAY_A
+    );
+
+    $out = [];
+    foreach ((array) $rows as $row) {
+      $sub_id = (int) ($row['subscription_id'] ?? 0);
+      if ($sub_id <= 0) continue;
+      $payload = self::get_member_payload($sub_id, false);
+      if (empty($payload['found']) || ($payload['status'] ?? '') !== 'valid') continue;
+
+      $qty = max(1, (int) ($row['quantity'] ?? 1));
+      $key = 'subscriber-walkup-' . $sub_id;
+      $out[] = [
+        'customer_key' => $key,
+        'name' => (string) ($payload['member_name'] ?? 'Subscriber'),
+        'email' => (string) ($payload['customer_email'] ?? ''),
+        'qty' => $qty,
+        'ticket_types' => ['Subscriber walk-up' => $qty],
+        'orders' => [],
+        'latest_order_ts' => strtotime((string) ($row['scanned_at'] ?? '')) ?: 0,
+        'source' => 'member_admit',
+        'subscription_id' => $sub_id,
+      ];
+    }
+    return $out;
+  }
+
+  public static function admitted_quantity_for_showing(int $sub_id, int $showing_id, string $source_like = ''): int {
+    if ($sub_id <= 0 || $showing_id <= 0) return 0;
+    global $wpdb;
+    self::create_log_table();
+    $table = self::table_name();
+    if ($source_like !== '') {
+      return (int) $wpdb->get_var($wpdb->prepare(
+        "SELECT COALESCE(SUM(quantity), 0) FROM {$table} WHERE subscription_id = %d AND showing_id = %d AND source LIKE %s",
+        $sub_id,
+        $showing_id,
+        $source_like
+      ));
+    }
+    return (int) $wpdb->get_var($wpdb->prepare(
+      "SELECT COALESCE(SUM(quantity), 0) FROM {$table} WHERE subscription_id = %d AND showing_id = %d",
+      $sub_id,
+      $showing_id
+    ));
+  }
+
+  private static function log_scan($sub_id, $user_id, $status, $is_active, int $showing_id = 0, string $source = 'nfc_scan', int $quantity = 1) {
     global $wpdb;
     self::create_log_table();
     $table = self::table_name();
@@ -346,10 +489,13 @@ class Roxy_Sub_Check {
         'user_id'         => $user_id ? (int)$user_id : null,
         'status'          => $status ? sanitize_text_field($status) : null,
         'is_active'       => (int)$is_active,
+        'showing_id'      => $showing_id > 0 ? (int)$showing_id : null,
+        'source'          => sanitize_key($source ?: 'nfc_scan'),
+        'quantity'        => max(1, (int)$quantity),
         'ip'              => $ip,
         'user_agent'      => $ua
       ],
-      ['%s','%d','%d','%s','%d','%s','%s']
+      ['%s','%d','%d','%s','%d','%d','%s','%d','%s','%s']
     );
   }
 

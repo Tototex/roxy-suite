@@ -137,13 +137,17 @@
   function stateHtml(payload){
     if (payload && payload.credential_type === 'member') {
       const active = payload.status === 'valid';
+      const admitted = !!payload.admitted;
+      const alreadyAdmitted = !!payload.already_admitted;
       const photo = payload.photo_url ? `<div class="roxy-door-member-photo-wrap"><img class="roxy-door-member-photo" src="${escapeHtml(payload.photo_url)}" alt="Member photo"></div>` : '';
       const qty = payload.membership_qty ? `<div><dt>Memberships</dt><dd>${escapeHtml(String(payload.membership_qty))}</dd></div>` : '';
+      const admitQty = (admitted || alreadyAdmitted) ? `<div><dt>${alreadyAdmitted ? 'Already in' : 'Admitted'}</dt><dd>${escapeHtml(String(payload.admit_quantity || 1))}</dd></div>` : '';
       const since = payload.member_since ? `<div class="roxy-door-meta"><strong>Member since:</strong> ${escapeHtml(payload.member_since)}</div>` : '';
       const lastVisit = payload.last_visit ? `<div class="roxy-door-meta"><strong>Last visit:</strong> ${escapeHtml(payload.last_visit)}</div>` : '';
       const nextPay = payload.next_payment ? `<div class="roxy-door-meta"><strong>Next payment:</strong> ${escapeHtml(payload.next_payment)}</div>` : '';
       const statusLabel = payload.status_label ? `<div class="roxy-door-meta"><strong>Status:</strong> ${escapeHtml(payload.status_label)}</div>` : '';
-      return `<div class="roxy-door-state roxy-door-state-${active ? 'valid' : 'invalid'}"><div class="roxy-door-kicker">${active ? 'Member Verified' : 'Membership Needs Review'}</div><div class="roxy-door-title" id="roxy-door-modal-title">${escapeHtml(payload.headline || 'Membership')}</div><p>${escapeHtml(payload.subline || '')}</p>${photo}<dl class="roxy-door-details"><div><dt>Member</dt><dd>${escapeHtml(payload.member_name || payload.customer_name || 'Unknown')}</dd></div><div><dt>Subscription</dt><dd>#${escapeHtml(payload.subscription_id || '')}</dd></div>${qty}</dl>${statusLabel}${since}${lastVisit}${nextPay}<div class="roxy-door-token">${escapeHtml(payload.member_check_url || payload.token || '')}</div><div class="roxy-door-result-actions"><button type="button" class="button button-primary roxy-door-rescan">Done / Next Scan</button>${payload.member_check_url ? `<a href="${escapeHtml(payload.member_check_url)}" target="_blank" rel="noopener" class="button">Open Member Check</a>` : ''}</div></div>`;
+      const admitSource = payload.admit_source ? `<div class="roxy-door-meta"><strong>Admission:</strong> ${escapeHtml(payload.admit_source.replace(/_/g, ' '))}${payload.showing_title ? ' to ' + escapeHtml(payload.showing_title) : ''}</div>` : '';
+      return `<div class="roxy-door-state roxy-door-state-${active ? 'valid' : 'invalid'}"><div class="roxy-door-kicker">${admitted ? 'Member Admitted' : (alreadyAdmitted ? 'Already Admitted' : (active ? 'Member Verified' : 'Membership Needs Review'))}</div><div class="roxy-door-title" id="roxy-door-modal-title">${escapeHtml(admitted ? 'Subscriber admitted' : (alreadyAdmitted ? 'Subscriber already arrived' : (payload.headline || 'Membership')))}</div><p>${escapeHtml(admitted ? 'This subscriber has been logged for the selected showing.' : (alreadyAdmitted ? (payload.admit_error || 'This subscriber is already marked arrived for the selected showing.') : (payload.subline || '')))}</p>${photo}<dl class="roxy-door-details"><div><dt>Member</dt><dd>${escapeHtml(payload.member_name || payload.customer_name || 'Unknown')}</dd></div><div><dt>Subscription</dt><dd>#${escapeHtml(payload.subscription_id || '')}</dd></div>${qty}${admitQty}</dl>${admitSource}${statusLabel}${since}${lastVisit}${nextPay}<div class="roxy-door-token">${escapeHtml(payload.member_check_url || payload.token || '')}</div><div class="roxy-door-result-actions"><button type="button" class="button button-primary roxy-door-rescan">Done / Next Scan</button>${payload.member_check_url ? `<a href="${escapeHtml(payload.member_check_url)}" target="_blank" rel="noopener" class="button">Open Member Check</a>` : ''}</div></div>`;
     }
     if (!payload || payload.found === false || (payload.status === 'invalid' && !payload.ticket_id)) {
       const token = escapeHtml((payload && payload.token) || '');
@@ -218,12 +222,13 @@
         addRecentScan(activeMember ? 'member_active' : 'member_inactive', payload);
         triggerFlash(activeMember ? 'valid' : 'invalid');
         playSound(activeMember ? 'valid' : 'invalid');
+        if (payload.attendance) renderAttendance(payload.attendance);
         if (activeMember && autoResumeEnabled()) {
-          setOverlay('Member verified');
-          setNote('Membership verified. Returning to scan mode…');
+          setOverlay(payload.admitted ? 'Member admitted' : (payload.already_admitted ? 'Already admitted' : 'Member verified'));
+          setNote((payload.admitted ? 'Member admitted. ' : (payload.already_admitted ? 'Already admitted. ' : 'Membership verified. ')) + 'Returning to scan mode…');
           window.setTimeout(() => { idle(); resumeScanning(); }, 3000);
         } else {
-          setNote(activeMember ? 'Membership verified.' : 'Membership needs review.');
+          setNote(activeMember ? (payload.admitted ? 'Member admitted.' : (payload.already_admitted ? 'Already admitted.' : 'Membership verified.')) : 'Membership needs review.');
         }
       } else if (payload.status === 'valid') {
         triggerFlash('valid');

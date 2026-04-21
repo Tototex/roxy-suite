@@ -6,7 +6,7 @@ if (!defined('ABSPATH')) exit;
 class Sales {
   private static array $stats_cache = [];
   private const META_KEY = '_roxy_sales_stats';
-  private const CACHE_VERSION = 1;
+  private const CACHE_VERSION = 2;
 
   public static function init(): void {
     add_action('woocommerce_order_status_changed', [__CLASS__, 'on_order_changed'], 20, 1);
@@ -101,6 +101,7 @@ class Sales {
 
     $stats = self::empty_stats();
     $stats['ticket_types'] = [];
+    $showing_date = self::showing_date($showing_id);
 
     $order_ids = wc_get_orders([
       'limit' => -1,
@@ -121,6 +122,8 @@ class Sales {
       $order = wc_get_order($oid);
       if (!$order) continue;
 
+      $order_date = self::order_date($order);
+      $is_presale_order = $showing_date !== '' && $order_date !== '' && $order_date < $showing_date;
       $matched_order = false;
       foreach ($order->get_items() as $item) {
         $pid = (int) $item->get_product_id();
@@ -135,6 +138,10 @@ class Sales {
         $stats['gross_revenue'] += $line_total;
         if ($type === 'subscriber') {
           $stats['subscriber_qty'] += $qty;
+        } elseif ($is_presale_order) {
+          $stats['presale_qty'] += $qty;
+        } else {
+          $stats['day_of_qty'] += $qty;
         }
 
         if (!isset($stats['ticket_types'][$type])) {
@@ -264,11 +271,43 @@ class Sales {
     }
   }
 
+  private static function showing_date(int $showing_id): string {
+    $raw = (string) get_post_meta($showing_id, '_roxy_start', true);
+    if ($raw === '') {
+      return '';
+    }
+
+    try {
+      return (new \DateTimeImmutable($raw, wp_timezone()))->format('Y-m-d');
+    } catch (\Throwable $e) {
+      return substr($raw, 0, 10);
+    }
+  }
+
+  private static function order_date($order): string {
+    if (!is_object($order) || !method_exists($order, 'get_date_created')) {
+      return '';
+    }
+
+    $created = $order->get_date_created();
+    if (!$created || !method_exists($created, 'setTimezone')) {
+      return '';
+    }
+
+    try {
+      return $created->setTimezone(wp_timezone())->date('Y-m-d');
+    } catch (\Throwable $e) {
+      return '';
+    }
+  }
+
   private static function empty_stats(): array {
     return [
       'sold_qty' => 0,
       'paid_qty' => 0,
       'subscriber_qty' => 0,
+      'presale_qty' => 0,
+      'day_of_qty' => 0,
       'gross_revenue' => 0.0,
       'order_count' => 0,
       'ticket_types' => [],

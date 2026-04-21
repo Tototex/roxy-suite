@@ -6,41 +6,65 @@ function roxy_eb_register_shortcodes() {
 
     add_action('wp_enqueue_scripts', function () {
         if (!is_singular()) return;
-        global $post;
-        if (!$post || strpos($post->post_content, '[roxy_booking_calendar') === false) return;
-
-        wp_enqueue_style('roxy-eb-fullcalendar', 'https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css', [], ROXY_EB_VERSION);
-        wp_enqueue_script('roxy-eb-fullcalendar', 'https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js', [], ROXY_EB_VERSION, true);
-
-        wp_enqueue_style('roxy-eb', ROXY_EB_PLUGIN_URL . 'assets/roxy-eb.css', [], ROXY_EB_VERSION);
-        wp_enqueue_script('roxy-eb', ROXY_EB_PLUGIN_URL . 'assets/roxy-eb.js', ['jquery', 'roxy-eb-fullcalendar'], ROXY_EB_VERSION, true);
-
-        $settings = roxy_eb_get_settings();
-        wp_localize_script('roxy-eb', 'RoxyEB', [
-            'ajaxUrl' => admin_url('admin-ajax.php'),
-            'nonce' => wp_create_nonce('roxy_eb_nonce'),
-            'leadTimeHours' => intval($settings['lead_time_hours']),
-            'incrementMinutes' => intval($settings['time_increment_minutes']),
-            'openTime' => $settings['open_time'],
-            'closeTime' => $settings['close_time'],
-            'guestCap' => intval($settings['guest_cap']),
-            'pizzaPrice' => intval($settings['pizza_price'] ?? 18),
-            'bulkItemPrice' => intval($settings['bulk_item_price'] ?? 3),
-            'prices' => [
-                'under' => intval($settings['base_price_under']),
-                'over' => intval($settings['base_price_over']),
-                'extra' => intval($settings['extra_hour_price']),
-            ],
-            'cancelFreeDays' => intval($settings['cancel_free_days']),
-            'timezone' => wp_timezone_string(),
-        ]);
+        if (!roxy_eb_current_page_has_calendar()) return;
+        roxy_eb_enqueue_calendar_assets();
     });
 
     add_action('wp_ajax_roxy_eb_calendar_blocks', 'roxy_eb_ajax_calendar_blocks');
     add_action('wp_ajax_nopriv_roxy_eb_calendar_blocks', 'roxy_eb_ajax_calendar_blocks');
 }
 
+function roxy_eb_current_page_has_calendar(): bool {
+    global $post;
+    if (!$post instanceof WP_Post) return false;
+
+    if (has_shortcode((string) $post->post_content, 'roxy_booking_calendar')) {
+        return true;
+    }
+
+    $elementor_data = (string) get_post_meta((int) $post->ID, '_elementor_data', true);
+    if ($elementor_data !== '' && strpos($elementor_data, 'roxy_booking_calendar') !== false) {
+        return true;
+    }
+
+    return in_array((string) $post->post_name, ['rent-the-roxy', 'private-events'], true);
+}
+
+function roxy_eb_enqueue_calendar_assets(): void {
+    wp_enqueue_style('roxy-eb-fullcalendar', 'https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css', [], ROXY_EB_VERSION);
+    wp_enqueue_script('roxy-eb-fullcalendar', 'https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js', [], ROXY_EB_VERSION, true);
+
+    wp_enqueue_style('roxy-eb', ROXY_EB_ASSETS_URL . 'roxy-eb.css', [], ROXY_EB_VERSION);
+    wp_enqueue_script('roxy-eb', ROXY_EB_ASSETS_URL . 'roxy-eb.js', ['jquery', 'roxy-eb-fullcalendar'], ROXY_EB_VERSION, true);
+
+    static $localized = false;
+    if ($localized) return;
+    $localized = true;
+
+    $settings = roxy_eb_get_settings();
+    wp_localize_script('roxy-eb', 'RoxyEB', [
+        'ajaxUrl' => admin_url('admin-ajax.php'),
+        'nonce' => wp_create_nonce('roxy_eb_nonce'),
+        'leadTimeHours' => intval($settings['lead_time_hours']),
+        'incrementMinutes' => intval($settings['time_increment_minutes']),
+        'openTime' => $settings['open_time'],
+        'closeTime' => $settings['close_time'],
+        'guestCap' => intval($settings['guest_cap']),
+        'pizzaPrice' => intval($settings['pizza_price'] ?? 18),
+        'bulkItemPrice' => intval($settings['bulk_item_price'] ?? 3),
+        'prices' => [
+            'under' => intval($settings['base_price_under']),
+            'over' => intval($settings['base_price_over']),
+            'extra' => intval($settings['extra_hour_price']),
+        ],
+        'cancelFreeDays' => intval($settings['cancel_free_days']),
+        'timezone' => wp_timezone_string(),
+    ]);
+}
+
 function roxy_eb_shortcode_calendar() {
+    roxy_eb_enqueue_calendar_assets();
+
     ob_start();
     if (!empty($_GET['roxy_eb_submitted']) && $_GET['roxy_eb_submitted'] === 'invoice') {
         echo '<div class="roxy-eb-alert roxy-eb-alert--success"><div><strong>Booking request received.</strong> We will follow up with invoice details.</div></div>';

@@ -19,7 +19,7 @@ function roxy_eb_register_my_account_endpoints() {
     add_action('wp_enqueue_scripts', function () {
         if (!function_exists('is_account_page') || !is_account_page()) return;
         if (!function_exists('is_wc_endpoint_url') || !is_wc_endpoint_url('roxy-bookings')) return;
-        wp_enqueue_style('roxy-eb', ROXY_EB_PLUGIN_URL . 'assets/roxy-eb.css', [], ROXY_EB_VERSION);
+        wp_enqueue_style('roxy-eb', ROXY_EB_ASSETS_URL . 'roxy-eb.css', [], ROXY_EB_VERSION);
     });
 
     add_action('wp_loaded', function () {

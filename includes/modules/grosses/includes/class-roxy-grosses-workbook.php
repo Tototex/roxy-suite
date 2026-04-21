@@ -390,7 +390,16 @@ class Workbook {
         $body .= "\nGenerated automatically by the Roxy Grosses plugin.";
       }
 
-      $sent = wp_mail($to, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$workbook_path]);
+      // Keep advertiser recipients private: the visible To address should be a theater inbox, not the admin alert inbox.
+      $mail_to = 'info@newportroxy.com';
+      $headers = ['Content-Type: text/plain; charset=UTF-8'];
+      foreach ($to as $bcc_email) {
+        if ($bcc_email && is_email($bcc_email)) {
+          $headers[] = 'Bcc: ' . $bcc_email;
+        }
+      }
+
+      $sent = wp_mail($mail_to, $subject, $body, $headers, [$workbook_path]);
       if (!$sent) {
         throw new \RuntimeException('WordPress could not send the advertiser summary email.');
       }

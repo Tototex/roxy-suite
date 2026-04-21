@@ -32,6 +32,13 @@ class Updater {
             return;
         }
 
+        // Never let update checks block public page rendering. Bluehost shared
+        // hosting can be slow to external APIs, so keep GitHub calls in admin,
+        // cron, or WP-CLI contexts only.
+        if (!is_admin() && !wp_doing_cron() && !(defined('WP_CLI') && WP_CLI)) {
+            return;
+        }
+
         add_filter('pre_set_site_transient_update_plugins', [__CLASS__, 'filter_update_plugins']);
         add_filter('plugins_api', [__CLASS__, 'filter_plugins_api'], 20, 3);
         add_filter('upgrader_post_install', [__CLASS__, 'filter_upgrader_post_install'], 20, 3);
@@ -160,7 +167,7 @@ class Updater {
                 'Accept'     => 'application/vnd.github+json',
                 'User-Agent' => 'WordPress',
             ],
-            'timeout' => 15,
+            'timeout' => 5,
         ]);
 
         if (is_wp_error($response)) {

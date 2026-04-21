@@ -695,7 +695,20 @@ function roxy_will_call_showing_dropdown($selected, bool $show_archived = false)
 
 function roxy_will_call_get_showing_list($showing_id) {
   $product_ids = roxy_will_call_showing_product_ids((int) $showing_id);
-  return roxy_will_call_get_list($product_ids, roxy_will_call_showing_type_labels((int) $showing_id));
+  $result = roxy_will_call_get_list($product_ids, roxy_will_call_showing_type_labels((int) $showing_id));
+  if (class_exists('Roxy_Sub_Check') && method_exists('Roxy_Sub_Check', 'showing_admit_rows')) {
+    $member_rows = Roxy_Sub_Check::showing_admit_rows((int) $showing_id);
+    foreach ($member_rows as $member_row) {
+      $result['rows'][] = $member_row;
+      $result['totals']['total_qty'] = (int) ($result['totals']['total_qty'] ?? 0) + max(0, (int) ($member_row['qty'] ?? 0));
+    }
+    if ($member_rows) {
+      usort($result['rows'], function ($a, $b) {
+        return strcasecmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
+      });
+    }
+  }
+  return $result;
 }
 
 function roxy_will_call_get_list($product_ids, array $ticket_type_labels = []) {
@@ -816,6 +829,9 @@ function roxy_will_call_checked_in_type_totals(array $rows, array $checkins): ar
     }
 
     $used_qty = isset($checkins[$customer_key]['used_qty']) ? (int) $checkins[$customer_key]['used_qty'] : 0;
+    if (($row['source'] ?? '') === 'member_admit') {
+      $used_qty = (int) ($row['qty'] ?? 0);
+    }
     if ($used_qty <= 0) {
       continue;
     }
@@ -869,6 +885,12 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
   foreach ($rows as $r) {
     $key = $r['customer_key'];
     $saved = isset($checkins[$key]) ? $checkins[$key] : ['checked_in' => 0, 'used_qty' => 0];
+    if (($r['source'] ?? '') === 'member_admit') {
+      $saved = ['checked_in' => 1, 'used_qty' => (int) ($r['qty'] ?? 0)];
+    }
+    if (($r['source'] ?? '') === 'member_admit') {
+      $saved = ['checked_in' => 1, 'used_qty' => $qty];
+    }
     $used_qty = isset($saved['used_qty']) ? (int) $saved['used_qty'] : 0;
     if ($used_qty < 0) $used_qty = 0;
     if ($used_qty > (int) $r['qty']) $used_qty = (int) $r['qty'];
@@ -950,7 +972,7 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
         $order_ids_for_search[] = (string) absint($oid);
       }
     }
-    $orders_html = $order_links ? implode(', ', $order_links) : '—';
+    $orders_html = $order_links ? implode(', ', $order_links) : (($r['source'] ?? '') === 'member_admit' ? 'Subscriber admit' : '—');
     $latest_date = '—';
     if (!empty($r['latest_order_ts'])) {
       $latest_date = wp_date('Y-m-d g:ia', (int) $r['latest_order_ts']);
