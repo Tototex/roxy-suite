@@ -1169,3 +1169,233 @@ add_action('wp_ajax_roxy_will_call_save', function () {
     'ticket_sync_count' => count($updated_ticket_ids),
   ]);
 });
+
+
+// ── Door Staff Shortcode [roxy_door_checkin] ───────────────────────────────────
+// Renders a mobile-friendly will-call interface on any page/post.
+// Requires the roxy_suite_access capability (granted to shop managers and admins).
+// Usage: [roxy_door_checkin] or [roxy_door_checkin mode="showing" id="123"]
+
+add_shortcode('roxy_door_checkin', 'roxy_door_checkin_shortcode');
+
+function roxy_door_checkin_shortcode($atts) {
+  // Gate: requires roxy_suite_access or manage_options
+  if (!current_user_can(roxy_suite_admin_capability()) && !current_user_can('manage_options')) {
+    return '<p style="color:#b42318;font-weight:700;">Door check-in requires staff login.</p>';
+  }
+
+  $atts = shortcode_atts([
+    'mode' => 'showing', // 'showing' or 'product'
+    'id'   => 0,         // pre-selected showing_id or product_id
+  ], $atts, 'roxy_door_checkin');
+
+  $preset_mode = in_array($atts['mode'], ['showing', 'product'], true) ? $atts['mode'] : 'showing';
+  $preset_id   = absint($atts['id']);
+
+  // Read GET params to allow URL-based overrides (e.g. ?door_mode=showing&door_id=42)
+  $mode  = isset($_GET['door_mode']) && in_array(sanitize_key(wp_unslash($_GET['door_mode'])), ['showing', 'product'], true)
+         ? sanitize_key(wp_unslash($_GET['door_mode'])) : $preset_mode;
+  $sel_id = isset($_GET['door_id']) ? absint($_GET['door_id']) : $preset_id;
+
+  ob_start();
+  ?>
+  <div id="roxy-door-wrap" style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;padding:0 8px;">
+    <style>
+      #roxy-door-wrap * { box-sizing:border-box; }
+      #roxy-door-wrap h2 { font-size:22px; margin:0 0 14px; }
+      #roxy-door-wrap .roxy-door-controls { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
+      #roxy-door-wrap select, #roxy-door-wrap input[type=search] { width:100%; font-size:16px; padding:10px 12px; border:1.5px solid #ccc; border-radius:8px; }
+      #roxy-door-wrap .roxy-door-load-btn { display:inline-block; background:#111; color:#fff; padding:10px 22px; border-radius:8px; font-size:16px; font-weight:700; text-decoration:none; border:none; cursor:pointer; }
+      #roxy-door-wrap .roxy-door-search-wrap { margin-bottom:14px; }
+      #roxy-door-wrap .roxy-door-counter { display:flex; gap:12px; margin-bottom:18px; flex-wrap:wrap; }
+      #roxy-door-wrap .roxy-door-stat { flex:1 1 120px; background:#f6f7f7; border:1px solid #ddd; border-radius:10px; padding:12px 14px; }
+      #roxy-door-wrap .roxy-door-stat .label { font-size:11px; color:#666; text-transform:uppercase; letter-spacing:.04em; margin-bottom:4px; }
+      #roxy-door-wrap .roxy-door-stat .value { font-size:28px; font-weight:800; line-height:1; }
+      #roxy-door-wrap .roxy-door-list { list-style:none; margin:0; padding:0; }
+      #roxy-door-wrap .roxy-door-list li { display:flex; align-items:center; justify-content:space-between; padding:12px 14px; border-bottom:1px solid #eee; gap:12px; }
+      #roxy-door-wrap .roxy-door-list li:first-child { border-top:1px solid #eee; }
+      #roxy-door-wrap .roxy-door-name { font-size:16px; font-weight:700; flex:1 1 auto; }
+      #roxy-door-wrap .roxy-door-qty { font-size:13px; color:#666; margin-top:2px; }
+      #roxy-door-wrap .roxy-door-checkin-btn { flex:0 0 auto; background:#16a34a; color:#fff; border:none; border-radius:8px; padding:10px 18px; font-size:15px; font-weight:700; cursor:pointer; min-width:90px; }
+      #roxy-door-wrap .roxy-door-checkin-btn.checked { background:#111; }
+      #roxy-door-wrap .roxy-door-checkin-btn.checked::after { content:" ✓"; }
+      #roxy-door-wrap .roxy-door-empty { padding:20px 0; color:#888; text-align:center; }
+    </style>
+
+    <h2>🎟 Door Check-in</h2>
+
+    <form method="get" class="roxy-door-controls">
+      <?php
+      // Preserve any other GET params the current page might have (e.g. page name)
+      foreach ($_GET as $k => $v) {
+        if (in_array($k, ['door_mode', 'door_id'], true)) continue;
+        echo '<input type="hidden" name="' . esc_attr(sanitize_key($k)) . '" value="' . esc_attr((string) $v) . '">';
+      }
+      ?>
+      <div style="flex:0 0 130px;">
+        <label style="display:block;font-size:12px;font-weight:700;margin-bottom:4px;">Mode</label>
+        <select name="door_mode">
+          <option value="showing" <?php selected($mode, 'showing'); ?>>Showing</option>
+          <option value="product" <?php selected($mode, 'product'); ?>>Product</option>
+        </select>
+      </div>
+      <div style="flex:1 1 200px;">
+        <label style="display:block;font-size:12px;font-weight:700;margin-bottom:4px;"><?php echo $mode === 'product' ? 'Product ID' : 'Showing ID'; ?></label>
+        <?php if ($mode === 'showing'): ?>
+          <?php echo roxy_will_call_showing_dropdown($sel_id, false); ?>
+        <?php else: ?>
+          <?php echo roxy_will_call_product_dropdown($sel_id); ?>
+        <?php endif; ?>
+      </div>
+      <div style="align-self:flex-end;">
+        <button type="submit" class="roxy-door-load-btn">Load</button>
+      </div>
+    </form>
+
+    <?php if ($sel_id > 0): ?>
+      <?php
+      if ($mode === 'showing') {
+        $result = roxy_will_call_get_showing_list($sel_id);
+      } else {
+        $result = roxy_will_call_get_list([$sel_id]);
+      }
+      $rows   = $result['rows'] ?? [];
+      $totals = $result['totals'] ?? [];
+      $total_sold     = intval($totals['sold'] ?? 0);
+      $total_checked  = intval($totals['checked_in'] ?? 0);
+      $context_numeric = roxy_will_call_context_numeric_id($mode, $sel_id);
+      ?>
+
+      <div class="roxy-door-search-wrap">
+        <input type="search" id="roxy-door-search" placeholder="Search by name or email…" style="max-width:100%;">
+      </div>
+
+      <div class="roxy-door-counter">
+        <div class="roxy-door-stat">
+          <div class="label">Checked In</div>
+          <div class="value" id="roxy-door-count-in"><?php echo esc_html($total_checked); ?></div>
+        </div>
+        <div class="roxy-door-stat">
+          <div class="label">Remaining</div>
+          <div class="value" id="roxy-door-count-remaining"><?php echo esc_html(max(0, $total_sold - $total_checked)); ?></div>
+        </div>
+        <div class="roxy-door-stat">
+          <div class="label">Total Sold</div>
+          <div class="value"><?php echo esc_html($total_sold); ?></div>
+        </div>
+      </div>
+
+      <?php if (empty($rows)): ?>
+        <div class="roxy-door-empty">No attendees found for this event.</div>
+      <?php else: ?>
+        <ul class="roxy-door-list" id="roxy-door-list">
+          <?php foreach ($rows as $row):
+            $ck = esc_attr((string) ($row['customer_key'] ?? ''));
+            $name = esc_html(trim((string) ($row['name'] ?? '')));
+            $qty  = intval($row['qty'] ?? 0);
+            $used = intval($row['used_qty'] ?? 0);
+            $checked = !empty($row['checked_in']);
+          ?>
+            <li data-customer-key="<?php echo $ck; ?>" data-qty="<?php echo esc_attr($qty); ?>" data-search="<?php echo esc_attr(strtolower($name . ' ' . ($row['email'] ?? ''))); ?>">
+              <div>
+                <div class="roxy-door-name"><?php echo $name; ?></div>
+                <div class="roxy-door-qty"><?php echo esc_html($qty); ?> ticket<?php echo $qty === 1 ? '' : 's'; ?><?php if ($used > 0): ?> &mdash; <?php echo esc_html($used); ?> used<?php endif; ?></div>
+              </div>
+              <button
+                type="button"
+                class="roxy-door-checkin-btn<?php echo $checked ? ' checked' : ''; ?>"
+                data-checked="<?php echo $checked ? '1' : '0'; ?>"
+                data-used="<?php echo esc_attr($used); ?>"
+                data-customer-key="<?php echo $ck; ?>"
+                data-context-id="<?php echo esc_attr($context_numeric); ?>"
+                data-nonce="<?php echo esc_attr(wp_create_nonce('roxy_wc_save_' . $context_numeric . '_' . ($row['customer_key'] ?? ''))); ?>"
+              ><?php echo $checked ? 'In' : 'Check In'; ?></button>
+            </li>
+          <?php endforeach; ?>
+        </ul>
+      <?php endif; ?>
+
+      <script>
+      (function(){
+        const ajaxUrl = <?php echo wp_json_encode(admin_url('admin-ajax.php')); ?>;
+        const list    = document.getElementById('roxy-door-list');
+        const inEl    = document.getElementById('roxy-door-count-in');
+        const remEl   = document.getElementById('roxy-door-count-remaining');
+
+        function recalc() {
+          if (!list) return;
+          let checked = 0, total = 0;
+          list.querySelectorAll('[data-qty]').forEach(li => {
+            total += parseInt(li.getAttribute('data-qty') || '0', 10);
+            if (li.querySelector('.roxy-door-checkin-btn')?.getAttribute('data-checked') === '1') {
+              checked += parseInt(li.getAttribute('data-qty') || '0', 10);
+            }
+          });
+          if (inEl) inEl.textContent = checked;
+          if (remEl) remEl.textContent = Math.max(0, total - checked);
+        }
+
+        if (list) {
+          list.addEventListener('click', function(e) {
+            const btn = e.target.closest('.roxy-door-checkin-btn');
+            if (!btn) return;
+            const li = btn.closest('li');
+            const currentlyChecked = btn.getAttribute('data-checked') === '1';
+            const qty = parseInt(li?.getAttribute('data-qty') || '0', 10);
+            const newChecked = !currentlyChecked;
+            const newUsed    = newChecked ? qty : 0;
+
+            btn.disabled = true;
+            btn.textContent = '…';
+
+            const body = new FormData();
+            body.append('action', 'roxy_will_call_save');
+            body.append('nonce', btn.getAttribute('data-nonce'));
+            body.append('context_id', btn.getAttribute('data-context-id'));
+            body.append('customer_key', btn.getAttribute('data-customer-key'));
+            body.append('checked_in', newChecked ? '1' : '0');
+            body.append('used_qty', String(newUsed));
+
+            fetch(ajaxUrl, { method: 'POST', body })
+              .then(r => r.json())
+              .then(data => {
+                if (data.success) {
+                  btn.setAttribute('data-checked', newChecked ? '1' : '0');
+                  btn.setAttribute('data-used', String(newUsed));
+                  btn.classList.toggle('checked', newChecked);
+                  btn.textContent = newChecked ? 'In' : 'Check In';
+                  recalc();
+                } else {
+                  btn.textContent = currentlyChecked ? 'In' : 'Check In';
+                  btn.setAttribute('data-checked', currentlyChecked ? '1' : '0');
+                  alert('Save failed. Please try again.');
+                }
+              })
+              .catch(() => {
+                btn.textContent = currentlyChecked ? 'In' : 'Check In';
+                btn.setAttribute('data-checked', currentlyChecked ? '1' : '0');
+                alert('Network error. Check your connection.');
+              })
+              .finally(() => { btn.disabled = false; });
+          });
+        }
+
+        // Search filter
+        const searchInput = document.getElementById('roxy-door-search');
+        if (searchInput && list) {
+          searchInput.addEventListener('input', function() {
+            const q = this.value.trim().toLowerCase();
+            list.querySelectorAll('li[data-search]').forEach(li => {
+              li.style.display = (q && !li.getAttribute('data-search').includes(q)) ? 'none' : '';
+            });
+          });
+        }
+      })();
+      </script>
+    <?php else: ?>
+      <p style="color:#888;">Select a showing or product above and tap Load.</p>
+    <?php endif; ?>
+  </div>
+  <?php
+  return ob_get_clean();
+}

@@ -66,6 +66,10 @@ function roxy_eb_render_email_invoice_customer_html($booking) {
     $html .= '<p style="margin:0 0 18px;">Thanks for your booking request. We have your time reserved and will follow up with invoice/payment details.</p>';
     $html .= roxy_eb_render_rows_table_html($rows);
     $html .= '<p style="margin:18px 0 0;"><strong>What happens next?</strong><br>Our team will review the request and send invoice or payment details.</p>';
+    $extra_notes = trim((string) (roxy_eb_get_settings()['email_invoice_extra_notes'] ?? ''));
+    if ($extra_notes !== '') {
+        $html .= '<p style="margin:18px 0 0; border-top:1px solid #eee; padding-top:14px; color:#555; font-size:14px;">' . nl2br(esc_html($extra_notes)) . '</p>';
+    }
     $html .= '</div>';
     return $html;
 }
@@ -88,6 +92,10 @@ function roxy_eb_render_email_booking_summary_html($booking, $order) {
     $html .= roxy_eb_render_rows_table_html($pricing);
     $html .= '<p style="margin:0 0 14px;"><strong>Cancellation</strong><br>Free cancellation up to 7 days before your event. Within 7 days, please contact us to cancel.</p>';
     $html .= '<p style="margin:0 0 18px;"><a href="' . esc_url($account_url) . '" style="display:inline-block; padding:10px 14px; background:#111; color:#fff; text-decoration:none; border-radius:6px;">Manage your booking here</a></p>';
+    $extra_notes = trim((string) (roxy_eb_get_settings()['email_customer_extra_notes'] ?? ''));
+    if ($extra_notes !== '') {
+        $html .= '<p style="margin:18px 0 0; border-top:1px solid #eee; padding-top:14px; color:#555; font-size:14px;">' . nl2br(esc_html($extra_notes)) . '</p>';
+    }
     $html .= '</div>';
     return $html;
 }

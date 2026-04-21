@@ -99,7 +99,7 @@ require_once ROXY_SUITE_PATH . 'includes/class-roxy-suite-members-dashboard.php'
 // ── Module toggle AJAX ─────────────────────────────────────────────────────────
 add_action('wp_ajax_roxy_suite_toggle_module', function () {
     check_ajax_referer('roxy_suite_toggle_module', 'nonce');
-    if (!roxy_suite_user_can_access_admin()) {
+    if (!current_user_can('manage_options')) {
         wp_send_json_error('Insufficient permissions', 403);
     }
     $module  = sanitize_key((string) ($_POST['module'] ?? ''));

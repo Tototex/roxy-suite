@@ -7,8 +7,16 @@ add_action('init', function () {
     }
 });
 
-function roxy_eb_pizza_notification_emails() {
-    return ['jason@newportroxy.com', 'info@newportroxy.com'];
+function roxy_eb_pizza_notification_emails(): array {
+    $settings = roxy_eb_get_settings();
+    $raw = trim((string) ($settings['pizza_reminder_emails'] ?? ''));
+    if ($raw !== '') {
+        $emails = array_values(array_filter(array_map('trim', explode(',', $raw)), 'is_email'));
+        if (!empty($emails)) return $emails;
+    }
+    // Fall back to internal notification email, then site admin
+    $fallback = $settings['internal_email'] ?? get_option('admin_email');
+    return $fallback ? [$fallback] : [];
 }
 
 function roxy_eb_clear_pizza_reminders($booking_id) {

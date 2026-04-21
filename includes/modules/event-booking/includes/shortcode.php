@@ -66,8 +66,11 @@ function roxy_eb_shortcode_calendar() {
     roxy_eb_enqueue_calendar_assets();
 
     ob_start();
-    if (!empty($_GET['roxy_eb_submitted']) && $_GET['roxy_eb_submitted'] === 'invoice') {
+    $roxy_eb_submitted = isset($_GET['roxy_eb_submitted']) ? sanitize_key(wp_unslash($_GET['roxy_eb_submitted'])) : '';
+    if ($roxy_eb_submitted === 'invoice') {
         echo '<div class="roxy-eb-alert roxy-eb-alert--success"><div><strong>Booking request received.</strong> We will follow up with invoice details.</div></div>';
+    } elseif ($roxy_eb_submitted === 'confirmed') {
+        echo '<div class="roxy-eb-alert roxy-eb-alert--success"><div><strong>You\'re booked!</strong> Your reservation is confirmed. Check your email for full details.</div></div>';
     }
     ?>
     <div class="roxy-eb-wrap">

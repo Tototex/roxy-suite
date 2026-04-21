@@ -45,3 +45,65 @@ add_action('plugins_loaded', function () {
         roxy_eb_register_woo_hooks();
     }
 });
+
+// ── Invoice auto-cancel cron ───────────────────────────────────────────────────
+add_action('init', function () {
+    if (!wp_next_scheduled('roxy_eb_invoice_auto_cancel')) {
+        wp_schedule_event(time(), 'daily', 'roxy_eb_invoice_auto_cancel');
+    }
+});
+
+add_action('roxy_eb_invoice_auto_cancel', function () {
+    $settings = roxy_eb_get_settings();
+    $days = intval($settings['invoice_auto_cancel_days'] ?? 14);
+    if ($days <= 0) return;
+
+    global $wpdb;
+    $table = roxy_eb_table_bookings();
+    $cutoff = date('Y-m-d H:i:s', strtotime('-' . $days . ' days'));
+
+    // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+    $stale = $wpdb->get_results(
+        $wpdb->prepare(
+            "SELECT id, customer_email, customer_first_name, customer_last_name, doors_open_at, notes_admin
+             FROM `{$table}`
+             WHERE status = 'pending_invoice'
+             AND created_at < %s",
+            $cutoff
+        ),
+        ARRAY_A
+    );
+
+    if (!$stale) return;
+
+    foreach ($stale as $booking) {
+        $booking_id = intval($booking['id']);
+
+        roxy_eb_repo_update_booking($booking_id, [
+            'status'         => 'cancelled',
+            'invoice_status' => 'void',
+            'notes_admin'    => trim((string) ($booking['notes_admin'] ?? '')) . "\n[" . current_time('Y-m-d H:i:s') . '] Auto-cancelled: pending invoice exceeded ' . $days . ' days.',
+        ]);
+
+        if (function_exists('roxy_eb_clear_pizza_reminders')) roxy_eb_clear_pizza_reminders($booking_id);
+        if (function_exists('roxy_eb_sling_enqueue_cancel')) roxy_eb_sling_enqueue_cancel($booking_id);
+
+        // Notify the customer
+        $customer_email = sanitize_email((string) ($booking['customer_email'] ?? ''));
+        if ($customer_email && is_email($customer_email)) {
+            $name = trim(($booking['customer_first_name'] ?? '') . ' ' . ($booking['customer_last_name'] ?? ''));
+            $date_label = !empty($booking['doors_open_at']) ? date_i18n('F j, Y', strtotime($booking['doors_open_at'])) : '';
+            $subject = 'Your Newport Roxy booking request has expired';
+            $body  = '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#111;">';
+            $body .= '<h2>Booking Request Expired</h2>';
+            $body .= '<p>Hi ' . esc_html($name) . ',</p>';
+            $body .= '<p>Your pending booking request' . ($date_label ? ' for <strong>' . esc_html($date_label) . '</strong>' : '') . ' has been automatically cancelled because we did not receive invoice payment within ' . intval($days) . ' days.</p>';
+            $body .= '<p>If you\'d still like to book the Roxy, please <a href="' . esc_url(home_url('/rent-the-roxy/')) . '">submit a new request here</a> or contact us directly.</p>';
+            $body .= '<p>We hope to see you soon!</p>';
+            $body .= '</div>';
+            wp_mail($customer_email, $subject, $body, ['Content-Type: text/html; charset=UTF-8']);
+        }
+
+        error_log('[Roxy EB] Auto-cancelled pending invoice booking #' . $booking_id . ' (older than ' . $days . ' days).');
+    }
+});

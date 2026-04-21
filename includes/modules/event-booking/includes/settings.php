@@ -23,6 +23,10 @@ function roxy_eb_defaults() {
             ['weekday' => 0, 'start' => '13:00', 'end' => '17:00', 'label' => 'Regular Showing (Sun)'],
         ],
         'booking_product_id' => 0,
+        'pizza_reminder_emails' => '',
+        'invoice_auto_cancel_days' => 14,
+        'email_customer_extra_notes' => '',
+        'email_invoice_extra_notes' => '',
 
         'sling_mode' => 'disabled',
         'sling_base_url' => 'https://api.getsling.com',
@@ -109,6 +113,10 @@ function roxy_eb_update_settings($new) {
         : $defaults['time_increment_minutes'];
 
     $clean['booking_product_id'] = intval($new['booking_product_id'] ?? $defaults['booking_product_id']);
+    $clean['pizza_reminder_emails'] = sanitize_text_field($new['pizza_reminder_emails'] ?? '');
+    $clean['invoice_auto_cancel_days'] = max(0, intval($new['invoice_auto_cancel_days'] ?? $defaults['invoice_auto_cancel_days']));
+    $clean['email_customer_extra_notes'] = sanitize_textarea_field($new['email_customer_extra_notes'] ?? '');
+    $clean['email_invoice_extra_notes'] = sanitize_textarea_field($new['email_invoice_extra_notes'] ?? '');
 
     $clean['showtime_blocks'] = [];
     if (!empty($new['showtime_blocks']) && is_array($new['showtime_blocks'])) {
