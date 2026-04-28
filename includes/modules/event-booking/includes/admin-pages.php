@@ -6,45 +6,6 @@ function roxy_eb_register_admin_pages() {
     // The four render functions below are called directly from the tabbed Event Booking page.
 }
 
-/**
- * Validate core booking fields shared across admin-create and frontend flows.
- * Returns an array of error strings. Empty array = no errors.
- */
-function roxy_eb_validate_booking_core_fields(array $data): array {
-    $errors = [];
-    if (empty($data['first_name'])) $errors[] = 'First name is required.';
-    if (empty($data['last_name']))  $errors[] = 'Last name is required.';
-    if (empty($data['email']) || !is_email($data['email'])) $errors[] = 'Valid email is required.';
-    if (empty($data['phone']))      $errors[] = 'Phone number is required.';
-
-    $customer_type = $data['customer_type'] ?? 'personal';
-    if ($customer_type === 'business' && empty($data['business_name'])) {
-        $errors[] = 'Business name is required for invoice bookings.';
-    }
-
-    $event_format = $data['event_format'] ?? 'movie';
-    if ($event_format === 'movie' && empty($data['movie_title'])) {
-        $errors[] = 'Movie title is required.';
-    }
-    if ($event_format === 'live' && empty($data['live_description'])) {
-        $errors[] = 'Live event description is required.';
-    }
-
-    if (!empty($data['pizza_requested']) && empty($data['pizza_order_details'])) {
-        $errors[] = 'Pizza order details are required.';
-    }
-
-    if (!empty($data['bulk_concessions_requested'])) {
-        $popcorn = intval($data['bulk_popcorn_qty'] ?? 0);
-        $soda    = intval($data['bulk_soda_qty'] ?? 0);
-        if (!roxy_eb_valid_bulk_qty($popcorn) || !roxy_eb_valid_bulk_qty($soda)) {
-            $errors[] = 'Bulk concessions must be 0, or between 25 and 250 for each item.';
-        }
-    }
-
-    return $errors;
-}
-
 function roxy_eb_admin_settings_page() {
     if (!roxy_suite_user_can_access_admin()) return;
     $settings = roxy_eb_get_settings();
@@ -65,12 +26,8 @@ function roxy_eb_admin_settings_page() {
             unset($incoming['_sling_token_plain']);
             $settings = roxy_eb_update_settings($incoming);
             $result = roxy_eb_sling_admin_test_and_resolve($settings);
-            if (is_wp_error($result)) {
-                error_log('[Roxy EB] Sling connection test failed: ' . $result->get_error_message());
-                echo '<div class="notice notice-error"><p><strong>Sling test failed:</strong> ' . esc_html($result->get_error_message()) . '</p></div>';
-            } else {
-                echo '<div class="notice notice-success"><p><strong>Sling connected.</strong> ' . esc_html($result['message'] ?? 'Token stored.') . '</p></div>';
-            }
+            if (is_wp_error($result)) echo '<div class="notice notice-error"><p><strong>Sling test failed:</strong> ' . esc_html($result->get_error_message()) . '</p></div>';
+            else echo '<div class="notice notice-success"><p><strong>Sling connected.</strong> ' . esc_html($result['message'] ?? 'Token stored.') . '</p></div>';
         }
         if (isset($_POST['roxy_eb_sling_create_test_shift'])) {
             check_admin_referer('roxy_eb_save_settings');
@@ -79,12 +36,8 @@ function roxy_eb_admin_settings_page() {
             unset($incoming['_sling_token_plain']);
             $settings = roxy_eb_update_settings($incoming);
             $result = roxy_eb_sling_admin_create_test_shift($settings);
-            if (is_wp_error($result)) {
-                error_log('[Roxy EB] Sling test shift failed: ' . $result->get_error_message());
-                echo '<div class="notice notice-error"><p><strong>Test shift failed:</strong> ' . esc_html($result->get_error_message()) . '</p></div>';
-            } else {
-                echo '<div class="notice notice-success"><p><strong>Test shift created.</strong> ' . esc_html($result) . '</p></div>';
-            }
+            if (is_wp_error($result)) echo '<div class="notice notice-error"><p><strong>Test shift failed:</strong> ' . esc_html($result->get_error_message()) . '</p></div>';
+            else echo '<div class="notice notice-success"><p><strong>Test shift created.</strong> ' . esc_html($result) . '</p></div>';
         }
     }
     ?>
@@ -94,10 +47,8 @@ function roxy_eb_admin_settings_page() {
             <?php wp_nonce_field('roxy_eb_save_settings'); ?>
             <table class="form-table" role="presentation">
                 <tr><th scope="row">Internal notification email</th><td><input type="email" name="settings[internal_email]" value="<?php echo esc_attr($settings['internal_email']); ?>" class="regular-text" /></td></tr>
-                <tr><th scope="row">Pizza reminder emails</th><td><input type="text" name="settings[pizza_reminder_emails]" value="<?php echo esc_attr($settings['pizza_reminder_emails'] ?? ''); ?>" class="large-text" /><p class="description">Comma-separated list of emails to notify when pizza is not handled. Leave blank to use the internal notification email.</p></td></tr>
                 <tr><th scope="row">Lead time (hours)</th><td><input type="number" name="settings[lead_time_hours]" value="<?php echo esc_attr($settings['lead_time_hours']); ?>" min="0" /></td></tr>
                 <tr><th scope="row">Free cancellation window (days)</th><td><input type="number" name="settings[cancel_free_days]" value="<?php echo esc_attr($settings['cancel_free_days']); ?>" min="0" /></td></tr>
-                <tr><th scope="row">Invoice auto-cancel (days)</th><td><input type="number" name="settings[invoice_auto_cancel_days]" value="<?php echo esc_attr($settings['invoice_auto_cancel_days'] ?? 14); ?>" min="0" /><p class="description">Pending invoice bookings older than this many days are automatically cancelled. Set to 0 to disable.</p></td></tr>
                 <tr><th scope="row">Guest cap</th><td><input type="number" name="settings[guest_cap]" value="<?php echo esc_attr($settings['guest_cap']); ?>" min="1" /></td></tr>
                 <tr><th scope="row">Base price (≤ 25 guests)</th><td>$ <input type="number" name="settings[base_price_under]" value="<?php echo esc_attr($settings['base_price_under']); ?>" min="0" /></td></tr>
                 <tr><th scope="row">Base price (≥ 26 guests)</th><td>$ <input type="number" name="settings[base_price_over]" value="<?php echo esc_attr($settings['base_price_over']); ?>" min="0" /></td></tr>
@@ -107,8 +58,6 @@ function roxy_eb_admin_settings_page() {
                 <tr><th scope="row">Operating hours</th><td>Open <input type="text" name="settings[open_time]" value="<?php echo esc_attr($settings['open_time']); ?>" placeholder="08:00" /> Close <input type="text" name="settings[close_time]" value="<?php echo esc_attr($settings['close_time']); ?>" placeholder="24:00" /></td></tr>
                 <tr><th scope="row">Time increments</th><td><select name="settings[time_increment_minutes]"><?php foreach ([5,10,15,20,30,60] as $m): ?><option value="<?php echo esc_attr($m); ?>" <?php selected(intval($settings['time_increment_minutes']), $m); ?>><?php echo esc_html($m); ?> minutes</option><?php endforeach; ?></select></td></tr>
                 <tr><th scope="row">Booking product</th><td><input type="number" name="settings[booking_product_id]" value="<?php echo esc_attr($settings['booking_product_id']); ?>" min="0" /></td></tr>
-                <tr><th scope="row">Customer confirmation email — extra notes</th><td><textarea name="settings[email_customer_extra_notes]" rows="4" class="large-text"><?php echo esc_textarea($settings['email_customer_extra_notes'] ?? ''); ?></textarea><p class="description">Optional text appended to customer confirmation emails (e.g. parking instructions, what to bring, contact info). Plain text.</p></td></tr>
-                <tr><th scope="row">Customer invoice email — extra notes</th><td><textarea name="settings[email_invoice_extra_notes]" rows="4" class="large-text"><?php echo esc_textarea($settings['email_invoice_extra_notes'] ?? ''); ?></textarea><p class="description">Optional text appended to invoice/pending booking emails. Plain text.</p></td></tr>
             </table>
 
             <h2>Fixed Showtime Blocks</h2>
@@ -285,14 +234,14 @@ function roxy_eb_admin_bookings_page() {
 
     if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'retry_sling' && isset($_GET['booking_id'])) {
         $booking_id = intval($_GET['booking_id']);
-        $nonce = $_GET['_wpnonce'] ?? '';
+        $nonce = sanitize_text_field($_GET['_wpnonce'] ?? '');
         if (!wp_verify_nonce($nonce, 'roxy_eb_admin_retry_sling_' . $booking_id)) echo '<div class="notice notice-error"><p>Security check failed.</p></div>';
         else { roxy_eb_sling_enqueue_sync($booking_id, 'manual_retry'); echo '<div class="notice notice-success"><p>Sling sync queued.</p></div>'; }
     }
 
     if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'cancel' && isset($_GET['booking_id'])) {
         $booking_id = intval($_GET['booking_id']);
-        $nonce = $_GET['_wpnonce'] ?? '';
+        $nonce = sanitize_text_field($_GET['_wpnonce'] ?? '');
         if (!wp_verify_nonce($nonce, 'roxy_eb_admin_cancel_' . $booking_id)) echo '<div class="notice notice-error"><p>Security check failed.</p></div>';
         else {
             $res = roxy_eb_cancel_booking($booking_id, 'admin');
@@ -346,22 +295,18 @@ function roxy_eb_admin_bookings_page() {
         $bulk_popcorn_qty = $bulk_concessions_requested ? intval($_POST['bulk_popcorn_qty'] ?? 0) : 0;
         $bulk_soda_qty = $bulk_concessions_requested ? intval($_POST['bulk_soda_qty'] ?? 0) : 0;
 
-        $errors = roxy_eb_validate_booking_core_fields([
-            'first_name'                  => $first_name,
-            'last_name'                   => $last_name,
-            'email'                       => $email,
-            'phone'                       => $phone,
-            'customer_type'               => $customer_type,
-            'business_name'               => $business_name,
-            'event_format'                => $event_format,
-            'movie_title'                 => $movie_title,
-            'live_description'            => $live_description,
-            'pizza_requested'             => $pizza_requested,
-            'pizza_order_details'         => $pizza_order_details,
-            'bulk_concessions_requested'  => $bulk_concessions_requested,
-            'bulk_popcorn_qty'            => $bulk_popcorn_qty,
-            'bulk_soda_qty'               => $bulk_soda_qty,
-        ]);
+        $errors = [];
+        if ($first_name === '') $errors[] = 'First name is required.';
+        if ($last_name === '') $errors[] = 'Last name is required.';
+        if (!$email || !is_email($email)) $errors[] = 'Valid email is required.';
+        if ($phone === '') $errors[] = 'Phone number is required.';
+        if ($customer_type === 'business' && $business_name === '') $errors[] = 'Business name is required for invoice bookings.';
+        if ($event_format === 'movie' && $movie_title === '') $errors[] = 'Movie title is required.';
+        if ($event_format === 'live' && $live_description === '') $errors[] = 'Live event description is required.';
+        if ($pizza_requested && $pizza_order_details === '') $errors[] = 'Pizza order details are required.';
+        if ($bulk_concessions_requested && (!roxy_eb_valid_bulk_qty($bulk_popcorn_qty) || !roxy_eb_valid_bulk_qty($bulk_soda_qty))) {
+            $errors[] = 'Bulk concessions must be 0, or between 25 and 250 for each item.';
+        }
 
         $tz = wp_timezone();
         $dt = DateTimeImmutable::createFromFormat('Y-m-d H:i', $date . ' ' . $time, $tz);
@@ -429,7 +374,7 @@ function roxy_eb_admin_bookings_page() {
 
     if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'update' && isset($_GET['booking_id'])) {
         $booking_id = intval($_GET['booking_id']);
-        $nonce = $_POST['_wpnonce'] ?? '';
+        $nonce = sanitize_text_field($_POST['_wpnonce'] ?? '');
         if (!wp_verify_nonce($nonce, 'roxy_eb_admin_edit_' . $booking_id)) echo '<div class="notice notice-error"><p>Security check failed.</p></div>';
         else {
             $booking_before = roxy_eb_repo_get_booking($booking_id);

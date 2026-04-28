@@ -223,6 +223,7 @@ class Health {
 
         global $wpdb;
         $t_reports = $wpdb->prefix . 'roxy_grosses_reports';
+        $t_logs = $wpdb->prefix . 'roxy_grosses_logs';
         $t_logs    = $wpdb->prefix . 'roxy_grosses_logs';
         $t_r_ok    = self::table_exists($t_reports);
         $t_l_ok    = self::table_exists($t_logs);
@@ -230,6 +231,11 @@ class Health {
         $settings       = get_option('roxy_grosses_settings', []);
         $has_token      = !empty($settings['square_access_token']);
         $sched_enabled  = ($settings['schedule_enabled'] ?? '0') === '1';
+        $advertiser_enabled = ($settings['advertiser_schedule_enabled'] ?? '0') === '1';
+        $report_hook = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::report_hook() : 'roxy_grosses_scheduled_send';
+        $advertiser_hook = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::advertiser_hook() : 'roxy_grosses_monthly_advertiser_send';
+        $report_cron = wp_next_scheduled($report_hook);
+        $advertiser_cron = wp_next_scheduled($advertiser_hook);
 
         return self::module('Grosses', admin_url('admin.php?page=roxy-grosses'), [
             self::item($t_reports, $t_r_ok ? 'Exists' : 'Missing',
@@ -244,6 +250,12 @@ class Health {
             self::item('Auto-send schedule', $sched_enabled ? 'Enabled (daily at configured time)' : 'Disabled',
                 $sched_enabled ? self::PASS : self::WARN,
                 $sched_enabled ? '' : 'Auto-send is off — configure in Grosses → Settings'),
+            self::item('Daily grosses cron', $report_cron ? 'Scheduled' : ($sched_enabled ? 'Missing' : 'Not needed'),
+                $report_cron ? self::PASS : ($sched_enabled ? self::FAIL : self::PASS),
+                $report_cron ? '' : ($sched_enabled ? 'Automatic grosses are enabled, but the cron hook is not registered.' : '')),
+            self::item('Monthly advertiser cron', $advertiser_cron ? 'Scheduled' : ($advertiser_enabled ? 'Missing' : 'Not needed'),
+                $advertiser_cron ? self::PASS : ($advertiser_enabled ? self::FAIL : self::PASS),
+                $advertiser_cron ? '' : ($advertiser_enabled ? 'Monthly advertiser sends are enabled, but the cron hook is not registered.' : '')),
         ], 'grosses');
     }
 
@@ -413,10 +425,69 @@ class Health {
         $status      = get_option('roxy_grosses_last_report', []);
         $last_date   = is_array($status) && !empty($status['report_date']) ? $status['report_date'] : 'Never';
         $last_mode   = is_array($status) && !empty($status['mode']) ? $status['mode'] : '';
+        $settings    = get_option('roxy_grosses_settings', []);
+        $sched_enabled = ($settings['schedule_enabled'] ?? '0') === '1';
+        $advertiser_enabled = ($settings['advertiser_schedule_enabled'] ?? '0') === '1';
+        $report_hook = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::report_hook() : 'roxy_grosses_scheduled_send';
+        $advertiser_hook = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::advertiser_hook() : 'roxy_grosses_monthly_advertiser_send';
+        $next_local  = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::scheduled_time_local($report_hook) : '';
+        $next_advertiser_local = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::scheduled_time_local($advertiser_hook) : '';
+        $last_auto_date = (string) get_option('roxy_grosses_last_auto_date', '');
+        $stale_status = self::PASS;
+        $stale_detail = $last_auto_date ?: 'Never';
+        $stale_note = '';
+        $latest_log_detail = 'No logs found';
+        $latest_log_status = self::WARN;
+        $latest_log_note = '';
+
+        if (self::table_exists($t_logs)) {
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $latest_log = $wpdb->get_row("SELECT event_type, mode, success, created_at, message FROM `{$t_logs}` ORDER BY id DESC LIMIT 1", ARRAY_A);
+            if (is_array($latest_log) && $latest_log) {
+                $latest_log_detail = trim(sprintf(
+                    '%s (%s) at %s',
+                    (string) ($latest_log['event_type'] ?? 'log'),
+                    (string) ($latest_log['mode'] ?? 'n/a'),
+                    (string) ($latest_log['created_at'] ?? 'unknown time')
+                ));
+                $latest_log_status = !empty($latest_log['success']) ? self::PASS : self::WARN;
+                $latest_log_note = (string) ($latest_log['message'] ?? '');
+            }
+        }
+
+        if ($sched_enabled) {
+            if ($last_auto_date === '') {
+                $stale_status = self::WARN;
+                $stale_note = 'Automatic grosses are enabled, but no successful automatic run has been recorded yet.';
+            } else {
+                try {
+                    $timezone = class_exists('\\RoxyGrosses\\Settings')
+                        ? new \DateTimeZone(\RoxyGrosses\Settings::get_report_timezone())
+                        : wp_timezone();
+                    $last_auto = new \DateTimeImmutable($last_auto_date . ' 00:00:00', $timezone);
+                    $today = new \DateTimeImmutable('today', $timezone);
+                    $days = (int) $last_auto->diff($today)->format('%r%a');
+                    if ($days >= 2) {
+                        $stale_status = self::FAIL;
+                        $stale_note = 'The automatic grosses run is stale. Cron may have stopped firing.';
+                    } elseif ($days >= 1) {
+                        $stale_status = self::WARN;
+                        $stale_note = 'The last automatic grosses run was not today.';
+                    }
+                } catch (\Throwable $e) {
+                    $stale_status = self::WARN;
+                    $stale_note = 'Could not interpret the last automatic grosses date.';
+                }
+            }
+        }
 
         return [
             self::item('Saved reports', "$count total", self::PASS),
             self::item('Last report', $last_date . ($last_mode ? " ($last_mode)" : ''), self::PASS),
+            self::item('Next daily cron', $next_local ?: 'Not scheduled', $next_local ? self::PASS : ($sched_enabled ? self::FAIL : self::PASS), $next_local ? '' : ($sched_enabled ? 'The daily grosses cron hook is missing.' : '')),
+            self::item('Next advertiser cron', $next_advertiser_local ?: 'Not scheduled', $next_advertiser_local ? self::PASS : ($advertiser_enabled ? self::FAIL : self::PASS), $next_advertiser_local ? '' : ($advertiser_enabled ? 'The advertiser cron hook is missing.' : '')),
+            self::item('Last automatic run', $stale_detail, $stale_status, $stale_note),
+            self::item('Latest log event', $latest_log_detail, $latest_log_status, $latest_log_note),
         ];
     }
 

@@ -19,7 +19,7 @@ class Settings {
       'report_timezone'=>wp_timezone_string()?:'America/Los_Angeles',
       'ticket_keywords'=>"ticket\nadmission",'exclude_keywords'=>"popcorn\nsoda\ndrink\ncandy\nmembership",
       'film_mappings'=>'','studio_mappings'=>'',
-      'recipient_emails'=>'comscore@example.com,lori@example.com','advertiser_emails'=>'','admin_email'=>get_option('admin_email'),
+      'recipient_emails'=>'comscore@example.com,lori@example.com','advertiser_emails'=>'','live_email_recipients'=>'','admin_email'=>get_option('admin_email'),
       'email_subject'=>'Roxy grosses for {report_date}',
       'email_body'=>"Attached is the grosses report for {report_date}.\n\nGenerated automatically by the Roxy Grosses plugin.",
       'advertiser_email_subject'=>'Roxy advertiser summary for {month_name} {year}',
@@ -63,7 +63,8 @@ class Settings {
       'square_environment'=>['Square environment','roxy_grosses_square'],'square_access_token'=>['Square access token','roxy_grosses_square'],
       'square_location_ids'=>['Square location IDs','roxy_grosses_square'],'report_timezone'=>['Report timezone','roxy_grosses_square'],
       'ticket_keywords'=>['Ticket keywords','roxy_grosses_square'],'exclude_keywords'=>['Exclude keywords','roxy_grosses_square'],
-      'film_mappings'=>['Film mappings','roxy_grosses_square'],'studio_mappings'=>['Studio overrides','roxy_grosses_square'],'recipient_emails'=>['Recipient emails','roxy_grosses_email'],
+      'film_mappings'=>['Film mappings','roxy_grosses_square'],'studio_mappings'=>['Studio overrides','roxy_grosses_square'],'recipient_emails'=>['Daily grosses recipient emails','roxy_grosses_email'],
+      'live_email_recipients'=>['Live grosses recipient emails','roxy_grosses_email'],
       'admin_email'=>['Admin alert email','roxy_grosses_email'],'email_subject'=>['Email subject','roxy_grosses_email'],
       'email_body'=>['Email body','roxy_grosses_email'],'theater_name'=>['Theater name','roxy_grosses_email'],
       'general_price'=>['General ticket price','roxy_grosses_email'],'discount_price'=>['Discount ticket price','roxy_grosses_email'],
@@ -89,6 +90,7 @@ class Settings {
       'studio_mappings'=>self::sanitize_studio_mappings((string) ($input['studio_mappings']??$d['studio_mappings'])),
       'recipient_emails'=>self::sanitize_email_list((string) ($input['recipient_emails']??$d['recipient_emails'])),
       'advertiser_emails'=>self::sanitize_email_list((string) ($input['advertiser_emails']??$d['advertiser_emails'])),
+      'live_email_recipients'=>self::sanitize_email_list((string) ($input['live_email_recipients']??$d['live_email_recipients'])),
       'admin_email'=>sanitize_email((string) ($input['admin_email']??$d['admin_email'])),
       'email_subject'=>sanitize_text_field((string) ($input['email_subject']??$d['email_subject'])),
       'email_body'=>sanitize_textarea_field((string) ($input['email_body']??$d['email_body'])),
@@ -128,10 +130,10 @@ class Settings {
         elseif($key==='email_body') echo '<p class="description">You can use {report_date}, {theater_name}, {gross_total}, and {ticket_total}.</p>';
           else echo '<p class="description">You can use {theater_name}, {month_name}, {month}, {year}, {attendance_total}, {gross_total}, {period_label}, {start_month}, and {end_month}.</p>';
         return;
-      case 'recipient_emails': case 'advertiser_emails': case 'admin_email': case 'email_subject': case 'advertiser_email_subject': case 'theater_name': case 'report_timezone': case 'lookback_days': case 'advertiser_schedule_day':
-        $class=in_array($key,['recipient_emails','advertiser_emails'],true)?'regular-text code':'regular-text';
+      case 'recipient_emails': case 'advertiser_emails': case 'live_email_recipients': case 'admin_email': case 'email_subject': case 'advertiser_email_subject': case 'theater_name': case 'report_timezone': case 'lookback_days': case 'advertiser_schedule_day':
+        $class=in_array($key,['recipient_emails','advertiser_emails','live_email_recipients'],true)?'regular-text code':'regular-text';
         echo '<input type="text" class="'.esc_attr($class).'" name="'.esc_attr($name).'" value="'.esc_attr((string) $value).'">';
-        if($key==='recipient_emails'||$key==='advertiser_emails') echo '<p class="description">Comma-separated email addresses.</p>';
+        if($key==='recipient_emails'||$key==='advertiser_emails'||$key==='live_email_recipients') echo '<p class="description">Comma-separated email addresses.</p>';
         elseif($key==='admin_email') echo '<p class="description">Used for failure alerts when a run, workbook build, or email send fails.</p>';
         elseif($key==='report_timezone') echo '<p class="description">Timezone used to decide the report day and Square date window, for example America/Los_Angeles.</p>';
         elseif($key==='lookback_days') echo '<p class="description">How many previous days with the same film to refresh alongside the selected date. Use 0 to only update the selected day.</p>';
@@ -601,18 +603,20 @@ class Settings {
     $default_advertiser_end = (new \DateTimeImmutable($default_advertiser_date . ' 00:00:00', $timezone))->modify('first day of last month')->format('Y-m');
     $default_advertiser_start = $default_advertiser_end;
     $live_rows = Store::list_live_entries([], 200, 0);
-    echo '<hr><h2>Email Tests</h2><p>Send one-off test emails for daily grosses, advertiser summaries, and live-show grosses.</p>';
+    echo '<hr><h2>Email Tools</h2><p>Each email flow can send an admin-only test copy or the full production email to its saved recipient list.</p>';
     echo '<div style="display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap;">';
 
     echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="min-width:320px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;">';
     wp_nonce_field('roxy_grosses_send_manual');
     echo '<input type="hidden" name="action" value="roxy_grosses_send_manual">';
     echo '<input type="hidden" name="return_tab" value="settings">';
-    echo '<input type="hidden" name="test_send" value="1">';
-    echo '<h3 style="margin-top:0;">Test Daily Grosses Email</h3>';
-    echo '<p>Select a report date and send the grosses email as if it were being run for that day.</p>';
+    echo '<h3 style="margin-top:0;">Send Daily Grosses Email</h3>';
+    echo '<p>Select a report date, then send either an admin-only test email or the full daily grosses email to the saved daily recipient list.</p>';
     echo '<p><label for="roxy-grosses-test-date"><strong>Report date</strong></label><br><input id="roxy-grosses-test-date" type="date" name="report_date" value="'.esc_attr($default_date).'"></p>';
-    submit_button('Send Test Grosses Email','secondary','submit',false);
+    echo '<div style="display:flex; gap:8px; flex-wrap:wrap;">';
+    submit_button('Send Test Email','secondary','test_send',false,['value'=>'1']);
+    submit_button('Send Daily Grosses Email','primary','submit',false);
+    echo '</div>';
     echo '</form>';
 
     echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="min-width:360px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;">';
@@ -623,14 +627,18 @@ class Settings {
     echo '<p>Select a month range to send. For a single month, choose the same start and end month. For the last 12 months, choose the first and last months in that span.</p>';
     echo '<p><label for="roxy-grosses-advertiser-start-month"><strong>Start month</strong></label><br><input id="roxy-grosses-advertiser-start-month" type="month" name="advertiser_start_month" value="'.esc_attr($default_advertiser_start).'"></p>';
     echo '<p><label for="roxy-grosses-advertiser-end-month"><strong>End month</strong></label><br><input id="roxy-grosses-advertiser-end-month" type="month" name="advertiser_end_month" value="'.esc_attr($default_advertiser_end).'"></p>';
-    submit_button('Send Advertiser Email','secondary','submit',false);
+    echo '<div style="display:flex; gap:8px; flex-wrap:wrap;">';
+    submit_button('Send Test Email','secondary','test_send',false,['value'=>'1']);
+    submit_button('Send Advertiser Email','primary','submit',false);
+    echo '</div>';
     echo '</form>';
 
     echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="min-width:380px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;">';
     wp_nonce_field('roxy_grosses_send_live_email');
     echo '<input type="hidden" name="action" value="roxy_grosses_send_live_email">';
     echo '<h3 style="margin-top:0;">Send Live Grosses Email</h3>';
-    echo '<p>Select a live show row, enter recipients, and choose whether concessions should be included.</p>';
+    echo '<input type="hidden" name="return_tab" value="settings">';
+    echo '<p>Select a live show row, then send either an admin-only test email or the full live grosses email to the saved live recipient list.</p>';
     echo '<p><label for="roxy-grosses-live-email-show"><strong>Live show</strong></label><br><select id="roxy-grosses-live-email-show" name="live_entry_id" style="width:100%; max-width:420px;">';
     echo '<option value="">Select a live show</option>';
     foreach ($live_rows as $row) {
@@ -639,9 +647,11 @@ class Settings {
       echo '<option value="'.esc_attr((string) ($row['id'] ?? 0)).'">'.esc_html($label).'</option>';
     }
     echo '</select></p>';
-    echo '<p><label for="roxy-grosses-live-email-recipients"><strong>Recipients</strong></label><br><input id="roxy-grosses-live-email-recipients" class="regular-text code" type="text" name="live_email_recipients" placeholder="name@example.com, another@example.com"></p>';
     echo '<p><label><input type="checkbox" name="include_concessions" value="1"> Include concession sales</label></p>';
-    submit_button('Send Live Grosses Email','secondary','submit',false);
+    echo '<div style="display:flex; gap:8px; flex-wrap:wrap;">';
+    submit_button('Send Test Email','secondary','test_send',false,['value'=>'1']);
+    submit_button('Send Live Grosses Email','primary','submit',false);
+    echo '</div>';
     echo '</form>';
 
     echo '</div>';
@@ -967,6 +977,8 @@ class Settings {
   }
   public static function email_list(): array { return array_values(array_filter(array_map('sanitize_email',array_map('trim',explode(',',(string) self::get('recipient_emails','')))))); }
   public static function advertiser_email_list(): array { return array_values(array_filter(array_map('sanitize_email',array_map('trim',explode(',',(string) self::get('advertiser_emails','')))))); }
+  public static function live_email_list(): array { return array_values(array_filter(array_map('sanitize_email',array_map('trim',explode(',',(string) self::get('live_email_recipients','')))))); }
+  public static function admin_email(): string { return sanitize_email((string) self::get('admin_email',get_option('admin_email'))); }
   public static function sanitize_mappings(string $value): string {
     $clean=[]; foreach((array) preg_split('/\r\n|\r|\n/',$value) as $line){ $parts=array_map('trim',explode('|',(string) $line)); if(count($parts)<2||$parts[0]===''||$parts[1]==='') continue; $clean[]=sanitize_text_field($parts[0]).'|'.sanitize_text_field($parts[1]).'|'.sanitize_text_field($parts[2]??''); }
     return implode("\n",$clean);

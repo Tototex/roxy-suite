@@ -12,6 +12,7 @@ class Scheduler {
   public static function init(): void {
     add_action(self::REPORT_HOOK, [__CLASS__, 'run_scheduled_send']);
     add_action(self::ADVERTISER_HOOK, [__CLASS__, 'run_monthly_advertiser_send']);
+    add_action('init', [__CLASS__, 'ensure_schedule'], 30);
   }
 
   public static function sync_schedule(?array $settings = null): void {
@@ -35,19 +36,72 @@ class Scheduler {
     }
   }
 
+  public static function ensure_schedule($settings = null): void {
+    if (wp_installing()) {
+      return;
+    }
+
+    $settings = is_array($settings) ? $settings : Settings::get_all();
+    $changes = [];
+
+    $report_enabled = ($settings['schedule_enabled'] ?? '0') === '1';
+    $advertiser_enabled = ($settings['advertiser_schedule_enabled'] ?? '0') === '1';
+    $report_timestamp = wp_next_scheduled(self::REPORT_HOOK);
+    $advertiser_timestamp = wp_next_scheduled(self::ADVERTISER_HOOK);
+
+    if ($report_enabled && !$report_timestamp) {
+      wp_schedule_event(
+        self::next_run_timestamp((string) ($settings['schedule_time'] ?? '22:00'), (string) ($settings['report_timezone'] ?? Settings::get_report_timezone())),
+        'daily',
+        self::REPORT_HOOK
+      );
+      $changes['report'] = 'scheduled';
+    } elseif (!$report_enabled && $report_timestamp) {
+      self::unschedule_hook(self::REPORT_HOOK);
+      $changes['report'] = 'cleared';
+    }
+
+    if ($advertiser_enabled && !$advertiser_timestamp) {
+      wp_schedule_event(
+        self::next_run_timestamp((string) ($settings['advertiser_schedule_time'] ?? '09:00'), (string) ($settings['report_timezone'] ?? Settings::get_report_timezone())),
+        'daily',
+        self::ADVERTISER_HOOK
+      );
+      $changes['advertiser'] = 'scheduled';
+    } elseif (!$advertiser_enabled && $advertiser_timestamp) {
+      self::unschedule_hook(self::ADVERTISER_HOOK);
+      $changes['advertiser'] = 'cleared';
+    }
+
+    if ($changes) {
+      Store::insert_log(
+        'schedule_repair',
+        'self-heal',
+        null,
+        null,
+        true,
+        'Grosses scheduler automatically repaired cron registration.',
+        [
+          'changes' => $changes,
+          'report_enabled' => $report_enabled,
+          'advertiser_enabled' => $advertiser_enabled,
+          'report_next_gmt' => self::scheduled_time_iso(self::REPORT_HOOK),
+          'advertiser_next_gmt' => self::scheduled_time_iso(self::ADVERTISER_HOOK),
+        ]
+      );
+    }
+  }
+
   public static function clear_schedule(): void {
     foreach ([self::REPORT_HOOK, self::ADVERTISER_HOOK] as $hook) {
-      $timestamp = wp_next_scheduled($hook);
-      while ($timestamp) {
-        wp_unschedule_event($timestamp, $hook);
-        $timestamp = wp_next_scheduled($hook);
-      }
+      self::unschedule_hook($hook);
     }
   }
 
   public static function run_scheduled_send(): void {
     $settings = Settings::get_all();
     if (($settings['schedule_enabled'] ?? '0') !== '1') {
+      Store::insert_log('scheduled_sync', 'scheduled-sync', null, null, false, 'Scheduled grosses send fired while automatic scheduling was disabled.');
       return;
     }
 
@@ -56,6 +110,7 @@ class Scheduler {
     $report_date = $now->format('Y-m-d');
 
     if (get_option(self::LAST_AUTO_DATE_KEY) === $report_date) {
+      Store::insert_log('scheduled_sync', 'scheduled-sync', null, $report_date, true, 'Scheduled grosses sync skipped because this report date already completed.');
       return;
     }
 
@@ -92,6 +147,47 @@ class Scheduler {
     $result = Workbook::send_advertiser_summary((int) $target->format('Y'), (int) $target->format('m'), 'scheduled-advertiser');
     if (!empty($result['success'])) {
       update_option(self::LAST_ADVERTISER_MONTH_KEY, $month_key);
+      Store::insert_log('advertiser_send', 'scheduled-advertiser', null, $target->format('Y-m-01'), true, 'Scheduled advertiser summary sent successfully.', [
+        'month' => $month_key,
+      ]);
+    } else {
+      Store::insert_log('advertiser_send', 'scheduled-advertiser', null, $target->format('Y-m-01'), false, (string) ($result['message'] ?? 'Scheduled advertiser summary failed.'), [
+        'month' => $month_key,
+      ]);
+    }
+  }
+
+  public static function report_hook(): string {
+    return self::REPORT_HOOK;
+  }
+
+  public static function advertiser_hook(): string {
+    return self::ADVERTISER_HOOK;
+  }
+
+  public static function scheduled_time_iso(string $hook): string {
+    $timestamp = wp_next_scheduled($hook);
+    if (!$timestamp) {
+      return '';
+    }
+
+    return gmdate('Y-m-d H:i:s', (int) $timestamp);
+  }
+
+  public static function scheduled_time_local(string $hook): string {
+    $timestamp = wp_next_scheduled($hook);
+    if (!$timestamp) {
+      return '';
+    }
+
+    return wp_date('Y-m-d H:i:s T', (int) $timestamp, new \DateTimeZone(Settings::get_report_timezone()));
+  }
+
+  private static function unschedule_hook(string $hook): void {
+    $timestamp = wp_next_scheduled($hook);
+    while ($timestamp) {
+      wp_unschedule_event($timestamp, $hook);
+      $timestamp = wp_next_scheduled($hook);
     }
   }
 

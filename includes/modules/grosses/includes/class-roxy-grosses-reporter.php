@@ -176,14 +176,15 @@ class Reporter {
     check_admin_referer('roxy_grosses_send_live_email');
 
     $entry_id = isset($_POST['live_entry_id']) ? max(0, (int) $_POST['live_entry_id']) : 0;
-    $recipients = self::parse_email_recipients(isset($_POST['live_email_recipients']) ? (string) wp_unslash($_POST['live_email_recipients']) : '');
+    $mode = !empty($_POST['test_send']) ? 'manual-live-test' : 'manual-live-email';
+    $recipients = $mode === 'manual-live-test' ? self::test_email_list() : Settings::live_email_list();
     $include_concessions = !empty($_POST['include_concessions']);
 
     if ($entry_id <= 0) {
       self::redirect_with_notice('error', 'Choose a live show to email.', 'settings');
     }
     if (!$recipients) {
-      self::redirect_with_notice('error', 'Enter at least one valid live grosses email recipient.', 'settings');
+      self::redirect_with_notice('error', $mode === 'manual-live-test' ? 'No admin alert email is configured for live grosses tests.' : 'No live grosses recipient emails are configured.', 'settings');
     }
 
     $row = Store::get_live_entry($entry_id);
@@ -191,7 +192,7 @@ class Reporter {
       self::redirect_with_notice('error', 'Could not find that live show row.', 'settings');
     }
 
-    $result = self::send_live_grosses_email($row, $recipients, $include_concessions);
+    $result = self::send_live_grosses_email($row, $recipients, $include_concessions, $mode);
     self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'settings');
   }
 
@@ -408,7 +409,7 @@ class Reporter {
       Store::upsert_history_rows($reports, $mode, null);
       Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, null), 'update');
 
-      $send = self::send_email($reports, $summary);
+      $send = self::send_email($reports, $summary, $mode);
       if (!$send['success']) {
         throw new \RuntimeException($send['message']);
       }
@@ -1056,7 +1057,7 @@ class Reporter {
     Store::upsert_history_rows($rows, 'saved-report', $report_id);
     Store::upsert_entries(self::entries_from_report_rows($rows, 'saved_report', 'saved-report', $report_id), 'update');
 
-    $send = self::send_email($rows, $summary);
+    $send = self::send_email($rows, $summary, 'saved-report');
     if (!$send['success']) {
       Store::insert_log('send_saved_report', 'saved-report', $report_id, (string) ($saved['report_end_date'] ?? ''), false, $send['message']);
       self::notify_admin_failure('Saved grosses report failed', (string) ($saved['report_end_date'] ?? ''), 'saved-report', $send['message']);
@@ -1893,19 +1894,28 @@ class Reporter {
     return $entries;
   }
 
-  private static function send_email(array $reports, array $summary): array {
+  private static function send_email(array $reports, array $summary, string $mode = 'scheduled'): array {
     $attachment = self::write_csv($reports);
-    $to = Settings::email_list();
+    $is_test_send = $mode === 'manual-test';
+    $to = $is_test_send ? self::test_email_list() : Settings::email_list();
     if (!$to) {
       @unlink($attachment);
       return [
         'success' => false,
-        'message' => 'No recipient emails are configured.',
+        'message' => $is_test_send
+          ? 'No admin alert email is configured for test sends.'
+          : 'No recipient emails are configured.',
       ];
     }
 
     $subject = self::expand_tokens((string) Settings::get('email_subject', ''), $summary);
+    if ($is_test_send) {
+      $subject = '[TEST] ' . $subject;
+    }
     $body = self::expand_tokens((string) Settings::get('email_body', ''), $summary);
+    if ($is_test_send) {
+      $body = "This is a test grosses email sent only to the configured admin alert address.\n\n" . $body;
+    }
     $body .= "\n\nReport rows\n";
       foreach ($reports as $report) {
         $paid_tickets = max(0, (int) ($report['general_qty'] ?? 0))
@@ -1940,16 +1950,32 @@ class Reporter {
     ];
   }
 
-  private static function send_live_grosses_email(array $row, array $recipients, bool $include_concessions): array {
+  private static function test_email_list(): array {
+    $admin_email = Settings::admin_email();
+    if ($admin_email === '') {
+      return [];
+    }
+
+    return [$admin_email];
+  }
+
+  private static function send_live_grosses_email(array $row, array $recipients, bool $include_concessions, string $mode = 'manual-live-email'): array {
     $attachment = self::write_live_csv($row, $include_concessions);
     $show_title = (string) ($row['show_title'] ?? 'Live Show');
     $report_date = (string) ($row['report_date'] ?? '');
     $show_time = (string) ($row['show_time'] ?? '');
     $ticket_gross = round((float) ($row['gross_total'] ?? 0), 2);
     $concessions = round((float) ($row['concessions_total'] ?? 0), 2);
+    $is_test_send = $mode === 'manual-live-test';
 
     $subject = sprintf('Roxy live grosses for %s on %s', $show_title, $report_date);
+    if ($is_test_send) {
+      $subject = '[TEST] ' . $subject;
+    }
     $body = Settings::get('theater_name', 'Newport Roxy Theater') . "\n";
+    if ($is_test_send) {
+      $body .= "This is a test live grosses email sent only to the configured admin alert address.\n\n";
+    }
     $body .= "Live show grosses\n\n";
     $body .= sprintf("Show: %s\n", $show_title);
     $body .= sprintf("Date: %s\n", $report_date);
@@ -1970,7 +1996,7 @@ class Reporter {
     @unlink($attachment);
 
     if (!$sent) {
-      Store::insert_log('send_live_grosses', 'manual-live-email', null, $report_date, false, 'WordPress could not send the live grosses email.', [
+      Store::insert_log('send_live_grosses', $mode, null, $report_date, false, 'WordPress could not send the live grosses email.', [
         'live_entry_id' => (int) ($row['id'] ?? 0),
         'include_concessions' => $include_concessions,
       ]);
@@ -1980,7 +2006,7 @@ class Reporter {
       ];
     }
 
-    Store::insert_log('send_live_grosses', 'manual-live-email', null, $report_date, true, 'Live grosses email sent to ' . implode(', ', $recipients) . '.', [
+    Store::insert_log('send_live_grosses', $mode, null, $report_date, true, 'Live grosses email sent to ' . implode(', ', $recipients) . '.', [
       'live_entry_id' => (int) ($row['id'] ?? 0),
       'include_concessions' => $include_concessions,
     ]);
@@ -1989,18 +2015,6 @@ class Reporter {
       'success' => true,
       'message' => 'Live grosses email sent to ' . implode(', ', $recipients) . '.',
     ];
-  }
-
-  private static function parse_email_recipients(string $raw): array {
-    $parts = preg_split('/[\s,;]+/', $raw);
-    $emails = [];
-    foreach ((array) $parts as $part) {
-      $email = sanitize_email(trim((string) $part));
-      if ($email !== '' && is_email($email)) {
-        $emails[] = $email;
-      }
-    }
-    return array_values(array_unique($emails));
   }
 
   private static function expand_tokens(string $template, array $summary): string {

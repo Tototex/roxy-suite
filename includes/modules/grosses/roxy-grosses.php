@@ -16,10 +16,12 @@ add_action('plugins_loaded', function () {
         return;
     }
 
+    \RoxyGrosses\Settings::ensure_defaults();
     \RoxyGrosses\Store::maybe_upgrade_schema();
     \RoxyGrosses\Store::maybe_backfill_history();
     \RoxyGrosses\Settings::init();
     \RoxyGrosses\Scheduler::init();
     \RoxyGrosses\Reporter::init();
     \RoxyGrosses\Workbook::init();
+    \RoxyGrosses\Scheduler::ensure_schedule();
 });

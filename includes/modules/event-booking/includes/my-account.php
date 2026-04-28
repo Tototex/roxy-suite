@@ -31,7 +31,7 @@ function roxy_eb_register_my_account_endpoints() {
         if (!isset($_GET['roxy_eb_cancel'])) return;
 
         $booking_id = intval($_GET['roxy_eb_cancel']);
-        $nonce = $_GET['_wpnonce'] ?? '';
+        $nonce = sanitize_text_field($_GET['_wpnonce'] ?? '');
         if (!wp_verify_nonce($nonce, 'roxy_eb_cancel_' . $booking_id)) {
             wc_add_notice('Security check failed. Please try again.', 'error');
             wp_safe_redirect(wc_get_account_endpoint_url('roxy-bookings'));
@@ -360,16 +360,7 @@ function roxy_eb_render_my_bookings() {
     foreach ($rows as $booking) {
         $doors = roxy_eb_mysql_to_dt($booking['doors_open_at']);
         $duration = 2 + intval($booking['extra_hours']);
-        $status_key = (string) $booking['status'];
-        $status_label = ucwords(str_replace('_', ' ', $status_key));
-        $status_colors = [
-            'confirmed'       => '#16a34a',
-            'pending_invoice' => '#d97706',
-            'pending'         => '#d97706',
-            'cancelled'       => '#dc2626',
-        ];
-        $badge_color = $status_colors[$status_key] ?? '#6b7280';
-        $status = '<span style="display:inline-block;padding:2px 9px;border-radius:999px;background:' . esc_attr($badge_color) . ';color:#fff;font-size:11px;font-weight:700;white-space:nowrap;">' . esc_html($status_label) . '</span>';
+        $status = esc_html(ucfirst((string) $booking['status']));
         $notes = '';
         if (!empty($booking['notes_admin'])) {
             $notes = wp_strip_all_tags((string) $booking['notes_admin']);
@@ -542,19 +533,10 @@ function roxy_eb_cancel_booking($booking_id, $by = 'customer') {
             }
         }
 
-        // Build audit note before updating
-        $cancel_actor = $by === 'admin' ? ('admin:' . get_current_user_id()) : ('customer:' . get_current_user_id());
-        $cancel_note  = '[' . current_time('Y-m-d H:i:s') . '] Cancelled by ' . $cancel_actor . '.';
-        $existing_notes = trim((string) ($booking['notes_admin'] ?? ''));
-        $merged_notes   = $existing_notes !== '' ? ($existing_notes . "\n" . $cancel_note) : $cancel_note;
-
         roxy_eb_repo_update_booking($booking_id, [
             'status' => 'cancelled',
             'invoice_status' => ($booking['payment_method'] ?? '') === 'invoice' ? 'void' : ($booking['invoice_status'] ?? 'not_needed'),
-            'notes_admin' => $merged_notes,
         ]);
-
-        error_log('[Roxy EB] Booking #' . $booking_id . ' cancelled by ' . $cancel_actor);
 
         if (function_exists('roxy_eb_clear_pizza_reminders')) {
             roxy_eb_clear_pizza_reminders($booking_id);

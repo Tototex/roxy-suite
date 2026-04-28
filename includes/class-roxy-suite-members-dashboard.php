@@ -8,91 +8,8 @@ class Members_Dashboard {
     private const OPTION_FIXED_COST = 'roxy_suite_member_fixed_cost';
     private const META_TRADE = '_roxy_member_trade_subscription';
 
-    /**
-     * Batch-load scan stats for all subscription IDs in one query.
-     * Returns an associative array keyed by subscription_id.
-     */
-    private static function scan_stats_batch(array $sub_ids): array {
-        global $wpdb;
-        $table = $wpdb->prefix . 'roxy_member_scans';
-
-        // Confirm the table exists once
-        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table)) !== $table) {
-            $empty = ['month' => 0, 'lifetime' => 0, 'last' => ''];
-            return array_fill_keys($sub_ids, $empty);
-        }
-
-        if (empty($sub_ids)) return [];
-
-        $month_start  = wp_date('Y-m-01 00:00:00');
-        $placeholders = implode(',', array_fill(0, count($sub_ids), '%d'));
-
-        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $rows = $wpdb->get_results(
-            $wpdb->prepare(
-                "SELECT
-                    subscription_id,
-                    SUM(CASE WHEN scanned_at >= %s THEN 1 ELSE 0 END) AS visits_month,
-                    COUNT(*)                                             AS visits_lifetime,
-                    MAX(scanned_at)                                      AS last_visit
-                 FROM `{$table}`
-                 WHERE subscription_id IN ($placeholders)
-                 GROUP BY subscription_id",
-                array_merge([$month_start], $sub_ids)
-            ),
-            ARRAY_A
-        );
-
-        $indexed = [];
-        foreach ((array) $rows as $row) {
-            $indexed[(int) $row['subscription_id']] = [
-                'month'    => (int) ($row['visits_month'] ?? 0),
-                'lifetime' => (int) ($row['visits_lifetime'] ?? 0),
-                'last'     => (string) ($row['last_visit'] ?? ''),
-            ];
-        }
-
-        // Fill in zeros for any subscription_id that had no rows at all
-        $empty = ['month' => 0, 'lifetime' => 0, 'last' => ''];
-        foreach ($sub_ids as $sid) {
-            if (!isset($indexed[$sid])) $indexed[$sid] = $empty;
-        }
-
-        return $indexed;
-    }
-
     public static function render(): void {
         if (!roxy_suite_user_can_access_admin()) return;
-
-        // ── CSV export ─────────────────────────────────────────────────────────
-        if (!empty($_GET['roxy_members_export']) && current_user_can('manage_options')) {
-            check_admin_referer('roxy_members_export');
-            $filters  = self::filters();
-            $snapshot = self::snapshot($filters);
-            header('Content-Type: text/csv; charset=utf-8');
-            header('Content-Disposition: attachment; filename="roxy-members-' . date('Y-m-d') . '.csv"');
-            header('Pragma: no-cache');
-            $out = fopen('php://output', 'w');
-            fputcsv($out, ['Name', 'Email', 'Subscription ID', 'Products', 'Status', 'Subs', 'Monthly Revenue', 'Visits This Month', 'Lifetime Visits', 'Last Visit', 'Next Payment', 'Trade/Comp']);
-            foreach ($snapshot['rows'] as $row) {
-                fputcsv($out, [
-                    $row['name'],
-                    $row['email'],
-                    $row['subscription_id'],
-                    $row['products'],
-                    $row['status'],
-                    $row['subs'],
-                    number_format((float) $row['monthly_revenue'], 2, '.', ''),
-                    $row['visits_month'],
-                    $row['visits_lifetime'],
-                    $row['last_visit'],
-                    $row['next_payment'],
-                    $row['trade'] ? 'Yes' : 'No',
-                ]);
-            }
-            fclose($out);
-            exit;
-        }
 
         if (function_exists('wp_enqueue_media')) {
             wp_enqueue_media();
@@ -202,9 +119,6 @@ class Members_Dashboard {
                 <button class="button button-secondary" type="submit" name="roxy_members_save" value="1">Save estimates</button>
                 <a class="button" href="<?php echo esc_url($scan_log_url); ?>">View Scan Log</a>
                 <a class="button" href="<?php echo esc_url($subs_url); ?>">Open Woo Subscriptions</a>
-                <?php if (current_user_can('manage_options')): ?>
-                    <a class="button" href="<?php echo esc_url(wp_nonce_url(add_query_arg(array_merge(['roxy_members_export' => '1'], (array) ($_GET ?? [])), admin_url('admin.php?page=roxy-suite&tab=membership')), 'roxy_members_export')); ?>">Export CSV</a>
-                <?php endif; ?>
             </form>
 
             <form method="post" id="rs-members-action-form" style="display:none;">
@@ -392,21 +306,13 @@ class Members_Dashboard {
 
         if (!is_array($subscriptions)) $subscriptions = [];
 
-        // Collect all sub IDs up front so we can batch-load scan stats in one query
-        $all_sub_ids = [];
-        foreach ($subscriptions as $subscription) {
-            if (!is_object($subscription) || !method_exists($subscription, 'get_id')) continue;
-            $all_sub_ids[] = (int) $subscription->get_id();
-        }
-        $scan_stats_cache = self::scan_stats_batch($all_sub_ids);
-
         foreach ($subscriptions as $subscription) {
             if (!is_object($subscription) || !method_exists($subscription, 'get_id')) continue;
 
             $sub_id = (int) $subscription->get_id();
             $subs = self::subscription_quantity($subscription);
             $monthly_revenue = self::monthly_revenue($subscription);
-            $scan_stats = $scan_stats_cache[$sub_id] ?? ['month' => 0, 'lifetime' => 0, 'last' => ''];
+            $scan_stats = self::scan_stats($sub_id);
             $user = method_exists($subscription, 'get_user') ? $subscription->get_user() : null;
             $name = self::customer_name($subscription, $user);
             $email = is_object($user) && !empty($user->user_email) ? (string) $user->user_email : '';

@@ -85,14 +85,14 @@ function roxy_eb_repo_update_booking($id, $data) {
 function roxy_eb_repo_get_booking($id) {
     global $wpdb;
     $table = roxy_eb_table_bookings();
-    $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM `{$table}` WHERE id=%d", intval($id)), ARRAY_A);
+    $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table WHERE id=%d", intval($id)), ARRAY_A);
     return $row ?: null;
 }
 
 function roxy_eb_repo_get_booking_by_order($order_id) {
     global $wpdb;
     $table = roxy_eb_table_bookings();
-    $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM `{$table}` WHERE woo_order_id=%d ORDER BY id DESC LIMIT 1", intval($order_id)), ARRAY_A);
+    $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table WHERE woo_order_id=%d ORDER BY id DESC LIMIT 1", intval($order_id)), ARRAY_A);
     return $row ?: null;
 }
 
@@ -103,12 +103,12 @@ function roxy_eb_repo_list_bookings_for_user($wp_user_id, $email) {
     $email = sanitize_email($email);
     if ($wp_user_id > 0) {
         $rows = $wpdb->get_results($wpdb->prepare(
-            "SELECT * FROM `{$table}` WHERE (wp_user_id=%d) OR (customer_email=%s) ORDER BY doors_open_at DESC",
+            "SELECT * FROM $table WHERE (wp_user_id=%d) OR (customer_email=%s) ORDER BY doors_open_at DESC",
             $wp_user_id, $email
         ), ARRAY_A);
     } else {
         $rows = $wpdb->get_results($wpdb->prepare(
-            "SELECT * FROM `{$table}` WHERE customer_email=%s ORDER BY doors_open_at DESC",
+            "SELECT * FROM $table WHERE customer_email=%s ORDER BY doors_open_at DESC",
             $email
         ), ARRAY_A);
     }
@@ -120,7 +120,7 @@ function roxy_eb_repo_list_bookings_in_range($start_mysql, $end_mysql) {
     $table = roxy_eb_table_bookings();
     $rows = $wpdb->get_results($wpdb->prepare(
         "SELECT id,status,reserved_start_at,reserved_end_at,doors_open_at,doors_close_at,visibility,customer_last_name,guest_count
-         FROM `{$table}`
+         FROM $table
          WHERE status IN ('confirmed','pending','pending_invoice')
          AND reserved_start_at < %s AND reserved_end_at > %s
          ORDER BY reserved_start_at ASC",
@@ -171,7 +171,7 @@ function roxy_eb_repo_list_blocks_in_range($start_mysql, $end_mysql) {
     global $wpdb;
     $table = roxy_eb_table_blocks();
     $rows = $wpdb->get_results($wpdb->prepare(
-        "SELECT * FROM `{$table}`
+        "SELECT * FROM $table
          WHERE start_at < %s AND end_at > %s
          ORDER BY start_at ASC",
         $end_mysql, $start_mysql
@@ -214,12 +214,12 @@ function roxy_eb_repo_list_sling_logs($limit = 200, $booking_id = 0) {
 
     if ($booking_id > 0) {
         $rows = $wpdb->get_results(
-            $wpdb->prepare("SELECT * FROM `{$table}` WHERE booking_id=%d ORDER BY id DESC LIMIT %d", $booking_id, $limit),
+            $wpdb->prepare("SELECT * FROM $table WHERE booking_id=%d ORDER BY id DESC LIMIT %d", $booking_id, $limit),
             ARRAY_A
         );
     } else {
         $rows = $wpdb->get_results(
-            $wpdb->prepare("SELECT * FROM `{$table}` ORDER BY id DESC LIMIT %d", $limit),
+            $wpdb->prepare("SELECT * FROM $table ORDER BY id DESC LIMIT %d", $limit),
             ARRAY_A
         );
     }

@@ -2,14 +2,14 @@
 /**
  * Plugin Name: Roxy Suite
  * Description: Unified management plugin for Newport Roxy — Show Tickets, Will Call, Event Booking, Member Check, Arcade, Legacy NFC Redirect, and Grosses.
- * Version: 1.0.11
+ * Version: 1.0.14
  * Author: Newport Roxy (AI Team)
  * Update URI: https://github.com/Tototex/roxy-suite
  */
 
 if (!defined('ABSPATH')) exit;
 
-define('ROXY_SUITE_VERSION', '1.0.11');
+define('ROXY_SUITE_VERSION', '1.0.14');
 define('ROXY_SUITE_PATH', plugin_dir_path(__FILE__));
 define('ROXY_SUITE_URL', plugin_dir_url(__FILE__));
 
@@ -99,7 +99,7 @@ require_once ROXY_SUITE_PATH . 'includes/class-roxy-suite-members-dashboard.php'
 // ── Module toggle AJAX ─────────────────────────────────────────────────────────
 add_action('wp_ajax_roxy_suite_toggle_module', function () {
     check_ajax_referer('roxy_suite_toggle_module', 'nonce');
-    if (!current_user_can('manage_options')) {
+    if (!roxy_suite_user_can_access_admin()) {
         wp_send_json_error('Insufficient permissions', 403);
     }
     $module  = sanitize_key((string) ($_POST['module'] ?? ''));

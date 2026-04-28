@@ -309,7 +309,8 @@ class Workbook {
   }
 
   public static function send_advertiser_summary(int $year, int $month, string $mode = 'scheduled-advertiser', ?int $end_year = null, ?int $end_month = null): array {
-    $to = Settings::advertiser_email_list();
+    $is_test_send = $mode === 'manual-advertiser-test';
+    $to = $is_test_send ? self::test_email_list() : Settings::advertiser_email_list();
     $end_year = $end_year ?? $year;
     $end_month = $end_month ?? $month;
     [$year, $month, $end_year, $end_month] = self::normalized_period($year, $month, $end_year, $end_month);
@@ -319,7 +320,7 @@ class Workbook {
     $period_label = self::period_label($year, $month, $end_year, $end_month);
 
     if (!$to) {
-      $message = 'No advertiser email addresses are configured.';
+      $message = $is_test_send ? 'No admin alert email is configured for advertiser tests.' : 'No advertiser email addresses are configured.';
       Store::insert_log('send_advertiser_summary', $mode, null, $report_date, false, $message);
       Reporter::notify_admin_failure('Advertiser summary email failed', $report_date, $mode, $message);
       return ['success' => false, 'message' => $message];
@@ -357,7 +358,13 @@ class Workbook {
       }
 
       $subject = strtr($subject_template, $tokens);
+      if ($is_test_send) {
+        $subject = '[TEST] ' . $subject;
+      }
       $body = strtr($body_template, $tokens);
+      if ($is_test_send) {
+        $body = "This is a test advertiser summary email sent only to the configured admin alert address.\n\n" . $body;
+      }
       $body = str_replace('Please use the Advertiser Summary tab.', '', $body);
       $body = trim(preg_replace("/\n{3,}/", "\n\n", $body) ?? $body);
       $body .= "\n\nAdvertiser summary\n";
@@ -390,12 +397,14 @@ class Workbook {
         $body .= "\nGenerated automatically by the Roxy Grosses plugin.";
       }
 
-      // Keep advertiser recipients private: the visible To address should be a theater inbox, not the admin alert inbox.
-      $mail_to = 'info@newportroxy.com';
+      // Keep advertiser recipients private on production sends; tests go straight to the admin alert address.
+      $mail_to = $is_test_send ? $to[0] : 'info@newportroxy.com';
       $headers = ['Content-Type: text/plain; charset=UTF-8'];
-      foreach ($to as $bcc_email) {
-        if ($bcc_email && is_email($bcc_email)) {
-          $headers[] = 'Bcc: ' . $bcc_email;
+      if (!$is_test_send) {
+        foreach ($to as $bcc_email) {
+          if ($bcc_email && is_email($bcc_email)) {
+            $headers[] = 'Bcc: ' . $bcc_email;
+          }
         }
       }
 
@@ -423,6 +432,15 @@ class Workbook {
       Reporter::notify_admin_failure('Advertiser summary email failed', $report_date, $mode, $e->getMessage());
       return ['success' => false, 'message' => $e->getMessage()];
     }
+  }
+
+  private static function test_email_list(): array {
+    $admin_email = Settings::admin_email();
+    if ($admin_email === '') {
+      return [];
+    }
+
+    return [$admin_email];
   }
 
   public static function build_workbook_file(int $year): string {
