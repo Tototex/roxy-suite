@@ -16,6 +16,8 @@ class Tickets {
   const META_CHECKED_IN_AT = '_roxy_checked_in_at';
   const META_CHECKED_IN_BY = '_roxy_checked_in_by';
   const META_QR_URL = '_roxy_ticket_qr_url';
+  private const QR_RATE_LIMIT_WINDOW = 60;
+  private const QR_RATE_LIMIT_MAX = 60;
 
   public static function init(): void {
     add_action('init', [__CLASS__, 'register_post_type']);
@@ -1392,20 +1394,25 @@ class Tickets {
 
   public static function ajax_qr(): void {
     if (!class_exists('\QRCode') || !function_exists('imagepng')) {
-      status_header(500);
-      wp_die('QR generation is unavailable on this server.');
+      wp_die('QR generation is unavailable on this server.', '', ['response' => 500]);
     }
 
     $data = isset($_REQUEST['data']) ? wp_unslash((string) $_REQUEST['data']) : '';
     $data = preg_replace('/[\x00-\x1F\x7F]/u', '', $data);
     $data = trim(is_string($data) ? $data : '');
     if ($data === '' || strlen($data) > 1000) {
-      status_header(400);
-      wp_die('Invalid QR payload.');
+      wp_die('Invalid QR payload.', '', ['response' => 400]);
     }
 
     $size = isset($_REQUEST['size']) ? (int) $_REQUEST['size'] : 220;
     $size = max(120, min(512, $size));
+    $signature = isset($_REQUEST['sig']) ? sanitize_text_field(wp_unslash((string) $_REQUEST['sig'])) : '';
+    if (!hash_equals(self::qr_signature($data, $size), $signature)) {
+      wp_die('Invalid QR request.', '', ['response' => 403]);
+    }
+    if (!self::allow_qr_request()) {
+      wp_die('Too many QR requests. Please slow down.', '', ['response' => 429]);
+    }
 
     nocache_headers();
     $generator = new \QRCode($data, [
@@ -1507,11 +1514,34 @@ class Tickets {
   }
 
   public static function qr_image_url(string $data, int $size = 220): string {
+    $size = max(120, min(512, $size));
     return add_query_arg([
       'action' => 'roxy_st_qr',
       'data' => $data,
-      'size' => max(120, min(512, $size)),
+      'size' => $size,
+      'sig' => self::qr_signature($data, $size),
     ], admin_url('admin-ajax.php'));
+  }
+
+  private static function qr_signature(string $data, int $size): string {
+    $secret = (defined('AUTH_SALT') ? AUTH_SALT : 'roxy-st') . '|' . (defined('SECURE_AUTH_SALT') ? SECURE_AUTH_SALT : 'roxy-st');
+    return hash_hmac('sha256', $data . '|' . $size, $secret);
+  }
+
+  private static function allow_qr_request(): bool {
+    $ip = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash((string) $_SERVER['REMOTE_ADDR'])) : '';
+    $key = 'roxy_st_qr_' . md5($ip !== '' ? $ip : 'unknown');
+    $bucket = get_transient($key);
+    if (!is_array($bucket)) {
+      $bucket = ['count' => 0, 'started_at' => time()];
+    }
+    $elapsed = time() - (int) ($bucket['started_at'] ?? 0);
+    if ($elapsed >= self::QR_RATE_LIMIT_WINDOW) {
+      $bucket = ['count' => 0, 'started_at' => time()];
+    }
+    $bucket['count'] = (int) ($bucket['count'] ?? 0) + 1;
+    set_transient($key, $bucket, self::QR_RATE_LIMIT_WINDOW);
+    return $bucket['count'] <= self::QR_RATE_LIMIT_MAX;
   }
 
   private static function state_for_order_status(string $status): string {

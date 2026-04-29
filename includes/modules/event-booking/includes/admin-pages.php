@@ -147,7 +147,8 @@ function roxy_eb_admin_blocks_page() {
 
     if (isset($_GET['delete']) && isset($_GET['_wpnonce'])) {
         $id = intval($_GET['delete']);
-        if (wp_verify_nonce($_GET['_wpnonce'], 'roxy_eb_del_block_' . $id)) {
+        $nonce = sanitize_text_field(wp_unslash((string) $_GET['_wpnonce']));
+        if (wp_verify_nonce($nonce, 'roxy_eb_del_block_' . $id)) {
             $res = roxy_eb_repo_delete_block($id);
             echo is_wp_error($res) ? '<div class="error"><p>Could not delete: ' . esc_html($res->get_error_message()) . '</p></div>' : '<div class="updated"><p>Block deleted.</p></div>';
         }
@@ -234,14 +235,14 @@ function roxy_eb_admin_bookings_page() {
 
     if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'retry_sling' && isset($_GET['booking_id'])) {
         $booking_id = intval($_GET['booking_id']);
-        $nonce = sanitize_text_field($_GET['_wpnonce'] ?? '');
+        $nonce = sanitize_text_field(wp_unslash($_GET['_wpnonce'] ?? ''));
         if (!wp_verify_nonce($nonce, 'roxy_eb_admin_retry_sling_' . $booking_id)) echo '<div class="notice notice-error"><p>Security check failed.</p></div>';
         else { roxy_eb_sling_enqueue_sync($booking_id, 'manual_retry'); echo '<div class="notice notice-success"><p>Sling sync queued.</p></div>'; }
     }
 
     if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'cancel' && isset($_GET['booking_id'])) {
         $booking_id = intval($_GET['booking_id']);
-        $nonce = sanitize_text_field($_GET['_wpnonce'] ?? '');
+        $nonce = sanitize_text_field(wp_unslash($_GET['_wpnonce'] ?? ''));
         if (!wp_verify_nonce($nonce, 'roxy_eb_admin_cancel_' . $booking_id)) echo '<div class="notice notice-error"><p>Security check failed.</p></div>';
         else {
             $res = roxy_eb_cancel_booking($booking_id, 'admin');
@@ -374,7 +375,7 @@ function roxy_eb_admin_bookings_page() {
 
     if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'update' && isset($_GET['booking_id'])) {
         $booking_id = intval($_GET['booking_id']);
-        $nonce = sanitize_text_field($_POST['_wpnonce'] ?? '');
+        $nonce = sanitize_text_field(wp_unslash($_POST['_wpnonce'] ?? ''));
         if (!wp_verify_nonce($nonce, 'roxy_eb_admin_edit_' . $booking_id)) echo '<div class="notice notice-error"><p>Security check failed.</p></div>';
         else {
             $booking_before = roxy_eb_repo_get_booking($booking_id);

@@ -941,12 +941,13 @@ function roxy_eb_thankyou_booking_details($order_id) {
 
 function roxy_eb_ajax_start_booking() {
     check_ajax_referer('roxy_eb_nonce', 'nonce');
+    roxy_eb_rate_limit_public_request('start_booking', 300, 20);
     if (!roxy_eb_wc_ready()) wp_send_json_error(['message' => 'WooCommerce is required.']);
     $settings = roxy_eb_get_settings();
     $pid = intval($settings['booking_product_id'] ?? 0);
     if ($pid <= 0) wp_send_json_error(['message' => 'Booking product not configured.']);
 
-    $payload = isset($_POST['booking']) ? (array) $_POST['booking'] : [];
+    $payload = isset($_POST['booking']) ? (array) wp_unslash($_POST['booking']) : [];
     $validation = roxy_eb_validate_booking_payload($payload);
     if (is_wp_error($validation)) wp_send_json_error(['message' => $validation->get_error_message()]);
 
@@ -974,7 +975,8 @@ function roxy_eb_ajax_start_booking() {
 
 function roxy_eb_ajax_submit_invoice_booking() {
     check_ajax_referer('roxy_eb_nonce', 'nonce');
-    $payload = isset($_POST['booking']) ? (array) $_POST['booking'] : [];
+    roxy_eb_rate_limit_public_request('submit_invoice_booking', HOUR_IN_SECONDS, 6);
+    $payload = isset($_POST['booking']) ? (array) wp_unslash($_POST['booking']) : [];
 
     $payload['customer_type'] = sanitize_text_field($payload['customer_type'] ?? 'personal');
     $payload['payment_method'] = sanitize_text_field($payload['payment_method'] ?? 'pay_now');

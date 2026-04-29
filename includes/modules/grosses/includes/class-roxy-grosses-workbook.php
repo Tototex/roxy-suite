@@ -22,7 +22,7 @@ class Workbook {
     check_admin_referer('roxy_grosses_upload_template');
 
     if (empty($_FILES['workbook_template']['name'])) {
-      self::redirect_with_notice('error', 'Choose an .xlsx workbook template to upload.', null, 'imports');
+      self::redirect_with_notice('error', 'Choose an .xlsx workbook template to upload.', null, 'workbook');
     }
 
     require_once ABSPATH . 'wp-admin/includes/file.php';
@@ -32,7 +32,7 @@ class Workbook {
     ]);
 
     if (!empty($uploaded['error'])) {
-      self::redirect_with_notice('error', (string) $uploaded['error'], null, 'imports');
+      self::redirect_with_notice('error', (string) $uploaded['error'], null, 'workbook');
     }
 
     self::set_uploaded_template([
@@ -45,7 +45,7 @@ class Workbook {
     Store::insert_log('upload_workbook_template', 'manual-template', null, null, true, 'Workbook template uploaded.', [
       'path' => (string) ($uploaded['file'] ?? ''),
     ]);
-    self::redirect_with_notice('success', 'Workbook template uploaded successfully.', null, 'imports');
+    self::redirect_with_notice('success', 'Workbook template uploaded successfully.', null, 'workbook');
   }
 
   public static function handle_refresh_workbook(): void {
@@ -58,11 +58,11 @@ class Workbook {
 
     try {
       $snapshot = self::refresh_snapshot($year, 'manual-refresh');
-      self::redirect_with_notice('success', 'Workbook refreshed for ' . $year . ' at ' . ($snapshot['refreshed_at'] ?? '') . '.', $year, 'imports');
+      self::redirect_with_notice('success', 'Workbook refreshed for ' . $year . ' at ' . ($snapshot['refreshed_at'] ?? '') . '.', $year, 'workbook');
     } catch (\Throwable $e) {
       Store::insert_log('refresh_workbook', 'manual-refresh', null, sprintf('%04d-12-31', $year), false, $e->getMessage());
       Reporter::notify_admin_failure('Grosses workbook refresh failed', sprintf('%04d-12-31', $year), 'manual-refresh', $e->getMessage());
-      self::redirect_with_notice('error', $e->getMessage(), $year, 'imports');
+      self::redirect_with_notice('error', $e->getMessage(), $year, 'workbook');
     }
   }
 
@@ -98,7 +98,7 @@ class Workbook {
     } catch (\Throwable $e) {
       Store::insert_log('download_workbook', 'manual-workbook', null, sprintf('%04d-12-31', $year), false, $e->getMessage());
       Reporter::notify_admin_failure('Grosses workbook generation failed', sprintf('%04d-12-31', $year), 'manual-workbook', $e->getMessage());
-      self::redirect_with_notice('error', $e->getMessage(), null, 'imports');
+      self::redirect_with_notice('error', $e->getMessage(), null, 'workbook');
     }
   }
 
@@ -108,9 +108,9 @@ class Workbook {
     }
 
     check_admin_referer('roxy_grosses_send_advertiser_summary');
-    $return_tab = isset($_POST['return_tab']) ? sanitize_key((string) wp_unslash($_POST['return_tab'])) : 'settings';
-    if (!in_array($return_tab, ['database', 'settings', 'logs', 'legacy-weekly'], true)) {
-      $return_tab = 'settings';
+    $return_tab = isset($_POST['return_tab']) ? sanitize_key((string) wp_unslash($_POST['return_tab'])) : 'workbook';
+    if (!in_array($return_tab, ['database', 'settings', 'logs', 'legacy-weekly', 'workbook', 'daily'], true)) {
+      $return_tab = 'workbook';
     }
     $start_month_value = isset($_POST['advertiser_start_month']) ? sanitize_text_field(wp_unslash((string) $_POST['advertiser_start_month'])) : '';
     $end_month_value = isset($_POST['advertiser_end_month']) ? sanitize_text_field(wp_unslash((string) $_POST['advertiser_end_month'])) : '';
@@ -398,7 +398,7 @@ class Workbook {
       }
 
       // Keep advertiser recipients private on production sends; tests go straight to the admin alert address.
-      $mail_to = $is_test_send ? $to[0] : 'info@newportroxy.com';
+      $mail_to = $to[0];
       $headers = ['Content-Type: text/plain; charset=UTF-8'];
       if (!$is_test_send) {
         foreach ($to as $bcc_email) {
@@ -988,7 +988,7 @@ class Workbook {
     return '';
   }
 
-  private static function redirect_with_notice(string $status, string $message, ?int $year = null, string $tab = 'imports'): void {
+  private static function redirect_with_notice(string $status, string $message, ?int $year = null, string $tab = 'workbook'): void {
     $url = add_query_arg([
       'page' => 'roxy-grosses',
       'tab' => $tab,

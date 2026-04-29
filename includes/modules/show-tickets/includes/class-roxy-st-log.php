@@ -4,14 +4,31 @@ namespace RoxyST;
 if (!defined('ABSPATH')) exit;
 
 /**
- * Lightweight logger that writes to both WooCommerce logs and a flat file in uploads.
- * File path: wp-content/uploads/roxy-st.log
+ * Lightweight logger that writes to both WooCommerce logs and a guarded flat file in uploads.
  */
 class Log {
   private static function uploads_log_path(): string {
     $up = wp_upload_dir(null, false);
     $base = isset($up['basedir']) ? $up['basedir'] : WP_CONTENT_DIR . '/uploads';
-    return rtrim($base, '/').'/roxy-st.log';
+    $dir = rtrim($base, '/').'/roxy-st-logs';
+    self::ensure_log_directory($dir);
+    return $dir . '/roxy-st.log';
+  }
+
+  private static function ensure_log_directory(string $dir): void {
+    if (!is_dir($dir)) {
+      wp_mkdir_p($dir);
+    }
+
+    $index = $dir . '/index.html';
+    if (!file_exists($index)) {
+      @file_put_contents($index, '');
+    }
+
+    $htaccess = $dir . '/.htaccess';
+    if (!file_exists($htaccess)) {
+      @file_put_contents($htaccess, "Require all denied\nDeny from all\n");
+    }
   }
 
   private static function write_file(string $level, string $message): void {

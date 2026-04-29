@@ -335,7 +335,7 @@ class CPT {
   public static function save(int $post_id, $post): void {
     if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
     if (self::$is_generating_schedule) return;
-    if (!isset($_POST['roxy_showing_nonce']) || !wp_verify_nonce($_POST['roxy_showing_nonce'], 'roxy_showing_save')) return;
+    if (!isset($_POST['roxy_showing_nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash((string) $_POST['roxy_showing_nonce'])), 'roxy_showing_save')) return;
     if (!current_user_can('edit_post', $post_id)) return;
 
     $capacity = isset($_POST['roxy_capacity']) ? (int) $_POST['roxy_capacity'] : Settings::get_default_capacity();
@@ -770,35 +770,10 @@ class CPT {
   }
 
   public static function maybe_run_one_time_cleanup(): void {
-    if (!roxy_suite_user_can_access_admin()) {
-      return;
-    }
-
     $flag = 'roxy_st_cleanup_test_showings_021019_done';
-    if (get_option($flag) === '1') {
-      return;
+    if (get_option($flag) !== '1') {
+      update_option($flag, '1', false);
     }
-
-    $ids = get_posts([
-      'post_type' => self::POST_TYPE,
-      'post_status' => 'any',
-      'posts_per_page' => -1,
-      'fields' => 'ids',
-      'title' => 'Test',
-      'suppress_filters' => true,
-    ]);
-
-    foreach ($ids as $id) {
-      foreach (['_roxy_pid_adult','_roxy_pid_discount','_roxy_pid_matinee','_roxy_pid_live1','_roxy_pid_live2','_roxy_pid_subscriber'] as $product_meta_key) {
-        $pid = (int) get_post_meta((int) $id, $product_meta_key, true);
-        if ($pid > 0 && get_post_type($pid) === 'product') {
-          wp_delete_post($pid, true);
-        }
-      }
-      wp_delete_post((int) $id, true);
-    }
-
-    update_option($flag, '1', false);
   }
 
 

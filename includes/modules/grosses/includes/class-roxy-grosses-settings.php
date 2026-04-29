@@ -5,13 +5,18 @@ if (!defined('ABSPATH')) exit;
 class Settings {
   public const OPTION_KEY='roxy_grosses_settings';
   public const STATUS_KEY='roxy_grosses_last_report';
+  private const WORKBOOK_TEMPLATE_UPLOAD_KEY='workbook_template_upload';
+  private const ENCRYPTION_PREFIX='gcm:';
 
   public static function init(): void {
     add_action('admin_init',[__CLASS__,'register_settings']);
   }
   public static function current_tab(): string {
     $tab=isset($_GET['tab'])?sanitize_key((string) wp_unslash($_GET['tab'])):'database';
-    return in_array($tab,['database','live-shows','rentals','legacy-weekly','settings','logs'],true)?$tab:'database';
+    if ($tab === 'imports') {
+      $tab = 'workbook';
+    }
+    return in_array($tab,['database','live-shows','rentals','legacy-weekly','workbook','daily','settings','logs'],true)?$tab:'database';
   }
   public static function defaults(): array {
     return [
@@ -35,7 +40,9 @@ class Settings {
   }
   public static function get_all(): array {
     $saved=get_option(self::OPTION_KEY,[]); if(!is_array($saved)) $saved=[];
-    return wp_parse_args($saved,self::defaults());
+    $all = wp_parse_args($saved,self::defaults());
+    $all['square_access_token'] = self::decrypt_secret((string) ($saved['square_access_token'] ?? $all['square_access_token']));
+    return $all;
   }
   public static function get(string $key,$default=''){ $all=self::get_all(); return array_key_exists($key,$all)?$all[$key]:$default; }
   public static function get_report_timezone(): string {
@@ -79,9 +86,17 @@ class Settings {
 
   public static function sanitize($input): array {
     $d=self::defaults(); $input=is_array($input)?$input:[];
+    $existing = get_option(self::OPTION_KEY, []);
+    if (!is_array($existing)) {
+      $existing = [];
+    }
+    $incoming_square_token = sanitize_text_field((string) ($input['square_access_token'] ?? ''));
+    $square_token = $incoming_square_token !== ''
+      ? self::encrypt_secret($incoming_square_token)
+      : sanitize_text_field((string) ($existing['square_access_token'] ?? $d['square_access_token']));
     $sanitized=[
       'square_environment'=>in_array(($input['square_environment']??''),['production','sandbox'],true)?$input['square_environment']:$d['square_environment'],
-      'square_access_token'=>sanitize_text_field((string) ($input['square_access_token']??$d['square_access_token'])),
+      'square_access_token'=>$square_token,
       'square_location_ids'=>self::sanitize_line_list((string) ($input['square_location_ids']??$d['square_location_ids'])),
       'report_timezone'=>self::sanitize_timezone((string) ($input['report_timezone']??$d['report_timezone'])),
       'ticket_keywords'=>self::sanitize_line_list((string) ($input['ticket_keywords']??$d['ticket_keywords'])),
@@ -107,6 +122,21 @@ class Settings {
       'advertiser_schedule_day'=>(string) min(31,max(1,(int) ($input['advertiser_schedule_day']??$d['advertiser_schedule_day']))),
       'advertiser_schedule_time'=>self::sanitize_time((string) ($input['advertiser_schedule_time']??$d['advertiser_schedule_time'])),
     ];
+    $workbook_template_path = array_key_exists('workbook_template_path', $input)
+      ? sanitize_text_field((string) ($input['workbook_template_path'] ?? ''))
+      : sanitize_text_field((string) ($existing['workbook_template_path'] ?? $d['workbook_template_path']));
+    if ($workbook_template_path !== '') {
+      $sanitized['workbook_template_path'] = $workbook_template_path;
+    }
+    $uploaded_template = $existing[self::WORKBOOK_TEMPLATE_UPLOAD_KEY] ?? [];
+    if (is_array($uploaded_template) && $uploaded_template) {
+      $sanitized[self::WORKBOOK_TEMPLATE_UPLOAD_KEY] = [
+        'path' => sanitize_text_field((string) ($uploaded_template['path'] ?? '')),
+        'url' => esc_url_raw((string) ($uploaded_template['url'] ?? '')),
+        'name' => sanitize_file_name((string) ($uploaded_template['name'] ?? '')),
+        'uploaded_at' => sanitize_text_field((string) ($uploaded_template['uploaded_at'] ?? '')),
+      ];
+    }
     Scheduler::sync_schedule($sanitized); return $sanitized;
   }
 
@@ -118,7 +148,7 @@ class Settings {
         foreach(['production'=>'Production','sandbox'=>'Sandbox'] as $ov=>$label){ echo '<option value="'.esc_attr($ov).'" '.selected($value,$ov,false).'>'.esc_html($label).'</option>'; }
         echo '</select><p class="description">Use sandbox only for testing with a Square sandbox token.</p>'; return;
       case 'square_access_token':
-        echo '<input type="password" class="regular-text code" name="'.esc_attr($name).'" value="'.esc_attr((string) $value).'" autocomplete="off"><p class="description">Personal access token or OAuth token with Orders read access.</p>'; return;
+        echo '<input type="password" class="regular-text code" name="'.esc_attr($name).'" value="" autocomplete="off"'.(self::has_square_access_token() ? ' placeholder="Token saved - leave blank to keep current token"' : '').'><p class="description">Personal access token or OAuth token with Orders read access. Leave blank to keep the current token.</p>'; return;
       case 'square_location_ids': case 'ticket_keywords': case 'exclude_keywords': case 'film_mappings': case 'studio_mappings': case 'email_body': case 'advertiser_email_body':
         $rows=$key==='film_mappings'?'8':'5';
         echo '<textarea class="large-text code" rows="'.esc_attr($rows).'" name="'.esc_attr($name).'">'.esc_textarea((string) $value).'</textarea>';
@@ -158,6 +188,8 @@ class Settings {
     echo '<a class="nav-tab '.($tab==='live-shows'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=live-shows')).'">Live Shows</a>';
     echo '<a class="nav-tab '.($tab==='rentals'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=rentals')).'">Rentals</a>';
     echo '<a class="nav-tab '.($tab==='legacy-weekly'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=legacy-weekly')).'">Legacy Movies</a>';
+    echo '<a class="nav-tab '.($tab==='workbook'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=workbook')).'">Workbook</a>';
+    echo '<a class="nav-tab '.($tab==='daily'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=daily')).'">Saved Reports</a>';
     echo '<a class="nav-tab '.($tab==='settings'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=settings')).'">Settings</a>';
     echo '<a class="nav-tab '.($tab==='logs'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=logs')).'">Logs</a></nav>';
     if(!empty($_GET['roxy_grosses_notice'])){ $notice=sanitize_text_field(wp_unslash((string) $_GET['roxy_grosses_notice'])); $message=isset($_GET['message'])?sanitize_text_field(wp_unslash((string) $_GET['message'])):''; echo '<div class="'.esc_attr($notice==='success'?'notice notice-success':'notice notice-error').'"><p>'.esc_html($message).'</p></div>'; }
@@ -166,8 +198,18 @@ class Settings {
     elseif($tab==='rentals'){ self::render_rentals_tab(); }
     elseif($tab==='logs'){ self::render_logs_tab($logs); }
     elseif($tab==='legacy-weekly'){ self::render_legacy_weekly_tab(); }
+    elseif($tab==='workbook'){ self::render_workbook_tab(self::workbook_year(),self::default_advertiser_month($timezone)); }
+    elseif($tab==='daily'){ self::render_reports_tab(); }
     else { self::render_database_tab($default_date); }
     echo '</div>';
+  }
+
+  private static function workbook_year(): int {
+    return isset($_GET['workbook_year']) ? max(2000, (int) $_GET['workbook_year']) : (int) wp_date('Y', null, new \DateTimeZone(self::get_report_timezone()));
+  }
+
+  private static function default_advertiser_month(\DateTimeZone $timezone): string {
+    return (new \DateTimeImmutable('now', $timezone))->modify('first day of last month')->format('Y-m');
   }
 
   private static function render_database_tab(string $default_date): void {
@@ -979,6 +1021,8 @@ class Settings {
   public static function advertiser_email_list(): array { return array_values(array_filter(array_map('sanitize_email',array_map('trim',explode(',',(string) self::get('advertiser_emails','')))))); }
   public static function live_email_list(): array { return array_values(array_filter(array_map('sanitize_email',array_map('trim',explode(',',(string) self::get('live_email_recipients','')))))); }
   public static function admin_email(): string { return sanitize_email((string) self::get('admin_email',get_option('admin_email'))); }
+  public static function square_access_token(): string { return trim((string) self::get('square_access_token','')); }
+  public static function has_square_access_token(): bool { return self::square_access_token() !== ''; }
   public static function sanitize_mappings(string $value): string {
     $clean=[]; foreach((array) preg_split('/\r\n|\r|\n/',$value) as $line){ $parts=array_map('trim',explode('|',(string) $line)); if(count($parts)<2||$parts[0]===''||$parts[1]==='') continue; $clean[]=sanitize_text_field($parts[0]).'|'.sanitize_text_field($parts[1]).'|'.sanitize_text_field($parts[2]??''); }
     return implode("\n",$clean);
@@ -998,6 +1042,42 @@ class Settings {
   public static function sanitize_time(string $time): string { return preg_match('/^\d{2}:\d{2}$/',$time)?$time:'20:00'; }
   public static function sanitize_timezone(string $timezone): string {
     $timezone=sanitize_text_field($timezone); try { new \DateTimeZone($timezone); return $timezone; } catch (\Exception $e) { return wp_timezone_string()?:'America/Los_Angeles'; }
+  }
+  private static function encryption_key(): string {
+    return hash('sha256', (defined('AUTH_SALT') ? AUTH_SALT : 'roxy-grosses') . '|' . (defined('SECURE_AUTH_SALT') ? SECURE_AUTH_SALT : 'roxy-grosses'), true);
+  }
+
+  private static function encrypt_secret(string $plain): string {
+    $plain = trim($plain);
+    if ($plain === '') {
+      return '';
+    }
+    $iv = random_bytes(12);
+    $tag = '';
+    $cipher = openssl_encrypt($plain, 'aes-256-gcm', self::encryption_key(), OPENSSL_RAW_DATA, $iv, $tag);
+    if ($cipher === false || $tag === '') {
+      return $plain;
+    }
+    return self::ENCRYPTION_PREFIX . base64_encode($iv . $tag . $cipher);
+  }
+
+  private static function decrypt_secret(string $value): string {
+    $value = trim($value);
+    if ($value === '') {
+      return '';
+    }
+    if (!str_starts_with($value, self::ENCRYPTION_PREFIX)) {
+      return $value;
+    }
+    $raw = base64_decode(substr($value, strlen(self::ENCRYPTION_PREFIX)), true);
+    if ($raw === false || strlen($raw) < 29) {
+      return '';
+    }
+    $iv = substr($raw, 0, 12);
+    $tag = substr($raw, 12, 16);
+    $cipher = substr($raw, 28);
+    $plain = openssl_decrypt($cipher, 'aes-256-gcm', self::encryption_key(), OPENSSL_RAW_DATA, $iv, $tag);
+    return $plain === false ? '' : $plain;
   }
 }
 

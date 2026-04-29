@@ -888,9 +888,6 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
     if (($r['source'] ?? '') === 'member_admit') {
       $saved = ['checked_in' => 1, 'used_qty' => (int) ($r['qty'] ?? 0)];
     }
-    if (($r['source'] ?? '') === 'member_admit') {
-      $saved = ['checked_in' => 1, 'used_qty' => $qty];
-    }
     $used_qty = isset($saved['used_qty']) ? (int) $saved['used_qty'] : 0;
     if ($used_qty < 0) $used_qty = 0;
     if ($used_qty > (int) $r['qty']) $used_qty = (int) $r['qty'];
@@ -976,6 +973,11 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
     $latest_date = '—';
     if (!empty($r['latest_order_ts'])) {
       $latest_date = wp_date('Y-m-d g:ia', (int) $r['latest_order_ts']);
+    } else {
+      $latest_date = '&mdash;';
+    }
+    if (!$order_links && ($r['source'] ?? '') !== 'member_admit') {
+      $orders_html = '&mdash;';
     }
     $ticket_types = [];
     if (!empty($r['ticket_types']) && is_array($r['ticket_types'])) {
@@ -994,6 +996,8 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
         $parts[] = '<span class="roxy-wc-ticket-type"><strong>' . esc_html((string) $type_row['qty']) . '</strong> ' . esc_html($type_row['label']) . '</span>';
       }
       $ticket_types_html = implode(' ', $parts);
+    } else {
+      $ticket_types_html = '&mdash;';
     }
     $search_text = trim($r['name'] . ' ' . $r['email'] . ' ' . implode(' ', $order_ids_for_search) . ' ' . implode(' ', array_keys((array) ($r['ticket_types'] ?? []))));
 
@@ -1002,7 +1006,7 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
     echo '<td><strong>' . esc_html($r['name']) . '</strong></td>';
     echo '<td>' . esc_html($r['email']) . '</td>';
     echo '<td>' . wp_kses_post($orders_html) . '</td>';
-    echo '<td>' . esc_html($latest_date) . '</td>';
+    echo '<td>' . wp_kses_post($latest_date) . '</td>';
     echo '<td>' . esc_html($qty) . '</td>';
     echo '<td>' . wp_kses_post($ticket_types_html) . '</td>';
     echo '<td><input class="roxy-used" type="number" min="0" max="' . esc_attr($qty) . '" value="' . esc_attr($used_qty) . '" /></td>';

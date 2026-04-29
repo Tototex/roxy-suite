@@ -262,9 +262,10 @@ function roxy_eb_shortcode_calendar() {
 
 function roxy_eb_ajax_calendar_blocks() {
     check_ajax_referer('roxy_eb_nonce', 'nonce');
+    roxy_eb_rate_limit_public_request('calendar_blocks', 60, 90);
 
-    $start = sanitize_text_field($_GET['start'] ?? '');
-    $end   = sanitize_text_field($_GET['end'] ?? '');
+    $start = sanitize_text_field(wp_unslash($_GET['start'] ?? ''));
+    $end   = sanitize_text_field(wp_unslash($_GET['end'] ?? ''));
 
     $tz = wp_timezone();
     try {
@@ -276,4 +277,23 @@ function roxy_eb_ajax_calendar_blocks() {
 
     $items = roxy_eb_get_calendar_blocks($rangeStart, $rangeEnd);
     wp_send_json_success(['items' => $items]);
+}
+
+if (!function_exists('roxy_eb_rate_limit_public_request')) {
+    function roxy_eb_rate_limit_public_request($action, $window, $max_attempts) {
+        $ip = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash((string) $_SERVER['REMOTE_ADDR'])) : 'unknown';
+        $key = 'roxy_eb_rl_' . sanitize_key((string) $action) . '_' . md5($ip);
+        $bucket = get_transient($key);
+        if (!is_array($bucket)) {
+            $bucket = ['count' => 0, 'started_at' => time()];
+        }
+        if ((time() - (int) ($bucket['started_at'] ?? 0)) >= (int) $window) {
+            $bucket = ['count' => 0, 'started_at' => time()];
+        }
+        $bucket['count'] = (int) ($bucket['count'] ?? 0) + 1;
+        set_transient($key, $bucket, max(1, (int) $window));
+        if ((int) $bucket['count'] > (int) $max_attempts) {
+            wp_send_json_error(['message' => 'Too many requests. Please try again shortly.'], 429);
+        }
+    }
 }

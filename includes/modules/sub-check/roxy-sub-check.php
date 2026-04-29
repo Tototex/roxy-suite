@@ -724,7 +724,7 @@ class Roxy_Sub_Check {
 
     if (
       empty($_POST['roxy_myaccount_photo_nonce']) ||
-      !wp_verify_nonce($_POST['roxy_myaccount_photo_nonce'], 'roxy_myaccount_photo_upload')
+      !wp_verify_nonce(sanitize_text_field(wp_unslash((string) $_POST['roxy_myaccount_photo_nonce'])), 'roxy_myaccount_photo_upload')
     ) {
       return;
     }
@@ -745,7 +745,17 @@ class Roxy_Sub_Check {
     require_once ABSPATH . 'wp-admin/includes/media.php';
     require_once ABSPATH . 'wp-admin/includes/image.php';
 
+    $prefilter = static function (array $file): array {
+      $allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif'];
+      $type = isset($file['type']) ? strtolower((string) $file['type']) : '';
+      if ($type === '' || !in_array($type, $allowed, true)) {
+        $file['error'] = 'Please upload a valid image file.';
+      }
+      return $file;
+    };
+    add_filter('wp_handle_upload_prefilter', $prefilter);
     $attachment_id = media_handle_upload('roxy_member_photo', $sub_id);
+    remove_filter('wp_handle_upload_prefilter', $prefilter);
 
     if (is_wp_error($attachment_id)) {
       return;
@@ -848,7 +858,7 @@ class Roxy_Sub_Check {
     if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
     if (!current_user_can('edit_post', $post_id)) return;
 
-    if (!isset($_POST['roxy_member_photo_nonce']) || !wp_verify_nonce($_POST['roxy_member_photo_nonce'], 'roxy_member_photo_save')) {
+    if (!isset($_POST['roxy_member_photo_nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash((string) $_POST['roxy_member_photo_nonce'])), 'roxy_member_photo_save')) {
       return;
     }
 

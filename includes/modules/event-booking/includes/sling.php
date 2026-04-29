@@ -562,20 +562,30 @@ function roxy_eb_sling_encrypt_secret($plain) {
     $plain = strval($plain);
     if ($plain === '') return '';
     $key = hash('sha256', (defined('AUTH_SALT') ? AUTH_SALT : 'roxy-eb') . '|' . (defined('SECURE_AUTH_SALT') ? SECURE_AUTH_SALT : 'roxy-eb'), true);
-    $iv = random_bytes(16);
-    $cipher = openssl_encrypt($plain, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
-    if ($cipher === false) return '';
-    return base64_encode($iv . $cipher);
+    $iv = random_bytes(12);
+    $tag = '';
+    $cipher = openssl_encrypt($plain, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+    if ($cipher === false || $tag === '') return '';
+    return 'gcm:' . base64_encode($iv . $tag . $cipher);
 }
 
 function roxy_eb_sling_decrypt_secret($enc) {
     $enc = strval($enc);
     if ($enc === '') return '';
+    $key = hash('sha256', (defined('AUTH_SALT') ? AUTH_SALT : 'roxy-eb') . '|' . (defined('SECURE_AUTH_SALT') ? SECURE_AUTH_SALT : 'roxy-eb'), true);
+    if (str_starts_with($enc, 'gcm:')) {
+        $raw = base64_decode(substr($enc, 4), true);
+        if ($raw === false || strlen($raw) < 29) return '';
+        $iv = substr($raw, 0, 12);
+        $tag = substr($raw, 12, 16);
+        $cipher = substr($raw, 28);
+        $plain = openssl_decrypt($cipher, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+        return $plain === false ? '' : $plain;
+    }
     $raw = base64_decode($enc, true);
     if ($raw === false || strlen($raw) < 17) return '';
     $iv = substr($raw, 0, 16);
     $cipher = substr($raw, 16);
-    $key = hash('sha256', (defined('AUTH_SALT') ? AUTH_SALT : 'roxy-eb') . '|' . (defined('SECURE_AUTH_SALT') ? SECURE_AUTH_SALT : 'roxy-eb'), true);
     $plain = openssl_decrypt($cipher, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
     return $plain === false ? '' : $plain;
 }

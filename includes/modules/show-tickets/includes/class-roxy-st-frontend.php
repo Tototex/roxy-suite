@@ -616,7 +616,7 @@ class Frontend {
   }
 
   public static function handle_add(): void {
-    if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'roxy_st_add')) {
+    if (!isset($_POST['nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash((string) $_POST['nonce'])), 'roxy_st_add')) {
       wp_die('Invalid request (nonce).');
     }
 

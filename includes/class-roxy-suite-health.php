@@ -224,7 +224,6 @@ class Health {
         global $wpdb;
         $t_reports = $wpdb->prefix . 'roxy_grosses_reports';
         $t_logs = $wpdb->prefix . 'roxy_grosses_logs';
-        $t_logs    = $wpdb->prefix . 'roxy_grosses_logs';
         $t_r_ok    = self::table_exists($t_reports);
         $t_l_ok    = self::table_exists($t_logs);
 
@@ -293,7 +292,7 @@ class Health {
 
         $items = [];
 
-        $now  = date('Y-m-d\TH:i', current_time('timestamp'));
+        $now  = wp_date('Y-m-d\TH:i', null, wp_timezone());
         $upcoming = get_posts([
             'post_type'      => 'roxy_showing',
             'post_status'    => 'publish',
@@ -414,6 +413,7 @@ class Health {
 
         global $wpdb;
         $t_reports = $wpdb->prefix . 'roxy_grosses_reports';
+        $t_logs = $wpdb->prefix . 'roxy_grosses_logs';
 
         if (!self::table_exists($t_reports)) {
             return [self::item('Report table', 'Missing — run activation', self::FAIL)];

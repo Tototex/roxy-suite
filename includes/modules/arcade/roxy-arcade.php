@@ -18,10 +18,12 @@ class Roxy_Arcade {
   // Options
   const OPTION_DBV = 'roxy_arcade_db_version';
   const OPTION_REWARDS_ENABLED = 'roxy_arcade_rewards_enabled';
+  const OPTION_AUTO_FULFILL_REWARDS = 'roxy_arcade_auto_fulfill_rewards';
   const OPTION_LAST_AWARDED_MONTH = 'roxy_arcade_last_awarded_month';
   const OPTION_LAST_WINNER_USER_ID = 'roxy_arcade_last_winner_user_id';
   const OPTION_LAST_WINNER_SUB_ID  = 'roxy_arcade_last_winner_sub_id';
   const OPTION_AWARD_TIME = 'roxy_arcade_award_time_local';
+  const OPTION_LAST_REVIEW_CANDIDATE = 'roxy_arcade_last_review_candidate';
 
   // Prize product SKU
   const SKU_PRIZE = 'SUB002';
@@ -63,6 +65,9 @@ class Roxy_Arcade {
 
     if (get_option(self::OPTION_REWARDS_ENABLED, null) === null) {
       update_option(self::OPTION_REWARDS_ENABLED, 0); // OFF by default
+    }
+    if (get_option(self::OPTION_AUTO_FULFILL_REWARDS, null) === null) {
+      update_option(self::OPTION_AUTO_FULFILL_REWARDS, 0);
     }
 
     update_option(self::OPTION_AWARD_TIME, sprintf('%02d:%02d (site timezone)', self::AWARD_HOUR, self::AWARD_MIN));
@@ -270,10 +275,10 @@ class Roxy_Arcade {
 
     $rate_key = "roxy_arcade_rate_{$user_id}_{$game}";
     $last = (int) get_transient($rate_key);
-    if ($last && (time() - $last) < 10) {
+    if ($last && (time() - $last) < 30) {
       return new WP_REST_Response(['ok' => false, 'message' => 'Too fast — try again in a moment.'], 429);
     }
-    set_transient($rate_key, time(), 30);
+    set_transient($rate_key, time(), 60);
 
     if ($score > 9999999) $score = 9999999;
 
@@ -380,6 +385,12 @@ class Roxy_Arcade {
     if (empty($combined) || empty($combined[0]['user_id'])) return;
 
     $winner_id = (int) $combined[0]['user_id'];
+    $auto_fulfill = (int) get_option(self::OPTION_AUTO_FULFILL_REWARDS, 0) === 1;
+
+    if (!$auto_fulfill) {
+      self::queue_review_candidate($month, $combined[0]);
+      return;
+    }
 
     $sub_id = self::award_free_subscription_one_period($winner_id);
     if ($sub_id) {
@@ -427,6 +438,38 @@ class Roxy_Arcade {
     return (int) $sub->get_id();
   }
 
+  private static function queue_review_candidate($month, array $leader) {
+    $candidate = [
+      'month' => (string) $month,
+      'user_id' => (int) ($leader['user_id'] ?? 0),
+      'name' => (string) ($leader['name'] ?? 'Player'),
+      'score' => (int) ($leader['score'] ?? 0),
+      'queued_at' => wp_date('Y-m-d H:i:s T', null, wp_timezone()),
+    ];
+    update_option(self::OPTION_LAST_REVIEW_CANDIDATE, $candidate, false);
+    self::notify_review_candidate($candidate);
+  }
+
+  private static function notify_review_candidate(array $candidate) {
+    $to = sanitize_email(get_option('admin_email'));
+    if ($to === '') return;
+
+    $subject = sprintf('Roxy Arcade monthly winner review needed for %s', (string) ($candidate['month'] ?? 'this month'));
+    $message = implode("\n", [
+      'Automatic prize fulfillment is disabled for Roxy Arcade.',
+      '',
+      'Review candidate:',
+      'Month: ' . (string) ($candidate['month'] ?? ''),
+      'User ID: ' . (string) ($candidate['user_id'] ?? 0),
+      'Name: ' . (string) ($candidate['name'] ?? 'Player'),
+      'Combined score: ' . (string) ($candidate['score'] ?? 0),
+      'Queued at: ' . (string) ($candidate['queued_at'] ?? ''),
+      '',
+      'If this looks correct, enable automatic fulfillment temporarily and run the monthly award manually from the Arcade settings screen.',
+    ]);
+    wp_mail($to, $subject, $message);
+  }
+
   public static function admin_menu() {
     add_submenu_page('roxy-suite', 'Arcade', 'Arcade', roxy_suite_admin_capability(), 'roxy-arcade-settings', [__CLASS__, 'settings_page']);
   }
@@ -438,6 +481,8 @@ class Roxy_Arcade {
     if (isset($_POST['roxy_arcade_save']) && check_admin_referer('roxy_arcade_save_settings')) {
       $enabled = isset($_POST['rewards_enabled']) ? 1 : 0;
       update_option(self::OPTION_REWARDS_ENABLED, $enabled);
+      $auto_fulfill = isset($_POST['auto_fulfill_rewards']) ? 1 : 0;
+      update_option(self::OPTION_AUTO_FULFILL_REWARDS, $auto_fulfill);
 
       if (isset($_POST['reset_awarded_month'])) {
         update_option(self::OPTION_LAST_AWARDED_MONTH, '');
@@ -454,9 +499,12 @@ class Roxy_Arcade {
     }
 
     $enabled = (int) get_option(self::OPTION_REWARDS_ENABLED, 0);
+    $auto_fulfill = (int) get_option(self::OPTION_AUTO_FULFILL_REWARDS, 0);
     $last_month = (string) get_option(self::OPTION_LAST_AWARDED_MONTH, '');
     $last_winner_id = (int) get_option(self::OPTION_LAST_WINNER_USER_ID, 0);
     $last_sub_id = (int) get_option(self::OPTION_LAST_WINNER_SUB_ID, 0);
+    $review_candidate = get_option(self::OPTION_LAST_REVIEW_CANDIDATE, []);
+    if (!is_array($review_candidate)) $review_candidate = [];
 
     $next_ts = wp_next_scheduled('roxy_arcade_monthly_award');
     $next_run = $next_ts ? wp_date('Y-m-d H:i:s T', $next_ts, wp_timezone()) : 'Not scheduled';
@@ -486,6 +534,11 @@ class Roxy_Arcade {
                 Enable monthly prize awarding (1st at <?php echo esc_html(get_option(self::OPTION_AWARD_TIME)); ?>)
               </label>
               <p class="description">Keep OFF while seeding scores.</p>
+              <label style="display:block;margin-top:8px;">
+                <input type="checkbox" name="auto_fulfill_rewards" <?php checked($auto_fulfill, 1); ?> />
+                Automatically create the prize subscription without admin review
+              </label>
+              <p class="description">Recommended OFF. When disabled, the monthly job emails the admin with a review candidate instead of automatically issuing the prize.</p>
             </td>
           </tr>
 
@@ -508,6 +561,7 @@ class Roxy_Arcade {
               <div><strong>Last awarded month:</strong> <?php echo esc_html($last_month ? $last_month : '—'); ?></div>
               <div><strong>Last winner user ID:</strong> <?php echo esc_html($last_winner_id ? $last_winner_id : '—'); ?></div>
               <div><strong>Last winner subscription ID:</strong> <?php echo esc_html($last_sub_id ? $last_sub_id : '—'); ?></div>
+              <div><strong>Last review candidate:</strong> <?php echo esc_html(!empty($review_candidate['month']) ? sprintf('%s - %s (%s pts)', (string) $review_candidate['month'], (string) ($review_candidate['name'] ?? 'Player'), number_format_i18n((int) ($review_candidate['score'] ?? 0))) : 'â€”'); ?></div>
               <label style="display:block;margin-top:8px;">
                 <input type="checkbox" name="reset_awarded_month" />
                 Reset awarded month (allows awarding again this month)

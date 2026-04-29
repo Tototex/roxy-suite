@@ -153,7 +153,7 @@ class Square {
 
   private static function request(string $method, string $path, array $body = null): array {
     $settings = Settings::get_all();
-    $token = trim((string) ($settings['square_access_token'] ?? ''));
+    $token = Settings::square_access_token();
 
     if ($token === '') {
       throw new \RuntimeException('Add a Square access token before sending grosses reports.');
