@@ -15,7 +15,6 @@ class CPT {
     add_action('manage_' . self::POST_TYPE . '_posts_custom_column', [__CLASS__, 'render_admin_column'], 10, 2);
     add_action('pre_get_posts', [__CLASS__, 'filter_admin_list']);
     add_filter('views_edit-' . self::POST_TYPE, [__CLASS__, 'admin_views']);
-    add_action('admin_init', [__CLASS__, 'maybe_run_one_time_cleanup']);
     add_filter('post_row_actions', [__CLASS__, 'row_actions'], 10, 2);
     add_action('admin_action_roxy_duplicate_weekend', [__CLASS__, 'handle_duplicate_weekend']);
     add_action('admin_notices', [__CLASS__, 'admin_notices']);
@@ -768,14 +767,6 @@ class CPT {
 
     return (int) $new_post_id;
   }
-
-  public static function maybe_run_one_time_cleanup(): void {
-    $flag = 'roxy_st_cleanup_test_showings_021019_done';
-    if (get_option($flag) !== '1') {
-      update_option($flag, '1', false);
-    }
-  }
-
 
   private static function sanitize_legacy_product_ids($raw): string {
     $lines = preg_split('/[\r\n,]+/', (string) $raw);

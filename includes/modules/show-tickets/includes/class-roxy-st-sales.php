@@ -6,6 +6,7 @@ if (!defined('ABSPATH')) exit;
 class Sales {
   private static array $stats_cache = [];
   private const META_KEY = '_roxy_sales_stats';
+  private const LEGACY_SCAN_COMPLETE_KEY = '_roxy_legacy_sales_scan_complete';
   private const CACHE_VERSION = 2;
 
   public static function init(): void {
@@ -75,6 +76,7 @@ class Sales {
     unset(self::$stats_cache[$showing_id]);
     if ($showing_id > 0) {
       delete_post_meta($showing_id, self::META_KEY);
+      delete_post_meta($showing_id, self::LEGACY_SCAN_COMPLETE_KEY);
     }
   }
 
@@ -114,7 +116,7 @@ class Sales {
       ]],
     ]);
 
-    if (!$order_ids) {
+    if (!$order_ids && !self::legacy_scan_complete($showing_id)) {
       $order_ids = self::find_and_tag_legacy_orders_for_showing($showing_id, $ticket_type_by_product);
     }
 
@@ -171,12 +173,19 @@ class Sales {
 
 
   private static function find_and_tag_legacy_orders_for_showing(int $showing_id, array $ticket_type_by_product): array {
-    $order_ids = wc_get_orders([
+    $query_args = [
       'limit' => -1,
       'return' => 'ids',
       'status' => ['processing', 'completed', 'on-hold'],
       'type' => 'shop_order',
-    ]);
+    ];
+
+    $window_start = self::legacy_scan_window_start($showing_id);
+    if ($window_start !== '') {
+      $query_args['date_created'] = '>=' . $window_start;
+    }
+
+    $order_ids = wc_get_orders($query_args);
 
     $matched = [];
     foreach ($order_ids as $order_id) {
@@ -192,7 +201,26 @@ class Sales {
       }
     }
 
+    update_post_meta($showing_id, self::LEGACY_SCAN_COMPLETE_KEY, '1');
+
     return $matched;
+  }
+
+  private static function legacy_scan_complete(int $showing_id): bool {
+    return get_post_meta($showing_id, self::LEGACY_SCAN_COMPLETE_KEY, true) === '1';
+  }
+
+  private static function legacy_scan_window_start(int $showing_id): string {
+    $showing_date = self::showing_date($showing_id);
+    if ($showing_date !== '') {
+      try {
+        return (new \DateTimeImmutable($showing_date, wp_timezone()))->modify('-180 days')->format('Y-m-d');
+      } catch (\Throwable $e) {
+        return $showing_date;
+      }
+    }
+
+    return wp_date('Y-m-d', strtotime('-180 days'), wp_timezone());
   }
 
   public static function mark_order_showings($order_id): void {

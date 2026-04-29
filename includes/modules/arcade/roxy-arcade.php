@@ -24,6 +24,8 @@ class Roxy_Arcade {
   const OPTION_LAST_WINNER_SUB_ID  = 'roxy_arcade_last_winner_sub_id';
   const OPTION_AWARD_TIME = 'roxy_arcade_award_time_local';
   const OPTION_LAST_REVIEW_CANDIDATE = 'roxy_arcade_last_review_candidate';
+  const SCORE_RATE_WINDOW = 300;
+  const SCORE_RATE_LIMIT = 10;
 
   // Prize product SKU
   const SKU_PRIZE = 'SUB002';
@@ -214,6 +216,10 @@ class Roxy_Arcade {
     return $wpdb->prefix . self::TABLE_KEY;
   }
 
+  private static function allowed_games() {
+    return ['marquee', 'popcorn', 'projector'];
+  }
+
   private static function public_name_from_user($user) {
     if (!$user) return 'Player';
 
@@ -255,7 +261,9 @@ class Roxy_Arcade {
     $game = sanitize_key($req->get_param('game'));
     $score = absint($req->get_param('score'));
 
-    if ($game === '') return new WP_REST_Response(['ok' => false, 'message' => 'Unknown game.'], 400);
+    if ($game === '' || !in_array($game, self::allowed_games(), true)) {
+      return new WP_REST_Response(['ok' => false, 'message' => 'Unknown game.'], 400);
+    }
 
     if (!is_user_logged_in()) {
       $combined = self::get_combined_top10();
@@ -272,13 +280,13 @@ class Roxy_Arcade {
     }
 
     $user_id = get_current_user_id();
-
-    $rate_key = "roxy_arcade_rate_{$user_id}_{$game}";
-    $last = (int) get_transient($rate_key);
-    if ($last && (time() - $last) < 30) {
-      return new WP_REST_Response(['ok' => false, 'message' => 'Too fast — try again in a moment.'], 429);
+    $rate = self::track_score_submission($user_id, $game);
+    if (!empty($rate['blocked'])) {
+      return new WP_REST_Response([
+        'ok' => false,
+        'message' => (string) ($rate['message'] ?? 'Too many score submissions. Please wait a few minutes and try again.'),
+      ], 429);
     }
-    set_transient($rate_key, time(), 60);
 
     if ($score > 9999999) $score = 9999999;
 
@@ -367,6 +375,44 @@ class Roxy_Arcade {
       'user_id' => (int)($top['user_id'] ?? 0),
       'name' => (string)($top['name'] ?? '—'),
       'score' => (int)($top['score'] ?? 0),
+    ];
+  }
+
+  private static function track_score_submission($user_id, $game) {
+    $ip = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash((string) $_SERVER['REMOTE_ADDR'])) : 'unknown';
+    $key = 'roxy_arcade_rate_' . md5($user_id . '|' . $game . '|' . $ip);
+    $now = time();
+    $window_start = $now - self::SCORE_RATE_WINDOW;
+    $history = get_transient($key);
+    if (!is_array($history)) {
+      $history = [];
+    }
+
+    $history = array_values(array_filter(array_map('intval', $history), static function ($timestamp) use ($window_start) {
+      return $timestamp >= $window_start;
+    }));
+
+    $last = !empty($history) ? max($history) : 0;
+    if ($last && ($now - $last) < 30) {
+      return [
+        'blocked' => true,
+        'message' => 'Too fast - try again in a moment.',
+      ];
+    }
+
+    if (count($history) >= self::SCORE_RATE_LIMIT) {
+      return [
+        'blocked' => true,
+        'message' => 'Too many score submissions. Please wait a few minutes and try again.',
+      ];
+    }
+
+    $history[] = $now;
+    set_transient($key, $history, self::SCORE_RATE_WINDOW);
+
+    return [
+      'blocked' => false,
+      'message' => '',
     ];
   }
 
@@ -470,6 +516,44 @@ class Roxy_Arcade {
     wp_mail($to, $subject, $message);
   }
 
+  private static function approve_review_candidate() {
+    $candidate = get_option(self::OPTION_LAST_REVIEW_CANDIDATE, []);
+    if (!is_array($candidate) || empty($candidate['user_id']) || empty($candidate['month'])) {
+      return [
+        'ok' => false,
+        'message' => 'There is no queued review candidate to approve.',
+      ];
+    }
+
+    $month = (string) $candidate['month'];
+    $last = (string) get_option(self::OPTION_LAST_AWARDED_MONTH, '');
+    if ($last === $month) {
+      return [
+        'ok' => false,
+        'message' => 'This month has already been awarded.',
+      ];
+    }
+
+    $winner_id = (int) $candidate['user_id'];
+    $sub_id = self::award_free_subscription_one_period($winner_id);
+    if (!$sub_id) {
+      return [
+        'ok' => false,
+        'message' => 'Unable to issue the prize subscription for the queued candidate.',
+      ];
+    }
+
+    update_option(self::OPTION_LAST_AWARDED_MONTH, $month);
+    update_option(self::OPTION_LAST_WINNER_USER_ID, $winner_id);
+    update_option(self::OPTION_LAST_WINNER_SUB_ID, (int) $sub_id);
+    update_option(self::OPTION_LAST_REVIEW_CANDIDATE, [], false);
+
+    return [
+      'ok' => true,
+      'message' => 'Queued review candidate approved and prize issued.',
+    ];
+  }
+
   public static function admin_menu() {
     add_submenu_page('roxy-suite', 'Arcade', 'Arcade', roxy_suite_admin_capability(), 'roxy-arcade-settings', [__CLASS__, 'settings_page']);
   }
@@ -493,6 +577,9 @@ class Roxy_Arcade {
       if (isset($_POST['run_award_now'])) {
         self::award_monthly_winner_snapshot();
         $msg = 'Monthly award routine ran (if eligible).';
+      } elseif (isset($_POST['approve_review_candidate'])) {
+        $result = self::approve_review_candidate();
+        $msg = (string) ($result['message'] ?? 'Settings saved.');
       } else {
         $msg = 'Settings saved.';
       }
@@ -561,7 +648,13 @@ class Roxy_Arcade {
               <div><strong>Last awarded month:</strong> <?php echo esc_html($last_month ? $last_month : '—'); ?></div>
               <div><strong>Last winner user ID:</strong> <?php echo esc_html($last_winner_id ? $last_winner_id : '—'); ?></div>
               <div><strong>Last winner subscription ID:</strong> <?php echo esc_html($last_sub_id ? $last_sub_id : '—'); ?></div>
-              <div><strong>Last review candidate:</strong> <?php echo esc_html(!empty($review_candidate['month']) ? sprintf('%s - %s (%s pts)', (string) $review_candidate['month'], (string) ($review_candidate['name'] ?? 'Player'), number_format_i18n((int) ($review_candidate['score'] ?? 0))) : 'â€”'); ?></div>
+              <div><strong>Last review candidate:</strong> <?php echo esc_html(!empty($review_candidate['month']) ? sprintf('%s - %s (%s pts)', (string) $review_candidate['month'], (string) ($review_candidate['name'] ?? 'Player'), number_format_i18n((int) ($review_candidate['score'] ?? 0))) : '—'); ?></div>
+              <?php if (!empty($review_candidate['month']) && !empty($review_candidate['user_id'])): ?>
+                <label style="display:block;margin-top:8px;">
+                  <input type="checkbox" name="approve_review_candidate" />
+                  Approve queued review candidate and issue the prize now
+                </label>
+              <?php endif; ?>
               <label style="display:block;margin-top:8px;">
                 <input type="checkbox" name="reset_awarded_month" />
                 Reset awarded month (allows awarding again this month)

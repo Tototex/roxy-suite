@@ -132,7 +132,6 @@ class Settings {
     if (is_array($uploaded_template) && $uploaded_template) {
       $sanitized[self::WORKBOOK_TEMPLATE_UPLOAD_KEY] = [
         'path' => sanitize_text_field((string) ($uploaded_template['path'] ?? '')),
-        'url' => esc_url_raw((string) ($uploaded_template['url'] ?? '')),
         'name' => sanitize_file_name((string) ($uploaded_template['name'] ?? '')),
         'uploaded_at' => sanitize_text_field((string) ($uploaded_template['uploaded_at'] ?? '')),
       ];
@@ -182,7 +181,16 @@ class Settings {
   public static function render_page(): void {
     if(!roxy_suite_user_can_access_admin()) return;
     $status=self::get_status(); $timezone=new \DateTimeZone(self::get_report_timezone()); $default_date=wp_date('Y-m-d',null,$timezone); $default_advertiser_date=wp_date('Y-m-d',null,$timezone);
-    $tab=self::current_tab(); $logs=Store::list_logs(100);
+    $tab=self::current_tab();
+    $saved_reports = [];
+    $selected_report = null;
+    if ($tab === 'daily') {
+      $saved_reports = self::saved_reports_for_tab();
+      $report_id = isset($_GET['report_id']) ? max(0, (int) $_GET['report_id']) : 0;
+      if ($report_id > 0) {
+        $selected_report = self::selected_report_for_tab($report_id);
+      }
+    }
     echo '<div class="wrap"><h1>Roxy Grosses</h1><nav class="nav-tab-wrapper" style="margin-bottom:16px;">';
     echo '<a class="nav-tab '.($tab==='database'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=database')).'">Movies</a>';
     echo '<a class="nav-tab '.($tab==='live-shows'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=live-shows')).'">Live Shows</a>';
@@ -196,10 +204,10 @@ class Settings {
     if($tab==='settings'){ echo '<form method="post" action="options.php">'; settings_fields(self::OPTION_KEY); do_settings_sections('roxy-grosses'); submit_button('Save Grosses Settings'); echo '</form>'; self::render_test_tools($default_date,$default_advertiser_date); self::render_documentation_panel(); }
     elseif($tab==='live-shows'){ self::render_live_shows_tab($default_date); }
     elseif($tab==='rentals'){ self::render_rentals_tab(); }
-    elseif($tab==='logs'){ self::render_logs_tab($logs); }
+    elseif($tab==='logs'){ self::render_logs_tab(); }
     elseif($tab==='legacy-weekly'){ self::render_legacy_weekly_tab(); }
     elseif($tab==='workbook'){ self::render_workbook_tab(self::workbook_year(),self::default_advertiser_month($timezone)); }
-    elseif($tab==='daily'){ self::render_reports_tab(); }
+    elseif($tab==='daily'){ self::render_reports_tab($default_date, $selected_report, $saved_reports); }
     else { self::render_database_tab($default_date); }
     echo '</div>';
   }
@@ -612,32 +620,88 @@ class Settings {
     echo '</div></div>';
   }
 
-  private static function render_logs_tab(array $logs): void {
+  private static function render_logs_tab(): void {
     $timezone = new \DateTimeZone(self::get_report_timezone());
     $default_to = wp_date('Y-m-d', null, $timezone);
-    $default_from = wp_date('Y-m-d', time() - (29 * DAY_IN_SECONDS), $timezone);
+    $default_from = wp_date('Y-m-d', time() - (6 * DAY_IN_SECONDS), $timezone);
+    $log_default_from = wp_date('Y-m-d', time() - (29 * DAY_IN_SECONDS), $timezone);
+    $search = isset($_GET['log_search']) ? sanitize_text_field(wp_unslash((string) $_GET['log_search'])) : '';
+    $event_type = isset($_GET['log_event_type']) ? sanitize_key((string) wp_unslash($_GET['log_event_type'])) : '';
+    $success_raw = isset($_GET['log_success']) ? sanitize_text_field(wp_unslash((string) $_GET['log_success'])) : '';
+    $log_from = isset($_GET['log_from']) ? sanitize_text_field(wp_unslash((string) $_GET['log_from'])) : $log_default_from;
+    $log_to = isset($_GET['log_to']) ? sanitize_text_field(wp_unslash((string) $_GET['log_to'])) : $default_to;
+    $page_number = isset($_GET['logs_paged']) ? max(1, (int) $_GET['logs_paged']) : 1;
+    $per_page = 100;
+    $log_filters = array_filter([
+      'search' => $search,
+      'event_type' => $event_type,
+      'date_from' => $log_from,
+      'date_to' => $log_to,
+    ], static function ($value) {
+      return $value !== null && $value !== '';
+    });
+    if ($success_raw === 'success') {
+      $log_filters['success'] = true;
+    } elseif ($success_raw === 'failed') {
+      $log_filters['success'] = false;
+    }
+    $total_logs = Store::count_logs($log_filters);
+    $logs = Store::list_logs($log_filters, $per_page, ($page_number - 1) * $per_page);
+    $event_types = ['anomaly','send_advertiser_summary','send_live_report','send_report','send_saved_report','sync_tables','scheduled_sync','save_draft','import'];
+    $run_reconciliation = !empty($_GET['run_reconciliation']);
     $rec_from = isset($_GET['reconciliation_from']) ? sanitize_text_field(wp_unslash((string) $_GET['reconciliation_from'])) : $default_from;
     $rec_to = isset($_GET['reconciliation_to']) ? sanitize_text_field(wp_unslash((string) $_GET['reconciliation_to'])) : $default_to;
-    $reconciliation = Reporter::reconciliation_rows($rec_from, $rec_to);
+    $reconciliation = $run_reconciliation ? Reporter::reconciliation_rows($rec_from, $rec_to) : [];
     echo '<h2>Logs</h2><p>Review database pulls, daily email sends, advertiser sends, anomalies, and reconciliation gaps.</p>';
-    echo '<h3>Reconciliation</h3><p>Compare Square In Store Purchase totals against the concessions currently assigned across Movies, Live Shows, and Rentals.</p>';
+    echo '<h3>Log Entries</h3><p>Showing the most recent matching log entries. Use filters to narrow results and page through older activity.</p>';
     echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
     echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="logs">';
-    echo '<div><label><strong>From</strong></label><br><input type="date" name="reconciliation_from" value="'.esc_attr($rec_from).'"></div>';
-    echo '<div><label><strong>To</strong></label><br><input type="date" name="reconciliation_to" value="'.esc_attr($rec_to).'"></div>';
-    submit_button('Run Reconciliation','secondary','',false);
-    echo '</form>';
-    echo '<table class="widefat striped" style="margin-bottom:24px;"><thead><tr><th>Date</th><th>Square</th><th>Movies</th><th>Live Shows</th><th>Rentals</th><th>Assigned</th><th>Difference</th></tr></thead><tbody>';
-    foreach ($reconciliation as $row) {
-      echo '<tr><td>'.esc_html((string) $row['date']).'</td><td>$'.esc_html(number_format((float) $row['square_total'], 2)).'</td><td>$'.esc_html(number_format((float) $row['movies'], 2)).'</td><td>$'.esc_html(number_format((float) $row['live'], 2)).'</td><td>$'.esc_html(number_format((float) $row['rentals'], 2)).'</td><td>$'.esc_html(number_format((float) $row['assigned_total'], 2)).'</td><td>$'.esc_html(number_format((float) $row['difference'], 2)).'</td></tr>';
+    echo '<div><label><strong>Search</strong></label><br><input type="text" class="regular-text" name="log_search" value="'.esc_attr($search).'" placeholder="Event, mode, message, date"></div>';
+    echo '<div><label><strong>Event</strong></label><br><select name="log_event_type"><option value="">All events</option>';
+    foreach ($event_types as $option_event_type) {
+      echo '<option value="'.esc_attr($option_event_type).'" '.selected($event_type, $option_event_type, false).'>'.esc_html($option_event_type).'</option>';
     }
-    if(!$reconciliation) echo '<tr><td colspan="7">No reconciliation differences were found in this date range.</td></tr>';
-    echo '</tbody></table>';
+    echo '</select></div>';
+    echo '<div><label><strong>Result</strong></label><br><select name="log_success">';
+    echo '<option value="">All results</option>';
+    echo '<option value="success" '.selected($success_raw, 'success', false).'>Success</option>';
+    echo '<option value="failed" '.selected($success_raw, 'failed', false).'>Failed</option>';
+    echo '</select></div>';
+    echo '<div><label><strong>From</strong></label><br><input type="date" name="log_from" value="'.esc_attr($log_from).'"></div>';
+    echo '<div><label><strong>To</strong></label><br><input type="date" name="log_to" value="'.esc_attr($log_to).'"></div>';
+    submit_button('Filter Logs','secondary','',false);
+    echo '</form>';
     echo '<table class="widefat striped" style="max-width:1100px"><thead><tr><th>Time</th><th>Event</th><th>Mode</th><th>Report ID</th><th>End Date</th><th>Result</th><th>Message</th></tr></thead><tbody>';
     foreach($logs as $log_row){
       echo '<tr><td>'.esc_html((string) $log_row['created_at']).'</td><td>'.esc_html((string) $log_row['event_type']).'</td><td>'.esc_html((string) $log_row['mode']).'</td><td>'.esc_html(!empty($log_row['report_id'])?(string) $log_row['report_id']:'-').'</td><td>'.esc_html((string) ($log_row['report_end_date']?:'-')).'</td><td>'.(!empty($log_row['success'])?'Success':'Failed').'</td><td>'.esc_html((string) $log_row['message']).'</td></tr>';
     }
-    if(!$logs) echo '<tr><td colspan="7">No log entries yet.</td></tr>'; echo '</tbody></table>';
+    if(!$logs) echo '<tr><td colspan="7">No log entries matched these filters.</td></tr>'; echo '</tbody></table>';
+    self::render_pagination($total_logs, $per_page, $page_number, 'logs_paged', [
+      'page' => 'roxy-grosses',
+      'tab' => 'logs',
+      'log_search' => $search,
+      'log_event_type' => $event_type,
+      'log_success' => $success_raw,
+      'log_from' => $log_from,
+      'log_to' => $log_to,
+    ]);
+    echo '<hr><h3>Reconciliation</h3><p>Compare Square In Store Purchase totals against the concessions currently assigned across Movies, Live Shows, and Rentals. This can be slower on larger date ranges, so it only runs when requested.</p>';
+    echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
+    echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="logs"><input type="hidden" name="run_reconciliation" value="1">';
+    echo '<div><label><strong>From</strong></label><br><input type="date" name="reconciliation_from" value="'.esc_attr($rec_from).'"></div>';
+    echo '<div><label><strong>To</strong></label><br><input type="date" name="reconciliation_to" value="'.esc_attr($rec_to).'"></div>';
+    submit_button('Run Reconciliation','secondary','',false);
+    echo '</form>';
+    if ($run_reconciliation) {
+      echo '<table class="widefat striped" style="margin-bottom:24px;"><thead><tr><th>Date</th><th>Square</th><th>Movies</th><th>Live Shows</th><th>Rentals</th><th>Assigned</th><th>Difference</th></tr></thead><tbody>';
+      foreach ($reconciliation as $row) {
+        echo '<tr><td>'.esc_html((string) $row['date']).'</td><td>$'.esc_html(number_format((float) $row['square_total'], 2)).'</td><td>$'.esc_html(number_format((float) $row['movies'], 2)).'</td><td>$'.esc_html(number_format((float) $row['live'], 2)).'</td><td>$'.esc_html(number_format((float) $row['rentals'], 2)).'</td><td>$'.esc_html(number_format((float) $row['assigned_total'], 2)).'</td><td>$'.esc_html(number_format((float) $row['difference'], 2)).'</td></tr>';
+      }
+      if(!$reconciliation) echo '<tr><td colspan="7">No reconciliation differences were found in this date range.</td></tr>';
+      echo '</tbody></table>';
+    } else {
+      echo '<p><em>Reconciliation has not run yet for this page load. Use the form above when you want to check a date range.</em></p>';
+    }
   }
 
   private static function render_test_tools(string $default_date, string $default_advertiser_date): void {
@@ -747,6 +811,38 @@ class Settings {
     echo '<hr><h2>Saved Reports</h2><table class="widefat striped" style="max-width:980px"><thead><tr><th>ID</th><th>End Date</th><th>Status</th><th>Rows</th><th>Tickets</th><th>Gross</th><th>Created</th><th>Action</th></tr></thead><tbody>';
     foreach($saved_reports as $report_row){ $view_url=add_query_arg(['page'=>'roxy-grosses','tab'=>'daily','report_id'=>(int) $report_row['id']],admin_url('admin.php')); echo '<tr><td>'.esc_html((string) $report_row['id']).'</td><td>'.esc_html((string) $report_row['report_end_date']).'</td><td>'.esc_html((string) $report_row['status']).'</td><td>'.esc_html(number_format_i18n((int) $report_row['row_count'])).'</td><td>'.esc_html(number_format_i18n((int) $report_row['summary_tickets'])).'</td><td>$'.esc_html(number_format((float) $report_row['summary_gross'],2)).'</td><td>'.esc_html((string) $report_row['created_at']).'</td><td><a class="button button-small" href="'.esc_url($view_url).'">Review</a></td></tr>'; }
     if(!$saved_reports) echo '<tr><td colspan="8">No saved reports yet.</td></tr>'; echo '</tbody></table>';
+  }
+
+  private static function saved_reports_for_tab(): array {
+    try {
+      if (method_exists(Store::class, 'list_saved_reports')) {
+        $rows = Store::list_saved_reports(100);
+        return is_array($rows) ? $rows : [];
+      }
+      if (method_exists(Store::class, 'list_reports')) {
+        $rows = Store::list_reports(100);
+        return is_array($rows) ? $rows : [];
+      }
+    } catch (\Throwable $e) {
+      Store::insert_log('saved_reports_tab', 'daily-tab', null, null, false, $e->getMessage());
+    }
+    return [];
+  }
+
+  private static function selected_report_for_tab(int $report_id): ?array {
+    try {
+      if (method_exists(Store::class, 'get_saved_report')) {
+        $row = Store::get_saved_report($report_id);
+        return is_array($row) ? $row : null;
+      }
+      if (method_exists(Store::class, 'get_report')) {
+        $row = Store::get_report($report_id);
+        return is_array($row) ? $row : null;
+      }
+    } catch (\Throwable $e) {
+      Store::insert_log('saved_reports_tab', 'daily-tab', $report_id, null, false, $e->getMessage());
+    }
+    return null;
   }
 
   public static function render_dashboard_panel(string $page_slug = 'roxy-suite', ?string $page_tab = null): void {

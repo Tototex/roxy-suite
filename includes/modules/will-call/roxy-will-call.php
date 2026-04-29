@@ -15,6 +15,8 @@ define('ROXY_WC_VERSION', '0.3.8');
 const ROXY_WC_CONTEXT_SHOWING_OFFSET = 1000000000;
 const ROXY_WC_OFFLINE_QUEUE_KEY = 'roxyWillCallQueue';
 const ROXY_WC_OFFLINE_STATE_KEY = 'roxyWillCallState';
+const ROXY_WC_CACHE_VERSION_OPTION = 'roxy_will_call_cache_version';
+const ROXY_WC_CACHE_TTL = 120;
 
 function roxy_will_call_context_numeric_id(string $mode, int $id): int {
   return $mode === 'showing' ? (ROXY_WC_CONTEXT_SHOWING_OFFSET + $id) : $id;
@@ -117,6 +119,20 @@ function roxy_will_call_customer_key(string $name, string $email): string {
   return md5($name . '|' . $email);
 }
 
+function roxy_will_call_cache_version(): int {
+  return max(1, (int) get_option(ROXY_WC_CACHE_VERSION_OPTION, 1));
+}
+
+function roxy_will_call_bump_cache_version(): void {
+  update_option(ROXY_WC_CACHE_VERSION_OPTION, roxy_will_call_cache_version() + 1, false);
+}
+
+function roxy_will_call_cache_key(array $product_ids): string {
+  $product_ids = array_values(array_filter(array_map('intval', $product_ids)));
+  sort($product_ids, SORT_NUMERIC);
+  return 'roxy_wc_list_' . roxy_will_call_cache_version() . '_' . md5(wp_json_encode($product_ids));
+}
+
 if (!defined('ROXY_SUITE_VERSION')) {
   add_action('admin_menu', function () {
     add_submenu_page(
@@ -129,6 +145,9 @@ if (!defined('ROXY_SUITE_VERSION')) {
     );
   });
 }
+
+add_action('woocommerce_new_order', 'roxy_will_call_bump_cache_version');
+add_action('woocommerce_order_status_changed', 'roxy_will_call_bump_cache_version');
 
 function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
   if (!roxy_suite_user_can_access_admin()) {
@@ -720,6 +739,12 @@ function roxy_will_call_get_list($product_ids, array $ticket_type_labels = []) {
     ];
   }
 
+  $cache_key = roxy_will_call_cache_key($product_ids);
+  $cached = get_transient($cache_key);
+  if (is_array($cached) && isset($cached['rows'], $cached['totals'])) {
+    return $cached;
+  }
+
   $statuses = ['wc-processing', 'wc-completed'];
   $order_ids = wc_get_orders([
     'type' => 'shop_order',
@@ -809,6 +834,12 @@ function roxy_will_call_get_list($product_ids, array $ticket_type_labels = []) {
     return strcasecmp($a['name'], $b['name']);
   });
 
+  $result = roxy_will_call_cacheable_list_result($rows, (int) $total_qty, (float) $total_revenue, $matching_order_ids);
+  set_transient($cache_key, $result, ROXY_WC_CACHE_TTL);
+  return $result;
+}
+
+function roxy_will_call_cacheable_list_result(array $rows, int $total_qty, float $total_revenue, array $matching_order_ids): array {
   return [
     'rows' => $rows,
     'totals' => [
@@ -988,7 +1019,6 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
         return strcasecmp($a['label'], $b['label']);
       });
     }
-    $ticket_types_html = 'â€”';
     $ticket_types_html = '&mdash;';
     if ($ticket_types) {
       $parts = [];

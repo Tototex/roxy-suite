@@ -18,6 +18,7 @@ class Tickets {
   const META_QR_URL = '_roxy_ticket_qr_url';
   private const QR_RATE_LIMIT_WINDOW = 60;
   private const QR_RATE_LIMIT_MAX = 60;
+  private const DOOR_STATS_CACHE_TTL = 5;
 
   public static function init(): void {
     add_action('init', [__CLASS__, 'register_post_type']);
@@ -158,6 +159,7 @@ class Tickets {
     if ($order_changed) {
       $order->save();
     }
+    self::invalidate_door_stats_cache_for_order($order_id);
   }
 
   private static function create_ticket_record($order, $item, int $showing_id, string $ticket_type, string $state, int $sequence): int {
@@ -249,18 +251,27 @@ class Tickets {
   }
 
   public static function count_checked_in_for_showing(int $showing_id): int {
-    $posts = get_posts([
-      'post_type' => self::POST_TYPE,
-      'post_status' => 'publish',
-      'numberposts' => -1,
-      'fields' => 'ids',
-      'meta_query' => [
-        ['key' => self::META_SHOWING_ID, 'value' => $showing_id],
-        ['key' => self::META_CHECKED_IN, 'value' => '1'],
-      ],
-      'no_found_rows' => true,
-    ]);
-    return count($posts);
+    global $wpdb;
+    $postmeta = $wpdb->postmeta;
+    $posts = $wpdb->posts;
+    return (int) $wpdb->get_var($wpdb->prepare(
+      "SELECT COUNT(1)
+       FROM {$posts} p
+       INNER JOIN {$postmeta} pm_showing
+         ON pm_showing.post_id = p.ID
+        AND pm_showing.meta_key = %s
+        AND pm_showing.meta_value = %d
+       INNER JOIN {$postmeta} pm_checked
+         ON pm_checked.post_id = p.ID
+        AND pm_checked.meta_key = %s
+        AND pm_checked.meta_value = '1'
+       WHERE p.post_type = %s
+         AND p.post_status = 'publish'",
+      self::META_SHOWING_ID,
+      $showing_id,
+      self::META_CHECKED_IN,
+      self::POST_TYPE
+    ));
   }
 
   public static function get_door_mode_showings(): array {
@@ -343,6 +354,12 @@ class Tickets {
   }
 
   private static function door_stats_payload(int $showing_id): array {
+    $cache_key = self::door_stats_cache_key($showing_id);
+    $cached = get_transient($cache_key);
+    if (is_array($cached)) {
+      return $cached;
+    }
+
     $capacity = Capacity::capacity_limit_for_showing($showing_id);
     $sold = Sales::sold_qty_for_showing($showing_id);
     $member_walkups = self::member_walkup_count_for_showing($showing_id);
@@ -353,7 +370,7 @@ class Tickets {
       $remaining = max(0, (int) $remaining - (int) $member_walkups);
     }
 
-    return [
+    $payload = [
       'showing_id' => $showing_id,
       'showing_title' => get_the_title($showing_id),
       'capacity' => is_null($capacity) ? null : (int) $capacity,
@@ -363,6 +380,8 @@ class Tickets {
       'not_checked_in' => max(0, (int) $sold - (int) $ticket_checked_in),
       'member_walkups' => (int) $member_walkups,
     ];
+    set_transient($cache_key, $payload, self::DOOR_STATS_CACHE_TTL);
+    return $payload;
   }
 
   public static function get_order_ticket_ids(int $order_id): array {
@@ -411,6 +430,7 @@ class Tickets {
     update_post_meta($ticket_id, self::META_CHECKED_IN_AT, current_time('mysql'));
     update_post_meta($ticket_id, self::META_CHECKED_IN_BY, (int) $user_id);
     update_post_meta($ticket_id, self::META_STATE, 'checked_in');
+    self::invalidate_door_stats_cache_for_ticket($ticket_id);
     return true;
   }
 
@@ -426,6 +446,7 @@ class Tickets {
     $order_id = (int) get_post_meta($ticket_id, self::META_ORDER_ID, true);
     $order = wc_get_order($order_id);
     update_post_meta($ticket_id, self::META_STATE, self::state_for_order_status($order ? (string) $order->get_status() : 'processing'));
+    self::invalidate_door_stats_cache_for_ticket($ticket_id);
     return true;
   }
 
@@ -1225,6 +1246,7 @@ class Tickets {
 
     $visit = \Roxy_Sub_Check::log_member_visit($sub_id, $showing_id, $quantity, $source);
     $payload = is_array($visit['payload'] ?? null) ? $visit['payload'] : $member_payload;
+    self::invalidate_door_stats_cache($showing_id);
     $payload['admitted'] = !empty($visit['ok']);
     $payload['admit_quantity'] = $quantity;
     $payload['admit_source'] = $source;
@@ -1390,6 +1412,40 @@ class Tickets {
     }
 
     wp_send_json_success(self::door_stats_payload($showing_id));
+  }
+
+  private static function door_stats_cache_key(int $showing_id): string {
+    return 'roxy_st_door_stats_' . $showing_id;
+  }
+
+  private static function invalidate_door_stats_cache(int $showing_id): void {
+    if ($showing_id > 0) {
+      delete_transient(self::door_stats_cache_key($showing_id));
+    }
+  }
+
+  private static function invalidate_door_stats_cache_for_ticket(int $ticket_id): void {
+    $showing_id = (int) get_post_meta($ticket_id, self::META_SHOWING_ID, true);
+    self::invalidate_door_stats_cache($showing_id);
+  }
+
+  private static function invalidate_door_stats_cache_for_order(int $order_id): void {
+    $ticket_ids = self::get_order_ticket_ids($order_id);
+    if (!$ticket_ids) {
+      return;
+    }
+
+    $showing_ids = [];
+    foreach ($ticket_ids as $ticket_id) {
+      $showing_id = (int) get_post_meta($ticket_id, self::META_SHOWING_ID, true);
+      if ($showing_id > 0) {
+        $showing_ids[$showing_id] = $showing_id;
+      }
+    }
+
+    foreach ($showing_ids as $showing_id) {
+      self::invalidate_door_stats_cache($showing_id);
+    }
   }
 
   public static function ajax_qr(): void {

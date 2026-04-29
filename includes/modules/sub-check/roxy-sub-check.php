@@ -182,7 +182,7 @@ class Roxy_Sub_Check {
     if ($sub_id <= 0) {
       wp_send_json_error(['message' => 'Missing subscription ID.'], 400);
     }
-    wp_send_json_success(self::get_member_payload($sub_id, true));
+    wp_send_json_success(self::get_member_payload($sub_id, false));
   }
 
   private static function render_page() {

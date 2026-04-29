@@ -305,6 +305,13 @@ class Members_Dashboard {
         ]);
 
         if (!is_array($subscriptions)) $subscriptions = [];
+        $subscription_ids = array_values(array_filter(array_map(static function ($subscription) {
+            return (is_object($subscription) && method_exists($subscription, 'get_id')) ? (int) $subscription->get_id() : 0;
+        }, $subscriptions)));
+        if ($subscription_ids) {
+            update_meta_cache('post', $subscription_ids);
+        }
+        $scan_stats_map = self::scan_stats_map($subscription_ids);
 
         foreach ($subscriptions as $subscription) {
             if (!is_object($subscription) || !method_exists($subscription, 'get_id')) continue;
@@ -312,7 +319,7 @@ class Members_Dashboard {
             $sub_id = (int) $subscription->get_id();
             $subs = self::subscription_quantity($subscription);
             $monthly_revenue = self::monthly_revenue($subscription);
-            $scan_stats = self::scan_stats($sub_id);
+            $scan_stats = $scan_stats_map[$sub_id] ?? ['month' => 0, 'lifetime' => 0, 'last' => ''];
             $user = method_exists($subscription, 'get_user') ? $subscription->get_user() : null;
             $name = self::customer_name($subscription, $user);
             $email = is_object($user) && !empty($user->user_email) ? (string) $user->user_email : '';
@@ -410,34 +417,69 @@ class Members_Dashboard {
     }
 
     private static function scan_stats(int $sub_id): array {
+        $map = self::scan_stats_map([$sub_id]);
+        return $map[$sub_id] ?? ['month' => 0, 'lifetime' => 0, 'last' => ''];
+    }
+
+    private static function scan_stats_map(array $sub_ids): array {
         global $wpdb;
+        $sub_ids = array_values(array_filter(array_map('intval', $sub_ids)));
+        if (!$sub_ids) {
+            return [];
+        }
+
         $table = $wpdb->prefix . 'roxy_member_scans';
         $month_start = wp_date('Y-m-01 00:00:00');
 
-        $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table));
-        if ($exists !== $table) {
-            return ['month' => 0, 'lifetime' => 0, 'last' => ''];
+        if (!self::scan_table_exists($table)) {
+            return [];
         }
 
-        $row = $wpdb->get_row(
+        $placeholders = implode(',', array_fill(0, count($sub_ids), '%d'));
+        $params = array_merge([$month_start], $sub_ids);
+        $rows = $wpdb->get_results(
             $wpdb->prepare(
                 "SELECT
+                    subscription_id,
                     SUM(CASE WHEN scanned_at >= %s THEN 1 ELSE 0 END) AS visits_month,
                     COUNT(*) AS visits_lifetime,
                     MAX(scanned_at) AS last_visit
                  FROM {$table}
-                 WHERE subscription_id = %d",
-                $month_start,
-                $sub_id
+                 WHERE subscription_id IN ({$placeholders})
+                 GROUP BY subscription_id",
+                $params
             ),
             ARRAY_A
         );
 
-        return [
-            'month' => isset($row['visits_month']) ? (int) $row['visits_month'] : 0,
-            'lifetime' => isset($row['visits_lifetime']) ? (int) $row['visits_lifetime'] : 0,
-            'last' => isset($row['last_visit']) ? (string) $row['last_visit'] : '',
-        ];
+        $stats = [];
+        foreach ($sub_ids as $sub_id) {
+            $stats[$sub_id] = ['month' => 0, 'lifetime' => 0, 'last' => ''];
+        }
+        foreach ((array) $rows as $row) {
+            $subscription_id = isset($row['subscription_id']) ? (int) $row['subscription_id'] : 0;
+            if ($subscription_id <= 0) {
+                continue;
+            }
+            $stats[$subscription_id] = [
+                'month' => isset($row['visits_month']) ? (int) $row['visits_month'] : 0,
+                'lifetime' => isset($row['visits_lifetime']) ? (int) $row['visits_lifetime'] : 0,
+                'last' => isset($row['last_visit']) ? (string) $row['last_visit'] : '',
+            ];
+        }
+
+        return $stats;
+    }
+
+    private static function scan_table_exists(string $table): bool {
+        static $exists = null;
+        if ($exists !== null) {
+            return $exists;
+        }
+
+        global $wpdb;
+        $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table)) === $table;
+        return $exists;
     }
 
     private static function customer_name($sub, $user): string {

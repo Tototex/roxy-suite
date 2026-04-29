@@ -425,6 +425,10 @@ class Store {
     return $row;
   }
 
+  public static function get_saved_report(int $report_id): ?array {
+    return self::get_report($report_id);
+  }
+
   public static function list_reports(int $limit = 50): array {
     global $wpdb;
     $rows = $wpdb->get_results($wpdb->prepare(
@@ -433,6 +437,10 @@ class Store {
       max(1, min(200, $limit))
     ), ARRAY_A);
     return is_array($rows) ? $rows : [];
+  }
+
+  public static function list_saved_reports(int $limit = 50): array {
+    return self::list_reports($limit);
   }
 
   public static function insert_log(string $event_type, string $mode, ?int $report_id, ?string $report_end_date, bool $success, string $message, array $context = []): int {
@@ -450,13 +458,21 @@ class Store {
     return $ok ? (int) $wpdb->insert_id : 0;
   }
 
-  public static function list_logs(int $limit = 100): array {
+  public static function count_logs(array $filters = []): int {
     global $wpdb;
-    $rows = $wpdb->get_results($wpdb->prepare(
-      'SELECT id, created_at, event_type, mode, report_id, report_end_date, success, message
-       FROM ' . self::log_table_name() . ' ORDER BY id DESC LIMIT %d',
-      max(1, min(500, $limit))
-    ), ARRAY_A);
+    [$where, $params] = self::log_where_sql($filters);
+    $sql = 'SELECT COUNT(*) FROM ' . self::log_table_name() . ' ' . $where;
+    return (int) $wpdb->get_var(self::prepare_query($sql, $params));
+  }
+
+  public static function list_logs(array $filters = [], int $limit = 100, int $offset = 0): array {
+    global $wpdb;
+    [$where, $params] = self::log_where_sql($filters);
+    $params[] = max(1, min(500, $limit));
+    $params[] = max(0, $offset);
+    $sql = 'SELECT id, created_at, event_type, mode, report_id, report_end_date, success, message
+       FROM ' . self::log_table_name() . ' ' . $where . ' ORDER BY id DESC LIMIT %d OFFSET %d';
+    $rows = $wpdb->get_results(self::prepare_query($sql, $params), ARRAY_A);
     return is_array($rows) ? $rows : [];
   }
 
@@ -1985,6 +2001,48 @@ class Store {
     }
 
     return $totals;
+  }
+
+  private static function log_where_sql(array $filters): array {
+    $where = ['WHERE 1=1'];
+    $params = [];
+
+    $search = trim((string) ($filters['search'] ?? ''));
+    if ($search !== '') {
+      $like = '%' . self::escape_like($search) . '%';
+      $where[] = 'AND (event_type LIKE %s OR mode LIKE %s OR message LIKE %s OR report_end_date LIKE %s)';
+      array_push($params, $like, $like, $like, $like);
+    }
+
+    $event_type = trim((string) ($filters['event_type'] ?? ''));
+    if ($event_type !== '') {
+      $where[] = 'AND event_type = %s';
+      $params[] = $event_type;
+    }
+
+    if (array_key_exists('success', $filters) && $filters['success'] !== '' && $filters['success'] !== null) {
+      $where[] = 'AND success = %d';
+      $params[] = (int) ((bool) $filters['success']);
+    }
+
+    $date_from = trim((string) ($filters['date_from'] ?? ''));
+    if ($date_from !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_from)) {
+      $where[] = 'AND created_at >= %s';
+      $params[] = $date_from . ' 00:00:00';
+    }
+
+    $date_to = trim((string) ($filters['date_to'] ?? ''));
+    if ($date_to !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_to)) {
+      $where[] = 'AND created_at <= %s';
+      $params[] = $date_to . ' 23:59:59';
+    }
+
+    return [implode(' ', $where), $params];
+  }
+
+  private static function escape_like(string $value): string {
+    global $wpdb;
+    return $wpdb->esc_like($value);
   }
 
   public static function list_import_batches(int $limit = 25): array {

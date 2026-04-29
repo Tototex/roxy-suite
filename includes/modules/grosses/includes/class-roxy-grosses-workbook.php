@@ -6,6 +6,7 @@ if (!defined('ABSPATH')) exit;
 class Workbook {
   private const SNAPSHOT_OPTION = 'roxy_grosses_workbook_snapshots';
   private const TEMPLATE_KEY = 'workbook_template_upload';
+  private const PRIVATE_ROOT_DIR = 'roxy-grosses-private';
 
   public static function init(): void {
     add_action('admin_post_roxy_grosses_upload_template', [__CLASS__, 'handle_upload_template']);
@@ -35,15 +36,21 @@ class Workbook {
       self::redirect_with_notice('error', (string) $uploaded['error'], null, 'workbook');
     }
 
+    $original_name = sanitize_file_name((string) ($_FILES['workbook_template']['name'] ?? basename((string) ($uploaded['file'] ?? 'template.xlsx'))));
+    $private_path = self::move_file_to_private_storage(
+      (string) ($uploaded['file'] ?? ''),
+      self::private_templates_dir(),
+      $original_name
+    );
+
     self::set_uploaded_template([
-      'path' => (string) ($uploaded['file'] ?? ''),
-      'url' => (string) ($uploaded['url'] ?? ''),
-      'name' => sanitize_file_name((string) ($_FILES['workbook_template']['name'] ?? basename((string) ($uploaded['file'] ?? 'template.xlsx')))),
+      'path' => $private_path,
+      'name' => $original_name,
       'uploaded_at' => wp_date('Y-m-d H:i:s', null, new \DateTimeZone(Settings::get_report_timezone())),
     ]);
 
     Store::insert_log('upload_workbook_template', 'manual-template', null, null, true, 'Workbook template uploaded.', [
-      'path' => (string) ($uploaded['file'] ?? ''),
+      'path' => $private_path,
     ]);
     self::redirect_with_notice('success', 'Workbook template uploaded successfully.', null, 'workbook');
   }
@@ -458,9 +465,7 @@ class Workbook {
       throw new \RuntimeException('ZipArchive is required to build the workbook.');
     }
 
-    $upload_dir = wp_upload_dir();
-    $dir = trailingslashit($upload_dir['basedir']) . 'roxy-grosses/workbooks';
-    wp_mkdir_p($dir);
+    $dir = self::private_workbooks_dir();
     $output_path = trailingslashit($dir) . 'roxy-box-office-' . $year . '.xlsx';
     if (!copy($template, $output_path)) {
       throw new \RuntimeException('The workbook template could not be copied for generation.');
@@ -502,7 +507,7 @@ class Workbook {
   public static function latest_snapshot_path(int $year): string {
     $snapshot = self::get_snapshot_status($year);
     $path = (string) ($snapshot['path'] ?? '');
-    return ($path !== '' && is_readable($path)) ? $path : '';
+    return ($path !== '' && is_readable($path) && self::is_private_path($path)) ? $path : '';
   }
 
   public static function refresh_snapshot(int $year, string $mode = 'manual-refresh'): array {
@@ -531,7 +536,11 @@ class Workbook {
   }
 
   public static function template_status(): array {
-    $uploaded = self::uploaded_template();
+    try {
+      $uploaded = self::ensure_uploaded_template_private();
+    } catch (\Throwable $e) {
+      $uploaded = self::uploaded_template();
+    }
     if (!empty($uploaded['path']) && is_readable((string) $uploaded['path'])) {
       return array_merge($uploaded, ['source' => 'upload', 'readable' => true]);
     }
@@ -631,16 +640,21 @@ class Workbook {
   }
 
   private static function uploaded_template(): array {
-    $settings = Settings::get_all();
+    $settings = get_option(Settings::OPTION_KEY, []);
+    if (!is_array($settings)) {
+      $settings = [];
+    }
     $template = $settings[self::TEMPLATE_KEY] ?? [];
     return is_array($template) ? $template : [];
   }
 
   private static function set_uploaded_template(array $template): void {
-    $settings = Settings::get_all();
+    $settings = get_option(Settings::OPTION_KEY, []);
+    if (!is_array($settings)) {
+      $settings = [];
+    }
     $settings[self::TEMPLATE_KEY] = [
       'path' => sanitize_text_field((string) ($template['path'] ?? '')),
-      'url' => esc_url_raw((string) ($template['url'] ?? '')),
       'name' => sanitize_file_name((string) ($template['name'] ?? '')),
       'uploaded_at' => sanitize_text_field((string) ($template['uploaded_at'] ?? '')),
     ];
@@ -648,7 +662,7 @@ class Workbook {
   }
 
   private static function resolve_template_path(int $year): string {
-    $uploaded = self::uploaded_template();
+    $uploaded = self::ensure_uploaded_template_private();
     $uploaded_path = (string) ($uploaded['path'] ?? '');
     if ($uploaded_path !== '' && is_readable($uploaded_path)) {
       return $uploaded_path;
@@ -908,9 +922,7 @@ class Workbook {
   }
 
   private static function build_advertiser_workbook_file(int $start_year, int $start_month, int $end_year, int $end_month, array $rows): string {
-    $upload_dir = wp_upload_dir();
-    $dir = trailingslashit($upload_dir['basedir']) . 'roxy-grosses/advertiser';
-    wp_mkdir_p($dir);
+    $dir = self::private_advertiser_dir();
     $range_suffix = sprintf('%04d-%02d', $start_year, $start_month);
     if ($start_year !== $end_year || $start_month !== $end_month) {
       $range_suffix .= '-to-' . sprintf('%04d-%02d', $end_year, $end_month);
@@ -999,6 +1011,107 @@ class Workbook {
 
     wp_safe_redirect($url);
     exit;
+  }
+
+  private static function private_root_dir(): string {
+    $dir = trailingslashit(WP_CONTENT_DIR) . self::PRIVATE_ROOT_DIR;
+    self::ensure_private_directory($dir);
+    return $dir;
+  }
+
+  private static function private_templates_dir(): string {
+    $dir = trailingslashit(self::private_root_dir()) . 'templates';
+    self::ensure_private_directory($dir);
+    return $dir;
+  }
+
+  private static function private_workbooks_dir(): string {
+    $dir = trailingslashit(self::private_root_dir()) . 'workbooks';
+    self::ensure_private_directory($dir);
+    return $dir;
+  }
+
+  private static function private_advertiser_dir(): string {
+    $dir = trailingslashit(self::private_root_dir()) . 'advertiser';
+    self::ensure_private_directory($dir);
+    return $dir;
+  }
+
+  private static function ensure_private_directory(string $dir): void {
+    if (!is_dir($dir)) {
+      wp_mkdir_p($dir);
+    }
+
+    if (!is_dir($dir)) {
+      throw new \RuntimeException('Could not create the private grosses workbook directory.');
+    }
+
+    self::protect_directory($dir);
+  }
+
+  private static function protect_directory(string $dir): void {
+    $index = trailingslashit($dir) . 'index.html';
+    if (!file_exists($index)) {
+      file_put_contents($index, '');
+    }
+
+    $htaccess = trailingslashit($dir) . '.htaccess';
+    if (!file_exists($htaccess)) {
+      file_put_contents($htaccess, "Require all denied\nDeny from all\n");
+    }
+  }
+
+  private static function move_file_to_private_storage(string $source_path, string $target_dir, string $preferred_name): string {
+    $source_path = trim($source_path);
+    if ($source_path === '' || !is_readable($source_path)) {
+      throw new \RuntimeException('The uploaded workbook template could not be read.');
+    }
+
+    self::ensure_private_directory($target_dir);
+    $filename = wp_unique_filename($target_dir, $preferred_name !== '' ? $preferred_name : basename($source_path));
+    $target_path = trailingslashit($target_dir) . $filename;
+
+    $moved = @rename($source_path, $target_path);
+    if (!$moved) {
+      $moved = @copy($source_path, $target_path);
+      if ($moved) {
+        @unlink($source_path);
+      }
+    }
+
+    if (!$moved || !is_readable($target_path)) {
+      throw new \RuntimeException('The workbook file could not be moved into private storage.');
+    }
+
+    return $target_path;
+  }
+
+  private static function ensure_uploaded_template_private(): array {
+    $uploaded = self::uploaded_template();
+    $path = trim((string) ($uploaded['path'] ?? ''));
+    if ($path === '' || !is_readable($path) || self::is_private_path($path)) {
+      return $uploaded;
+    }
+
+    $migrated_path = self::move_file_to_private_storage(
+      $path,
+      self::private_templates_dir(),
+      sanitize_file_name((string) ($uploaded['name'] ?? basename($path)))
+    );
+
+    $uploaded['path'] = $migrated_path;
+    if (empty($uploaded['name'])) {
+      $uploaded['name'] = basename($migrated_path);
+    }
+    self::set_uploaded_template($uploaded);
+
+    return $uploaded;
+  }
+
+  private static function is_private_path(string $path): bool {
+    $normalized_path = wp_normalize_path($path);
+    $private_root = wp_normalize_path(self::private_root_dir());
+    return $normalized_path !== '' && str_starts_with($normalized_path, $private_root);
   }
 
   private static function cell_ref(int $column, int $row): string {
