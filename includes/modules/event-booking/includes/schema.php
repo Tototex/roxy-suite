@@ -65,6 +65,8 @@ function roxy_eb_install_schema() {
         bulk_popcorn_qty INT UNSIGNED NOT NULL DEFAULT 0,
         bulk_soda_qty INT UNSIGNED NOT NULL DEFAULT 0,
         bulk_concessions_total INT NOT NULL DEFAULT 0,
+        special_charge_label VARCHAR(190) NULL,
+        special_charge_total INT NOT NULL DEFAULT 0,
         total_price INT NOT NULL DEFAULT 0,
         woo_order_id BIGINT UNSIGNED NULL,
         woo_adjustment_order_ids LONGTEXT NULL,

@@ -371,22 +371,8 @@ class Roxy_Sub_Check {
     if ($term === '') return [];
     $limit = max(1, min(50, $limit));
 
-    if (!function_exists('wcs_get_subscriptions')) {
-      return [];
-    }
-
-    $subscriptions = wcs_get_subscriptions([
-      'subscription_status' => ['active', 'pending-cancel'],
-      'subscriptions_per_page' => -1,
-      'orderby' => 'ID',
-      'order' => 'DESC',
-    ]);
-
     $matches = [];
-    foreach ((array) $subscriptions as $sub_id => $sub) {
-      $id = is_object($sub) && method_exists($sub, 'get_id') ? (int) $sub->get_id() : (int) $sub_id;
-      if ($id <= 0) continue;
-
+    foreach (self::search_member_subscription_ids($term, $limit) as $id) {
       $payload = self::get_member_payload($id, false);
       $haystack = strtolower(trim(
         (string) ($payload['member_name'] ?? '') . ' ' .
@@ -401,6 +387,96 @@ class Roxy_Sub_Check {
     }
 
     return $matches;
+  }
+
+  private static function search_member_subscription_ids(string $term, int $limit): array {
+    global $wpdb;
+
+    $posts_table = $wpdb->posts;
+    $postmeta_table = $wpdb->postmeta;
+    $users_table = $wpdb->users;
+    $usermeta_table = $wpdb->usermeta;
+
+    $like = '%' . $wpdb->esc_like($term) . '%';
+    $status_placeholders = implode(',', array_fill(0, 2, '%s'));
+    $params = [
+      'shop_subscription',
+      'wc-active',
+      'wc-pending-cancel',
+      '_customer_user',
+      'first_name',
+      'last_name',
+      '_billing_email',
+      '_billing_first_name',
+      '_billing_last_name',
+      $like,
+      $like,
+      $like,
+      $like,
+      $like,
+      $like,
+      $like,
+      $like,
+      $limit,
+    ];
+
+    $sql = "
+      SELECT DISTINCT p.ID
+      FROM {$posts_table} p
+      LEFT JOIN {$postmeta_table} pm_user
+        ON pm_user.post_id = p.ID AND pm_user.meta_key = %s
+      LEFT JOIN {$users_table} u
+        ON u.ID = CAST(pm_user.meta_value AS UNSIGNED)
+      LEFT JOIN {$usermeta_table} umf
+        ON umf.user_id = u.ID AND umf.meta_key = %s
+      LEFT JOIN {$usermeta_table} uml
+        ON uml.user_id = u.ID AND uml.meta_key = %s
+      LEFT JOIN {$postmeta_table} pm_email
+        ON pm_email.post_id = p.ID AND pm_email.meta_key = %s
+      LEFT JOIN {$postmeta_table} pm_bfirst
+        ON pm_bfirst.post_id = p.ID AND pm_bfirst.meta_key = %s
+      LEFT JOIN {$postmeta_table} pm_blast
+        ON pm_blast.post_id = p.ID AND pm_blast.meta_key = %s
+      WHERE p.post_type = %s
+        AND p.post_status IN ({$status_placeholders})
+        AND (
+          CAST(p.ID AS CHAR) LIKE %s
+          OR u.user_email LIKE %s
+          OR u.display_name LIKE %s
+          OR umf.meta_value LIKE %s
+          OR uml.meta_value LIKE %s
+          OR CONCAT_WS(' ', umf.meta_value, uml.meta_value) LIKE %s
+          OR pm_email.meta_value LIKE %s
+          OR CONCAT_WS(' ', pm_bfirst.meta_value, pm_blast.meta_value) LIKE %s
+        )
+      ORDER BY p.ID DESC
+      LIMIT %d
+    ";
+
+    $prepared = $wpdb->prepare(
+      $sql,
+      $params[3],
+      $params[4],
+      $params[5],
+      $params[6],
+      $params[7],
+      $params[8],
+      $params[0],
+      $params[1],
+      $params[2],
+      $params[9],
+      $params[10],
+      $params[11],
+      $params[12],
+      $params[13],
+      $params[14],
+      $params[15],
+      $params[16],
+      $params[17]
+    );
+
+    $ids = $wpdb->get_col($prepared);
+    return array_values(array_filter(array_map('intval', (array) $ids)));
   }
 
   public static function showing_admit_rows(int $showing_id): array {

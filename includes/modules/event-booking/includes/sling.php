@@ -669,6 +669,12 @@ function roxy_eb_sling_log_api($context, $endpoint, $http_code, $message, $reque
     }
     $req = $request_body !== null ? wp_json_encode($request_body) : null;
     $resp = $response_body !== null ? (is_string($response_body) ? $response_body : wp_json_encode($response_body)) : null;
+    if ($req !== null) {
+        $req = substr((string) $req, 0, 65535);
+    }
+    if ($resp !== null) {
+        $resp = substr((string) $resp, 0, 65535);
+    }
     try {
         roxy_eb_repo_insert_sling_log([
             'booking_id' => $booking_id ?: null,

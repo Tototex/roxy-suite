@@ -54,6 +54,27 @@ function roxy_eb_admin_settings_page() {
                 <tr><th scope="row">Base price (≥ 26 guests)</th><td>$ <input type="number" name="settings[base_price_over]" value="<?php echo esc_attr($settings['base_price_over']); ?>" min="0" /></td></tr>
                 <tr><th scope="row">Extra hour price</th><td>$ <input type="number" name="settings[extra_hour_price]" value="<?php echo esc_attr($settings['extra_hour_price']); ?>" min="0" /></td></tr>
                 <tr><th scope="row">Pizza price</th><td>$ <input type="number" name="settings[pizza_price]" value="<?php echo esc_attr($settings['pizza_price'] ?? 18); ?>" min="0" /></td></tr>
+                <tr>
+                    <th scope="row">Pizza reminders</th>
+                    <td>
+                        <label><input type="checkbox" name="settings[pizza_reminders_enabled]" value="1" <?php checked(!empty($settings['pizza_reminders_enabled'])); ?> /> Enable pizza reminder emails</label>
+                        <p class="description">When enabled, reminders keep sending until pizza is marked handled, the booking is cancelled, or doors open.</p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">First pizza reminder</th>
+                    <td>
+                        <input type="number" name="settings[pizza_reminder_lead_hours]" value="<?php echo esc_attr($settings['pizza_reminder_lead_hours'] ?? 4); ?>" min="0" />
+                        hours before doors open
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">Pizza reminder frequency</th>
+                    <td>
+                        <input type="number" name="settings[pizza_reminder_frequency_minutes]" value="<?php echo esc_attr($settings['pizza_reminder_frequency_minutes'] ?? 30); ?>" min="1" />
+                        minutes between reminders until marked handled
+                    </td>
+                </tr>
                 <tr><th scope="row">Bulk concession price</th><td>$ <input type="number" name="settings[bulk_item_price]" value="<?php echo esc_attr($settings['bulk_item_price'] ?? 3); ?>" min="0" /></td></tr>
                 <tr><th scope="row">Operating hours</th><td>Open <input type="text" name="settings[open_time]" value="<?php echo esc_attr($settings['open_time']); ?>" placeholder="08:00" /> Close <input type="text" name="settings[close_time]" value="<?php echo esc_attr($settings['close_time']); ?>" placeholder="24:00" /></td></tr>
                 <tr><th scope="row">Time increments</th><td><select name="settings[time_increment_minutes]"><?php foreach ([5,10,15,20,30,60] as $m): ?><option value="<?php echo esc_attr($m); ?>" <?php selected(intval($settings['time_increment_minutes']), $m); ?>><?php echo esc_html($m); ?> minutes</option><?php endforeach; ?></select></td></tr>
@@ -295,6 +316,8 @@ function roxy_eb_admin_bookings_page() {
         $bulk_concessions_requested = !empty($_POST['bulk_concessions_requested']) ? 1 : 0;
         $bulk_popcorn_qty = $bulk_concessions_requested ? intval($_POST['bulk_popcorn_qty'] ?? 0) : 0;
         $bulk_soda_qty = $bulk_concessions_requested ? intval($_POST['bulk_soda_qty'] ?? 0) : 0;
+        $special_charge_label = sanitize_text_field($_POST['special_charge_label'] ?? '');
+        $special_charge_total = max(0, intval($_POST['special_charge_total'] ?? 0));
 
         $errors = [];
         if ($first_name === '') $errors[] = 'First name is required.';
@@ -349,6 +372,8 @@ function roxy_eb_admin_bookings_page() {
                 'bulk_concessions_requested' => $bulk_concessions_requested,
                 'bulk_popcorn_qty' => $bulk_popcorn_qty,
                 'bulk_soda_qty' => $bulk_soda_qty,
+                'special_charge_label' => $special_charge_label !== '' ? $special_charge_label : null,
+                'special_charge_total' => $special_charge_total,
                 'notes' => $notes,
                 'wp_user_id' => email_exists($email) ? intval(email_exists($email)) : null,
             ];
@@ -403,6 +428,8 @@ function roxy_eb_admin_bookings_page() {
                 $bulk_concessions_requested = !empty($_POST['bulk_concessions_requested']) ? 1 : 0;
                 $bulk_popcorn_qty = $bulk_concessions_requested ? intval($_POST['bulk_popcorn_qty'] ?? 0) : 0;
                 $bulk_soda_qty = $bulk_concessions_requested ? intval($_POST['bulk_soda_qty'] ?? 0) : 0;
+                $special_charge_label = sanitize_text_field($_POST['special_charge_label'] ?? ($booking_before['special_charge_label'] ?? ''));
+                $special_charge_total = max(0, intval($_POST['special_charge_total'] ?? ($booking_before['special_charge_total'] ?? 0)));
                 if ($bulk_concessions_requested && (!roxy_eb_valid_bulk_qty($bulk_popcorn_qty) || !roxy_eb_valid_bulk_qty($bulk_soda_qty))) {
                     echo '<div class="notice notice-error"><p>Bulk concessions must be 0, or between 25 and 250 for each item.</p></div>';
                     return;
@@ -422,7 +449,7 @@ function roxy_eb_admin_bookings_page() {
                     } else {
                         $base_price = intval($booking_before['base_price']);
                         $extra_price = $extra_hours * intval(roxy_eb_get_settings()['extra_hour_price'] ?? 100);
-                        $total_price = $base_price + $extra_price + $pizza_total + $bulk_concessions_total;
+                        $total_price = $base_price + $extra_price + $pizza_total + $bulk_concessions_total + $special_charge_total;
 
                         $update = [
                             'guest_count' => $guest_count,
@@ -448,6 +475,8 @@ function roxy_eb_admin_bookings_page() {
                             'bulk_popcorn_qty' => $bulk_popcorn_qty,
                             'bulk_soda_qty' => $bulk_soda_qty,
                             'bulk_concessions_total' => $bulk_concessions_total,
+                            'special_charge_label' => $special_charge_label !== '' ? $special_charge_label : null,
+                            'special_charge_total' => $special_charge_total,
                             'extra_price' => $extra_price,
                             'total_price' => $total_price,
                         ];
@@ -472,7 +501,11 @@ function roxy_eb_admin_bookings_page() {
                                 if (($settings['sling_mode'] ?? 'disabled') !== 'disabled') roxy_eb_sling_enqueue_sync($booking_id, 'admin_edit');
                             }
                             if ($send_email && $booking_after) {
-                                roxy_eb_email_customer_booking_updated($booking_before, $booking_after);
+                                if (($booking_after['payment_method'] ?? '') === 'invoice') {
+                                    roxy_eb_email_customer_invoice_booking($booking_after);
+                                } else {
+                                    roxy_eb_email_customer_booking_updated($booking_before, $booking_after);
+                                }
                                 echo '<div class="notice notice-info"><p>Email sent to customer.</p></div>';
                             }
                         }
@@ -535,6 +568,8 @@ function roxy_eb_admin_bookings_page() {
                     <tr><th scope="row">Bulk concessions requested</th><td><label><input type="checkbox" name="bulk_concessions_requested" value="1"> Bulk concessions included</label><p class="description">Each item must be 0, or 25 to 250.</p></td></tr>
                     <tr><th scope="row"><label for="eb_create_bulk_popcorn">Bulk popcorn qty</label></th><td><input type="number" min="0" max="250" id="eb_create_bulk_popcorn" name="bulk_popcorn_qty" value="0"></td></tr>
                     <tr><th scope="row"><label for="eb_create_bulk_soda">Bulk soda qty</label></th><td><input type="number" min="0" max="250" id="eb_create_bulk_soda" name="bulk_soda_qty" value="0"></td></tr>
+                    <tr><th scope="row"><label for="eb_create_special_charge_label">Special charge label</label></th><td><input type="text" id="eb_create_special_charge_label" name="special_charge_label" class="regular-text" placeholder="Waters"></td></tr>
+                    <tr><th scope="row"><label for="eb_create_special_charge_total">Special charge amount</label></th><td>$ <input type="number" min="0" id="eb_create_special_charge_total" name="special_charge_total" value="0"></td></tr>
                     <tr><th scope="row"><label for="eb_create_notes">Notes</label></th><td><textarea id="eb_create_notes" name="notes_admin_create" rows="3" class="large-text"></textarea></td></tr>
                     <tr><th scope="row">Notify customer</th><td><label><input type="checkbox" name="email_customer" value="1"> Send confirmation email</label></td></tr>
                 </table>
@@ -581,6 +616,8 @@ if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'edit' && isse
                 <tr><th scope="row">Bulk concessions requested</th><td><label><input type="checkbox" name="bulk_concessions_requested" value="1" <?php checked(!empty($b['bulk_concessions_requested'])); ?>> Bulk concessions included</label><p class="description">Each item must be 0, or 25 to 250.</p></td></tr>
                 <tr><th scope="row"><label for="bulk_popcorn_qty">Bulk popcorn qty</label></th><td><input type="number" min="0" max="250" id="bulk_popcorn_qty" name="bulk_popcorn_qty" value="<?php echo esc_attr(intval($b['bulk_popcorn_qty'] ?? 0)); ?>"></td></tr>
                 <tr><th scope="row"><label for="bulk_soda_qty">Bulk soda qty</label></th><td><input type="number" min="0" max="250" id="bulk_soda_qty" name="bulk_soda_qty" value="<?php echo esc_attr(intval($b['bulk_soda_qty'] ?? 0)); ?>"></td></tr>
+                <tr><th scope="row"><label for="special_charge_label">Special charge label</label></th><td><input type="text" id="special_charge_label" name="special_charge_label" value="<?php echo esc_attr((string) ($b['special_charge_label'] ?? '')); ?>" class="regular-text" placeholder="Waters"></td></tr>
+                <tr><th scope="row"><label for="special_charge_total">Special charge amount</label></th><td>$ <input type="number" min="0" id="special_charge_total" name="special_charge_total" value="<?php echo esc_attr(intval($b['special_charge_total'] ?? 0)); ?>"></td></tr>
                 <tr><th scope="row">Pizza handled</th><td><label><input type="checkbox" name="pizza_handled" value="1" <?php checked(!empty($b['pizza_checked_at'])); ?>> Mark pizza handled</label><?php if (!empty($b['pizza_checked_at'])): ?><p class="description">Handled at <?php echo esc_html($b['pizza_checked_at']); ?></p><?php endif; ?></td></tr>
                 <tr><th scope="row"><label for="notes_admin">Event notes</label></th><td><textarea id="notes_admin" name="notes_admin" rows="3" style="width:420px;max-width:100%;"><?php echo esc_textarea($b['notes_admin'] ?? ''); ?></textarea></td></tr>
                 <tr><th scope="row">Notify customer</th><td><label><input type="checkbox" name="email_customer" value="1"> Email customer about this change</label></td></tr>

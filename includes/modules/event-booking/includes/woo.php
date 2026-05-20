@@ -52,18 +52,20 @@ function roxy_eb_booking_append_adjustment_order_id($booking_id, $order_id) {
     }
 }
 
-function roxy_eb_booking_component_totals(int $base_price, int $extra_hours, int $pizza_requested, int $pizza_quantity, int $bulk_requested, int $bulk_popcorn_qty, int $bulk_soda_qty): array {
+function roxy_eb_booking_component_totals(int $base_price, int $extra_hours, int $pizza_requested, int $pizza_quantity, int $bulk_requested, int $bulk_popcorn_qty, int $bulk_soda_qty, int $special_charge_total = 0): array {
     $settings = roxy_eb_get_settings();
     $extra_price = $extra_hours * intval($settings['extra_hour_price'] ?? 100);
     $pizza_total = $pizza_requested ? ($pizza_quantity * intval($settings['pizza_price'] ?? 18)) : 0;
     $bulk_concessions_total = $bulk_requested ? (($bulk_popcorn_qty + $bulk_soda_qty) * intval($settings['bulk_item_price'] ?? 3)) : 0;
+    $special_charge_total = max(0, $special_charge_total);
 
     return [
         'base_price' => $base_price,
         'extra_price' => $extra_price,
         'pizza_total' => $pizza_total,
         'bulk_concessions_total' => $bulk_concessions_total,
-        'total_price' => $base_price + $extra_price + $pizza_total + $bulk_concessions_total,
+        'special_charge_total' => $special_charge_total,
+        'total_price' => $base_price + $extra_price + $pizza_total + $bulk_concessions_total + $special_charge_total,
     ];
 }
 
@@ -118,7 +120,8 @@ function roxy_eb_build_order_change_from_request($booking, array $input) {
         $pizza_quantity,
         $bulk_requested,
         $bulk_popcorn_qty,
-        $bulk_soda_qty
+        $bulk_soda_qty,
+        intval($booking['special_charge_total'] ?? 0)
     );
 
     return [
@@ -137,6 +140,8 @@ function roxy_eb_build_order_change_from_request($booking, array $input) {
         'bulk_popcorn_qty' => $bulk_popcorn_qty,
         'bulk_soda_qty' => $bulk_soda_qty,
         'bulk_concessions_total' => intval($pricing['bulk_concessions_total']),
+        'special_charge_label' => $booking['special_charge_label'] ?? null,
+        'special_charge_total' => intval($pricing['special_charge_total']),
         'extra_price' => intval($pricing['extra_price']),
         'total_price' => intval($pricing['total_price']),
         'delta_total' => intval($pricing['total_price']) - intval($booking['total_price'] ?? 0),
@@ -173,6 +178,8 @@ function roxy_eb_apply_booking_order_change($booking_id, array $change, string $
         'bulk_popcorn_qty' => intval($change['bulk_popcorn_qty'] ?? 0),
         'bulk_soda_qty' => intval($change['bulk_soda_qty'] ?? 0),
         'bulk_concessions_total' => intval($change['bulk_concessions_total'] ?? 0),
+        'special_charge_label' => array_key_exists('special_charge_label', $change) ? sanitize_text_field((string) $change['special_charge_label']) : ($booking['special_charge_label'] ?? null),
+        'special_charge_total' => intval($change['special_charge_total'] ?? intval($booking['special_charge_total'] ?? 0)),
         'extra_price' => intval($change['extra_price'] ?? intval($booking['extra_price'] ?? 0)),
         'total_price' => max(0, intval($change['total_price'] ?? (intval($booking['total_price'] ?? 0) + intval($change['delta_total'] ?? 0)))),
     ];
@@ -251,6 +258,8 @@ function roxy_eb_start_booking_adjustment_checkout($booking, array $change) {
         'new_bulk_popcorn_qty' => intval($change['bulk_popcorn_qty'] ?? 0),
         'new_bulk_soda_qty' => intval($change['bulk_soda_qty'] ?? 0),
         'new_bulk_concessions_total' => intval($change['bulk_concessions_total'] ?? 0),
+        'new_special_charge_label' => sanitize_text_field((string) ($change['special_charge_label'] ?? ($booking['special_charge_label'] ?? ''))),
+        'new_special_charge_total' => intval($change['special_charge_total'] ?? intval($booking['special_charge_total'] ?? 0)),
         'new_extra_price' => intval($change['extra_price'] ?? 0),
         'new_total_price' => intval($change['total_price'] ?? 0),
         'summary' => sprintf(
@@ -635,7 +644,9 @@ function roxy_eb_normalize_booking_payload($payload) {
     $bulk_popcorn_qty = $bulk_requested ? intval($payload['bulk_popcorn_qty'] ?? 0) : 0;
     $bulk_soda_qty = $bulk_requested ? intval($payload['bulk_soda_qty'] ?? 0) : 0;
     $bulk_concessions_total = $bulk_requested ? (($bulk_popcorn_qty + $bulk_soda_qty) * intval($settings['bulk_item_price'] ?? 3)) : 0;
-    $total = $base + $extra_price + $pizza_total + $bulk_concessions_total;
+    $special_charge_label = sanitize_text_field($payload['special_charge_label'] ?? '');
+    $special_charge_total = max(0, intval($payload['special_charge_total'] ?? 0));
+    $total = $base + $extra_price + $pizza_total + $bulk_concessions_total + $special_charge_total;
 
     return [
         'first_name' => $first,
@@ -669,6 +680,8 @@ function roxy_eb_normalize_booking_payload($payload) {
         'bulk_popcorn_qty' => $bulk_popcorn_qty,
         'bulk_soda_qty' => $bulk_soda_qty,
         'bulk_concessions_total' => $bulk_concessions_total,
+        'special_charge_label' => $special_charge_label !== '' ? $special_charge_label : null,
+        'special_charge_total' => $special_charge_total,
         'total_price' => $total,
     ];
 }
@@ -728,6 +741,8 @@ function roxy_eb_create_booking_from_payload($payload, $order = null, $status = 
         'bulk_popcorn_qty' => intval($payload['bulk_popcorn_qty'] ?? 0),
         'bulk_soda_qty' => intval($payload['bulk_soda_qty'] ?? 0),
         'bulk_concessions_total' => intval($payload['bulk_concessions_total'] ?? 0),
+        'special_charge_label' => !empty($payload['special_charge_label']) ? sanitize_text_field($payload['special_charge_label']) : null,
+        'special_charge_total' => intval($payload['special_charge_total'] ?? 0),
         'total_price' => intval($payload['total_price']),
         'woo_order_id' => $order ? intval($order->get_id()) : null,
         'sling_status' => 'unscheduled',

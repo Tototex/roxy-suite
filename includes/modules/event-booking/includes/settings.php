@@ -13,6 +13,9 @@ function roxy_eb_defaults() {
         'base_price_over'  => 300,
         'extra_hour_price' => 100,
         'pizza_price' => 18,
+        'pizza_reminders_enabled' => 1,
+        'pizza_reminder_lead_hours' => 4,
+        'pizza_reminder_frequency_minutes' => 30,
         'bulk_item_price' => 3,
         'open_time' => '08:00',
         'close_time' => '24:00',
@@ -100,6 +103,9 @@ function roxy_eb_update_settings($new) {
     $clean['base_price_over']  = max(0, intval($new['base_price_over']  ?? $defaults['base_price_over']));
     $clean['extra_hour_price'] = max(0, intval($new['extra_hour_price'] ?? $defaults['extra_hour_price']));
     $clean['pizza_price'] = max(0, intval($new['pizza_price'] ?? $defaults['pizza_price']));
+    $clean['pizza_reminders_enabled'] = !empty($new['pizza_reminders_enabled']) ? 1 : 0;
+    $clean['pizza_reminder_lead_hours'] = max(0, intval($new['pizza_reminder_lead_hours'] ?? $defaults['pizza_reminder_lead_hours']));
+    $clean['pizza_reminder_frequency_minutes'] = max(1, intval($new['pizza_reminder_frequency_minutes'] ?? $defaults['pizza_reminder_frequency_minutes']));
     $clean['bulk_item_price'] = max(0, intval($new['bulk_item_price'] ?? $defaults['bulk_item_price']));
 
     $clean['open_time']  = preg_match('/^\d{2}:\d{2}$/', $new['open_time'] ?? '') ? $new['open_time'] : $defaults['open_time'];

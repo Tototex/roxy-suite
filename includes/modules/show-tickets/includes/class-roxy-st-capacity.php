@@ -4,6 +4,7 @@ namespace RoxyST;
 if (!defined('ABSPATH')) exit;
 
 class Capacity {
+  private static array $subscriber_usage_cache = [];
 
   public static function subscription_entitlement_count(int $user_id): int {
     if ($user_id <= 0) return 0;
@@ -206,15 +207,26 @@ class Capacity {
   public static function purchased_subscriber_qty_for_showing_user(int $showing_id, int $user_id): int {
     if ($showing_id <= 0 || $user_id <= 0 || !function_exists('wc_get_orders')) return 0;
 
+    $cache_key = $showing_id . ':' . $user_id;
+    if (isset(self::$subscriber_usage_cache[$cache_key])) {
+      return self::$subscriber_usage_cache[$cache_key];
+    }
+
     $orders = wc_get_orders([
       'customer_id' => $user_id,
       'status'      => ['wc-processing', 'wc-completed'],
       'limit'       => -1,
-      'return'      => 'objects',
+      'return'      => 'ids',
+      'type'        => 'shop_order',
+      'meta_query'  => [[
+        'key'   => '_roxy_contains_showing_' . $showing_id,
+        'value' => '1',
+      ]],
     ]);
 
     $used = 0;
     foreach ($orders as $order) {
+      $order = wc_get_order($order);
       if (!is_object($order) || !method_exists($order, 'get_items')) continue;
       foreach ($order->get_items('line_item') as $item) {
         if (!is_object($item) || !method_exists($item, 'get_product_id')) continue;
@@ -226,7 +238,7 @@ class Capacity {
       }
     }
 
-    return max(0, (int) $used);
+    return self::$subscriber_usage_cache[$cache_key] = max(0, (int) $used);
   }
 
   public static function subscriber_limit_remaining_for_showing(int $showing_id, int $user_id = 0, bool $include_cart = true): int {

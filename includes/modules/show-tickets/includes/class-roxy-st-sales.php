@@ -76,7 +76,6 @@ class Sales {
     unset(self::$stats_cache[$showing_id]);
     if ($showing_id > 0) {
       delete_post_meta($showing_id, self::META_KEY);
-      delete_post_meta($showing_id, self::LEGACY_SCAN_COMPLETE_KEY);
     }
   }
 

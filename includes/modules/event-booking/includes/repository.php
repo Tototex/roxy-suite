@@ -57,6 +57,8 @@ function roxy_eb_repo_insert_booking($data) {
         'bulk_popcorn_qty' => 0,
         'bulk_soda_qty' => 0,
         'bulk_concessions_total' => 0,
+        'special_charge_label' => null,
+        'special_charge_total' => 0,
         'total_price' => 0,
         'woo_order_id' => null,
         'woo_adjustment_order_ids' => null,
@@ -198,6 +200,7 @@ function roxy_eb_repo_insert_sling_log($data) {
     foreach (['request_json','response_body'] as $k) {
         if (!empty($row[$k])) {
             $row[$k] = preg_replace('/Authorization\s*[:=]\s*[^"\s]+/i', 'Authorization: [REDACTED]', $row[$k]);
+            $row[$k] = substr((string) $row[$k], 0, 65535);
         }
     }
 
@@ -225,4 +228,15 @@ function roxy_eb_repo_list_sling_logs($limit = 200, $booking_id = 0) {
     }
 
     return $rows ?: [];
+}
+
+function roxy_eb_repo_prune_old_sling_logs($days = null) {
+    global $wpdb;
+    $table = roxy_eb_table_sling_logs();
+    $days = $days === null ? (defined('ROXY_EB_SLING_LOG_RETENTION_DAYS') ? ROXY_EB_SLING_LOG_RETENTION_DAYS : 180) : max(1, (int) $days);
+    $cutoff = gmdate('Y-m-d H:i:s', time() - ($days * DAY_IN_SECONDS));
+
+    return $wpdb->query(
+        $wpdb->prepare("DELETE FROM $table WHERE created_at < %s", $cutoff)
+    );
 }

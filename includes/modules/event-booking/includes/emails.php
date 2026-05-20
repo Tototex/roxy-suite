@@ -61,10 +61,13 @@ function roxy_eb_email_pizza_reminder($booking) {
 
 function roxy_eb_render_email_invoice_customer_html($booking) {
     $rows = roxy_eb_booking_rows_for_email($booking);
+    $pricing = roxy_eb_booking_pricing_rows($booking);
     $html  = '<div style="font-family: Arial, Helvetica, sans-serif; line-height:1.5; color:#111; max-width:640px; margin:0 auto;">';
     $html .= '<h2 style="margin:0 0 10px;">Booking request received</h2>';
     $html .= '<p style="margin:0 0 18px;">Thanks for your booking request. We have your time reserved and will follow up with invoice/payment details.</p>';
     $html .= roxy_eb_render_rows_table_html($rows);
+    $html .= '<h3 style="margin:18px 0 8px;">Pricing</h3>';
+    $html .= roxy_eb_render_rows_table_html($pricing);
     $html .= '<p style="margin:18px 0 0;"><strong>What happens next?</strong><br>Our team will review the request and send invoice or payment details.</p>';
     $html .= '</div>';
     return $html;
@@ -124,14 +127,20 @@ function roxy_eb_booking_pricing_rows($booking) {
     $extra = (float)($booking['extra_price'] ?? 0);
     $pizza = (float)($booking['pizza_total'] ?? 0);
     $bulk = (float)($booking['bulk_concessions_total'] ?? 0);
+    $specialLabel = trim((string) ($booking['special_charge_label'] ?? ''));
+    $special = (float)($booking['special_charge_total'] ?? 0);
     $total = (float)($booking['total_price'] ?? 0);
-    return [
+    $rows = [
         ['Base', '$' . number_format($base, 2)],
         ['Extra hours', '$' . number_format($extra, 2)],
         ['Pizza', '$' . number_format($pizza, 2)],
         ['Bulk concessions', '$' . number_format($bulk, 2)],
-        [($booking['payment_method'] === 'invoice' ? 'Total due' : 'Total paid'), '$' . number_format($total, 2)],
     ];
+    if ($special > 0) {
+        $rows[] = [$specialLabel !== '' ? $specialLabel : 'Special charge', '$' . number_format($special, 2)];
+    }
+    $rows[] = [($booking['payment_method'] === 'invoice' ? 'Total due' : 'Total paid'), '$' . number_format($total, 2)];
+    return $rows;
 }
 
 function roxy_eb_render_rows_table_html($rows) {
