@@ -121,12 +121,18 @@
         $m.data('dateStr', newDate);
         $('#roxy-eb-doors-open-at').val(newDate + ' 00:00:00');
         $('#roxy-eb-doors-open-time').val('');
-        var newBlocksRaw = await fetchBlocks(newDate + ' 00:00:00', newDate + ' 23:59:59');
-        var newBlocks = normalizeBlocks(newBlocksRaw);
-        $m.data('blocks', newBlocks);
-        var parts = newDate.split('-').map(Number);
-        var midnight = new Date(parts[0], parts[1]-1, parts[2], 0,0,0);
-        rebuildTimeOptions(midnight, newBlocks);
+        try {
+          var newBlocksRaw = await fetchBlocks(newDate + ' 00:00:00', newDate + ' 23:59:59');
+          var newBlocks = normalizeBlocks(newBlocksRaw);
+          $m.data('blocks', newBlocks);
+          var parts = newDate.split('-').map(Number);
+          var midnight = new Date(parts[0], parts[1]-1, parts[2], 0,0,0);
+          rebuildTimeOptions(midnight, newBlocks);
+          $('#roxy-eb-error').hide().text('');
+        } catch (err) {
+          $('#roxy-eb-error').show().text('Could not load availability for that date. Please try another day or refresh the page.');
+          $('#roxy-eb-doors-open-time').prop('disabled', true).empty().append($('<option/>').val('').text('Availability unavailable'));
+        }
       });
     }
 
@@ -418,7 +424,13 @@
     $(document).off('click.roxy', '#roxy-eb-book-now').on('click.roxy', '#roxy-eb-book-now', function(){
       var dateStr = lastSelectedDateStr || toYmd(calendar.getDate());
       lastSelectedDateStr = dateStr;
-      fetchBlocks(dateStr + ' 00:00:00', dateStr + ' 23:59:59').then(function(items){ openModal(dateStr, normalizeBlocks(items)); }).catch(function(){ openModal(dateStr, []); });
+      fetchBlocks(dateStr + ' 00:00:00', dateStr + ' 23:59:59')
+        .then(function(items){
+          openModal(dateStr, normalizeBlocks(items));
+        })
+        .catch(function(){
+          $('#roxy-eb-error').show().text('Could not load availability right now. Please try again in a moment.');
+        });
     });
   });
 })(jQuery);

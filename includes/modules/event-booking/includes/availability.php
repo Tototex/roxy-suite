@@ -44,6 +44,65 @@ function roxy_eb_get_showtime_blocks_for_range(DateTimeImmutable $rangeStart, Da
     return $blocks;
 }
 
+function roxy_eb_get_showing_blocks_for_range(DateTimeImmutable $rangeStart, DateTimeImmutable $rangeEnd): array {
+    if (!class_exists('\\RoxyST\\CPT')) {
+        return [];
+    }
+
+    $posts = get_posts([
+        'post_type' => \RoxyST\CPT::POST_TYPE,
+        'post_status' => ['publish', 'future', 'draft', 'private'],
+        'posts_per_page' => -1,
+        'fields' => 'ids',
+        'meta_query' => [[
+            'key' => '_roxy_start',
+            'value' => [
+                $rangeStart->format('Y-m-d\TH:i'),
+                $rangeEnd->format('Y-m-d\TH:i'),
+            ],
+            'compare' => 'BETWEEN',
+            'type' => 'CHAR',
+        ]],
+    ]);
+
+    if (empty($posts)) {
+        return [];
+    }
+
+    $blocks = [];
+    foreach ($posts as $post_id) {
+        $raw_start = (string) get_post_meta((int) $post_id, '_roxy_start', true);
+        if ($raw_start === '') {
+            continue;
+        }
+
+        try {
+            $show_start = new DateTimeImmutable($raw_start, wp_timezone());
+        } catch (Exception $e) {
+            continue;
+        }
+
+        // Public showings reserve the room around the actual showtime.
+        $reserved_start = $show_start->modify('-2 hours');
+        $reserved_end = $show_start->modify('+2 hours');
+
+        if ($reserved_start >= $rangeEnd || $reserved_end <= $rangeStart) {
+            continue;
+        }
+
+        $blocks[] = [
+            'type' => 'showing',
+            'title' => get_the_title((int) $post_id) ?: 'Showing',
+            'start' => $reserved_start,
+            'end' => $reserved_end,
+            'show_start' => $show_start,
+            'showing_id' => (int) $post_id,
+        ];
+    }
+
+    return $blocks;
+}
+
 function roxy_eb_calc_times(DateTimeImmutable $doorsOpen, int $extraHours) {
     // Customer-facing duration: 2h + extras
     $guestHours = 2 + max(0, $extraHours);
@@ -107,6 +166,16 @@ function roxy_eb_is_slot_available(DateTimeImmutable $reservedStart, DateTimeImm
         if ($sbStart < $reservedEnd && $sbEnd > $reservedStart) return false;
     }
 
+    $showingBlocks = roxy_eb_get_showing_blocks_for_range($reservedStart, $reservedEnd);
+    foreach ($showingBlocks as $sb) {
+        /** @var DateTimeImmutable $sbStart */
+        $sbStart = $sb['start'];
+        $sbEnd = $sb['end'];
+        if ($sbStart < $reservedEnd && $sbEnd > $reservedStart) {
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -153,6 +222,19 @@ function roxy_eb_get_calendar_blocks(DateTimeImmutable $rangeStart, DateTimeImmu
             'title' => $sb['title'],
             'start' => roxy_eb_datetime_to_mysql($sb['start']),
             'end' => roxy_eb_datetime_to_mysql($sb['end']),
+        ];
+    }
+
+    // Actual showings from the Showings module.
+    $showingBlocks = roxy_eb_get_showing_blocks_for_range($rangeStart, $rangeEnd);
+    foreach ($showingBlocks as $sb) {
+        $items[] = [
+            'kind' => 'showing',
+            'title' => $sb['title'],
+            'start' => roxy_eb_datetime_to_mysql($sb['start']),
+            'end' => roxy_eb_datetime_to_mysql($sb['end']),
+            'doors_open_at' => roxy_eb_datetime_to_mysql($sb['show_start']),
+            'visibility' => 'public',
         ];
     }
 
