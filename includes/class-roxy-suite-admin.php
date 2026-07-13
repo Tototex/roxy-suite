@@ -40,6 +40,17 @@ class Admin {
             );
         }
 
+        if (roxy_suite_module_enabled('requested_showings')) {
+            add_submenu_page(
+                'roxy-suite',
+                'Requested Showings',
+                'Requested Showings',
+                roxy_suite_admin_capability(),
+                'roxy-requested-showings',
+                [__CLASS__, 'page_requested_showings']
+            );
+        }
+
         if (roxy_suite_module_enabled('event_booking')) {
             add_submenu_page(
                 'roxy-suite',
@@ -163,7 +174,7 @@ class Admin {
 
     public static function showings_parent_file($parent_file) {
         $screen = function_exists('get_current_screen') ? get_current_screen() : null;
-        if ($screen && $screen->post_type === 'roxy_showing') {
+        if ($screen && in_array($screen->post_type, ['roxy_showing', 'roxy_req_showing'], true)) {
             return 'roxy-suite';
         }
 
@@ -174,6 +185,9 @@ class Admin {
         $screen = function_exists('get_current_screen') ? get_current_screen() : null;
         if ($screen && $screen->post_type === 'roxy_showing') {
             return 'roxy-show-tickets';
+        }
+        if ($screen && $screen->post_type === 'roxy_req_showing') {
+            return 'roxy-requested-showings';
         }
 
         return $submenu_file;
@@ -219,5 +233,25 @@ class Admin {
                 roxy_eb_admin_bookings_page();
                 break;
         }
+    }
+
+    public static function page_requested_showings(): void {
+        if (!roxy_suite_user_can_access_admin()) return;
+        $tab = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : 'requests';
+        if ($tab !== 'settings') {
+            wp_safe_redirect(admin_url('edit.php?post_type=roxy_req_showing'));
+            exit;
+        }
+
+        echo '<div class="wrap">';
+        echo '<h1>Requested Showings</h1>';
+        echo '<nav class="nav-tab-wrapper">';
+        echo '<a href="' . esc_url(admin_url('edit.php?post_type=roxy_req_showing')) . '" class="nav-tab">Requested Showings</a>';
+        echo '<a href="' . esc_url(admin_url('admin.php?page=roxy-requested-showings&tab=settings')) . '" class="nav-tab nav-tab-active">Settings</a>';
+        echo '</nav>';
+        echo '<div class="roxy-suite-tab-content">';
+        \RoxyRS\Settings::render_page(false);
+        echo '</div>';
+        echo '</div>';
     }
 }

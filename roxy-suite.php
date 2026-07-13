@@ -104,7 +104,7 @@ add_action('wp_ajax_roxy_suite_toggle_module', function () {
     }
     $module  = sanitize_key((string) ($_POST['module'] ?? ''));
     $enabled = isset($_POST['enabled']) && $_POST['enabled'] !== '0' && $_POST['enabled'] !== '';
-    $allowed = ['arcade', 'sub_check', 'will_call', 'show_tickets', 'event_booking', 'grosses'];
+    $allowed = ['arcade', 'sub_check', 'will_call', 'show_tickets', 'requested_showings', 'event_booking', 'grosses'];
     if (!in_array($module, $allowed, true)) {
         wp_send_json_error('Unknown module', 400);
     }
@@ -229,6 +229,11 @@ if (roxy_suite_module_enabled('show_tickets')) {
     require_once ROXY_SUITE_PATH . 'includes/modules/show-tickets/roxy-show-tickets.php';
 }
 
+// Requested Showings
+if (roxy_suite_module_enabled('requested_showings')) {
+    require_once ROXY_SUITE_PATH . 'includes/modules/requested-showings/roxy-requested-showings.php';
+}
+
 // Event Booking
 if (roxy_suite_module_enabled('event_booking')) {
     require_once ROXY_SUITE_PATH . 'includes/modules/event-booking/roxy-event-booking.php';
@@ -315,6 +320,14 @@ register_activation_hook(__FILE__, function () {
         }
         if (defined('ROXY_EB_VERSION')) {
             update_option('roxy_eb_db_version', ROXY_EB_VERSION);
+        }
+    }
+
+    // Requested Showings schema
+    if (function_exists('roxy_rs_install_schema')) {
+        roxy_rs_install_schema();
+        if (defined('ROXY_RS_VERSION')) {
+            update_option('roxy_rs_db_version', ROXY_RS_VERSION);
         }
     }
 

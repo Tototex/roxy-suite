@@ -35,6 +35,8 @@ class Frontend {
       'limit' => 20,
       'days' => 60,
       'show_images' => '1',
+      'request_showings_url' => home_url('/movie-requests/'),
+      'request_showings_label' => 'Ask us to build a crowd-backed showing for the movie you want to see.',
     ], $atts);
 
     return self::render_showings_listing([
@@ -44,6 +46,8 @@ class Frontend {
       'show_all_button' => false,
       'all_button_url' => '',
       'all_button_label' => '',
+      'request_showings_url' => (string) $atts['request_showings_url'],
+      'request_showings_label' => (string) $atts['request_showings_label'],
     ]);
   }
 
@@ -64,6 +68,8 @@ class Frontend {
       'all_button_url' => (string) $atts['tickets_url'],
       'all_button_label' => (string) $atts['button_label'],
       'pin_next_live' => true,
+      'request_showings_url' => '',
+      'request_showings_label' => '',
     ]);
   }
 
@@ -74,6 +80,8 @@ class Frontend {
     $show_all_button = !empty($args['show_all_button']);
     $all_button_url = (string) ($args['all_button_url'] ?? '');
     $all_button_label = trim((string) ($args['all_button_label'] ?? 'View All Showings'));
+    $request_showings_url = trim((string) ($args['request_showings_url'] ?? ''));
+    $request_showings_label = trim((string) ($args['request_showings_label'] ?? 'Ask us to build a crowd-backed showing for the movie you want to see.'));
 
     $now = current_time('timestamp');
     $end = $now + ($days * DAY_IN_SECONDS);
@@ -109,11 +117,21 @@ class Frontend {
       .roxy-st-soldout, .roxy-st-soldout *{color:#ff4d4f !important;}
       .roxy-st-all-button-wrap{margin-top:18px;text-align:center;}
       .roxy-st-all-button{display:inline-block;padding:12px 18px;border-radius:12px;background:#111;color:#fff !important;text-decoration:none;font-weight:700;box-shadow:0 8px 18px rgba(0,0,0,.15);}
+      .roxy-st-request-cta{margin:18px 0;padding:16px 18px;border-radius:14px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+      .roxy-st-request-cta-copy{font-size:14px;line-height:1.5;opacity:.92;}
+      .roxy-st-request-cta-button{display:inline-block;padding:12px 18px;border-radius:999px;background:#ffcf35;color:#111 !important;text-decoration:none;font-weight:800;}
       @media (max-width: 640px){
         .roxy-st-ticket-row{grid-template-columns:minmax(0,1fr) 84px;justify-content:stretch;}
       }
     </style>';
     echo '<div class="roxy-st-grid" style="display:grid;gap:16px">';
+
+    if ($request_showings_url !== '') {
+      echo '<div class="roxy-st-request-cta">';
+      echo '<div class="roxy-st-request-cta-copy"><strong>Don\'t see the movie you want?</strong><br>' . esc_html($request_showings_label) . '</div>';
+      echo '<a class="roxy-st-request-cta-button" href="' . esc_url($request_showings_url) . '">Request a Movie</a>';
+      echo '</div>';
+    }
 
     // Collect posts so we can optionally inject a pinned live event
     $posts = $q->posts;

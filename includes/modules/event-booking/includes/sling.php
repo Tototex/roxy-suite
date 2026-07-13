@@ -5,6 +5,7 @@ add_action('init', function () {
     if (function_exists('as_enqueue_async_action')) {
         add_action('roxy_eb_sling_sync_booking', 'roxy_eb_sling_job_sync_booking', 10, 2);
         add_action('roxy_eb_sling_cancel_booking', 'roxy_eb_sling_job_cancel_booking', 10, 1);
+        add_action('roxy_eb_sling_retry_failed_auth_syncs', 'roxy_eb_sling_job_retry_failed_auth_syncs', 10, 0);
     }
 });
 
@@ -22,6 +23,14 @@ function roxy_eb_sling_enqueue_cancel($booking_id) {
     if ($mode === 'disabled') return;
     if (!function_exists('as_enqueue_async_action')) return;
     as_enqueue_async_action('roxy_eb_sling_cancel_booking', [intval($booking_id)], 'roxy-eb');
+}
+
+function roxy_eb_sling_enqueue_retry_failed_auth_syncs() {
+    if (!function_exists('as_enqueue_async_action')) return;
+    if (function_exists('as_has_scheduled_action') && as_has_scheduled_action('roxy_eb_sling_retry_failed_auth_syncs', [], 'roxy-eb')) {
+        return;
+    }
+    as_enqueue_async_action('roxy_eb_sling_retry_failed_auth_syncs', [], 'roxy-eb');
 }
 
 function roxy_eb_sling_job_sync_booking($booking_id, $reason = 'sync') {
@@ -71,6 +80,16 @@ function roxy_eb_sling_job_cancel_booking($booking_id) {
         'sling_error'  => null,
         'sling_shift_ids' => null,
     ]);
+}
+
+function roxy_eb_sling_job_retry_failed_auth_syncs() {
+    $rows = roxy_eb_repo_list_sling_auth_failed_bookings(25);
+    foreach ($rows as $row) {
+        $booking_id = intval($row['id'] ?? 0);
+        if ($booking_id > 0) {
+            roxy_eb_sling_enqueue_sync($booking_id, 'auto_retry_after_token_refresh');
+        }
+    }
 }
 
 function roxy_eb_sling_sync_shifts_for_booking($booking) {
@@ -416,6 +435,35 @@ function roxy_eb_sling_admin_test_and_resolve($settings) {
     return ['ok' => true, 'message' => 'Sling reachable and token valid. Mapping is manual in settings.'];
 }
 
+function roxy_eb_sling_admin_test_and_resolve_with_refresh($settings) {
+    if (($settings['sling_mode'] ?? 'disabled') !== 'direct') {
+        return new WP_Error('not_direct', 'Set Sling Mode to "Direct API" to test connection.');
+    }
+
+    $refreshed_on_test = false;
+    $refresh_warning = '';
+    if (!empty($settings['sling_auth_email']) && !empty($settings['sling_auth_password_enc'])) {
+        $refreshed = roxy_eb_sling_refresh_token(true, 'admin_test', false);
+        if (is_wp_error($refreshed)) {
+            $refresh_warning = $refreshed->get_error_message();
+        } else {
+            $settings = roxy_eb_get_settings();
+            $refreshed_on_test = true;
+        }
+    }
+
+    $result = roxy_eb_sling_admin_test_and_resolve($settings);
+    if (is_wp_error($result)) {
+        return $result;
+    }
+    if ($refreshed_on_test) {
+        $result['message'] = 'Sling reachable and token refreshed from stored login. Mapping is manual in settings.';
+    } elseif ($refresh_warning !== '') {
+        $result['message'] = 'Sling reachable and saved token valid. Automatic refresh is currently unavailable: ' . $refresh_warning;
+    }
+    return $result;
+}
+
 function roxy_eb_sling_match_entity_id($list, $label) {
     $label = trim(strval($label));
     if (!$label) return '';
@@ -471,24 +519,12 @@ function roxy_eb_sling_api_request($method, $path, $body = null, $context = []) 
     $settings = roxy_eb_get_settings();
     $base = rtrim($settings['sling_base_url'] ?? 'https://api.getsling.com', '/');
     $url = $base . $path;
+    $refresh_attempted = !empty($context['_refresh_attempted']);
 
     $token = roxy_eb_sling_get_token();
     if (is_wp_error($token)) return $token;
 
-    $args = [
-        'method' => $method,
-        'timeout' => 20,
-        'headers' => [
-            'Accept' => 'application/json',
-            'Authorization' => $token,
-        ],
-    ];
-    if ($body !== null) {
-        $args['headers']['Content-Type'] = 'application/json';
-        $args['body'] = wp_json_encode($body);
-    }
-
-    $resp = wp_remote_request($url, $args);
+    $resp = roxy_eb_sling_send_request($url, $method, $token, $body);
     if (is_wp_error($resp)) {
         roxy_eb_sling_log_api($context, $path, 0, 'Transport error', $body, $resp->get_error_message());
         roxy_eb_sling_notify_failure($context, 0, $path, $resp->get_error_message());
@@ -499,10 +535,20 @@ function roxy_eb_sling_api_request($method, $path, $body = null, $context = []) 
     $respBody = wp_remote_retrieve_body($resp);
 
     if ($code === 401 || $code === 403) {
+        if (!$refresh_attempted) {
+            $refreshed = roxy_eb_sling_refresh_token(true, 'auth_failure');
+            if (!is_wp_error($refreshed)) {
+                $retry_context = is_array($context) ? $context : [];
+                $retry_context['_refresh_attempted'] = 1;
+                return roxy_eb_sling_api_request($method, $path, $body, $retry_context);
+            }
+            roxy_eb_sling_log_api($context, '/account/login', 0, 'Token refresh failed', null, $refreshed->get_error_message());
+            roxy_eb_sling_notify_failure($context, 0, '/account/login', $refreshed->get_error_message());
+        }
         roxy_eb_sling_notify_auth_failure($code, $path, $respBody);
         roxy_eb_sling_notify_failure($context, $code, $path, $respBody);
         roxy_eb_sling_log_api($context, $path, $code, 'Auth failure', $body, $respBody);
-        return new WP_Error('sling_auth', 'Sling authorization failed (HTTP ' . $code . '). Update the Sling token in settings.');
+        return new WP_Error('sling_auth', 'Sling authorization failed (HTTP ' . $code . '). Refresh the Sling token or confirm the stored Sling login is still valid.');
     }
 
     if ($code < 200 || $code >= 300) {
@@ -522,7 +568,13 @@ function roxy_eb_sling_get_token() {
     $mode = $settings['sling_mode'] ?? 'disabled';
     if ($mode !== 'direct') return '';
     $token = roxy_eb_sling_decrypt_secret($settings['sling_auth_token_enc'] ?? '');
-    if (empty($token)) return new WP_Error('missing_token', 'Sling token not configured. Paste the Authorization token in settings.');
+    if (empty($token)) {
+        $refreshed = roxy_eb_sling_refresh_token(false, 'missing_token');
+        if (is_wp_error($refreshed)) {
+            return new WP_Error('missing_token', 'Sling token not configured and automatic login was not available. Save the Sling token or stored Sling login in settings.');
+        }
+        return $refreshed;
+    }
     return $token;
 }
 
@@ -542,20 +594,85 @@ function roxy_eb_sling_login($email, $password) {
         $body = wp_remote_retrieve_body($resp);
         return new WP_Error('login_failed', 'Login failed HTTP ' . $code . ': ' . substr($body, 0, 300));
     }
-    $auth = '';
+    $auth = roxy_eb_sling_extract_token_from_headers($headers);
+    $auth = trim(strval($auth));
+    if (empty($auth)) return new WP_Error('missing_auth_header', 'Login succeeded but Sling did not return a usable auth token.');
+    return $auth;
+}
+
+function roxy_eb_sling_send_request($url, $method, $token, $body = null) {
+    $args = [
+        'method' => $method,
+        'timeout' => 20,
+        'headers' => [
+            'Accept' => 'application/json',
+            'Authorization' => $token,
+        ],
+    ];
+    if ($body !== null) {
+        $args['headers']['Content-Type'] = 'application/json';
+        $args['body'] = wp_json_encode($body);
+    }
+    return wp_remote_request($url, $args);
+}
+
+function roxy_eb_sling_extract_token_from_headers($headers) {
+    $normalized = [];
     if (is_array($headers)) {
-        foreach ($headers as $k => $v) {
-            if (strtolower($k) === 'authorization') { $auth = is_array($v) ? reset($v) : $v; break; }
-        }
+        $normalized = $headers;
     } elseif (is_object($headers) && method_exists($headers, 'getAll')) {
-        $all = $headers->getAll();
-        foreach ($all as $k => $v) {
-            if (strtolower($k) === 'authorization') { $auth = is_array($v) ? reset($v) : $v; break; }
+        $normalized = $headers->getAll();
+    }
+    foreach ($normalized as $key => $value) {
+        if (strtolower((string) $key) === 'authorization') {
+            return trim((string) (is_array($value) ? reset($value) : $value));
         }
     }
-    $auth = trim(strval($auth));
-    if (empty($auth)) return new WP_Error('missing_auth_header', 'Login succeeded but Sling did not return an Authorization header.');
-    return $auth;
+    foreach ($normalized as $key => $value) {
+        if (strtolower((string) $key) !== 'set-cookie') continue;
+        $cookies = is_array($value) ? $value : [$value];
+        foreach ($cookies as $cookie_line) {
+            if (!is_string($cookie_line)) continue;
+            if (preg_match('/(?:^|;\s*)authorization-token=([^;]+)/i', $cookie_line, $matches)) {
+                return trim(rawurldecode((string) $matches[1]));
+            }
+        }
+    }
+    return '';
+}
+
+function roxy_eb_sling_refresh_token($force = false, $trigger = 'manual', $schedule_retry = true) {
+    static $refreshing = false;
+    if ($refreshing) {
+        return new WP_Error('refresh_in_progress', 'Sling token refresh already in progress.');
+    }
+    $settings = roxy_eb_get_settings();
+    $mode = $settings['sling_mode'] ?? 'disabled';
+    if ($mode !== 'direct') {
+        return new WP_Error('not_direct', 'Sling auto-refresh only applies in Direct API mode.');
+    }
+    $email = sanitize_email($settings['sling_auth_email'] ?? '');
+    $password = roxy_eb_sling_decrypt_secret($settings['sling_auth_password_enc'] ?? '');
+    if ($email === '' || $password === '') {
+        return new WP_Error('missing_credentials', 'Stored Sling login email/password are required for automatic token refresh.');
+    }
+
+    $refreshing = true;
+    try {
+        $token = roxy_eb_sling_login($email, $password);
+        if (is_wp_error($token)) {
+            return $token;
+        }
+        $settings['sling_auth_token_enc'] = roxy_eb_sling_encrypt_secret($token);
+        $settings['sling_auth_token_obtained_at'] = wp_date('Y-m-d H:i:s');
+        update_option(roxy_eb_option_key(), $settings, false);
+        if ($schedule_retry && ($force || $trigger !== 'missing_token')) {
+            roxy_eb_sling_enqueue_retry_failed_auth_syncs();
+        }
+        return $token;
+    } finally {
+        $refreshing = false;
+    }
 }
 
 function roxy_eb_sling_encrypt_secret($plain) {

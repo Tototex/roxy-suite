@@ -131,6 +131,28 @@ function roxy_eb_repo_list_bookings_in_range($start_mysql, $end_mysql) {
     return $rows ?: [];
 }
 
+function roxy_eb_repo_list_sling_auth_failed_bookings($limit = 25) {
+    global $wpdb;
+    $table = roxy_eb_table_bookings();
+    $limit = max(1, min(100, intval($limit)));
+    $like = $wpdb->esc_like('Sling authorization failed') . '%';
+    $rows = $wpdb->get_results(
+        $wpdb->prepare(
+            "SELECT id
+             FROM $table
+             WHERE sling_status = 'error'
+               AND sling_error LIKE %s
+               AND status IN ('confirmed','pending','pending_invoice')
+             ORDER BY updated_at DESC
+             LIMIT %d",
+            $like,
+            $limit
+        ),
+        ARRAY_A
+    );
+    return $rows ?: [];
+}
+
 function roxy_eb_repo_insert_block($data) {
     global $wpdb;
     $table = roxy_eb_table_blocks();

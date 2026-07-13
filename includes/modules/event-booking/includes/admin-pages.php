@@ -13,27 +13,21 @@ function roxy_eb_admin_settings_page() {
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (isset($_POST['roxy_eb_save_settings'])) {
             check_admin_referer('roxy_eb_save_settings');
-            $incoming = $_POST['settings'] ?? [];
-            if (!empty($incoming['_sling_token_plain'])) $incoming['sling_auth_token_enc'] = roxy_eb_sling_encrypt_secret($incoming['_sling_token_plain']);
-            unset($incoming['_sling_token_plain']);
+            $incoming = roxy_eb_admin_prepare_settings_input($_POST['settings'] ?? []);
             $settings = roxy_eb_update_settings($incoming);
             echo '<div class="updated"><p>Settings saved.</p></div>';
         }
         if (isset($_POST['roxy_eb_sling_test_connection'])) {
             check_admin_referer('roxy_eb_save_settings');
-            $incoming = $_POST['settings'] ?? [];
-            if (!empty($incoming['_sling_token_plain'])) $incoming['sling_auth_token_enc'] = roxy_eb_sling_encrypt_secret($incoming['_sling_token_plain']);
-            unset($incoming['_sling_token_plain']);
+            $incoming = roxy_eb_admin_prepare_settings_input($_POST['settings'] ?? []);
             $settings = roxy_eb_update_settings($incoming);
-            $result = roxy_eb_sling_admin_test_and_resolve($settings);
+            $result = roxy_eb_sling_admin_test_and_resolve_with_refresh($settings);
             if (is_wp_error($result)) echo '<div class="notice notice-error"><p><strong>Sling test failed:</strong> ' . esc_html($result->get_error_message()) . '</p></div>';
             else echo '<div class="notice notice-success"><p><strong>Sling connected.</strong> ' . esc_html($result['message'] ?? 'Token stored.') . '</p></div>';
         }
         if (isset($_POST['roxy_eb_sling_create_test_shift'])) {
             check_admin_referer('roxy_eb_save_settings');
-            $incoming = $_POST['settings'] ?? [];
-            if (!empty($incoming['_sling_token_plain'])) $incoming['sling_auth_token_enc'] = roxy_eb_sling_encrypt_secret($incoming['_sling_token_plain']);
-            unset($incoming['_sling_token_plain']);
+            $incoming = roxy_eb_admin_prepare_settings_input($_POST['settings'] ?? []);
             $settings = roxy_eb_update_settings($incoming);
             $result = roxy_eb_sling_admin_create_test_shift($settings);
             if (is_wp_error($result)) echo '<div class="notice notice-error"><p><strong>Test shift failed:</strong> ' . esc_html($result->get_error_message()) . '</p></div>';
@@ -109,7 +103,23 @@ function roxy_eb_admin_settings_page() {
                 <tr><th scope="row">Mode</th><td><select name="settings[sling_mode]"><option value="disabled" <?php selected($settings['sling_mode'], 'disabled'); ?>>Disabled</option><option value="webhook" <?php selected($settings['sling_mode'], 'webhook'); ?>>Webhook</option><option value="direct" <?php selected($settings['sling_mode'], 'direct'); ?>>Direct API</option></select></td></tr>
                 <tr><th scope="row">Webhook URL</th><td><input type="url" name="settings[sling_webhook_url]" value="<?php echo esc_attr($settings['sling_webhook_url']); ?>" class="regular-text" /></td></tr>
                 <tr><th scope="row">Direct API Base URL</th><td><input type="url" name="settings[sling_base_url]" value="<?php echo esc_attr($settings['sling_base_url']); ?>" class="regular-text" /></td></tr>
-                <tr><th scope="row">Sling Authorization token</th><td><input type="password" name="settings[_sling_token_plain]" value="" class="large-text" autocomplete="off" /></td></tr>
+                <tr><th scope="row">Sling login email</th><td><input type="email" name="settings[sling_auth_email]" value="<?php echo esc_attr($settings['sling_auth_email'] ?? ''); ?>" class="regular-text" autocomplete="username" /><p class="description">Optional. If saved with a password below, the plugin can refresh expired Sling tokens automatically.</p></td></tr>
+                <tr><th scope="row">Sling login password</th><td><input type="password" name="settings[_sling_password_plain]" value="" class="large-text" autocomplete="new-password" /><p class="description"><?php echo !empty($settings['sling_auth_password_enc']) ? 'Password saved. Leave blank to keep the current one.' : 'Optional, but recommended if you want automatic Sling token renewal.'; ?></p></td></tr>
+                <tr><th scope="row">Sling Authorization token</th><td><input type="password" name="settings[_sling_token_plain]" value="" class="large-text" autocomplete="off" /><p class="description">Primary fallback. Paste the current Sling auth token here if Sling blocks automatic refresh with CAPTCHA.</p></td></tr>
+                <tr><th scope="row">Stored token status</th><td><?php echo !empty($settings['sling_auth_token_obtained_at']) ? 'Last refreshed: ' . esc_html($settings['sling_auth_token_obtained_at']) : 'No token refresh timestamp stored yet.'; ?></td></tr>
+                <tr>
+                    <th scope="row">Manual token renewal</th>
+                    <td>
+                        <p><a class="button" href="https://app.getsling.com/" target="_blank" rel="noopener noreferrer">Open Sling in new tab</a></p>
+                        <ol style="margin:0 0 0 18px;">
+                            <li>Sign in to Sling in the new tab.</li>
+                            <li>Open browser DevTools, then use the global search for <code>authorization-token</code>.</li>
+                            <li>Copy the cookie value for <code>authorization-token=...</code>.</li>
+                            <li>Paste just that token value into the field above and save settings.</li>
+                        </ol>
+                        <p class="description" style="margin-top:8px;">If Test Connection says automatic refresh is blocked by CAPTCHA, use these steps to renew the token manually.</p>
+                    </td>
+                </tr>
                 <tr><th scope="row">Auth failure email</th><td><input type="email" name="settings[sling_auth_fail_email]" value="<?php echo esc_attr($settings['sling_auth_fail_email'] ?? 'info@newportroxy.com'); ?>" class="regular-text" /></td></tr>
                 <tr><th scope="row">Publish shifts</th><td><label><input type="checkbox" name="settings[sling_publish_shifts]" value="1" <?php checked(!empty($settings['sling_publish_shifts'])); ?> /> Publish shifts immediately</label></td></tr>
                 <tr><th scope="row">Location label / External ID</th><td><input type="text" name="settings[sling_location_label]" value="<?php echo esc_attr($settings['sling_location_label'] ?? ''); ?>" class="regular-text" /></td></tr>
@@ -133,6 +143,20 @@ function roxy_eb_admin_settings_page() {
         </form>
     </div>
     <?php
+}
+
+function roxy_eb_admin_prepare_settings_input($incoming) {
+    $incoming = is_array($incoming) ? $incoming : [];
+    $incoming = wp_unslash($incoming);
+    if (!empty($incoming['_sling_password_plain'])) {
+        $incoming['sling_auth_password_enc'] = roxy_eb_sling_encrypt_secret($incoming['_sling_password_plain']);
+    }
+    if (!empty($incoming['_sling_token_plain'])) {
+        $incoming['sling_auth_token_enc'] = roxy_eb_sling_encrypt_secret($incoming['_sling_token_plain']);
+        $incoming['sling_auth_token_obtained_at'] = wp_date('Y-m-d H:i:s');
+    }
+    unset($incoming['_sling_password_plain'], $incoming['_sling_token_plain']);
+    return $incoming;
 }
 
 function roxy_eb_admin_blocks_page() {

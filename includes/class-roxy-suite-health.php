@@ -43,6 +43,7 @@ class Health {
         return [
             self::module_core_structural(),
             self::module_show_tickets_structural(),
+            self::module_requested_showings_structural(),
             self::module_will_call_structural(),
             self::module_member_check_structural(),
             self::module_event_booking_structural(),
@@ -59,6 +60,7 @@ class Health {
         $functional = [
             'Core / Environment' => self::functional_core(),
             'Show Tickets'       => self::functional_show_tickets(),
+            'Requested Showings' => self::functional_requested_showings(),
             'Event Booking'      => self::functional_event_booking(),
             'Will Call'          => self::functional_will_call(),
             'Arcade'             => self::functional_arcade(),
@@ -138,6 +140,24 @@ class Health {
                 $exists ? self::PASS : self::FAIL,
                 $exists ? '' : 'Reactivate plugin to rebuild'),
         ], 'will_call');
+    }
+
+    private static function module_requested_showings_structural(): array {
+        if (!self::module_enabled('requested_showings')) {
+            return self::module('Requested Showings', admin_url('admin.php?page=roxy-requested-showings'), [], 'requested_showings');
+        }
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'roxy_requested_showing_backings';
+        $exists = self::table_exists($table);
+        $cpt = post_type_exists('roxy_req_showing');
+        $cron = (bool) wp_next_scheduled('roxy_rs_daily_review');
+
+        return self::module('Requested Showings', admin_url('admin.php?page=roxy-requested-showings'), [
+            self::item('roxy_req_showing CPT', $cpt ? 'Registered' : 'Missing', $cpt ? self::PASS : self::FAIL),
+            self::item($table, $exists ? 'Exists' : 'Missing', $exists ? self::PASS : self::FAIL),
+            self::item('Daily review cron', $cron ? 'Scheduled' : 'Missing', $cron ? self::PASS : self::WARN),
+        ], 'requested_showings');
     }
 
     private static function module_member_check_structural(): array {
@@ -378,6 +398,36 @@ class Health {
                 $items[] = self::item('Sling API', 'Webhook mode — no live ping needed', self::PASS);
             } else {
                 $items[] = self::item('Sling API', 'Disabled', self::WARN, 'Sling scheduling is off');
+            }
+        }
+
+        return $items;
+    }
+
+    private static function functional_requested_showings(): array {
+        if (!self::module_enabled('requested_showings')) return [];
+
+        $items = [];
+        $active = get_posts([
+            'post_type' => 'roxy_req_showing',
+            'post_status' => ['publish', 'draft'],
+            'posts_per_page' => -1,
+            'meta_query' => [[
+                'key' => '_roxy_rs_status',
+                'value' => ['active', 'threshold_met', 'pending_review'],
+                'compare' => 'IN',
+            ]],
+        ]);
+
+        $items[] = self::item('Open requests', count($active) > 0 ? count($active) . ' request(s)' : 'None', self::PASS);
+
+        if (function_exists('roxy_rs_table_backings')) {
+            global $wpdb;
+            $table = roxy_rs_table_backings();
+            if (self::table_exists($table)) {
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$table}`");
+                $items[] = self::item('Backing records', $count . ' total', self::PASS);
             }
         }
 
