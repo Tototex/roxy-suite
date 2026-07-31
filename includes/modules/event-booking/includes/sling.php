@@ -206,7 +206,7 @@ Notes:
 
     if (!empty($booking['pizza_requested'])) {
         $pizza_lines = [
-            '**Pizza Ordered**',
+            '**Pizza Alert**',
             '',
             'Notes: Order pizza within 4 hours of event from Westside 509-447-2200. Mention that is is concession pizza for the Roxy, and cost should be $13 per pizza. You must pickup pizza before doors open. Confirm on website pizza has been ordered or reminders will be sent out.',
             '',

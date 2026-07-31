@@ -51,6 +51,9 @@ function roxy_eb_enqueue_calendar_assets(): void {
         'closeTime' => $settings['close_time'],
         'guestCap' => intval($settings['guest_cap']),
         'pizzaPrice' => intval($settings['pizza_price'] ?? 18),
+        'pizzaStartMinutes' => roxy_eb_pizza_window_start_minutes(),
+        'pizzaEndMinutes' => roxy_eb_pizza_window_end_minutes(),
+        'pizzaAvailabilityMessage' => roxy_eb_pizza_unavailable_message(),
         'bulkItemPrice' => intval($settings['bulk_item_price'] ?? 3),
         'prices' => [
             'under' => intval($settings['base_price_under']),
@@ -197,13 +200,17 @@ function roxy_eb_shortcode_calendar() {
                         <label id="roxy-eb-pizza-quantity-wrap" style="display:none;">
                             <span>Pizza quantity *</span>
                             <input type="number" name="pizza_quantity" min="1" value="1" />
-                            <small class="roxy-eb-help">$18 per pizza. Large only. We recommend 1 pizza for every 4 people.</small>
+                            <small class="roxy-eb-help">$18 per pizza. Large only. We recommend 1 pizza for every 4 people. Pizza is only available when doors open between 11:30 AM and 9:00 PM.</small>
                         </label>
 
                         <label class="roxy-eb-span-2" id="roxy-eb-pizza-details-wrap" style="display:none;">
                             <span>Pizza order details *</span>
                             <textarea name="pizza_order_details" rows="3" placeholder="Tell us toppings and how many of each. Large pizzas only, 2 toppings or less."></textarea>
                         </label>
+
+                        <div class="roxy-eb-span-2" id="roxy-eb-pizza-time-alert" style="display:none;">
+                            <small class="roxy-eb-help"></small>
+                        </div>
 
                         <label>
                             <span>Bulk concessions? *</span>

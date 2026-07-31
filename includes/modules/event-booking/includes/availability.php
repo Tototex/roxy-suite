@@ -21,6 +21,32 @@ function roxy_eb_dt_from_date_and_time(DateTimeImmutable $date, $hhmm) {
     return $date->setTime($h,$m);
 }
 
+function roxy_eb_showtime_block_override(DateTimeImmutable $date, array $block): array {
+    $weekday = intval($date->format('w'));
+    $ymd = $date->format('Y-m-d');
+
+    // Allow 4 PM private-event starts on normal Friday/Saturday movie days.
+    if (($weekday === 5 || $weekday === 6) && !empty($block['label']) && stripos((string) $block['label'], 'Regular Showing') !== false) {
+        $block['start'] = '18:30';
+        $block['end'] = '22:00';
+    }
+
+    // Special October 2026 Friday rentals: daytime blocked, 6 PM opening allowed.
+    $octoberFridayOverrides = [
+        '2026-10-02',
+        '2026-10-09',
+        '2026-10-16',
+        '2026-10-23',
+    ];
+    if (in_array($ymd, $octoberFridayOverrides, true) && $weekday === 5 && !empty($block['label']) && stripos((string) $block['label'], 'Regular Showing') !== false) {
+        $block['start'] = '13:00';
+        $block['end'] = '17:30';
+        $block['label'] = 'Reserved Rental Window (Fri Override)';
+    }
+
+    return $block;
+}
+
 function roxy_eb_get_showtime_blocks_for_range(DateTimeImmutable $rangeStart, DateTimeImmutable $rangeEnd) {
     $settings = roxy_eb_get_settings();
     $blocks = [];
@@ -29,6 +55,7 @@ function roxy_eb_get_showtime_blocks_for_range(DateTimeImmutable $rangeStart, Da
         $weekday = intval($cursor->format('w')); // 0..6
         foreach ($settings['showtime_blocks'] as $b) {
             if (intval($b['weekday']) !== $weekday) continue;
+            $b = roxy_eb_showtime_block_override($cursor, $b);
             $start = roxy_eb_dt_from_date_and_time($cursor, $b['start']);
             $end   = roxy_eb_dt_from_date_and_time($cursor, $b['end']);
             if (!$start || !$end) continue;

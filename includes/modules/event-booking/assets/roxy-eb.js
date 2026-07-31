@@ -17,6 +17,37 @@
     return parseInt(m[1],10)*60 + parseInt(m[2],10);
   }
 
+  function selectedDoorsOpenMinutes(){
+    var timeVal = $('#roxy-eb-doors-open-time').val();
+    if(!timeVal) return null;
+    return hhmmToMinutes(timeVal);
+  }
+
+  function pizzaAllowedForCurrentSelection(){
+    var minutes = selectedDoorsOpenMinutes();
+    if(minutes === null) return true;
+    return minutes >= Number(RoxyEB.pizzaStartMinutes || 690) && minutes <= Number(RoxyEB.pizzaEndMinutes || 1260);
+  }
+
+  function refreshPizzaAvailabilityUI(){
+    var allowed = pizzaAllowedForCurrentSelection();
+    var $select = $('#roxy-eb-pizza-requested');
+    var $yes = $select.find('option[value="1"]');
+    var $alert = $('#roxy-eb-pizza-time-alert');
+    var message = String(RoxyEB.pizzaAvailabilityMessage || '');
+
+    if(!allowed){
+      if($select.val() === '1'){
+        $select.val('0');
+      }
+      $yes.prop('disabled', true);
+      $alert.show().find('small').text(message);
+    } else {
+      $yes.prop('disabled', false);
+      $alert.hide().find('small').text('');
+    }
+  }
+
   function buildTimeOptions(dateObj, extraHours, blocks){
     var inc = Number(RoxyEB.incrementMinutes || 15);
     var openMin = hhmmToMinutes(RoxyEB.openTime || '08:00');
@@ -218,6 +249,8 @@
       var dp = dateStr.split('-').map(Number);
       rebuildTimeOptions(new Date(dp[0], dp[1]-1, dp[2], 0,0,0), blocks);
     }
+    refreshPizzaAvailabilityUI();
+    togglePizzaFields();
     updateSubmitButton();
   }
 
@@ -241,6 +274,7 @@
   }
 
   function togglePizzaFields(){
+    refreshPizzaAvailabilityUI();
     var pizza = $('#roxy-eb-pizza-requested').val() === '1';
     $('#roxy-eb-pizza-quantity-wrap').toggle(pizza);
     $('#roxy-eb-pizza-details-wrap').toggle(pizza);
@@ -281,7 +315,7 @@
     $(document).on('click', '[data-roxy-eb-close]', function(){ closeModal(); });
     $(document).on('keydown', function(e){ if(e.key === 'Escape') closeModal(); });
 
-    $(document).on('change', '#roxy-eb-extra-hours, input[name="guest_count"], #roxy-eb-pizza-requested, input[name="pizza_quantity"], #roxy-eb-payment-method, #roxy-eb-bulk-concessions-requested, input[name="bulk_popcorn_qty"], input[name="bulk_soda_qty"]', updatePricingUI);
+    $(document).on('change', '#roxy-eb-extra-hours, input[name="guest_count"], #roxy-eb-pizza-requested, input[name="pizza_quantity"], #roxy-eb-payment-method, #roxy-eb-bulk-concessions-requested, input[name="bulk_popcorn_qty"], input[name="bulk_soda_qty"], #roxy-eb-doors-open-time', updatePricingUI);
     $(document).on('focus', 'input[name="bulk_popcorn_qty"], input[name="bulk_soda_qty"]', function(){
       $(this).data('roxyPrevVal', $(this).val());
     });
@@ -325,6 +359,10 @@
       var bulkSodaQty = Number(booking.bulk_soda_qty || 0);
       if (bulkRequested && (!validBulkQty(bulkPopcornQty) || !validBulkQty(bulkSodaQty))) {
         $('#roxy-eb-error').show().text('Bulk concessions must be 0, or between 25 and 250 for each item.');
+        return;
+      }
+      if (String(booking.pizza_requested || '0') === '1' && !pizzaAllowedForCurrentSelection()) {
+        $('#roxy-eb-error').show().text(String(RoxyEB.pizzaAvailabilityMessage || 'Pizza is not available for that start time.'));
         return;
       }
       $('#roxy-eb-error').hide().text('');

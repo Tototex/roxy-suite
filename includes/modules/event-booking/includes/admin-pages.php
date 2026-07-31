@@ -361,6 +361,9 @@ function roxy_eb_admin_bookings_page() {
         if (!$dt) {
             $errors[] = 'Invalid date/time.';
         } else {
+            if ($pizza_requested && !roxy_eb_doors_open_allows_pizza($dt)) {
+                $errors[] = roxy_eb_pizza_unavailable_message();
+            }
             $extra_hours = max(0, $duration_hours - 2);
             $times = roxy_eb_calc_times($dt, $extra_hours);
             if (!roxy_eb_time_within_operating_hours($dt, intval($times['guest_hours']))) {
@@ -465,72 +468,76 @@ function roxy_eb_admin_bookings_page() {
                 if (!$dt) {
                     echo '<div class="notice notice-error"><p>Invalid date/time.</p></div>';
                 } else {
-                    $extra_hours = max(0, $duration_hours - 2);
-                    $times = roxy_eb_calc_times($dt, $extra_hours);
-
-                    if (!roxy_eb_is_slot_available($times['reserved_start'], $times['reserved_end'], $booking_id)) {
-                        echo '<div class="notice notice-error"><p>That time conflicts with another booking or blocked event.</p></div>';
+                    if ($pizza_requested && !roxy_eb_doors_open_allows_pizza($dt)) {
+                        echo '<div class="notice notice-error"><p>' . esc_html(roxy_eb_pizza_unavailable_message()) . '</p></div>';
                     } else {
-                        $base_price = intval($booking_before['base_price']);
-                        $extra_price = $extra_hours * intval(roxy_eb_get_settings()['extra_hour_price'] ?? 100);
-                        $total_price = $base_price + $extra_price + $pizza_total + $bulk_concessions_total + $special_charge_total;
+                        $extra_hours = max(0, $duration_hours - 2);
+                        $times = roxy_eb_calc_times($dt, $extra_hours);
 
-                        $update = [
-                            'guest_count' => $guest_count,
-                            'tier' => roxy_eb_tier_from_guest_count($guest_count),
-                            'staff_shifts_required' => roxy_eb_shifts_from_guest_count($guest_count),
-                            'extra_hours' => $extra_hours,
-                            'doors_open_at' => roxy_eb_datetime_to_mysql($dt),
-                            'show_start_at' => roxy_eb_datetime_to_mysql($times['show_start']),
-                            'doors_close_at' => roxy_eb_datetime_to_mysql($times['doors_close']),
-                            'reserved_start_at' => roxy_eb_datetime_to_mysql($times['reserved_start']),
-                            'reserved_end_at' => roxy_eb_datetime_to_mysql($times['reserved_end']),
-                            'sling_status' => $sling_status,
-                            'notes_admin' => $notes_admin,
-                            'customer_type' => $customer_type,
-                            'business_name' => $business_name ?: null,
-                            'payment_method' => $payment_method,
-                            'invoice_status' => $invoice_status,
-                            'pizza_requested' => $pizza_requested,
-                            'pizza_quantity' => $pizza_quantity,
-                            'pizza_order_details' => $pizza_requested ? $pizza_order_details : null,
-                            'pizza_total' => $pizza_total,
-                            'bulk_concessions_requested' => $bulk_concessions_requested,
-                            'bulk_popcorn_qty' => $bulk_popcorn_qty,
-                            'bulk_soda_qty' => $bulk_soda_qty,
-                            'bulk_concessions_total' => $bulk_concessions_total,
-                            'special_charge_label' => $special_charge_label !== '' ? $special_charge_label : null,
-                            'special_charge_total' => $special_charge_total,
-                            'extra_price' => $extra_price,
-                            'total_price' => $total_price,
-                        ];
-                        if (!empty($_POST['pizza_handled'])) {
-                            $update['pizza_checked_at'] = current_time('mysql');
-                            $update['pizza_checked_by'] = get_current_user_id() ?: null;
+                        if (!roxy_eb_is_slot_available($times['reserved_start'], $times['reserved_end'], $booking_id)) {
+                            echo '<div class="notice notice-error"><p>That time conflicts with another booking or blocked event.</p></div>';
                         } else {
-                            $update['pizza_checked_at'] = null;
-                            $update['pizza_checked_by'] = null;
-                        }
+                            $base_price = intval($booking_before['base_price']);
+                            $extra_price = $extra_hours * intval(roxy_eb_get_settings()['extra_hour_price'] ?? 100);
+                            $total_price = $base_price + $extra_price + $pizza_total + $bulk_concessions_total + $special_charge_total;
 
-                        $res = roxy_eb_repo_update_booking($booking_id, $update);
-                        if (is_wp_error($res)) echo '<div class="notice notice-error"><p>' . esc_html($res->get_error_message()) . '</p></div>';
-                        else {
-                            $booking_after = roxy_eb_repo_get_booking($booking_id);
-                            if (!empty($booking_after['pizza_checked_at'])) roxy_eb_clear_pizza_reminders($booking_id);
-                            else roxy_eb_schedule_pizza_reminder($booking_id);
-                            echo '<div class="notice notice-success"><p>Booking updated.</p></div>';
-
-                            if ($booking_after && ($booking_after['sling_status'] ?? '') !== 'manual' && function_exists('roxy_eb_sling_enqueue_sync')) {
-                                $settings = roxy_eb_get_settings();
-                                if (($settings['sling_mode'] ?? 'disabled') !== 'disabled') roxy_eb_sling_enqueue_sync($booking_id, 'admin_edit');
+                            $update = [
+                                'guest_count' => $guest_count,
+                                'tier' => roxy_eb_tier_from_guest_count($guest_count),
+                                'staff_shifts_required' => roxy_eb_shifts_from_guest_count($guest_count),
+                                'extra_hours' => $extra_hours,
+                                'doors_open_at' => roxy_eb_datetime_to_mysql($dt),
+                                'show_start_at' => roxy_eb_datetime_to_mysql($times['show_start']),
+                                'doors_close_at' => roxy_eb_datetime_to_mysql($times['doors_close']),
+                                'reserved_start_at' => roxy_eb_datetime_to_mysql($times['reserved_start']),
+                                'reserved_end_at' => roxy_eb_datetime_to_mysql($times['reserved_end']),
+                                'sling_status' => $sling_status,
+                                'notes_admin' => $notes_admin,
+                                'customer_type' => $customer_type,
+                                'business_name' => $business_name ?: null,
+                                'payment_method' => $payment_method,
+                                'invoice_status' => $invoice_status,
+                                'pizza_requested' => $pizza_requested,
+                                'pizza_quantity' => $pizza_quantity,
+                                'pizza_order_details' => $pizza_requested ? $pizza_order_details : null,
+                                'pizza_total' => $pizza_total,
+                                'bulk_concessions_requested' => $bulk_concessions_requested,
+                                'bulk_popcorn_qty' => $bulk_popcorn_qty,
+                                'bulk_soda_qty' => $bulk_soda_qty,
+                                'bulk_concessions_total' => $bulk_concessions_total,
+                                'special_charge_label' => $special_charge_label !== '' ? $special_charge_label : null,
+                                'special_charge_total' => $special_charge_total,
+                                'extra_price' => $extra_price,
+                                'total_price' => $total_price,
+                            ];
+                            if (!empty($_POST['pizza_handled'])) {
+                                $update['pizza_checked_at'] = current_time('mysql');
+                                $update['pizza_checked_by'] = get_current_user_id() ?: null;
+                            } else {
+                                $update['pizza_checked_at'] = null;
+                                $update['pizza_checked_by'] = null;
                             }
-                            if ($send_email && $booking_after) {
-                                if (($booking_after['payment_method'] ?? '') === 'invoice') {
-                                    roxy_eb_email_customer_invoice_booking($booking_after);
-                                } else {
-                                    roxy_eb_email_customer_booking_updated($booking_before, $booking_after);
+
+                            $res = roxy_eb_repo_update_booking($booking_id, $update);
+                            if (is_wp_error($res)) echo '<div class="notice notice-error"><p>' . esc_html($res->get_error_message()) . '</p></div>';
+                            else {
+                                $booking_after = roxy_eb_repo_get_booking($booking_id);
+                                if (!empty($booking_after['pizza_checked_at'])) roxy_eb_clear_pizza_reminders($booking_id);
+                                else roxy_eb_schedule_pizza_reminder($booking_id);
+                                echo '<div class="notice notice-success"><p>Booking updated.</p></div>';
+
+                                if ($booking_after && ($booking_after['sling_status'] ?? '') !== 'manual' && function_exists('roxy_eb_sling_enqueue_sync')) {
+                                    $settings = roxy_eb_get_settings();
+                                    if (($settings['sling_mode'] ?? 'disabled') !== 'disabled') roxy_eb_sling_enqueue_sync($booking_id, 'admin_edit');
                                 }
-                                echo '<div class="notice notice-info"><p>Email sent to customer.</p></div>';
+                                if ($send_email && $booking_after) {
+                                    if (($booking_after['payment_method'] ?? '') === 'invoice') {
+                                        roxy_eb_email_customer_invoice_booking($booking_after);
+                                    } else {
+                                        roxy_eb_email_customer_booking_updated($booking_before, $booking_after);
+                                    }
+                                    echo '<div class="notice notice-info"><p>Email sent to customer.</p></div>';
+                                }
                             }
                         }
                     }

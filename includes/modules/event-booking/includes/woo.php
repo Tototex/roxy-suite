@@ -4,6 +4,27 @@ if (!defined('ABSPATH')) exit;
 function roxy_eb_booking_meta_key() { return '_roxy_eb_booking'; }
 function roxy_eb_booking_adjustment_meta_key() { return '_roxy_eb_booking_adjustment'; }
 
+function roxy_eb_pizza_window_start_minutes(): int {
+    return (11 * 60) + 30;
+}
+
+function roxy_eb_pizza_window_end_minutes(): int {
+    return 21 * 60;
+}
+
+function roxy_eb_pizza_window_label(): string {
+    return '11:30 AM and 9:00 PM';
+}
+
+function roxy_eb_pizza_unavailable_message(): string {
+    return 'Pizza is only available when doors open between ' . roxy_eb_pizza_window_label() . '.';
+}
+
+function roxy_eb_doors_open_allows_pizza(DateTimeImmutable $doors_open): bool {
+    $minutes = (intval($doors_open->format('G')) * 60) + intval($doors_open->format('i'));
+    return $minutes >= roxy_eb_pizza_window_start_minutes() && $minutes <= roxy_eb_pizza_window_end_minutes();
+}
+
 function roxy_eb_order_edit_cutoff_days(): int {
     return 4;
 }
@@ -103,6 +124,10 @@ function roxy_eb_build_order_change_from_request($booking, array $input) {
         $doors_open = roxy_eb_mysql_to_dt((string) ($booking['doors_open_at'] ?? ''));
     } catch (Throwable $e) {
         return new WP_Error('invalid_booking_time', 'Booking time could not be loaded.');
+    }
+
+    if ($pizza_requested && !roxy_eb_doors_open_allows_pizza($doors_open)) {
+        return new WP_Error('pizza_time_unavailable', roxy_eb_pizza_unavailable_message());
     }
 
     $calc = roxy_eb_calc_times($doors_open, $extra_hours);
@@ -598,6 +623,7 @@ function roxy_eb_validate_booking_payload($payload) {
     }
 
     if ($doorsOpen) {
+        if ($pizza_requested && !roxy_eb_doors_open_allows_pizza($doorsOpen)) $errors[] = roxy_eb_pizza_unavailable_message();
         $calc = roxy_eb_calc_times($doorsOpen, max(0, intval($payload['extra_hours'] ?? 0)));
         $inc = intval($settings['time_increment_minutes'] ?? 15);
         $minute = intval($doorsOpen->format('i'));
