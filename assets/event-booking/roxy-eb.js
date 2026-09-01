@@ -247,11 +247,17 @@
   }
 
   function fetchBlocks(startISO, endISO){
-    return $.getJSON(RoxyEB.ajaxUrl, {
-      action: 'roxy_eb_calendar_blocks',
-      nonce: RoxyEB.nonce,
-      start: startISO,
-      end: endISO
+    return $.ajax({
+      url: RoxyEB.ajaxUrl,
+      method: 'POST',
+      dataType: 'json',
+      cache: false,
+      data: {
+        action: 'roxy_eb_calendar_blocks',
+        nonce: RoxyEB.nonce,
+        start: startISO,
+        end: endISO
+      }
     }).then(function(resp){
       if (!resp || !resp.success) throw new Error((resp && resp.data && resp.data.message) || 'Could not load availability');
       return resp.data.items || [];
@@ -269,6 +275,22 @@
   }
 
   function formatVisibility(vis){ return (vis === 'public') ? 'Public' : 'Private'; }
+  function formatTimeRange(start, end){
+    if (!start || !end) return '';
+    var opts = { hour: 'numeric', minute: '2-digit' };
+    return start.toLocaleTimeString([], opts) + '–' + end.toLocaleTimeString([], opts);
+  }
+  function formatCalendarTitle(it, labelStart, reservedStart, reservedEnd){
+    if (it.kind === 'showing') {
+      return 'Showing: ' + (it.title || 'Showing') + ' · starts ' + labelStart.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    }
+    if (it.kind === 'showtime') {
+      var showingRange = formatTimeRange(reservedStart, reservedEnd);
+      return 'Showing' + (showingRange ? ' · reserved ' + showingRange : '');
+    }
+    var range = formatTimeRange(reservedStart, reservedEnd);
+    return 'Reserved: ' + formatVisibility(it.visibility) + (range ? ' · ' + range : '');
+  }
   function parseMysqlToDate(mysql){ if (!mysql) return null; return parseDateTime(mysql); }
 
   $(function(){
@@ -383,19 +405,21 @@
             if (it.kind === 'booking') labelStart = parseMysqlToDate(it.doors_open_at);
             else if (it.kind === 'block') labelStart = parseMysqlToDate(it.start);
             else if (it.kind === 'showtime') { labelStart = parseMysqlToDate(it.start); visibility = 'public'; }
+            else if (it.kind === 'showing') { labelStart = parseMysqlToDate(it.doors_open_at); visibility = 'public'; }
             if (!labelStart) return;
 
-            var title = formatVisibility(visibility);
+            var reservedStartDate = parseMysqlToDate(it.start);
+            var reservedEndDate = parseMysqlToDate(it.end);
+            var title = formatCalendarTitle(it, labelStart, reservedStartDate, reservedEndDate);
             if (viewType === 'timeGridWeek') {
-              var reservedStartDate = parseMysqlToDate(it.start);
-              var reservedEndDate   = parseMysqlToDate(it.end);
               var doorsOpenDate = labelStart;
-              ev.push({ title: '', start: reservedStartDate, end: reservedEndDate, allDay: false, display: 'background', backgroundColor: bg, borderColor: 'transparent' });
-              ev.push({ title: title, start: doorsOpenDate, end: reservedEndDate, allDay: false, backgroundColor: '#4c8bf5', borderColor: 'transparent', textColor: '#111', classNames: ['roxy-eb-booking-fg'] });
+              var foregroundClass = it.kind === 'showing' || it.kind === 'showtime' ? 'roxy-eb-showing-fg' : 'roxy-eb-booking-fg';
+              ev.push({ title: '', start: reservedStartDate, end: reservedEndDate, allDay: false, display: 'background', backgroundColor: bg, borderColor: 'transparent', classNames: ['roxy-eb-reserved-bg'] });
+              ev.push({ title: title, start: doorsOpenDate, end: reservedEndDate, allDay: false, backgroundColor: it.kind === 'showing' || it.kind === 'showtime' ? '#d7a928' : '#66cccc', borderColor: 'transparent', textColor: '#111', classNames: [foregroundClass] });
             } else {
-              ev.push({ title: '', start: it.start.replace(' ', 'T'), end: it.end.replace(' ', 'T'), display: 'background', backgroundColor: bg, borderColor: 'transparent' });
+              ev.push({ title: '', start: it.start.replace(' ', 'T'), end: it.end.replace(' ', 'T'), display: 'background', backgroundColor: bg, borderColor: 'transparent', classNames: ['roxy-eb-reserved-bg'] });
               var labelEnd = new Date(labelStart.getTime() + 15*60000);
-              ev.push({ title: title, start: labelStart, end: labelEnd, allDay: false, backgroundColor: '#4c8bf5', borderColor: 'transparent', textColor: '#111' });
+              ev.push({ title: title, start: labelStart, end: labelEnd, allDay: false, backgroundColor: it.kind === 'showing' || it.kind === 'showtime' ? '#d7a928' : '#66cccc', borderColor: 'transparent', textColor: '#111', classNames: ['roxy-eb-calendar-label'] });
             }
           });
           success(ev);

@@ -71,25 +71,19 @@ function roxy_eb_get_showtime_blocks_for_range(DateTimeImmutable $rangeStart, Da
     return $blocks;
 }
 
-function roxy_eb_get_showing_blocks_for_range(DateTimeImmutable $rangeStart, DateTimeImmutable $rangeEnd): array {
+function roxy_eb_get_showing_blocks_for_range(DateTimeImmutable $rangeStart, DateTimeImmutable $rangeEnd, bool $public_only = false): array {
     if (!class_exists('\\RoxyST\\CPT')) {
         return [];
     }
 
+    // Existing showings have used more than one datetime string format over time.
+    // Load the small showing set and compare parsed dates instead of relying on a
+    // lexicographic meta query that can silently miss valid records.
     $posts = get_posts([
         'post_type' => \RoxyST\CPT::POST_TYPE,
-        'post_status' => ['publish', 'future', 'draft', 'private'],
+        'post_status' => $public_only ? ['publish', 'future'] : ['publish', 'future', 'draft', 'private'],
         'posts_per_page' => -1,
         'fields' => 'ids',
-        'meta_query' => [[
-            'key' => '_roxy_start',
-            'value' => [
-                $rangeStart->format('Y-m-d\TH:i'),
-                $rangeEnd->format('Y-m-d\TH:i'),
-            ],
-            'compare' => 'BETWEEN',
-            'type' => 'CHAR',
-        ]],
     ]);
 
     if (empty($posts)) {
@@ -106,6 +100,10 @@ function roxy_eb_get_showing_blocks_for_range(DateTimeImmutable $rangeStart, Dat
         try {
             $show_start = new DateTimeImmutable($raw_start, wp_timezone());
         } catch (Exception $e) {
+            continue;
+        }
+
+        if ($show_start < $rangeStart || $show_start >= $rangeEnd) {
             continue;
         }
 
@@ -241,9 +239,22 @@ function roxy_eb_get_calendar_blocks(DateTimeImmutable $rangeStart, DateTimeImmu
         ];
     }
 
+    // Actual published showings replace the generic recurring marker when
+    // they occupy the same reserved window, so visitors see the movie title.
+    $showingBlocks = roxy_eb_get_showing_blocks_for_range($rangeStart, $rangeEnd, true);
+
     // Fixed showtime blocks
     $showBlocks = roxy_eb_get_showtime_blocks_for_range($rangeStart, $rangeEnd);
     foreach ($showBlocks as $sb) {
+        $overlapsPublishedShowing = false;
+        foreach ($showingBlocks as $showing) {
+            if ($showing['start'] < $sb['end'] && $showing['end'] > $sb['start']) {
+                $overlapsPublishedShowing = true;
+                break;
+            }
+        }
+        if ($overlapsPublishedShowing) continue;
+
         $items[] = [
             'kind' => 'showtime',
             'title' => $sb['title'],
@@ -252,8 +263,8 @@ function roxy_eb_get_calendar_blocks(DateTimeImmutable $rangeStart, DateTimeImmu
         ];
     }
 
-    // Actual showings from the Showings module.
-    $showingBlocks = roxy_eb_get_showing_blocks_for_range($rangeStart, $rangeEnd);
+    // Only published/upcoming showings are returned to visitors. The validator
+    // still considers internal drafts and private entries above.
     foreach ($showingBlocks as $sb) {
         $items[] = [
             'kind' => 'showing',

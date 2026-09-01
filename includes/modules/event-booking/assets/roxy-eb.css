@@ -3,6 +3,14 @@
 .roxy-eb-header { margin-bottom: 12px; }
 .roxy-eb-cta { margin: 10px 0 14px; }
 #roxy-eb-calendar { background: #fff; border-radius: 12px; padding: 10px; box-shadow: 0 1px 8px rgba(0,0,0,0.08); }
+.roxy-eb-calendar-legend { display:flex; flex-wrap:wrap; gap:8px 18px; margin:0 0 14px; color:#fff !important; font-size:13px; line-height:1.4; }
+.roxy-eb-calendar-legend strong, .roxy-eb-calendar-legend span { color:#fff !important; }
+.roxy-eb-calendar-legend > span { display:inline-flex; align-items:center; gap:6px; }
+.roxy-eb-legend-swatch { width:12px; height:12px; display:inline-block; border-radius:3px; }
+.roxy-eb-legend-swatch--showing { background:#d7a928; }
+.roxy-eb-legend-swatch--booking { background:#66cccc; }
+.roxy-eb-wrap .fc .roxy-eb-reserved-bg { background-image:repeating-linear-gradient(135deg, rgba(0,0,0,.08) 0, rgba(0,0,0,.08) 4px, transparent 4px, transparent 8px) !important; }
+.roxy-eb-wrap .fc .roxy-eb-calendar-label { font-size:11px; line-height:1.15; white-space:normal; }
 
 .roxy-eb-modal { position: fixed; inset: 0; display: none; z-index: 99999; }
 .roxy-eb-modal[aria-hidden="false"] { display: block; }

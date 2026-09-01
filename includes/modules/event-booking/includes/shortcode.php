@@ -76,7 +76,13 @@ function roxy_eb_shortcode_calendar() {
     <div class="roxy-eb-wrap">
         <div class="roxy-eb-header">
             <h3>Check Availability & Book</h3>
-            <p>Select a date to see availability and start your booking. Friday/Saturday evenings and Sunday matinees are reserved for regular showings.</p>
+            <p>Select a date to see availability and start your booking. A showing reserves a time window, not the entire day.</p>
+        </div>
+
+        <div class="roxy-eb-calendar-legend" aria-label="Calendar key">
+            <span><i class="roxy-eb-legend-swatch roxy-eb-legend-swatch--showing"></i><strong>Showing</strong> — theater reserved for the listed time</span>
+            <span><i class="roxy-eb-legend-swatch roxy-eb-legend-swatch--booking"></i><strong>Reserved</strong> — private booking</span>
+            <span><strong>Open times</strong> appear after you click a date</span>
         </div>
 
         <div class="roxy-eb-cta">
@@ -271,8 +277,10 @@ function roxy_eb_ajax_calendar_blocks() {
     check_ajax_referer('roxy_eb_nonce', 'nonce');
     roxy_eb_rate_limit_public_request('calendar_blocks', 60, 90);
 
-    $start = sanitize_text_field(wp_unslash($_GET['start'] ?? ''));
-    $end   = sanitize_text_field(wp_unslash($_GET['end'] ?? ''));
+    // Use POST for calendar ranges so page/CDN caches cannot replay another month.
+    $request = $_POST;
+    $start = sanitize_text_field(wp_unslash($request['start'] ?? ''));
+    $end   = sanitize_text_field(wp_unslash($request['end'] ?? ''));
 
     $tz = wp_timezone();
     try {
@@ -282,6 +290,7 @@ function roxy_eb_ajax_calendar_blocks() {
         wp_send_json_error(['message' => 'Invalid range']);
     }
 
+    nocache_headers();
     $items = roxy_eb_get_calendar_blocks($rangeStart, $rangeEnd);
     wp_send_json_success(['items' => $items]);
 }
