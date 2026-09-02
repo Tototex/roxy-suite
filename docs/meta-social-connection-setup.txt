@@ -1,0 +1,120 @@
+ROXY SOCIAL POSTS - META CONNECTION SETUP
+==========================================
+
+Purpose
+-------
+This guide explains how to connect the Roxy Social Posts dashboard to the
+Facebook Page and Instagram professional account used for publishing.
+
+Never put an App Secret, access token, password, or private key in this file.
+
+1. Create or open the Meta developer app
+-----------------------------------------
+1. Visit https://developers.facebook.com/.
+2. Open My Apps and select the Roxy Theater Suite app.
+3. If creating the app, create a business-type app and use a recognizable
+   name such as Roxy Theater Suite.
+4. Add the Instagram API use case with Facebook Login for Business.
+
+2. Configure the app domain
+---------------------------
+In App settings > Basic:
+
+App Domains:
+    newportroxy.com
+
+Enter the domain only. Do not include https://, a path, or a trailing page.
+Use the real Newport Roxy website details for any website, privacy policy, or
+terms URLs Meta requests.
+
+3. Configure Facebook Login for Business
+----------------------------------------
+Open the Facebook Login for Business settings for the app.
+
+Enable or leave enabled:
+    Client OAuth Login
+    Web OAuth Login
+    Enforce HTTPS
+    Use Strict Mode for Redirect URIs
+
+Add this exact value under Valid OAuth Redirect URIs:
+
+https://newportroxy.com/wp-admin/admin-post.php?action=roxy_social_meta_callback
+
+Do not add a different callback URL, localhost URL, or URL with a trailing
+slash. Webhooks and Tech Provider setup are not required for this connection.
+
+4. Add permissions
+------------------
+The current connection requests these permissions:
+
+    pages_show_list
+    pages_read_engagement
+    business_management
+    instagram_basic
+    instagram_content_publish
+
+Meta may show the permissions in a different order. Do not add
+pages_manage_posts to this app's authorization request; Meta rejects that
+scope in the current flow.
+
+For initial testing, the app may remain in development mode and the person
+authorizing it must have access to the Page and Instagram account. Production
+use may require Meta App Review and advanced access for the requested
+permissions.
+
+5. Save the WordPress connection settings
+------------------------------------------
+In WordPress, open:
+
+    Roxy Suite > Social Posts > Meta Connection
+
+Enter:
+    Meta App ID       The App ID from Meta for Developers.
+    Meta App Secret   The App Secret from Meta for Developers.
+
+Save Meta Connection. The secret is encrypted before storage. Do not paste
+the secret into a post, ticket, screenshot, or this guide.
+
+6. Authorize and verify
+-----------------------
+1. Click Connect Facebook and Instagram.
+2. Complete Meta's authorization flow.
+3. Return to the Meta Connection page.
+4. Click Verify connected accounts.
+
+Verification finds the authorized Facebook Page and its linked Instagram
+professional account, then saves their IDs for later publishing. A successful
+message should name both accounts. Publishing remains disabled until later
+approval and publishing features are enabled.
+
+7. Troubleshooting
+------------------
+Invalid Scopes: pages_manage_posts
+    The app was requesting a rejected permission. Confirm the current plugin
+    authorization request does not contain pages_manage_posts.
+
+The domain of this URL is not included in the app's domains
+    Add newportroxy.com under App settings > Basic > App Domains. Use only
+    the domain, not the full callback URL.
+
+Redirect URI mismatch
+    Compare Meta's Valid OAuth Redirect URIs with the exact callback URL in
+    section 3. The URL must use HTTPS and must match character-for-character.
+
+Facebook Page found but Instagram account missing
+    Confirm the Instagram account is a professional account and is linked to
+    the authorized Facebook Page in Meta Business settings. Reauthorize after
+    correcting the link, then verify again.
+
+Authorization completed but verification fails
+    Check that the authorizing Meta user has access to the Page, the app has
+    the permissions listed in section 4, and the app credentials were saved
+    on the WordPress Meta Connection page.
+
+Security reminders
+------------------
+- Treat the App Secret and access token like passwords.
+- Never send credentials by email or include them in screenshots.
+- Reauthorize the connection if the token is revoked or permissions change.
+- Do not publish the Meta app until production review requirements are met.
