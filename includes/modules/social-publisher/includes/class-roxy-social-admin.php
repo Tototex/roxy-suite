@@ -109,7 +109,7 @@ final class Admin {
     }
 
     private static function render_meta_page(): void {
-        $guide_url = plugins_url('docs/meta-social-connection-setup.txt', dirname(__DIR__, 4));
+        $guide_url = content_url('plugins/roxy-suite/docs/meta-social-connection-setup.txt');
         echo '<h2>Meta Connection</h2><p>Connect the Facebook Page and Instagram professional account used for Roxy social posts. Nothing will publish until a draft is approved. <a href="' . esc_url($guide_url) . '" target="_blank" rel="noopener">Meta setup instructions</a></p>';
         if (isset($_GET['saved'])) echo '<div class="notice notice-success is-dismissible"><p>Meta connection settings saved.</p></div>';
         if (isset($_GET['meta_connected'])) echo '<div class="notice notice-success is-dismissible"><p>Meta authorization completed. The account connection is ready for verification.</p></div>';
