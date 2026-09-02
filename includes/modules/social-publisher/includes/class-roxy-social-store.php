@@ -31,6 +31,9 @@ final class Store {
             hangar_filename VARCHAR(255) NULL,
             temporary_attachment_id BIGINT UNSIGNED NULL,
             cleanup_after DATETIME NULL,
+            facebook_post_id VARCHAR(190) NULL,
+            instagram_media_id VARCHAR(190) NULL,
+            last_error TEXT NULL,
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
             PRIMARY KEY (id),
@@ -164,9 +167,20 @@ final class Store {
 
     public static function update_status(int $id, string $status): bool {
         global $wpdb;
-        $allowed = ['draft', 'approved', 'needs_review', 'skipped'];
+        $allowed = ['draft', 'approved', 'needs_review', 'skipped', 'publishing', 'posted', 'failed'];
         if (!in_array($status, $allowed, true)) return false;
         return false !== $wpdb->update(self::table_name(), ['status' => $status, 'updated_at' => current_time('mysql')], ['id' => $id]);
+    }
+
+    public static function update_publish_result(int $id, string $status, string $error = '', string $facebook_id = '', string $instagram_id = ''): bool {
+        global $wpdb;
+        return false !== $wpdb->update(self::table_name(), [
+            'status' => sanitize_key($status),
+            'last_error' => $error !== '' ? sanitize_textarea_field($error) : null,
+            'facebook_post_id' => $facebook_id !== '' ? sanitize_text_field($facebook_id) : null,
+            'instagram_media_id' => $instagram_id !== '' ? sanitize_text_field($instagram_id) : null,
+            'updated_at' => current_time('mysql'),
+        ], ['id' => $id]);
     }
 
     public static function update_draft(int $id, string $text, string $scheduled_for): bool {

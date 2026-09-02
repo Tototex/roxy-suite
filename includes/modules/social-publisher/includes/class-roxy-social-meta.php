@@ -12,6 +12,7 @@ final class Meta {
         'instagram_user_id' => 'roxy_social_meta_instagram_user_id',
         'instagram_username' => 'roxy_social_meta_instagram_username',
         'access_token' => 'roxy_social_meta_access_token',
+        'page_access_token' => 'roxy_social_meta_page_access_token',
     ];
 
     public static function save_settings(): void {
@@ -22,7 +23,7 @@ final class Meta {
         update_option(self::OPTIONS['page_name'], sanitize_text_field((string) ($_POST['meta_page_name'] ?? '')), false);
         update_option(self::OPTIONS['instagram_user_id'], sanitize_text_field((string) ($_POST['meta_instagram_user_id'] ?? '')), false);
         update_option(self::OPTIONS['instagram_username'], sanitize_text_field((string) ($_POST['meta_instagram_username'] ?? '')), false);
-        foreach (['app_secret', 'access_token'] as $key) {
+        foreach (['app_secret', 'access_token', 'page_access_token'] as $key) {
             $value = (string) ($_POST['meta_' . $key] ?? '');
             if ($value !== '') update_option(self::OPTIONS[$key], self::encrypt($value), false);
         }
@@ -100,6 +101,7 @@ final class Meta {
         if (!$selected) $selected = $pages[0];
         update_option(self::OPTIONS['page_id'], sanitize_text_field((string) ($selected['id'] ?? '')), false);
         update_option(self::OPTIONS['page_name'], sanitize_text_field((string) ($selected['name'] ?? '')), false);
+        if (!empty($selected['access_token'])) update_option(self::OPTIONS['page_access_token'], self::encrypt((string) $selected['access_token']), false);
         $instagram = is_array($selected['instagram_business_account'] ?? null) ? $selected['instagram_business_account'] : [];
         update_option(self::OPTIONS['instagram_user_id'], sanitize_text_field((string) ($instagram['id'] ?? '')), false);
         update_option(self::OPTIONS['instagram_username'], sanitize_text_field((string) ($instagram['username'] ?? '')), false);
@@ -133,6 +135,10 @@ final class Meta {
 
     public static function access_token(): string {
         return self::decrypt((string) get_option(self::OPTIONS['access_token'], ''));
+    }
+
+    public static function page_access_token(): string {
+        return self::decrypt((string) get_option(self::OPTIONS['page_access_token'], '')) ?: self::access_token();
     }
 
     private static function encrypt(string $value): string {

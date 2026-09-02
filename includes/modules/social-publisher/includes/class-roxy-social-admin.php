@@ -39,9 +39,9 @@ final class Admin {
         $rows = Store::all_recent();
         $filter = isset($_GET['status']) ? sanitize_key((string) $_GET['status']) : 'all';
         if ($filter !== 'all') $rows = array_values(array_filter($rows, static function ($row) use ($filter) { return (string) $row['status'] === $filter; }));
-        echo '<p>Review showing-based drafts here. Publishing is not connected yet.</p>';
+        echo '<p>Review showing-based drafts here. Only approved posts publish when their scheduled time arrives.</p>';
         echo '<p><strong>Show:</strong> ';
-        foreach (['all' => 'All', 'draft' => 'Drafts', 'approved' => 'Approved', 'skipped' => 'Skipped'] as $key => $label) echo '<a class="button' . ($filter === $key ? ' button-primary' : '') . '" style="margin-right:5px" href="' . esc_url(add_query_arg(['page' => 'roxy-social-posts', 'status' => $key], admin_url('admin.php'))) . '">' . esc_html($label) . '</a>';
+        foreach (['all' => 'All', 'draft' => 'Drafts', 'approved' => 'Approved', 'publishing' => 'Publishing', 'posted' => 'Posted', 'failed' => 'Failed', 'skipped' => 'Skipped'] as $key => $label) echo '<a class="button' . ($filter === $key ? ' button-primary' : '') . '" style="margin-right:5px" href="' . esc_url(add_query_arg(['page' => 'roxy-social-posts', 'status' => $key], admin_url('admin.php'))) . '">' . esc_html($label) . '</a>';
         echo '</p>';
         if (!$rows) {
             echo '<div class="notice notice-info"><p>Save a Friday, Saturday, or Sunday showing to create its five-post campaign.</p></div></div>';
@@ -61,8 +61,9 @@ final class Admin {
             if (!empty($row['hangar_filename'])) echo '<br><strong>Hangar:</strong> ' . esc_html($row['hangar_filename']);
             if (!empty($row['hangar_asset_id'])) echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:6px"><input type="hidden" name="action" value="roxy_social_remove_media"><input type="hidden" name="id" value="' . (int) $row['id'] . '">' . wp_nonce_field('roxy_social_remove_media_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit" onclick="return confirm(\'Remove the Hangar media from this draft?\')">Remove Hangar media</button></form>';
             echo '</td><td><strong>' . esc_html(ucwords(str_replace('_', ' ', $status))) . '</strong></td><td><form id="roxy-social-draft-' . (int) $row['id'] . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_update_draft"><input type="hidden" name="id" value="' . (int) $row['id'] . '">' . wp_nonce_field('roxy_social_update_draft_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit">Save</button></form>';
-            if ($status !== 'approved') self::action_link((int) $row['id'], 'approved', 'Approve');
-            if ($status !== 'skipped') self::action_link((int) $row['id'], 'skipped', 'Skip');
+            if (in_array($status, ['draft', 'needs_review', 'failed'], true)) self::action_link((int) $row['id'], 'approved', 'Approve');
+            if (!in_array($status, ['skipped', 'posted'], true)) self::action_link((int) $row['id'], 'skipped', 'Skip');
+            if (!empty($row['last_error'])) echo '<p class="description" style="color:#b32d2e">' . esc_html($row['last_error']) . '</p>';
             echo '</td></tr>';
         }
         echo '</tbody></table></div>';

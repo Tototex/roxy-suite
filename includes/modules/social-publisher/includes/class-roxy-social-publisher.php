@@ -1,0 +1,62 @@
+<?php
+namespace RoxySocial;
+
+if (!defined('ABSPATH')) exit;
+
+final class Publisher {
+    public static function publish_due(): void {
+        if (!Meta::configured() || Meta::page_access_token() === '' || Meta::instagram_user_id() === '') return;
+        global $wpdb;
+        $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . Store::table_name() . ' WHERE status = %s AND scheduled_for <= %s ORDER BY scheduled_for ASC, id ASC LIMIT 3', 'approved', current_time('mysql')), ARRAY_A) ?: [];
+        foreach ($rows as $row) self::publish_row($row);
+    }
+
+    private static function publish_row(array $row): void {
+        $id = (int) ($row['id'] ?? 0);
+        $media_url = esc_url_raw((string) ($row['media_url'] ?? ''));
+        $caption = trim((string) ($row['post_text'] ?? ''));
+        if ($id <= 0 || $media_url === '' || $caption === '') { Store::update_publish_result($id, 'failed', 'The draft is missing public media or post text.'); return; }
+        Store::update_publish_result($id, 'publishing');
+        $facebook = self::publish_facebook($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
+        $instagram = self::publish_instagram($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
+        $errors = array_filter([$facebook['error'] ?? '', $instagram['error'] ?? '']);
+        if ($errors) { Store::update_publish_result($id, 'failed', implode(' ', $errors), (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? '')); return; }
+        Store::update_publish_result($id, 'posted', '', (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? ''));
+    }
+
+    private static function publish_facebook(string $url, string $caption, string $type): array {
+        $endpoint = 'https://graph.facebook.com/' . rawurlencode(Meta::page_id()) . ($type === 'video' ? '/videos' : '/photos');
+        $body = ['access_token' => Meta::page_access_token(), 'message' => $caption];
+        $body[$type === 'video' ? 'file_url' : 'url'] = $url;
+        return self::request($endpoint, $body);
+    }
+
+    private static function publish_instagram(string $url, string $caption, string $type): array {
+        $endpoint = 'https://graph.facebook.com/' . rawurlencode(Meta::instagram_user_id()) . '/media';
+        $body = ['access_token' => Meta::access_token(), 'caption' => $caption];
+        if ($type === 'video') { $body['media_type'] = 'REELS'; $body['video_url'] = $url; }
+        else { $body['image_url'] = $url; }
+        $container = self::request($endpoint, $body);
+        if (!empty($container['error']) || empty($container['id'])) return $container;
+        if ($type === 'video') {
+            $ready = false;
+            for ($attempt = 0; $attempt < 5; $attempt++) {
+                sleep(2);
+                $status = self::request('https://graph.facebook.com/' . rawurlencode((string) $container['id']), ['fields' => 'status_code', 'access_token' => Meta::access_token()]);
+                if (($status['status_code'] ?? '') === 'FINISHED') { $ready = true; break; }
+                if (($status['status_code'] ?? '') === 'ERROR') return ['error' => 'Instagram video processing failed.'];
+            }
+            if (!$ready) return ['error' => 'Instagram video is still processing; approve it again after the media is ready.'];
+        }
+        return self::request('https://graph.facebook.com/' . rawurlencode(Meta::instagram_user_id()) . '/media_publish', ['creation_id' => $container['id'], 'access_token' => Meta::access_token()]);
+    }
+
+    private static function request(string $url, array $body): array {
+        $response = wp_remote_post($url, ['timeout' => 45, 'body' => $body]);
+        if (is_wp_error($response)) return ['error' => $response->get_error_message()];
+        $data = json_decode((string) wp_remote_retrieve_body($response), true);
+        if (!is_array($data)) return ['error' => 'Meta returned an unreadable response.'];
+        if (!empty($data['error']['message'])) return ['error' => sanitize_text_field((string) $data['error']['message'])];
+        return $data;
+    }
+}
