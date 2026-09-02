@@ -72,6 +72,17 @@ class Admin {
                 ['\\RoxyGrosses\\Settings', 'render_page']
             );
         }
+
+        if (roxy_suite_module_enabled('social_publisher')) {
+            add_submenu_page(
+                'roxy-suite',
+                'Social Posts',
+                'Social Posts',
+                roxy_suite_admin_capability(),
+                'roxy-social-posts',
+                ['\\RoxySocial\\Admin', 'render_page']
+            );
+        }
     }
 
     public static function page_ticket_ops(): void {

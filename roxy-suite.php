@@ -104,7 +104,7 @@ add_action('wp_ajax_roxy_suite_toggle_module', function () {
     }
     $module  = sanitize_key((string) ($_POST['module'] ?? ''));
     $enabled = isset($_POST['enabled']) && $_POST['enabled'] !== '0' && $_POST['enabled'] !== '';
-    $allowed = ['arcade', 'sub_check', 'will_call', 'show_tickets', 'requested_showings', 'event_booking', 'grosses'];
+    $allowed = ['arcade', 'sub_check', 'will_call', 'show_tickets', 'requested_showings', 'event_booking', 'grosses', 'social_publisher'];
     if (!in_array($module, $allowed, true)) {
         wp_send_json_error('Unknown module', 400);
     }
@@ -244,6 +244,11 @@ if (roxy_suite_module_enabled('grosses')) {
     require_once ROXY_SUITE_PATH . 'includes/modules/grosses/roxy-grosses.php';
 }
 
+// Social Publisher — draft generation and approval dashboard.
+if (roxy_suite_module_enabled('social_publisher')) {
+    require_once ROXY_SUITE_PATH . 'includes/modules/social-publisher/roxy-social-publisher.php';
+}
+
 // ── Activation hook — consolidates all module DB/setup work ───────────────────
 register_activation_hook(__FILE__, function () {
     roxy_suite_grant_capabilities();
@@ -343,6 +348,10 @@ register_activation_hook(__FILE__, function () {
         \RoxyGrosses\Scheduler::sync_schedule();
     }
 
+    if (function_exists('roxy_social_install_schema')) {
+        roxy_social_install_schema();
+    }
+
     flush_rewrite_rules();
 });
 
@@ -357,6 +366,11 @@ register_deactivation_hook(__FILE__, function () {
     // Unschedule grosses cron
     if (class_exists('\\RoxyGrosses\\Scheduler')) {
         \RoxyGrosses\Scheduler::clear_schedule();
+    }
+    $social_ts = wp_next_scheduled('roxy_social_cleanup');
+    while ($social_ts) {
+        wp_unschedule_event($social_ts, 'roxy_social_cleanup');
+        $social_ts = wp_next_scheduled('roxy_social_cleanup');
     }
     flush_rewrite_rules();
 });

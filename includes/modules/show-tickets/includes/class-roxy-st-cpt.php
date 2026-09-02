@@ -175,6 +175,12 @@ class CPT {
     echo '<label><strong>Trailer / Media URL</strong></label>';
     echo '<input name="roxy_trailer_url" type="url" placeholder="https://www.youtube.com/watch?v=..." value="' . esc_attr((string) $trailer_url) . '">';
     echo '<div class="roxy-help">Optional. Supports YouTube or Vimeo embeds on the public event page.</div>';
+    echo '<div class="roxy-help" style="margin-top:8px"><strong>YouTube Trailer Search</strong> — <a id="roxy-youtube-trailer-search" href="https://www.youtube.com/results?search_query=trailer" target="_blank" rel="noopener">Search YouTube for trailer</a></div>';
+    echo '<script>(function(){function titleValue(){var field=document.querySelector("#title, textarea.editor-post-title__input, input.editor-post-title__input");if(field)return (field.value||"").trim();if(window.wp&&wp.data){return (wp.data.select("core/editor").getEditedPostAttribute("title")||"").trim();}return "";}function update(){var link=document.getElementById("roxy-youtube-trailer-search"),title=titleValue();if(!link)return;link.textContent=title?"Search YouTube for " + title + " trailer":"Search YouTube for trailer";link.href="https://www.youtube.com/results?search_query="+encodeURIComponent((title?title+" ":"")+"trailer");}function bind(){update();var field=document.querySelector("#title, textarea.editor-post-title__input, input.editor-post-title__input");if(field)field.addEventListener("input",update);if(window.wp&&wp.data)wp.data.subscribe(update);}document.addEventListener("DOMContentLoaded",bind);setTimeout(bind,500);})();</script>';
+
+    if (class_exists('\\RoxySocial\\Admin')) {
+      \RoxySocial\Admin::render_showing_media_picker((int) $post->ID);
+    }
 
     if ($is_new_showing) {
       echo '<div id="roxy-schedule-builder-wrap" class="roxy-schedule-wrap"' . ($use_schedule_builder ? '' : ' hidden') . '>';
