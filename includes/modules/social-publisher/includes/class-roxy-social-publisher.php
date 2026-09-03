@@ -28,7 +28,8 @@ final class Publisher {
             !empty($facebook['error']) ? 'Facebook: ' . $facebook['error'] : '',
             !empty($instagram['error']) ? 'Instagram: ' . $instagram['error'] : '',
         ]);
-        if ($errors) { Store::update_publish_result($id, 'failed', implode(' ', $errors)); return false; }
+        // Keep the live record retryable when one platform rejects an edit.
+        if ($errors) { Store::update_publish_result($id, 'posted', implode(' ', $errors)); return false; }
         Store::update_publish_result($id, 'posted', '');
         return true;
     }
@@ -106,7 +107,7 @@ final class Publisher {
     }
 
     private static function update_instagram(string $media_id, string $caption): array {
-        return $media_id !== '' ? self::request('https://graph.facebook.com/' . rawurlencode($media_id), ['caption' => $caption, 'access_token' => Meta::access_token()]) : ['error' => 'The Instagram media ID is missing.'];
+        return $media_id !== '' ? ['error' => 'Instagram captions cannot be edited through the Meta API. Edit the caption in Meta Business Suite.'] : ['error' => 'The Instagram media ID is missing.'];
     }
 
     private static function delete_remote(string $object_id, string $token): array {
