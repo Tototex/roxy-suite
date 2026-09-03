@@ -194,13 +194,14 @@ final class Store {
 
     public static function update_publish_result(int $id, string $status, string $error = '', string $facebook_id = '', string $instagram_id = ''): bool {
         global $wpdb;
-        return false !== $wpdb->update(self::table_name(), [
+        $values = [
             'status' => sanitize_key($status),
             'last_error' => $error !== '' ? sanitize_textarea_field($error) : null,
-            'facebook_post_id' => $facebook_id !== '' ? sanitize_text_field($facebook_id) : null,
-            'instagram_media_id' => $instagram_id !== '' ? sanitize_text_field($instagram_id) : null,
             'updated_at' => current_time('mysql'),
-        ], ['id' => $id]);
+        ];
+        if ($facebook_id !== '') $values['facebook_post_id'] = sanitize_text_field($facebook_id);
+        if ($instagram_id !== '') $values['instagram_media_id'] = sanitize_text_field($instagram_id);
+        return false !== $wpdb->update(self::table_name(), $values, ['id' => $id]);
     }
 
     public static function delete_unposted(int $id): ?int {
