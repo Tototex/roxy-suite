@@ -26,7 +26,7 @@ final class Publisher {
         if ($id <= 0 || $caption === '' || ($media_url === '' && $platform !== 'facebook')) { Store::update_publish_result($id, 'failed', 'The draft is missing public media or post text.'); return false; }
         Store::update_publish_result($id, 'publishing');
         $facebook = $platform === 'instagram' ? [] : self::publish_facebook($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
-        $instagram = $platform === 'facebook' ? [] : self::publish_instagram($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
+        $instagram = ($platform === 'facebook' || !empty($row['instagram_media_id'])) ? [] : self::publish_instagram($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
         $errors = array_filter([
             !empty($facebook['error']) ? 'Facebook: ' . $facebook['error'] : '',
             !empty($instagram['error']) ? 'Instagram: ' . $instagram['error'] : '',
