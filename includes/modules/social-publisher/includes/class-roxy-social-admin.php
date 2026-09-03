@@ -50,6 +50,7 @@ final class Admin {
         $filter = isset($_GET['status']) ? sanitize_key((string) $_GET['status']) : 'all';
         if ($filter !== 'all') $rows = array_values(array_filter($rows, static function ($row) use ($filter) { return (string) $row['status'] === $filter; }));
         echo '<p>Review showing-based drafts here. Only approved posts publish when their scheduled time arrives.</p>';
+        echo '<p><strong>After publishing:</strong> View, edit, or delete live posts in <a href="https://business.facebook.com/latest/posts/published_posts/?asset_id=297533574006330&amp;ir_qe_exposed=1&amp;business_id=624729991216395" target="_blank" rel="noopener noreferrer">Meta Business Suite</a>.</p>';
         echo '<p><strong>Show:</strong> ';
         foreach (['all' => 'All', 'draft' => 'Drafts', 'approved' => 'Approved', 'publishing' => 'Publishing', 'posted' => 'Posted', 'failed' => 'Failed'] as $key => $label) echo '<a class="button' . ($filter === $key ? ' button-primary' : '') . '" style="margin-right:5px" href="' . esc_url(add_query_arg(['page' => 'roxy-social-posts', 'status' => $key], admin_url('admin.php'))) . '">' . esc_html($label) . '</a>';
         echo '</p>';
@@ -82,6 +83,10 @@ final class Admin {
                 $remove_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_remove_published&id=' . (int) $row['id']), 'roxy_social_remove_published_' . (int) $row['id']);
                 $remove_label = $status === 'failed' ? 'Retry remove' : 'Remove from social';
                 echo '<a class="button" style="margin-top:6px" href="' . esc_url($remove_url) . '" onclick="return confirm(\'Remove this post from Facebook and Instagram?\')">' . esc_html($remove_label) . '</a>';
+                if ($status === 'failed') {
+                    $delete_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_delete_draft&id=' . (int) $row['id']), 'roxy_social_delete_draft_' . (int) $row['id']);
+                    echo ' <a class="button" href="' . esc_url($delete_url) . '" onclick="return confirm(\'Delete this local draft? Any remaining social post must be removed in Meta Business Suite.\')">Delete</a>';
+                }
             } elseif (!in_array($status, ['publishing', 'posted', 'removed'], true)) {
                 $delete_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_delete_draft&id=' . (int) $row['id']), 'roxy_social_delete_draft_' . (int) $row['id']);
                 echo ' <a class="button" href="' . esc_url($delete_url) . '" onclick="return confirm(\'Delete this unposted draft and its temporary media?\')">Delete</a>';
