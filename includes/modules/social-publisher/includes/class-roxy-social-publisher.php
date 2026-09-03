@@ -7,7 +7,7 @@ final class Publisher {
     public static function publish_due(): void {
         if (!Meta::configured() || Meta::page_access_token() === '' || Meta::instagram_user_id() === '') return;
         global $wpdb;
-        $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . Store::table_name() . ' WHERE status = %s AND scheduled_for <= %s ORDER BY scheduled_for ASC, id ASC LIMIT 3', 'approved', current_time('mysql')), ARRAY_A) ?: [];
+        $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . Store::table_name() . ' WHERE ((status = %s) OR (status = %s AND last_error LIKE %s AND instagram_media_id IS NULL)) AND scheduled_for <= %s ORDER BY scheduled_for ASC, id ASC LIMIT 3', 'approved', 'failed', '%Instagram video is still processing%', current_time('mysql')), ARRAY_A) ?: [];
         foreach ($rows as $row) self::publish_row($row);
     }
 
@@ -56,7 +56,8 @@ final class Publisher {
 
     private static function publish_facebook(string $url, string $caption, string $type): array {
         $endpoint = 'https://graph.facebook.com/' . rawurlencode(Meta::page_id()) . ($url === '' ? '/feed' : ($type === 'video' ? '/videos' : '/photos'));
-        $body = ['access_token' => Meta::page_access_token(), 'message' => $caption];
+        $body = ['access_token' => Meta::page_access_token()];
+        $body[$type === 'video' ? 'description' : 'message'] = $caption;
         if ($url !== '') $body[$type === 'video' ? 'file_url' : 'url'] = $url;
         return self::request($endpoint, $body);
     }
