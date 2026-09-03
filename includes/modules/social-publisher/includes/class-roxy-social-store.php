@@ -187,7 +187,7 @@ final class Store {
 
     public static function update_status(int $id, string $status): bool {
         global $wpdb;
-        $allowed = ['draft', 'approved', 'needs_review', 'skipped', 'publishing', 'posted', 'failed'];
+        $allowed = ['draft', 'approved', 'needs_review', 'skipped', 'publishing', 'posted', 'failed', 'removed'];
         if (!in_array($status, $allowed, true)) return false;
         return false !== $wpdb->update(self::table_name(), ['status' => $status, 'updated_at' => current_time('mysql')], ['id' => $id]);
     }

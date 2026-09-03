@@ -18,6 +18,36 @@ final class Publisher {
         return self::publish_row($row);
     }
 
+    public static function update_live(int $id, string $caption): bool {
+        $row = Store::find($id);
+        if (!$row || (string) $row['status'] !== 'posted' || trim($caption) === '') return false;
+        $platform = (string) ($row['platform'] ?? 'both');
+        $facebook = $platform === 'instagram' ? [] : self::update_facebook((string) ($row['facebook_post_id'] ?? ''), $caption);
+        $instagram = $platform === 'facebook' ? [] : self::update_instagram((string) ($row['instagram_media_id'] ?? ''), $caption);
+        $errors = array_filter([
+            !empty($facebook['error']) ? 'Facebook: ' . $facebook['error'] : '',
+            !empty($instagram['error']) ? 'Instagram: ' . $instagram['error'] : '',
+        ]);
+        if ($errors) { Store::update_publish_result($id, 'failed', implode(' ', $errors)); return false; }
+        Store::update_publish_result($id, 'posted', '');
+        return true;
+    }
+
+    public static function remove_published(int $id): bool {
+        $row = Store::find($id);
+        if (!$row || (string) $row['status'] !== 'posted') return false;
+        $platform = (string) ($row['platform'] ?? 'both');
+        $facebook = $platform === 'instagram' ? [] : self::delete_remote((string) ($row['facebook_post_id'] ?? ''), Meta::page_access_token());
+        $instagram = $platform === 'facebook' ? [] : self::delete_remote((string) ($row['instagram_media_id'] ?? ''), Meta::access_token());
+        $errors = array_filter([
+            !empty($facebook['error']) ? 'Facebook: ' . $facebook['error'] : '',
+            !empty($instagram['error']) ? 'Instagram: ' . $instagram['error'] : '',
+        ]);
+        if ($errors) { Store::update_publish_result($id, 'failed', implode(' ', $errors)); return false; }
+        Store::update_publish_result($id, 'removed', '');
+        return true;
+    }
+
     private static function publish_row(array $row): bool {
         $id = (int) ($row['id'] ?? 0);
         $media_url = esc_url_raw((string) ($row['media_url'] ?? ''));
@@ -69,6 +99,24 @@ final class Publisher {
             if (empty($published['error']) || stripos((string) $published['error'], 'Media ID is not available') === false) break;
         }
         return $published;
+    }
+
+    private static function update_facebook(string $post_id, string $caption): array {
+        return $post_id !== '' ? self::request('https://graph.facebook.com/' . rawurlencode($post_id), ['message' => $caption, 'access_token' => Meta::page_access_token()]) : ['error' => 'The Facebook post ID is missing.'];
+    }
+
+    private static function update_instagram(string $media_id, string $caption): array {
+        return $media_id !== '' ? self::request('https://graph.facebook.com/' . rawurlencode($media_id), ['caption' => $caption, 'access_token' => Meta::access_token()]) : ['error' => 'The Instagram media ID is missing.'];
+    }
+
+    private static function delete_remote(string $object_id, string $token): array {
+        if ($object_id === '') return ['error' => 'The published media ID is missing.'];
+        $response = wp_remote_request('https://graph.facebook.com/' . rawurlencode($object_id), ['method' => 'DELETE', 'timeout' => 45, 'body' => ['access_token' => $token]]);
+        if (is_wp_error($response)) return ['error' => $response->get_error_message()];
+        $data = json_decode((string) wp_remote_retrieve_body($response), true);
+        if (!is_array($data)) return ['error' => 'Meta returned an unreadable response.'];
+        if (!empty($data['error']['message'])) return ['error' => sanitize_text_field((string) $data['error']['message'])];
+        return $data;
     }
 
     private static function request(string $url, array $body): array {
