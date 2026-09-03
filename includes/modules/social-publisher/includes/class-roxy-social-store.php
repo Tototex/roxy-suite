@@ -140,6 +140,26 @@ final class Store {
         return (int) $wpdb->insert_id;
     }
 
+    public static function create_manual(array $data): int {
+        global $wpdb;
+        $now = current_time('mysql');
+        $wpdb->insert(self::table_name(), [
+            'campaign_key' => 'manual',
+            'post_key' => 'manual-' . wp_generate_uuid4(),
+            'showing_ids' => '',
+            'platform' => in_array($data['platform'], ['both', 'facebook', 'instagram'], true) ? $data['platform'] : 'both',
+            'scheduled_for' => $data['scheduled_for'],
+            'status' => 'draft',
+            'post_text' => $data['post_text'],
+            'media_type' => $data['media_type'],
+            'media_url' => $data['media_url'],
+            'trailer_url' => '',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        return (int) $wpdb->insert_id;
+    }
+
     public static function all_recent(): array {
         global $wpdb;
         $rows = $wpdb->get_results('SELECT * FROM ' . self::table_name() . ' ORDER BY scheduled_for ASC, id ASC', ARRAY_A) ?: [];

@@ -11,6 +11,7 @@ final class Admin {
         add_action('admin_post_roxy_social_meta_callback', ['\\RoxySocial\\Meta', 'handle_callback']);
         add_action('admin_post_roxy_social_meta_verify', ['\\RoxySocial\\Meta', 'verify_connection']);
         add_action('admin_post_roxy_social_update_draft', [__CLASS__, 'update_draft']);
+        add_action('admin_post_roxy_social_create_manual', [__CLASS__, 'create_manual']);
         add_action('admin_post_roxy_social_remove_media', [__CLASS__, 'remove_media']);
         add_action('wp_ajax_roxy_social_hangar_search', [__CLASS__, 'ajax_hangar_search']);
         add_action('wp_ajax_roxy_social_hangar_assign', [__CLASS__, 'ajax_hangar_assign']);
@@ -30,12 +31,14 @@ final class Admin {
     public static function render_page(): void {
         if (!roxy_suite_user_can_access_admin()) return;
         $tab = isset($_GET['tab']) ? sanitize_key((string) $_GET['tab']) : 'drafts';
+        if ($tab === 'drafts') wp_enqueue_media();
         echo '<div class="wrap"><h1>Social Posts</h1><nav class="nav-tab-wrapper">';
         echo '<a class="nav-tab' . ($tab === 'drafts' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts')) . '">Drafts</a>';
         echo '<a class="nav-tab' . ($tab === 'hangar' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts&tab=hangar')) . '">Hangar Assets</a>';
         echo '<a class="nav-tab' . ($tab === 'meta' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts&tab=meta')) . '">Meta Connection</a></nav>';
         if ($tab === 'meta') { self::render_meta_page(); echo '</div>'; return; }
         if ($tab === 'hangar') { self::render_hangar_page(); echo '</div>'; return; }
+        self::render_manual_form();
         $rows = Store::all_recent();
         $filter = isset($_GET['status']) ? sanitize_key((string) $_GET['status']) : 'all';
         if ($filter !== 'all') $rows = array_values(array_filter($rows, static function ($row) use ($filter) { return (string) $row['status'] === $filter; }));
@@ -79,6 +82,31 @@ final class Admin {
         if ($id > 0 && $text !== '' && $parsed) Store::update_draft($id, $text, $parsed->format('Y-m-d H:i:s'));
         wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&updated=1'));
         exit;
+    }
+
+    public static function create_manual(): void {
+        if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
+        check_admin_referer('roxy_social_create_manual');
+        $text = sanitize_textarea_field((string) ($_POST['post_text'] ?? ''));
+        $scheduled = date_create(sanitize_text_field((string) ($_POST['scheduled_for'] ?? '')), wp_timezone());
+        $media_url = esc_url_raw((string) ($_POST['media_url'] ?? ''));
+        $media_type = sanitize_key((string) ($_POST['media_type'] ?? 'image'));
+        if ($text === '' || !$scheduled || !in_array($media_type, ['image', 'video'], true)) wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&manual_error=missing'));
+        else { Store::create_manual(['post_text' => $text, 'scheduled_for' => $scheduled->format('Y-m-d H:i:s'), 'platform' => sanitize_key((string) ($_POST['platform'] ?? 'both')), 'media_url' => $media_url, 'media_type' => $media_type]); wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&manual_created=1')); }
+        exit;
+    }
+
+    private static function render_manual_form(): void {
+        $default_time = wp_date('Y-m-d\\TH:i', current_time('timestamp') + 600, wp_timezone());
+        if (isset($_GET['manual_created'])) echo '<div class="notice notice-success is-dismissible"><p>Manual post draft created. Review it below, then approve it when ready.</p></div>';
+        if (isset($_GET['manual_error'])) echo '<div class="notice notice-error is-dismissible"><p>Enter post text and a valid scheduled time.</p></div>';
+        echo '<details style="margin:16px 0 22px;max-width:900px"><summary class="button button-primary">Create Manual Post</summary><form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:14px;padding:14px;border:1px solid #c3c4c7;background:#fff">';
+        echo '<input type="hidden" name="action" value="roxy_social_create_manual">' . wp_nonce_field('roxy_social_create_manual', '_wpnonce', true, false);
+        echo '<p><label><strong>Post text</strong><br><textarea name="post_text" rows="5" style="width:100%;max-width:760px" required placeholder="Write the post caption..."></textarea></label></p>';
+        echo '<p><label><strong>Scheduled for</strong><br><input type="datetime-local" name="scheduled_for" value="' . esc_attr($default_time) . '" required></label> <label style="margin-left:18px"><strong>Send to</strong><br><select name="platform"><option value="both">Facebook and Instagram</option><option value="facebook">Facebook only</option><option value="instagram">Instagram only</option></select></label></p>';
+        echo '<p><label><strong>Media URL</strong><br><input id="roxy-manual-media-url" type="url" name="media_url" style="width:100%;max-width:760px" placeholder="Optional for Facebook-only text posts"></label> <button type="button" class="button" id="roxy-manual-media-button">Choose from Media Library</button></p>';
+        echo '<p><label><strong>Media type</strong> <select name="media_type"><option value="image">Image</option><option value="video">Video</option></select></label></p><p class="description">Manual posts use the same approval and scheduling process as showing posts. Instagram posts require media.</p><p><button type="submit" class="button button-primary">Save Manual Draft</button></p></form></details>';
+        echo '<script>(function(){var b=document.getElementById("roxy-manual-media-button"),u=document.getElementById("roxy-manual-media-url");if(!b||!window.wp||!wp.media)return;b.onclick=function(){var frame=wp.media({title:"Choose post media",button:{text:"Use this media"},multiple:false});frame.on("select",function(){var a=frame.state().get("selection").first().toJSON();u.value=a.url||"";});frame.open();};})();</script>';
     }
 
     public static function remove_media(): void {

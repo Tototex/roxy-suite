@@ -15,19 +15,20 @@ final class Publisher {
         $id = (int) ($row['id'] ?? 0);
         $media_url = esc_url_raw((string) ($row['media_url'] ?? ''));
         $caption = trim((string) ($row['post_text'] ?? ''));
-        if ($id <= 0 || $media_url === '' || $caption === '') { Store::update_publish_result($id, 'failed', 'The draft is missing public media or post text.'); return; }
+        $platform = (string) ($row['platform'] ?? 'both');
+        if ($id <= 0 || $caption === '' || ($media_url === '' && $platform !== 'facebook')) { Store::update_publish_result($id, 'failed', 'The draft is missing public media or post text.'); return; }
         Store::update_publish_result($id, 'publishing');
-        $facebook = self::publish_facebook($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
-        $instagram = self::publish_instagram($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
+        $facebook = $platform === 'instagram' ? [] : self::publish_facebook($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
+        $instagram = $platform === 'facebook' ? [] : self::publish_instagram($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
         $errors = array_filter([$facebook['error'] ?? '', $instagram['error'] ?? '']);
         if ($errors) { Store::update_publish_result($id, 'failed', implode(' ', $errors), (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? '')); return; }
         Store::update_publish_result($id, 'posted', '', (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? ''));
     }
 
     private static function publish_facebook(string $url, string $caption, string $type): array {
-        $endpoint = 'https://graph.facebook.com/' . rawurlencode(Meta::page_id()) . ($type === 'video' ? '/videos' : '/photos');
+        $endpoint = 'https://graph.facebook.com/' . rawurlencode(Meta::page_id()) . ($url === '' ? '/feed' : ($type === 'video' ? '/videos' : '/photos'));
         $body = ['access_token' => Meta::page_access_token(), 'message' => $caption];
-        $body[$type === 'video' ? 'file_url' : 'url'] = $url;
+        if ($url !== '') $body[$type === 'video' ? 'file_url' : 'url'] = $url;
         return self::request($endpoint, $body);
     }
 
