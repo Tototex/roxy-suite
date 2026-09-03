@@ -18,33 +18,19 @@ final class Publisher {
         return self::publish_row($row);
     }
 
-    public static function update_live(int $id, string $caption): bool {
-        $row = Store::find($id);
-        if (!$row || (string) $row['status'] !== 'posted' || trim($caption) === '') return false;
-        $platform = (string) ($row['platform'] ?? 'both');
-        $facebook = $platform === 'instagram' ? [] : self::update_facebook((string) ($row['facebook_post_id'] ?? ''), $caption);
-        $instagram = $platform === 'facebook' ? [] : self::update_instagram((string) ($row['instagram_media_id'] ?? ''), $caption);
-        $errors = array_filter([
-            !empty($facebook['error']) ? 'Facebook: ' . $facebook['error'] : '',
-            !empty($instagram['error']) ? 'Instagram: ' . $instagram['error'] : '',
-        ]);
-        // Keep the live record retryable when one platform rejects an edit.
-        if ($errors) { Store::update_publish_result($id, 'posted', implode(' ', $errors)); return false; }
-        Store::update_publish_result($id, 'posted', '');
-        return true;
-    }
-
     public static function remove_published(int $id): bool {
         $row = Store::find($id);
         if (!$row || (string) $row['status'] !== 'posted') return false;
         $platform = (string) ($row['platform'] ?? 'both');
         $facebook = $platform === 'instagram' ? [] : self::delete_remote((string) ($row['facebook_post_id'] ?? ''), Meta::page_access_token());
         $instagram = $platform === 'facebook' ? [] : self::delete_remote((string) ($row['instagram_media_id'] ?? ''), Meta::access_token());
+        if (empty($facebook['error']) && $platform !== 'instagram') Store::clear_publish_id($id, 'facebook');
+        if (empty($instagram['error']) && $platform !== 'facebook') Store::clear_publish_id($id, 'instagram');
         $errors = array_filter([
             !empty($facebook['error']) ? 'Facebook: ' . $facebook['error'] : '',
             !empty($instagram['error']) ? 'Instagram: ' . $instagram['error'] : '',
         ]);
-        if ($errors) { Store::update_publish_result($id, 'failed', implode(' ', $errors)); return false; }
+        if ($errors) { Store::update_publish_result($id, 'posted', implode(' ', $errors)); return false; }
         Store::update_publish_result($id, 'removed', '');
         return true;
     }
@@ -100,14 +86,6 @@ final class Publisher {
             if (empty($published['error']) || stripos((string) $published['error'], 'Media ID is not available') === false) break;
         }
         return $published;
-    }
-
-    private static function update_facebook(string $post_id, string $caption): array {
-        return $post_id !== '' ? self::request('https://graph.facebook.com/' . rawurlencode($post_id), ['message' => $caption, 'access_token' => Meta::page_access_token()]) : ['error' => 'The Facebook post ID is missing.'];
-    }
-
-    private static function update_instagram(string $media_id, string $caption): array {
-        return $media_id !== '' ? ['error' => 'Instagram captions cannot be edited through the Meta API. Edit the caption in Meta Business Suite.'] : ['error' => 'The Instagram media ID is missing.'];
     }
 
     private static function delete_remote(string $object_id, string $token): array {

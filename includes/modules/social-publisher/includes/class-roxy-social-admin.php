@@ -14,7 +14,6 @@ final class Admin {
         add_action('admin_post_roxy_social_update_draft', [__CLASS__, 'update_draft']);
         add_action('admin_post_roxy_social_delete_draft', [__CLASS__, 'delete_draft']);
         add_action('admin_post_roxy_social_publish_now', [__CLASS__, 'publish_now']);
-        add_action('admin_post_roxy_social_update_live', [__CLASS__, 'update_live']);
         add_action('admin_post_roxy_social_remove_published', [__CLASS__, 'remove_published']);
         add_action('admin_post_roxy_social_create_manual', [__CLASS__, 'create_manual']);
         add_action('admin_post_roxy_social_remove_media', [__CLASS__, 'remove_media']);
@@ -72,17 +71,17 @@ final class Admin {
             if (!empty($row['hangar_filename'])) echo '<br><strong>Hangar:</strong> ' . esc_html($row['hangar_filename']);
             if (!empty($row['hangar_asset_id'])) echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:6px"><input type="hidden" name="action" value="roxy_social_remove_media"><input type="hidden" name="id" value="' . (int) $row['id'] . '">' . wp_nonce_field('roxy_social_remove_media_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit" onclick="return confirm(\'Remove the Hangar media from this draft?\')">Remove Hangar media</button></form>';
             echo '</td><td><strong>' . esc_html(ucwords(str_replace('_', ' ', $status))) . '</strong></td><td><form id="roxy-social-draft-' . (int) $row['id'] . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_update_draft"><input type="hidden" name="id" value="' . (int) $row['id'] . '">' . wp_nonce_field('roxy_social_update_draft_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit">Save</button></form>';
-            if (in_array($status, ['draft', 'needs_review', 'failed'], true)) self::action_link((int) $row['id'], 'approved', 'Approve');
+            $has_published_ids = !empty($row['facebook_post_id']) || !empty($row['instagram_media_id']);
+            if (in_array($status, ['draft', 'needs_review', 'failed'], true) && !($status === 'failed' && $has_published_ids)) self::action_link((int) $row['id'], 'approved', 'Approve');
             if ($status === 'approved') self::action_link((int) $row['id'], 'draft', 'Un-approve');
             if ($status === 'approved') {
                 $publish_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_publish_now&id=' . (int) $row['id']), 'roxy_social_publish_now_' . (int) $row['id']);
                 echo ' <a class="button button-primary" href="' . esc_url($publish_url) . '" onclick="return confirm(\'Post this approved draft now to its selected social accounts?\')">Post now</a>';
             }
-            if ($status === 'posted') {
-                $update_url = admin_url('admin-post.php');
-                echo '<form method="post" action="' . esc_url($update_url) . '" style="margin-top:6px"><input type="hidden" name="action" value="roxy_social_update_live"><input type="hidden" name="id" value="' . (int) $row['id'] . '"><input type="hidden" name="post_text" value=""><button class="button" type="submit" onclick="this.form.post_text.value=this.closest(\'tr\').querySelector(\'textarea[name=post_text]\').value;return confirm(\'Update the live Facebook and Instagram captions?\')">Update live posts</button>' . wp_nonce_field('roxy_social_update_live_' . (int) $row['id'], '_wpnonce', true, false) . '</form>';
+            if ($status === 'posted' || ($status === 'failed' && $has_published_ids)) {
                 $remove_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_remove_published&id=' . (int) $row['id']), 'roxy_social_remove_published_' . (int) $row['id']);
-                echo '<a class="button" style="margin-top:6px" href="' . esc_url($remove_url) . '" onclick="return confirm(\'Remove this post from Facebook and Instagram?\')">Remove from social</a>';
+                $remove_label = $status === 'failed' ? 'Retry remove' : 'Remove from social';
+                echo '<a class="button" style="margin-top:6px" href="' . esc_url($remove_url) . '" onclick="return confirm(\'Remove this post from Facebook and Instagram?\')">' . esc_html($remove_label) . '</a>';
             } elseif (!in_array($status, ['publishing', 'posted', 'removed'], true)) {
                 $delete_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_delete_draft&id=' . (int) $row['id']), 'roxy_social_delete_draft_' . (int) $row['id']);
                 echo ' <a class="button" href="' . esc_url($delete_url) . '" onclick="return confirm(\'Delete this unposted draft and its temporary media?\')">Delete</a>';
@@ -156,15 +155,6 @@ final class Admin {
         check_admin_referer('roxy_social_publish_now_' . $id);
         \RoxySocial\Publisher::publish_now($id);
         wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&published_now=1'));
-        exit;
-    }
-
-    public static function update_live(): void {
-        if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
-        $id = isset($_POST['id']) ? (int) $_POST['id'] : 0;
-        check_admin_referer('roxy_social_update_live_' . $id);
-        Publisher::update_live($id, sanitize_textarea_field((string) ($_POST['post_text'] ?? '')));
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&updated_live=1'));
         exit;
     }
 

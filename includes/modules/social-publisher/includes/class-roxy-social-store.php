@@ -204,6 +204,13 @@ final class Store {
         return false !== $wpdb->update(self::table_name(), $values, ['id' => $id]);
     }
 
+    public static function clear_publish_id(int $id, string $platform): bool {
+        global $wpdb;
+        $column = $platform === 'facebook' ? 'facebook_post_id' : ($platform === 'instagram' ? 'instagram_media_id' : '');
+        if ($column === '') return false;
+        return false !== $wpdb->update(self::table_name(), [$column => null, 'updated_at' => current_time('mysql')], ['id' => $id]);
+    }
+
     public static function delete_unposted(int $id): ?int {
         global $wpdb;
         $row = self::find($id);
