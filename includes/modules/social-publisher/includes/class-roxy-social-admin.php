@@ -85,14 +85,14 @@ final class Admin {
                 $publish_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_publish_now&id=' . (int) $row['id']), 'roxy_social_publish_now_' . (int) $row['id']);
                 echo ' <a class="button button-primary" href="' . esc_url($publish_url) . '" onclick="return confirm(\'Retry publishing the missing social account?\')">Retry publish</a>';
             }
-            if ($status === 'posted' || ($status === 'failed' && $has_published_ids)) {
+            if ($status === 'failed' && $has_published_ids) {
                 $remove_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_remove_published&id=' . (int) $row['id']), 'roxy_social_remove_published_' . (int) $row['id']);
-                $remove_label = $status === 'failed' ? 'Retry remove' : 'Remove from social';
-                echo '<a class="button" style="margin-top:6px" href="' . esc_url($remove_url) . '" onclick="return confirm(\'Remove this post from Facebook and Instagram?\')">' . esc_html($remove_label) . '</a>';
-                if ($status === 'failed') {
-                    $delete_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_delete_draft&id=' . (int) $row['id']), 'roxy_social_delete_draft_' . (int) $row['id']);
-                    echo ' <a class="button" href="' . esc_url($delete_url) . '" onclick="return confirm(\'Delete this local draft? Any remaining social post must be removed in Meta Business Suite.\')">Delete</a>';
-                }
+                echo '<a class="button" style="margin-top:6px" href="' . esc_url($remove_url) . '" onclick="return confirm(\'Remove this post from Facebook and Instagram?\')">Retry remove</a>';
+                $delete_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_delete_draft&id=' . (int) $row['id']), 'roxy_social_delete_draft_' . (int) $row['id']);
+                echo ' <a class="button" href="' . esc_url($delete_url) . '" onclick="return confirm(\'Delete this local draft? Any remaining social post must be removed in Meta Business Suite.\')">Delete</a>';
+            } elseif ($status === 'posted') {
+                $delete_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_delete_draft&id=' . (int) $row['id']), 'roxy_social_delete_draft_' . (int) $row['id']);
+                echo ' <a class="button" href="' . esc_url($delete_url) . '" onclick="return confirm(\'Delete this local draft? The live Facebook and Instagram posts will remain in Meta Business Suite.\')">Delete</a>';
             } elseif (!in_array($status, ['publishing', 'posted', 'removed'], true)) {
                 $delete_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_delete_draft&id=' . (int) $row['id']), 'roxy_social_delete_draft_' . (int) $row['id']);
                 echo ' <a class="button" href="' . esc_url($delete_url) . '" onclick="return confirm(\'Delete this unposted draft and its temporary media?\')">Delete</a>';
@@ -168,7 +168,7 @@ final class Admin {
         if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
         $id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
         check_admin_referer('roxy_social_publish_now_' . $id);
-        \RoxySocial\Publisher::publish_now($id);
+        \RoxySocial\Publisher::queue_publish_now($id);
         wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&published_now=1'));
         exit;
     }

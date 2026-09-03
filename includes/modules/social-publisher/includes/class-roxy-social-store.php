@@ -225,7 +225,7 @@ final class Store {
     public static function delete_unposted(int $id): ?int {
         global $wpdb;
         $row = self::find($id);
-        if (!$row || in_array((string) $row['status'], ['publishing', 'posted'], true)) return null;
+        if (!$row || (string) $row['status'] === 'publishing') return null;
         $temporary_id = !empty($row['temporary_attachment_id']) ? (int) $row['temporary_attachment_id'] : 0;
         if (false === $wpdb->delete(self::table_name(), ['id' => $id], ['%d'])) return null;
         return $temporary_id;
