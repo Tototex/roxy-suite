@@ -50,13 +50,13 @@ The current connection requests these permissions:
 
     pages_show_list
     pages_read_engagement
+    pages_manage_posts
     business_management
     instagram_basic
     instagram_content_publish
 
-Meta may show the permissions in a different order. Do not add
-pages_manage_posts to this app's authorization request; Meta rejects that
-scope in the current flow.
+Meta may show the permissions in a different order. The Facebook Page
+publishing permission pages_manage_posts is required for Facebook posts.
 
 For initial testing, the app may remain in development mode and the person
 authorizing it must have access to the Page and Instagram account. Production
