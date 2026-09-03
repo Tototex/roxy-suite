@@ -71,7 +71,7 @@ final class Publisher {
         if (!empty($container['error']) || empty($container['id'])) return $container;
         if ($type === 'video') {
             $ready = false;
-            for ($attempt = 0; $attempt < 15; $attempt++) {
+            for ($attempt = 0; $attempt < 30; $attempt++) {
                 sleep(4);
                 $status = self::request('https://graph.facebook.com/' . rawurlencode((string) $container['id']), ['fields' => 'status_code', 'access_token' => Meta::access_token()]);
                 if (($status['status_code'] ?? '') === 'FINISHED') { $ready = true; break; }
