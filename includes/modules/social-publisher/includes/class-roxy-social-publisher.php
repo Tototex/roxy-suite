@@ -71,13 +71,13 @@ final class Publisher {
         if (!empty($container['error']) || empty($container['id'])) return $container;
         if ($type === 'video') {
             $ready = false;
-            for ($attempt = 0; $attempt < 5; $attempt++) {
-                sleep(2);
+            for ($attempt = 0; $attempt < 15; $attempt++) {
+                sleep(4);
                 $status = self::request('https://graph.facebook.com/' . rawurlencode((string) $container['id']), ['fields' => 'status_code', 'access_token' => Meta::access_token()]);
                 if (($status['status_code'] ?? '') === 'FINISHED') { $ready = true; break; }
                 if (($status['status_code'] ?? '') === 'ERROR') return ['error' => 'Instagram video processing failed.'];
             }
-            if (!$ready) return ['error' => 'Instagram video is still processing; approve it again after the media is ready.'];
+            if (!$ready) return ['error' => 'Instagram video is still processing; the scheduler will retry automatically.'];
         }
         $publish_url = 'https://graph.facebook.com/' . rawurlencode(Meta::instagram_user_id()) . '/media_publish';
         $publish_body = ['creation_id' => $container['id'], 'access_token' => Meta::access_token()];
