@@ -14,7 +14,8 @@ final class Publisher {
     public static function publish_now(int $id): bool {
         if (!Meta::configured() || Meta::page_access_token() === '' || Meta::instagram_user_id() === '') return false;
         $row = Store::find($id);
-        if (!$row || (string) $row['status'] !== 'approved') return false;
+        if (!$row || !in_array((string) $row['status'], ['approved', 'failed'], true)) return false;
+        if ((string) $row['status'] === 'failed' && !empty($row['facebook_post_id']) && !empty($row['instagram_media_id'])) return false;
         return self::publish_row($row);
     }
 
@@ -42,7 +43,7 @@ final class Publisher {
         $platform = (string) ($row['platform'] ?? 'both');
         if ($id <= 0 || $caption === '' || ($media_url === '' && $platform !== 'facebook')) { Store::update_publish_result($id, 'failed', 'The draft is missing public media or post text.'); return false; }
         Store::update_publish_result($id, 'publishing');
-        $facebook = $platform === 'instagram' ? [] : self::publish_facebook($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
+        $facebook = ($platform === 'instagram' || !empty($row['facebook_post_id'])) ? [] : self::publish_facebook($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
         $instagram = ($platform === 'facebook' || !empty($row['instagram_media_id'])) ? [] : self::publish_instagram($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
         $errors = array_filter([
             !empty($facebook['error']) ? 'Facebook: ' . $facebook['error'] : '',
