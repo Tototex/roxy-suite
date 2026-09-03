@@ -203,6 +203,15 @@ final class Store {
         ], ['id' => $id]);
     }
 
+    public static function delete_unposted(int $id): ?int {
+        global $wpdb;
+        $row = self::find($id);
+        if (!$row || in_array((string) $row['status'], ['publishing', 'posted'], true)) return null;
+        $temporary_id = !empty($row['temporary_attachment_id']) ? (int) $row['temporary_attachment_id'] : 0;
+        if (false === $wpdb->delete(self::table_name(), ['id' => $id], ['%d'])) return null;
+        return $temporary_id;
+    }
+
     public static function update_draft(int $id, string $text, string $scheduled_for): bool {
         global $wpdb;
         return false !== $wpdb->update(self::table_name(), [
