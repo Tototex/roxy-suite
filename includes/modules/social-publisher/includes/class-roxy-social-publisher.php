@@ -11,18 +11,26 @@ final class Publisher {
         foreach ($rows as $row) self::publish_row($row);
     }
 
-    private static function publish_row(array $row): void {
+    public static function publish_now(int $id): bool {
+        if (!Meta::configured() || Meta::page_access_token() === '' || Meta::instagram_user_id() === '') return false;
+        $row = Store::find($id);
+        if (!$row || (string) $row['status'] !== 'approved') return false;
+        return self::publish_row($row);
+    }
+
+    private static function publish_row(array $row): bool {
         $id = (int) ($row['id'] ?? 0);
         $media_url = esc_url_raw((string) ($row['media_url'] ?? ''));
         $caption = trim((string) ($row['post_text'] ?? ''));
         $platform = (string) ($row['platform'] ?? 'both');
-        if ($id <= 0 || $caption === '' || ($media_url === '' && $platform !== 'facebook')) { Store::update_publish_result($id, 'failed', 'The draft is missing public media or post text.'); return; }
+        if ($id <= 0 || $caption === '' || ($media_url === '' && $platform !== 'facebook')) { Store::update_publish_result($id, 'failed', 'The draft is missing public media or post text.'); return false; }
         Store::update_publish_result($id, 'publishing');
         $facebook = $platform === 'instagram' ? [] : self::publish_facebook($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
         $instagram = $platform === 'facebook' ? [] : self::publish_instagram($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
         $errors = array_filter([$facebook['error'] ?? '', $instagram['error'] ?? '']);
-        if ($errors) { Store::update_publish_result($id, 'failed', implode(' ', $errors), (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? '')); return; }
+        if ($errors) { Store::update_publish_result($id, 'failed', implode(' ', $errors), (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? '')); return false; }
         Store::update_publish_result($id, 'posted', '', (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? ''));
+        return true;
     }
 
     private static function publish_facebook(string $url, string $caption, string $type): array {

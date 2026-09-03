@@ -13,6 +13,7 @@ final class Admin {
         add_action('admin_post_roxy_social_meta_verify', ['\\RoxySocial\\Meta', 'verify_connection']);
         add_action('admin_post_roxy_social_update_draft', [__CLASS__, 'update_draft']);
         add_action('admin_post_roxy_social_delete_draft', [__CLASS__, 'delete_draft']);
+        add_action('admin_post_roxy_social_publish_now', [__CLASS__, 'publish_now']);
         add_action('admin_post_roxy_social_create_manual', [__CLASS__, 'create_manual']);
         add_action('admin_post_roxy_social_remove_media', [__CLASS__, 'remove_media']);
         add_action('wp_ajax_roxy_social_hangar_search', [__CLASS__, 'ajax_hangar_search']);
@@ -71,6 +72,10 @@ final class Admin {
             echo '</td><td><strong>' . esc_html(ucwords(str_replace('_', ' ', $status))) . '</strong></td><td><form id="roxy-social-draft-' . (int) $row['id'] . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_update_draft"><input type="hidden" name="id" value="' . (int) $row['id'] . '">' . wp_nonce_field('roxy_social_update_draft_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit">Save</button></form>';
             if (in_array($status, ['draft', 'needs_review', 'failed'], true)) self::action_link((int) $row['id'], 'approved', 'Approve');
             if ($status === 'approved') self::action_link((int) $row['id'], 'draft', 'Un-approve');
+            if ($status === 'approved') {
+                $publish_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_publish_now&id=' . (int) $row['id']), 'roxy_social_publish_now_' . (int) $row['id']);
+                echo ' <a class="button button-primary" href="' . esc_url($publish_url) . '" onclick="return confirm(\'Post this approved draft now to its selected social accounts?\')">Post now</a>';
+            }
             if (!in_array($status, ['publishing', 'posted'], true)) {
                 $delete_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_delete_draft&id=' . (int) $row['id']), 'roxy_social_delete_draft_' . (int) $row['id']);
                 echo ' <a class="button" href="' . esc_url($delete_url) . '" onclick="return confirm(\'Delete this unposted draft and its temporary media?\')">Delete</a>';
@@ -135,6 +140,15 @@ final class Admin {
         $temporary_id = $id > 0 ? Store::delete_unposted($id) : null;
         if ($temporary_id) wp_delete_attachment($temporary_id, true);
         wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&deleted_draft=1'));
+        exit;
+    }
+
+    public static function publish_now(): void {
+        if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
+        $id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
+        check_admin_referer('roxy_social_publish_now_' . $id);
+        \RoxySocial\Publisher::publish_now($id);
+        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&published_now=1'));
         exit;
     }
 
