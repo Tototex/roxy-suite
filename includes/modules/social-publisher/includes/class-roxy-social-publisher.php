@@ -27,7 +27,10 @@ final class Publisher {
         Store::update_publish_result($id, 'publishing');
         $facebook = $platform === 'instagram' ? [] : self::publish_facebook($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
         $instagram = $platform === 'facebook' ? [] : self::publish_instagram($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
-        $errors = array_filter([$facebook['error'] ?? '', $instagram['error'] ?? '']);
+        $errors = array_filter([
+            !empty($facebook['error']) ? 'Facebook: ' . $facebook['error'] : '',
+            !empty($instagram['error']) ? 'Instagram: ' . $instagram['error'] : '',
+        ]);
         if ($errors) { Store::update_publish_result($id, 'failed', implode(' ', $errors), (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? '')); return false; }
         Store::update_publish_result($id, 'posted', '', (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? ''));
         return true;
@@ -57,7 +60,15 @@ final class Publisher {
             }
             if (!$ready) return ['error' => 'Instagram video is still processing; approve it again after the media is ready.'];
         }
-        return self::request('https://graph.facebook.com/' . rawurlencode(Meta::instagram_user_id()) . '/media_publish', ['creation_id' => $container['id'], 'access_token' => Meta::access_token()]);
+        $publish_url = 'https://graph.facebook.com/' . rawurlencode(Meta::instagram_user_id()) . '/media_publish';
+        $publish_body = ['creation_id' => $container['id'], 'access_token' => Meta::access_token()];
+        $published = [];
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            if ($attempt > 0) sleep(3);
+            $published = self::request($publish_url, $publish_body);
+            if (empty($published['error']) || stripos((string) $published['error'], 'Media ID is not available') === false) break;
+        }
+        return $published;
     }
 
     private static function request(string $url, array $body): array {
