@@ -8,7 +8,25 @@ final class Publisher {
         if (!Meta::configured() || Meta::page_access_token() === '' || Meta::instagram_user_id() === '') return;
         global $wpdb;
         $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . Store::table_name() . ' WHERE ((status = %s) OR (status = %s AND instagram_media_id IS NULL AND (last_error LIKE %s OR last_error LIKE %s))) AND scheduled_for <= %s ORDER BY scheduled_for ASC, id ASC LIMIT 3', 'approved', 'failed', '%Instagram video is still processing%', '%Media ID is not available%', current_time('mysql')), ARRAY_A) ?: [];
-        foreach ($rows as $row) self::publish_row($row);
+        foreach ($rows as $row) self::queue_publish((int) $row['id']);
+    }
+
+    public static function queue_publish_now(int $id): bool {
+        $row = Store::find($id);
+        if (!$row || !in_array((string) $row['status'], ['approved', 'failed'], true)) return false;
+        if ((string) $row['status'] === 'failed' && !empty($row['facebook_post_id']) && !empty($row['instagram_media_id'])) return false;
+        return self::queue_publish($id);
+    }
+
+    public static function process_queued(int $id): void {
+        $row = Store::find($id);
+        if ($row && (string) $row['status'] === 'publishing') self::publish_row($row);
+    }
+
+    private static function queue_publish(int $id): bool {
+        if ($id <= 0 || !wp_schedule_single_event(time() + 1, 'roxy_social_publish_single', [$id])) return false;
+        Store::update_status($id, 'publishing');
+        return true;
     }
 
     public static function publish_now(int $id): bool {
@@ -50,7 +68,11 @@ final class Publisher {
             !empty($instagram['error']) ? 'Instagram: ' . $instagram['error'] : '',
         ]);
         if (!empty($instagram['id'])) Store::clear_instagram_container_id($id);
-        if ($errors) { Store::update_publish_result($id, 'failed', implode(' ', $errors), (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? '')); return false; }
+        if ($errors) {
+            Store::update_publish_result($id, 'failed', implode(' ', $errors), (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? ''));
+            if (!empty($instagram['error']) && stripos((string) $instagram['error'], 'still processing') !== false) wp_schedule_single_event(time() + 300, 'roxy_social_publish_single', [$id]);
+            return false;
+        }
         Store::update_publish_result($id, 'posted', '', (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? ''));
         Store::clear_instagram_container_id($id);
         return true;
