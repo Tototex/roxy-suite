@@ -33,6 +33,7 @@ final class Store {
             cleanup_after DATETIME NULL,
             facebook_post_id VARCHAR(190) NULL,
             instagram_media_id VARCHAR(190) NULL,
+            instagram_container_id VARCHAR(190) NULL,
             last_error TEXT NULL,
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
@@ -209,6 +210,16 @@ final class Store {
         $column = $platform === 'facebook' ? 'facebook_post_id' : ($platform === 'instagram' ? 'instagram_media_id' : '');
         if ($column === '') return false;
         return false !== $wpdb->update(self::table_name(), [$column => null, 'updated_at' => current_time('mysql')], ['id' => $id]);
+    }
+
+    public static function set_instagram_container_id(int $id, string $container_id): bool {
+        global $wpdb;
+        return false !== $wpdb->update(self::table_name(), ['instagram_container_id' => sanitize_text_field($container_id), 'updated_at' => current_time('mysql')], ['id' => $id]);
+    }
+
+    public static function clear_instagram_container_id(int $id): bool {
+        global $wpdb;
+        return false !== $wpdb->update(self::table_name(), ['instagram_container_id' => null, 'updated_at' => current_time('mysql')], ['id' => $id]);
     }
 
     public static function delete_unposted(int $id): ?int {

@@ -7,7 +7,7 @@ final class Publisher {
     public static function publish_due(): void {
         if (!Meta::configured() || Meta::page_access_token() === '' || Meta::instagram_user_id() === '') return;
         global $wpdb;
-        $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . Store::table_name() . ' WHERE ((status = %s) OR (status = %s AND last_error LIKE %s AND instagram_media_id IS NULL)) AND scheduled_for <= %s ORDER BY scheduled_for ASC, id ASC LIMIT 3', 'approved', 'failed', '%Instagram video is still processing%', current_time('mysql')), ARRAY_A) ?: [];
+        $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . Store::table_name() . ' WHERE ((status = %s) OR (status = %s AND instagram_media_id IS NULL AND (last_error LIKE %s OR last_error LIKE %s))) AND scheduled_for <= %s ORDER BY scheduled_for ASC, id ASC LIMIT 3', 'approved', 'failed', '%Instagram video is still processing%', '%Media ID is not available%', current_time('mysql')), ARRAY_A) ?: [];
         foreach ($rows as $row) self::publish_row($row);
     }
 
@@ -44,13 +44,15 @@ final class Publisher {
         if ($id <= 0 || $caption === '' || ($media_url === '' && $platform !== 'facebook')) { Store::update_publish_result($id, 'failed', 'The draft is missing public media or post text.'); return false; }
         Store::update_publish_result($id, 'publishing');
         $facebook = ($platform === 'instagram' || !empty($row['facebook_post_id'])) ? [] : self::publish_facebook($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
-        $instagram = ($platform === 'facebook' || !empty($row['instagram_media_id'])) ? [] : self::publish_instagram($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
+        $instagram = ($platform === 'facebook' || !empty($row['instagram_media_id'])) ? [] : self::publish_instagram($media_url, $caption, (string) ($row['media_type'] ?? 'image'), $id, (string) ($row['instagram_container_id'] ?? ''));
         $errors = array_filter([
             !empty($facebook['error']) ? 'Facebook: ' . $facebook['error'] : '',
             !empty($instagram['error']) ? 'Instagram: ' . $instagram['error'] : '',
         ]);
+        if (!empty($instagram['id'])) Store::clear_instagram_container_id($id);
         if ($errors) { Store::update_publish_result($id, 'failed', implode(' ', $errors), (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? '')); return false; }
         Store::update_publish_result($id, 'posted', '', (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? ''));
+        Store::clear_instagram_container_id($id);
         return true;
     }
 
@@ -62,13 +64,14 @@ final class Publisher {
         return self::request($endpoint, $body);
     }
 
-    private static function publish_instagram(string $url, string $caption, string $type): array {
+    private static function publish_instagram(string $url, string $caption, string $type, int $post_id, string $existing_container_id = ''): array {
         $endpoint = 'https://graph.facebook.com/' . rawurlencode(Meta::instagram_user_id()) . '/media';
         $body = ['access_token' => Meta::access_token(), 'caption' => $caption];
         if ($type === 'video') { $body['media_type'] = 'REELS'; $body['video_url'] = $url; }
         else { $body['image_url'] = $url; }
-        $container = self::request($endpoint, $body);
+        $container = $existing_container_id !== '' ? ['id' => $existing_container_id] : self::request($endpoint, $body);
         if (!empty($container['error']) || empty($container['id'])) return $container;
+        Store::set_instagram_container_id($post_id, (string) $container['id']);
         if ($type === 'video') {
             $ready = false;
             for ($attempt = 0; $attempt < 30; $attempt++) {
@@ -87,6 +90,7 @@ final class Publisher {
             $published = self::request($publish_url, $publish_body);
             if (empty($published['error']) || stripos((string) $published['error'], 'Media ID is not available') === false) break;
         }
+        if (empty($published['error']) && !empty($published['id'])) Store::clear_instagram_container_id($post_id);
         return $published;
     }
 
