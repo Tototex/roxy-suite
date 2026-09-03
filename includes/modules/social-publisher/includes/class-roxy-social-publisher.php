@@ -98,7 +98,7 @@ final class Publisher {
             $ready = false;
             for ($attempt = 0; $attempt < 30; $attempt++) {
                 sleep(4);
-                $status = self::request('https://graph.facebook.com/' . rawurlencode((string) $container['id']), ['fields' => 'status_code', 'access_token' => Meta::access_token()]);
+                $status = self::get('https://graph.facebook.com/' . rawurlencode((string) $container['id']), ['fields' => 'status_code', 'access_token' => Meta::access_token()]);
                 if (($status['status_code'] ?? '') === 'FINISHED') { $ready = true; break; }
                 if (($status['status_code'] ?? '') === 'ERROR') return ['error' => 'Instagram video processing failed.'];
             }
@@ -128,6 +128,15 @@ final class Publisher {
 
     private static function request(string $url, array $body): array {
         $response = wp_remote_post($url, ['timeout' => 45, 'body' => $body]);
+        if (is_wp_error($response)) return ['error' => $response->get_error_message()];
+        $data = json_decode((string) wp_remote_retrieve_body($response), true);
+        if (!is_array($data)) return ['error' => 'Meta returned an unreadable response.'];
+        if (!empty($data['error']['message'])) return ['error' => sanitize_text_field((string) $data['error']['message'])];
+        return $data;
+    }
+
+    private static function get(string $url, array $query): array {
+        $response = wp_remote_get(add_query_arg($query, $url), ['timeout' => 45]);
         if (is_wp_error($response)) return ['error' => $response->get_error_message()];
         $data = json_decode((string) wp_remote_retrieve_body($response), true);
         if (!is_array($data)) return ['error' => 'Meta returned an unreadable response.'];
