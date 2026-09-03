@@ -51,7 +51,7 @@ final class Meta {
             'redirect_uri' => self::redirect_url(),
             'state' => wp_create_nonce('roxy_social_meta_connect'),
             'response_type' => 'code',
-            'scope' => 'pages_show_list,pages_read_engagement,pages_manage_posts,business_management,instagram_basic,instagram_content_publish,instagram_manage_comments',
+            'scope' => 'pages_show_list,pages_read_engagement,pages_manage_posts,business_management,instagram_basic,instagram_content_publish',
         ], 'https://www.facebook.com/dialog/oauth');
     }
 
