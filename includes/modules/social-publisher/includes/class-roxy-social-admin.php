@@ -5,6 +5,7 @@ if (!defined('ABSPATH')) exit;
 
 final class Admin {
     public static function init(): void {
+        add_action('admin_enqueue_scripts', [__CLASS__, 'enqueue_assets']);
         add_action('admin_post_roxy_social_status', [__CLASS__, 'handle_status']);
         add_action('admin_post_roxy_social_hangar_settings', [__CLASS__, 'save_hangar_settings']);
         add_action('admin_post_roxy_social_meta_settings', ['\\RoxySocial\\Meta', 'save_settings']);
@@ -19,6 +20,10 @@ final class Admin {
         add_action('wp_ajax_roxy_social_hangar_thumbnail', [__CLASS__, 'ajax_hangar_thumbnail']);
     }
 
+    public static function enqueue_assets(string $hook): void {
+        if ($hook === 'roxy-suite_page_roxy-social-posts') wp_enqueue_media();
+    }
+
     public static function render_showing_media_picker(int $post_id): void {
         if ($post_id <= 0 || !Hangar::has_credentials()) {
             echo '<div class="roxy-help" style="margin-top:8px">Connect Hangar under <a href="' . esc_url(admin_url('admin.php?page=roxy-social-posts&tab=hangar')) . '">Roxy Suite → Social Posts → Hangar Assets</a> to import a poster here.</div>';
@@ -31,7 +36,6 @@ final class Admin {
     public static function render_page(): void {
         if (!roxy_suite_user_can_access_admin()) return;
         $tab = isset($_GET['tab']) ? sanitize_key((string) $_GET['tab']) : 'drafts';
-        if ($tab === 'drafts') wp_enqueue_media();
         echo '<div class="wrap"><h1>Social Posts</h1><nav class="nav-tab-wrapper">';
         echo '<a class="nav-tab' . ($tab === 'drafts' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts')) . '">Drafts</a>';
         echo '<a class="nav-tab' . ($tab === 'hangar' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts&tab=hangar')) . '">Hangar Assets</a>';
