@@ -23,7 +23,7 @@ final class Publisher {
         if (!$row || (string) $row['status'] !== 'posted') return false;
         $platform = (string) ($row['platform'] ?? 'both');
         $facebook = $platform === 'instagram' ? [] : self::delete_remote((string) ($row['facebook_post_id'] ?? ''), Meta::page_access_token());
-        $instagram = $platform === 'facebook' ? [] : self::delete_remote((string) ($row['instagram_media_id'] ?? ''), Meta::access_token());
+        $instagram = $platform === 'facebook' ? [] : self::delete_remote((string) ($row['instagram_media_id'] ?? ''), Meta::page_access_token());
         if (empty($facebook['error']) && $platform !== 'instagram') Store::clear_publish_id($id, 'facebook');
         if (empty($instagram['error']) && $platform !== 'facebook') Store::clear_publish_id($id, 'instagram');
         $errors = array_filter([
