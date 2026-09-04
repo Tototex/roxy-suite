@@ -144,7 +144,8 @@ final class Campaigns {
     public static function auto_assign_asset(string $campaign_key, int $showing_id, int $draft_id, int $asset_id, string $filename): void {
         $draft = Store::find($draft_id);
         if (!$draft || (string) $draft['campaign_key'] !== $campaign_key || !in_array((string) $draft['status'], ['draft', 'needs_review'], true) || !empty($draft['hangar_asset_id'])) return;
-        Hangar::import_social_asset($asset_id, $filename, $showing_id, $draft_id);
+        $attachment_id = Hangar::import_social_asset($asset_id, $filename, $showing_id, $draft_id);
+        if ($attachment_id && get_option('roxy_social_auto_approve', false)) Store::update_status($draft_id, 'approved');
     }
 
     private static function looks_vertical(array $asset): bool {

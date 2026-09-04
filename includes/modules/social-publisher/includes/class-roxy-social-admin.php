@@ -18,6 +18,7 @@ final class Admin {
         add_action('admin_post_roxy_social_remove_published', [__CLASS__, 'remove_published']);
         add_action('admin_post_roxy_social_create_manual', [__CLASS__, 'create_manual']);
         add_action('admin_post_roxy_social_remove_media', [__CLASS__, 'remove_media']);
+        add_action('admin_post_roxy_social_auto_approve', [__CLASS__, 'save_auto_approve']);
         add_action('wp_ajax_roxy_social_hangar_search', [__CLASS__, 'ajax_hangar_search']);
         add_action('wp_ajax_roxy_social_hangar_assign', [__CLASS__, 'ajax_hangar_assign']);
         add_action('wp_ajax_roxy_social_hangar_import_featured', [__CLASS__, 'ajax_hangar_import_featured']);
@@ -56,6 +57,12 @@ final class Admin {
         echo '<a class="nav-tab' . ($tab === 'meta' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts&tab=meta')) . '">Meta Connection</a></nav>';
         if ($tab === 'meta') { self::render_meta_page(); echo '</div>'; return; }
         if ($tab === 'hangar') { self::render_hangar_page(); echo '</div>'; return; }
+        $auto_approve = (bool) get_option('roxy_social_auto_approve', false);
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin:16px 0 18px;padding:12px 14px;border:1px solid #c3c4c7;background:#fff;max-width:900px">';
+        echo '<input type="hidden" name="action" value="roxy_social_auto_approve">' . wp_nonce_field('roxy_social_auto_approve', '_wpnonce', true, false);
+        echo '<label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="auto_approve" value="1"' . checked($auto_approve, true, false) . '> <strong>Auto-approve new showing drafts</strong></label>';
+        echo '<p class="description" style="margin:6px 0 0 24px">When enabled, newly generated showing drafts are approved after their Hangar media is assigned. Manual posts and existing drafts are not changed.</p>';
+        echo '<p style="margin:10px 0 0 24px"><button type="submit" class="button">Save auto-approve setting</button></p></form>';
         self::render_manual_form();
         $rows = Store::all_recent();
         $filter = isset($_GET['status']) ? sanitize_key((string) $_GET['status']) : 'all';
@@ -281,6 +288,14 @@ final class Admin {
             if ($title !== '' && !empty($draft['campaign_key']) && in_array((string) $draft['status'], ['draft', 'needs_review'], true) && !wp_next_scheduled('roxy_social_auto_assign_media', [(string) $draft['campaign_key'], $title, (int) reset($showing_ids)])) wp_schedule_single_event(time() + 5, 'roxy_social_auto_assign_media', [(string) $draft['campaign_key'], $title, (int) reset($showing_ids)]);
         }
         wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&tab=hangar&saved=1'));
+        exit;
+    }
+
+    public static function save_auto_approve(): void {
+        if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
+        check_admin_referer('roxy_social_auto_approve');
+        update_option('roxy_social_auto_approve', !empty($_POST['auto_approve']), false);
+        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&auto_approve_saved=1'));
         exit;
     }
 
