@@ -6,6 +6,7 @@ if (!defined('ABSPATH')) exit;
 final class Admin {
     public static function init(): void {
         add_action('admin_enqueue_scripts', [__CLASS__, 'enqueue_assets']);
+        add_filter('wp_prepare_attachment_for_js', [__CLASS__, 'prepare_attachment_for_js'], 10, 3);
         add_action('admin_post_roxy_social_status', [__CLASS__, 'handle_status']);
         add_action('admin_post_roxy_social_hangar_settings', [__CLASS__, 'save_hangar_settings']);
         add_action('admin_post_roxy_social_meta_settings', ['\\RoxySocial\\Meta', 'save_settings']);
@@ -25,6 +26,16 @@ final class Admin {
 
     public static function enqueue_assets(string $hook): void {
         if ($hook === 'roxy-suite_page_roxy-social-posts') wp_enqueue_media();
+    }
+
+    public static function prepare_attachment_for_js(array $response, $attachment, $meta = null): array {
+        $attachment_id = is_object($attachment) ? (int) ($attachment->ID ?? 0) : (int) ($attachment['ID'] ?? 0);
+        $poster = (string) get_post_meta($attachment_id, '_roxy_social_video_poster_url', true);
+        if ($poster !== '' && (($response['type'] ?? '') === 'video' || ($response['mime'] ?? '') === 'video/mp4')) {
+            $response['thumbnail'] = $poster;
+            $response['icon'] = $poster;
+        }
+        return $response;
     }
 
     public static function render_showing_media_picker(int $post_id): void {

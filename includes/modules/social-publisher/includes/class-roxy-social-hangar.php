@@ -78,7 +78,33 @@ final class Hangar {
         if (!$draft || !Store::update_imported_media($draft_id, (int) $attachment_id, in_array($extension, ['mp4', 'mov', 'm4v'], true) ? 'video' : 'image', self::cleanup_time($draft), $asset_id, $filename)) return 0;
         update_post_meta((int) $attachment_id, '_roxy_social_temporary', in_array($extension, ['mp4', 'mov', 'm4v'], true) ? '1' : '0');
         update_post_meta((int) $attachment_id, '_roxy_hangar_asset_id', $asset_id);
+        if (in_array($extension, ['mp4', 'mov', 'm4v'], true)) self::save_video_thumbnail((int) $attachment_id, $asset_id, $filename);
         return (int) $attachment_id;
+    }
+
+    private static function save_video_thumbnail(int $attachment_id, int $asset_id, string $filename): void {
+        $thumbnail = (string) get_transient('roxy_social_hangar_thumb_' . $asset_id);
+        if ($thumbnail === '') return;
+        if (strpos($thumbnail, 'http') !== 0) $thumbnail = self::BASE_URL . ltrim($thumbnail, '/');
+        $response = wp_remote_get($thumbnail, ['timeout' => 30, 'redirection' => 3, 'cookies' => self::login_cookies(), 'limit_response_size' => 5 * 1024 * 1024]);
+        if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) >= 400) return;
+        $content_type = (string) wp_remote_retrieve_header($response, 'content-type');
+        if (strpos($content_type, 'image/') !== 0) return;
+        $body = wp_remote_retrieve_body($response);
+        if ($body === '') return;
+        $uploads = wp_upload_dir();
+        if (!empty($uploads['error']) || !wp_mkdir_p($uploads['path'])) return;
+        $poster_name = wp_unique_filename($uploads['path'], sanitize_file_name(pathinfo($filename, PATHINFO_FILENAME) . '-poster.jpg'));
+        if (false === file_put_contents(trailingslashit($uploads['path']) . $poster_name, $body)) return;
+        update_post_meta($attachment_id, '_roxy_social_video_poster_url', trailingslashit($uploads['url']) . $poster_name);
+        update_post_meta($attachment_id, '_roxy_social_video_poster_file', trailingslashit($uploads['path']) . $poster_name);
+    }
+
+    public static function delete_video_thumbnail(int $attachment_id): void {
+        $file = (string) get_post_meta($attachment_id, '_roxy_social_video_poster_file', true);
+        if ($file !== '' && is_file($file)) @unlink($file);
+        delete_post_meta($attachment_id, '_roxy_social_video_poster_url');
+        delete_post_meta($attachment_id, '_roxy_social_video_poster_file');
     }
 
     private static function cleanup_time(array $draft): ?string {

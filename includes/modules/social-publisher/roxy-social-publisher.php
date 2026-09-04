@@ -21,10 +21,12 @@ add_action('plugins_loaded', function () {
     }
     \RoxySocial\Campaigns::init();
     \RoxySocial\Admin::init();
+    add_action('delete_attachment', ['\\RoxySocial\\Hangar', 'delete_video_thumbnail']);
     add_action('roxy_social_cleanup', ['\\RoxySocial\\Store', 'cleanup_expired']);
     if (!wp_next_scheduled('roxy_social_cleanup')) wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', 'roxy_social_cleanup');
     add_filter('cron_schedules', static function (array $schedules): array { $schedules['roxy_five_minutes'] = ['interval' => 300, 'display' => 'Every five minutes']; return $schedules; });
     add_action('roxy_social_publish_due', ['\\RoxySocial\\Publisher', 'publish_due']);
+    add_action('roxy_social_publish_single', ['\\RoxySocial\\Publisher', 'process_queued']);
     if (!wp_next_scheduled('roxy_social_publish_due')) wp_schedule_event(time() + 300, 'roxy_five_minutes', 'roxy_social_publish_due');
 });
 
