@@ -253,4 +253,9 @@ final class Store {
         }
         return false !== $wpdb->update(self::table_name(), $values, ['id' => $id]);
     }
+
+    public static function update_text(int $id, string $text): bool {
+        global $wpdb;
+        return false !== $wpdb->update(self::table_name(), ['post_text' => sanitize_textarea_field($text), 'updated_at' => current_time('mysql')], ['id' => $id]);
+    }
 }

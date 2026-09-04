@@ -54,9 +54,11 @@ final class Admin {
         echo '<div class="wrap"><h1>Social Posts</h1><nav class="nav-tab-wrapper">';
         echo '<a class="nav-tab' . ($tab === 'drafts' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts')) . '">Drafts</a>';
         echo '<a class="nav-tab' . ($tab === 'hangar' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts&tab=hangar')) . '">Hangar Assets</a>';
+        echo '<a class="nav-tab' . ($tab === 'ai' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts&tab=ai')) . '">AI Content</a>';
         echo '<a class="nav-tab' . ($tab === 'meta' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts&tab=meta')) . '">Meta Connection</a></nav>';
         if ($tab === 'meta') { self::render_meta_page(); echo '</div>'; return; }
         if ($tab === 'hangar') { self::render_hangar_page(); echo '</div>'; return; }
+        if ($tab === 'ai') { self::render_ai_page(); echo '</div>'; return; }
         $auto_approve = (bool) get_option('roxy_social_auto_approve', false);
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin:16px 0 18px;padding:12px 14px;border:1px solid #c3c4c7;background:#fff;max-width:900px">';
         echo '<input type="hidden" name="action" value="roxy_social_auto_approve">' . wp_nonce_field('roxy_social_auto_approve', '_wpnonce', true, false);
@@ -248,6 +250,23 @@ final class Admin {
         $assigned_assets = [];
         foreach ($drafts as $draft) if (!empty($draft['hangar_asset_id'])) $assigned_assets[] = (int) $draft['hangar_asset_id'];
         echo '<script>(function(){var assigned=' . wp_json_encode(array_values(array_unique($assigned_assets))) . ';var root=document.getElementById("roxy-hangar-results");if(!root)return;var update=function(){root.querySelectorAll("button[data-id]").forEach(function(button){if(assigned.indexOf(Number(button.dataset.id))!==-1){button.disabled=true;button.textContent="Assigned";}});};update();setInterval(update,1000);})();</script>';
+    }
+
+    private static function render_ai_page(): void {
+        $enabled = (bool) get_option('roxy_social_ai_enabled', false);
+        $endpoint = AI::endpoint();
+        $model = AI::model();
+        $style = AI::style_prompt();
+        echo '<h2>AI Post Content</h2><p>Use your own Ollama service to create richer captions for new showing drafts. Local Ollama calls are free; the computer or server hosting Ollama must be reachable from this WordPress site.</p>';
+        if (isset($_GET['saved'])) echo '<div class="notice notice-success"><p>AI content settings saved.</p></div>';
+        if (isset($_GET['tested'])) { $status = get_transient('roxy_social_ai_test_status'); echo '<div class="notice ' . (strpos((string) $status, 'Connected') === 0 ? 'notice-success' : 'notice-error') . '"><p>' . esc_html((string) $status) . '</p></div>'; }
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_ai_settings">' . wp_nonce_field('roxy_social_ai_settings', '_wpnonce', true, false) . '<table class="form-table">';
+        echo '<tr><th><label for="roxy-ai-enabled">Enable AI captions</label></th><td><label><input id="roxy-ai-enabled" type="checkbox" name="ai_enabled" value="1"' . checked($enabled, true, false) . '> Generate caption drafts automatically for new showing campaigns</label></td></tr>';
+        echo '<tr><th><label for="roxy-ai-endpoint">Ollama endpoint</label></th><td><input class="regular-text" id="roxy-ai-endpoint" name="ai_endpoint" value="' . esc_attr($endpoint) . '"><p class="description">Use a reachable address, such as a secured home-server URL. <code>127.0.0.1</code> works only when Ollama is on the same server as WordPress.</p></td></tr>';
+        echo '<tr><th><label for="roxy-ai-model">Model</label></th><td><input class="regular-text" id="roxy-ai-model" name="ai_model" value="' . esc_attr($model) . '"><p class="description">The model name installed in Ollama, for example <code>llama3.2:latest</code>.</p></td></tr>';
+        echo '<tr><th><label for="roxy-ai-style">Writing style</label></th><td><textarea class="large-text" rows="4" id="roxy-ai-style" name="ai_style">' . esc_textarea($style) . '</textarea><p class="description">Describe the Roxy voice and any boundaries you want the captions to follow.</p></td></tr></table>';
+        submit_button('Save AI Settings');
+        echo '</form><form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:12px"><input type="hidden" name="action" value="roxy_social_ai_test">' . wp_nonce_field('roxy_social_ai_test', '_wpnonce', true, false) . '<button type="submit" class="button">Test Ollama connection</button></form>';
     }
 
     private static function render_meta_page(): void {

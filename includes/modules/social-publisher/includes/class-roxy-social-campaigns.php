@@ -77,6 +77,7 @@ final class Campaigns {
             ]);
         }
         if (Hangar::has_credentials() && !wp_next_scheduled('roxy_social_auto_assign_media', [$campaign_key, $title, $post_id])) wp_schedule_single_event(time() + 5, 'roxy_social_auto_assign_media', [$campaign_key, $title, $post_id]);
+        AI::queue_campaign($campaign_key);
     }
 
     public static function auto_assign_media(string $campaign_key, string $title, int $showing_id): void {

@@ -11,6 +11,7 @@ require_once __DIR__ . '/includes/class-roxy-social-admin.php';
 require_once __DIR__ . '/includes/class-roxy-social-hangar.php';
 require_once __DIR__ . '/includes/class-roxy-social-meta.php';
 require_once __DIR__ . '/includes/class-roxy-social-publisher.php';
+require_once __DIR__ . '/includes/class-roxy-social-ai.php';
 
 add_action('plugins_loaded', function () {
     if (get_option('roxy_social_schema_version') !== '1.5') {
@@ -21,6 +22,7 @@ add_action('plugins_loaded', function () {
     }
     \RoxySocial\Campaigns::init();
     \RoxySocial\Admin::init();
+    \RoxySocial\AI::init();
     add_action('delete_attachment', ['\\RoxySocial\\Hangar', 'delete_video_thumbnail']);
     add_action('roxy_social_cleanup', ['\\RoxySocial\\Store', 'cleanup_expired']);
     if (!wp_next_scheduled('roxy_social_cleanup')) wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', 'roxy_social_cleanup');
