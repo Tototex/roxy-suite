@@ -94,14 +94,49 @@ final class Campaigns {
             return (strtotime((string) ($left['start_date'] ?? '')) ?: PHP_INT_MAX) <=> (strtotime((string) ($right['start_date'] ?? '')) ?: PHP_INT_MAX);
         });
         $drafts = Store::campaign_rows($campaign_key);
-        $used = [];
+        $used_by_prior_campaign = [];
+        foreach (Store::all_recent() as $existing) {
+            $asset_id = (int) ($existing['hangar_asset_id'] ?? 0);
+            if ($asset_id <= 0) continue;
+            $showing_ids = array_filter(array_map('absint', explode(',', (string) ($existing['showing_ids'] ?? ''))));
+            $same_showing = in_array($showing_id, $showing_ids, true);
+            if (!$same_showing && $showing_ids) {
+                foreach ($showing_ids as $existing_showing_id) {
+                    if (strcasecmp(trim((string) get_the_title($existing_showing_id)), trim($title)) === 0) {
+                        $same_showing = true;
+                        break;
+                    }
+                }
+            }
+            if ($same_showing && (string) ($existing['campaign_key'] ?? '') !== $campaign_key) $used_by_prior_campaign[$asset_id] = true;
+        }
+        $used_in_campaign = [];
         $delay = 10;
         foreach ($drafts as $draft) {
             if (!in_array((string) $draft['status'], ['draft', 'needs_review'], true) || !empty($draft['hangar_asset_id'])) continue;
+            $selected = null;
             foreach ($assets as $asset) {
                 $asset_id = (int) $asset['asset_id'];
-                if (isset($used[$asset_id])) continue;
-                if (wp_schedule_single_event(time() + $delay, 'roxy_social_auto_assign_asset', [$campaign_key, $showing_id, (int) $draft['id'], $asset_id, (string) $asset['filename']])) { $used[$asset_id] = true; $delay += 30; break; }
+                if (isset($used_in_campaign[$asset_id]) || isset($used_by_prior_campaign[$asset_id])) continue;
+                $selected = $asset;
+                break;
+            }
+            // Reuse an older asset only when no unused matching asset remains.
+            if (!$selected) {
+                foreach ($assets as $asset) {
+                    $asset_id = (int) $asset['asset_id'];
+                    if (!isset($used_in_campaign[$asset_id])) {
+                        $selected = $asset;
+                        break;
+                    }
+                }
+            }
+            if ($selected) {
+                $asset_id = (int) $selected['asset_id'];
+                if (wp_schedule_single_event(time() + $delay, 'roxy_social_auto_assign_asset', [$campaign_key, $showing_id, (int) $draft['id'], $asset_id, (string) $selected['filename']])) {
+                    $used_in_campaign[$asset_id] = true;
+                    $delay += 30;
+                }
             }
         }
     }
