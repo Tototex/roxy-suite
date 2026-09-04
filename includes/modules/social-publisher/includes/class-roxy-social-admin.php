@@ -70,10 +70,17 @@ final class Admin {
             echo '<td>' . ($row['media_url'] ? '<a href="' . esc_url($row['media_url']) . '" target="_blank">' . ($row['media_type'] === 'video' ? '<span style="display:block;width:72px;height:48px;background:#1d2327;color:#fff;text-align:center;padding-top:24px">Video</span>' : '<img src="' . esc_url($row['media_url']) . '" alt="Poster" style="width:72px;height:96px;object-fit:contain;display:block">') . esc_html($media_label) . '</a>' : '&mdash;');
             if ($row['trailer_url']) echo '<br><a href="' . esc_url($row['trailer_url']) . '" target="_blank">Trailer</a>';
             if (!empty($row['hangar_filename'])) echo '<br><strong>Hangar:</strong> ' . esc_html($row['hangar_filename']);
-            if (!empty($row['hangar_asset_id'])) echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:6px"><input type="hidden" name="action" value="roxy_social_remove_media"><input type="hidden" name="id" value="' . (int) $row['id'] . '">' . wp_nonce_field('roxy_social_remove_media_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit" onclick="return confirm(\'Remove the Hangar media from this draft?\')">Remove Hangar media</button></form>';
+            if ($row['media_type'] === 'video') {
+                $dimensions = self::video_dimensions((string) $row['media_url']);
+                if ($dimensions && ($dimensions[0] / max(1, $dimensions[1]) < 0.50 || $dimensions[0] / max(1, $dimensions[1]) > 0.65)) echo '<p class="description" style="color:#996800"><strong>Instagram note:</strong> ' . (int) $dimensions[0] . 'x' . (int) $dimensions[1] . ' is not a vertical 9:16 video. Review before approving.</p>';
+            }
+            if (!in_array($status, ['publishing', 'posted', 'removed'], true)) {
+                echo '<p style="margin-top:6px"><button type="button" class="button roxy-social-media-button" data-form="roxy-social-draft-' . (int) $row['id'] . '">Choose new media</button></p>';
+                if ($row['media_url']) echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:6px"><input type="hidden" name="action" value="roxy_social_remove_media"><input type="hidden" name="id" value="' . (int) $row['id'] . '">' . wp_nonce_field('roxy_social_remove_media_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit" onclick="return confirm(\'Remove the selected media from this draft?\')">Remove media</button></form>';
+            }
             $facebook_state = !empty($row['facebook_post_id']) ? 'Posted' : (($status === 'publishing') ? 'Publishing' : (($status === 'approved') ? 'Scheduled' : (($status === 'failed' && strpos((string) $row['last_error'], 'Facebook:') !== false) ? 'Failed' : 'Not posted')));
             $instagram_state = !empty($row['instagram_media_id']) ? 'Posted' : (($status === 'publishing') ? 'Publishing' : (($status === 'approved') ? 'Scheduled' : (($status === 'failed' && stripos((string) $row['last_error'], 'Instagram video is still processing') !== false) ? 'Processing' : (($status === 'failed' && strpos((string) $row['last_error'], 'Instagram:') !== false) ? 'Failed' : 'Not posted'))));
-            echo '</td><td><strong>' . esc_html(ucwords(str_replace('_', ' ', $status))) . '</strong><br><span class="description">Facebook: ' . esc_html($facebook_state) . '<br>Instagram: ' . esc_html($instagram_state) . '</span></td><td><form id="roxy-social-draft-' . (int) $row['id'] . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_update_draft"><input type="hidden" name="id" value="' . (int) $row['id'] . '">' . wp_nonce_field('roxy_social_update_draft_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit">Save</button></form>';
+            echo '</td><td><strong>' . esc_html(ucwords(str_replace('_', ' ', $status))) . '</strong><br><span class="description">Facebook: ' . esc_html($facebook_state) . '<br>Instagram: ' . esc_html($instagram_state) . '</span></td><td><form id="roxy-social-draft-' . (int) $row['id'] . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_update_draft"><input type="hidden" name="id" value="' . (int) $row['id'] . '"><input type="hidden" name="media_url" value="' . esc_attr((string) $row['media_url']) . '"><input type="hidden" name="media_type" value="' . esc_attr((string) $row['media_type']) . '">' . wp_nonce_field('roxy_social_update_draft_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit">Save</button></form>';
             $has_published_ids = !empty($row['facebook_post_id']) || !empty($row['instagram_media_id']);
             if (in_array($status, ['draft', 'needs_review', 'failed'], true) && !($status === 'failed' && $has_published_ids)) self::action_link((int) $row['id'], 'approved', 'Approve');
             if ($status === 'approved') self::action_link((int) $row['id'], 'draft', 'Un-approve');
@@ -101,6 +108,16 @@ final class Admin {
             echo '</td></tr>';
         }
         echo '</tbody></table></div>';
+        echo '<script>(function(){document.querySelectorAll(".roxy-social-media-button").forEach(function(b){b.addEventListener("click",function(){if(!window.wp||!wp.media){window.alert("The WordPress media library is not available. Please reload this page and try again.");return;}var f=document.getElementById(b.dataset.form),url=f.querySelector("[name=media_url]"),type=f.querySelector("[name=media_type]"),frame=wp.media({title:"Choose draft media",button:{text:"Use this media"},multiple:false});frame.on("select",function(){var a=frame.state().get("selection").first().toJSON(),mime=a.mime||"",value=a.url||"";url.value=value;type.value=mime.indexOf("video/")===0||/\\.(mp4|mov|m4v|webm|avi|mkv)(?:[?#]|$)/i.test(value)?"video":"image";b.textContent="Media selected - click Save";});frame.open();});});})();</script>';
+    }
+
+    private static function video_dimensions(string $url): ?array {
+        $attachment_id = $url !== '' ? attachment_url_to_postid($url) : 0;
+        if (!$attachment_id) return null;
+        $metadata = wp_get_attachment_metadata($attachment_id);
+        $width = (int) ($metadata['width'] ?? 0);
+        $height = (int) ($metadata['height'] ?? 0);
+        return $width > 0 && $height > 0 ? [$width, $height] : null;
     }
 
     public static function update_draft(): void {
@@ -110,7 +127,14 @@ final class Admin {
         $text = sanitize_textarea_field((string) ($_POST['post_text'] ?? ''));
         $scheduled = sanitize_text_field((string) ($_POST['scheduled_for'] ?? ''));
         $parsed = date_create($scheduled, wp_timezone());
-        if ($id > 0 && $text !== '' && $parsed) Store::update_draft($id, $text, $parsed->format('Y-m-d H:i:s'));
+        $media_url = isset($_POST['media_url']) ? esc_url_raw((string) $_POST['media_url']) : null;
+        $media_type = isset($_POST['media_type']) ? sanitize_key((string) $_POST['media_type']) : null;
+        if ($id > 0 && $text !== '' && $parsed) {
+            $old = Store::find($id);
+            $old_temporary = $old && $media_url !== null && (string) $old['media_url'] !== $media_url ? (int) ($old['temporary_attachment_id'] ?? 0) : 0;
+            Store::update_draft($id, $text, $parsed->format('Y-m-d H:i:s'), $media_url, $media_type);
+            if ($old_temporary) wp_delete_attachment($old_temporary, true);
+        }
         wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&updated=1'));
         exit;
     }

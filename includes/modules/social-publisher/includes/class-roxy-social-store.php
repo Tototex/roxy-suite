@@ -231,12 +231,21 @@ final class Store {
         return $temporary_id;
     }
 
-    public static function update_draft(int $id, string $text, string $scheduled_for): bool {
+    public static function update_draft(int $id, string $text, string $scheduled_for, ?string $media_url = null, ?string $media_type = null): bool {
         global $wpdb;
-        return false !== $wpdb->update(self::table_name(), [
+        $values = [
             'post_text' => sanitize_textarea_field($text),
             'scheduled_for' => sanitize_text_field($scheduled_for),
             'updated_at' => current_time('mysql'),
-        ], ['id' => $id]);
+        ];
+        if ($media_url !== null) {
+            $values['media_url'] = esc_url_raw($media_url);
+            $values['media_type'] = in_array($media_type, ['image', 'video'], true) ? $media_type : 'image';
+            $values['hangar_asset_id'] = null;
+            $values['hangar_filename'] = null;
+            $values['temporary_attachment_id'] = null;
+            $values['cleanup_after'] = null;
+        }
+        return false !== $wpdb->update(self::table_name(), $values, ['id' => $id]);
     }
 }
