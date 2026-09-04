@@ -275,6 +275,11 @@ final class Admin {
         $pass = (string) ($_POST['hangar_pass'] ?? '');
         if ($user !== '') update_option('roxy_social_hangar_user', $user, false);
         if ($pass !== '') Hangar::save_credentials($user ?: (string) get_option('roxy_social_hangar_user', ''), $pass);
+        if (Hangar::has_credentials()) foreach (Store::all_recent() as $draft) {
+            $showing_ids = array_filter(array_map('absint', explode(',', (string) $draft['showing_ids'])));
+            $title = $showing_ids ? trim((string) get_the_title((int) reset($showing_ids))) : '';
+            if ($title !== '' && !empty($draft['campaign_key']) && in_array((string) $draft['status'], ['draft', 'needs_review'], true) && !wp_next_scheduled('roxy_social_auto_assign_media', [(string) $draft['campaign_key'], $title, (int) reset($showing_ids)])) wp_schedule_single_event(time() + 5, 'roxy_social_auto_assign_media', [(string) $draft['campaign_key'], $title, (int) reset($showing_ids)]);
+        }
         wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&tab=hangar&saved=1'));
         exit;
     }

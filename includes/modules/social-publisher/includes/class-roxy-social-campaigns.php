@@ -6,6 +6,8 @@ if (!defined('ABSPATH')) exit;
 final class Campaigns {
     public static function init(): void {
         add_action('save_post_roxy_showing', [__CLASS__, 'showing_saved'], 50, 2);
+        add_action('roxy_social_auto_assign_media', [__CLASS__, 'auto_assign_media'], 10, 3);
+        add_action('roxy_social_auto_assign_asset', [__CLASS__, 'auto_assign_asset'], 10, 5);
     }
 
     public static function showing_saved(int $post_id, $post): void {
@@ -74,6 +76,45 @@ final class Campaigns {
                 'trailer_url' => $trailer_url,
             ]);
         }
+        if (Hangar::has_credentials() && !wp_next_scheduled('roxy_social_auto_assign_media', [$campaign_key, $title, $post_id])) wp_schedule_single_event(time() + 5, 'roxy_social_auto_assign_media', [$campaign_key, $title, $post_id]);
+    }
+
+    public static function auto_assign_media(string $campaign_key, string $title, int $showing_id): void {
+        if ($campaign_key === '' || $title === '' || !Hangar::has_credentials()) return;
+        $assets = array_values(array_filter(Hangar::search($title), static function (array $asset): bool {
+            $filename = strtolower((string) ($asset['filename'] ?? ''));
+            $type = strtolower((string) ($asset['asset_category'] ?? '') . ' ' . (string) ($asset['file_type'] ?? ''));
+            return strpos($type, 'video') !== false || (bool) preg_match('/\.(mp4|mov|m4v|webm)$/i', $filename);
+        }));
+        if (!$assets) return;
+        usort($assets, static function (array $left, array $right): int {
+            $left_vertical = self::looks_vertical($left) ? 0 : 1;
+            $right_vertical = self::looks_vertical($right) ? 0 : 1;
+            if ($left_vertical !== $right_vertical) return $left_vertical <=> $right_vertical;
+            return (strtotime((string) ($left['start_date'] ?? '')) ?: PHP_INT_MAX) <=> (strtotime((string) ($right['start_date'] ?? '')) ?: PHP_INT_MAX);
+        });
+        $drafts = Store::campaign_rows($campaign_key);
+        $used = [];
+        $delay = 10;
+        foreach ($drafts as $draft) {
+            if (!in_array((string) $draft['status'], ['draft', 'needs_review'], true) || !empty($draft['hangar_asset_id'])) continue;
+            foreach ($assets as $asset) {
+                $asset_id = (int) $asset['asset_id'];
+                if (isset($used[$asset_id])) continue;
+                if (wp_schedule_single_event(time() + $delay, 'roxy_social_auto_assign_asset', [$campaign_key, $showing_id, (int) $draft['id'], $asset_id, (string) $asset['filename']])) { $used[$asset_id] = true; $delay += 30; break; }
+            }
+        }
+    }
+
+    public static function auto_assign_asset(string $campaign_key, int $showing_id, int $draft_id, int $asset_id, string $filename): void {
+        $draft = Store::find($draft_id);
+        if (!$draft || (string) $draft['campaign_key'] !== $campaign_key || !in_array((string) $draft['status'], ['draft', 'needs_review'], true) || !empty($draft['hangar_asset_id'])) return;
+        Hangar::import_social_asset($asset_id, $filename, $showing_id, $draft_id);
+    }
+
+    private static function looks_vertical(array $asset): bool {
+        $text = strtolower(implode(' ', [(string) ($asset['filename'] ?? ''), (string) ($asset['asset_name'] ?? ''), (string) ($asset['description'] ?? '')]));
+        return (bool) preg_match('/9x16|vertical|portrait|1080x1920|1080x1350|4x5/', $text);
     }
 
     private static function format_showtimes(array $showings): string {

@@ -186,6 +186,11 @@ final class Store {
         return $rows;
     }
 
+    public static function campaign_rows(string $campaign_key): array {
+        global $wpdb;
+        return $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . self::table_name() . ' WHERE campaign_key = %s ORDER BY scheduled_for ASC, id ASC', $campaign_key), ARRAY_A) ?: [];
+    }
+
     public static function update_status(int $id, string $status): bool {
         global $wpdb;
         $allowed = ['draft', 'approved', 'needs_review', 'skipped', 'publishing', 'posted', 'failed', 'removed'];
