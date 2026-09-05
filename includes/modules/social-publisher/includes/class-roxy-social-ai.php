@@ -92,8 +92,8 @@ final class AI {
         $lines = match (strtolower($day)) {
             'monday' => [$showings['fri']['date'] . ' at ' . $showings['fri']['time'], $showings['sat']['date'] . ' at ' . $showings['sat']['time'], $showings['sun']['date'] . ' at ' . $showings['sun']['time']],
             'wednesday' => [$showings['fri']['date'] . ' at ' . $showings['fri']['time'], $showings['sat']['date'] . ' at ' . $showings['sat']['time'], $showings['sun']['date'] . ' at ' . $showings['sun']['time']],
-            'friday' => ['Tonight — ' . $showings['fri']['date'] . ' at ' . $showings['fri']['time']],
-            'saturday' => ['Tonight — ' . $showings['sat']['date'] . ' at ' . $showings['sat']['time']],
+            'friday' => [$showings['fri']['date'] . ' at ' . $showings['fri']['time'], $showings['sat']['date'] . ' at ' . $showings['sat']['time'], $showings['sun']['date'] . ' at ' . $showings['sun']['time']],
+            'saturday' => ['Tonight — ' . $showings['sat']['date'] . ' at ' . $showings['sat']['time'], $showings['sun']['date'] . ' at ' . $showings['sun']['time']],
             'sunday' => ['Today — ' . $showings['sun']['date'] . ' at ' . $showings['sun']['time']],
             default => [],
         };
@@ -131,8 +131,8 @@ final class AI {
         $day_guidance = match (strtolower($day)) {
             'monday' => 'Monday schedule rule: include exactly Friday — 7:30 PM, Saturday — 7:30 PM, and Sunday — 2:30 PM.',
             'wednesday' => 'Wednesday schedule rule: include exactly Friday — 7:30 PM, Saturday — 7:30 PM, and Sunday Matinee — 2:30 PM.',
-            'friday' => 'Friday schedule rule: include only Tonight — 7:30 PM. Do not mention Saturday or Sunday showtimes.',
-            'saturday' => 'Saturday schedule rule: include only Tonight — 7:30 PM. Do not mention Friday or Sunday showtimes.',
+            'friday' => 'Friday schedule rule: include Friday, Saturday, and Sunday showtimes. Do not label Friday as the only showing.',
+            'saturday' => 'Saturday schedule rule: include Saturday Tonight and Sunday showtimes. Do not mention Friday.',
             'sunday' => 'Sunday schedule rule: include only Today — 2:30 PM. Do not mention Friday or Saturday showtimes. Mention a next show only when the supplied next-showing context provides one.',
             default => 'Choose a natural angle that fits the posting day.',
         };
