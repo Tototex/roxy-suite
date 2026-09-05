@@ -107,6 +107,7 @@ final class AI {
         $lines = preg_split('/\R/', trim($text));
         $kept = [];
         foreach ($lines as $line) {
+            if (preg_match('/^\s*(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*$/i', $line)) continue;
             if (preg_match('/https?:\/\/|(?:Tonight|Today|Friday|Saturday|Sunday|Fri|Sat|Sun)[^\r\n]*(?:\d{1,2}:\d{2}|AM|PM)/i', $line)) continue;
             $kept[] = rtrim($line);
         }
