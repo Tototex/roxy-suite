@@ -23,7 +23,13 @@ final class AI {
     }
 
     public static function style_prompt(): string {
-        return (string) get_option('roxy_social_ai_style', 'Write in the Newport Roxy Theater voice: warm, local, concise, playful when appropriate, and never misleading.');
+        return (string) get_option('roxy_social_ai_style', 'Write in the Newport Roxy Theater voice: warm, local, concise, playful when appropriate, and never misleading. Use short lines, vivid but accurate hooks, and a friendly small-town theater feel.');
+    }
+
+    private static function film_context(string $campaign_key): string {
+        $slug = sanitize_title((string) preg_replace('/-\d{8}$/', '', $campaign_key));
+        if ($slug !== 'forgotten-island') return '';
+        return "\n\nVerified film context for Forgotten Island (2026): DreamWorks Animation describes it as an emotional animated adventure/comedy/fantasy about two lifelong best friends who must come together before they drift apart. Use only those verified themes: friendship, adventure, mystery, humor, and the feeling of an unusual island journey. Do not claim a specific plot event, character, cast member, award, review, or fact that is not in this context or the current draft.";
     }
 
     public static function queue_campaign(string $campaign_key): void {
@@ -40,7 +46,16 @@ final class AI {
         if (!$draft || (string) $draft['campaign_key'] !== $campaign_key || !in_array((string) $draft['status'], ['draft', 'needs_review'], true)) return;
         $scheduled = date_create((string) $draft['scheduled_for'], wp_timezone());
         $day = $scheduled ? wp_date('l', $scheduled->getTimestamp(), wp_timezone()) : 'scheduled day';
-        $prompt = self::style_prompt() . "\n\nCreate one social media caption for the Newport Roxy Theater.\nMovie/show title and campaign context: " . str_replace('-', ' ', $campaign_key) . "\nPosting day: " . $day . "\nCurrent draft information:\n" . (string) $draft['post_text'] . "\n\nRequirements:\n- Return only the finished caption, with no explanation or quotation marks.\n- Keep it under 900 characters.\n- Preserve the factual title, showtimes, ticket link, and any useful details from the current draft.\n- Vary the structure naturally: sometimes use a short hook, sometimes a compact bullet list, and occasionally one or two tasteful emojis.\n- Add a small movie-related joke, observation, or trivia-style line only when it fits; never invent cast, plot, awards, or showtime facts.\n- Do not use hashtags excessively; use 3 to 6 relevant hashtags at most.";
+        $title = ucwords(str_replace('-', ' ', (string) preg_replace('/-\d{8}$/', '', $campaign_key)));
+        $day_guidance = match (strtolower($day)) {
+            'monday' => 'Use a coming-this-weekend or keep-it-on-the-radar angle.',
+            'wednesday' => 'Use a this-weekend angle with a playful invitation.',
+            'friday' => 'Treat this as opening night and make tonight feel like an event.',
+            'saturday' => 'Use a Saturday-night-plans angle with a light popcorn joke.',
+            'sunday' => 'Treat this as the Sunday matinee or final chance and mention the 2:30 PM show when present.',
+            default => 'Choose a natural angle that fits the posting day.',
+        };
+        $prompt = self::style_prompt() . self::film_context($campaign_key) . "\n\nCreate one social media caption for the Newport Roxy Theater.\nMovie/show title: " . $title . "\nPosting day: " . $day . "\nDay guidance: " . $day_guidance . "\nCurrent draft information:\n" . (string) $draft['post_text'] . "\n\nRequirements:\n- Return only the finished caption, with no explanation, quotation marks, or preamble.\n- Keep it under 900 characters.\n- Preserve the exact title, dates, showtimes, and ticket link from the current draft. Never shorten away dates or times.\n- Write like the sample Roxy posts: a memorable opening hook, short readable lines, a warm local invitation, and a small movie-related joke or observation when it is supported by the verified context.\n- Use the day guidance to make the five posts feel meaningfully different, not like the same caption rearranged.\n- Use one or two tasteful emojis only when they improve the post. Hashtags are optional; use no more than 3 relevant hashtags.\n- Never invent plot events, character names, cast, reviews, awards, runtime, or other film facts. If a detail is not verified, keep the joke general or omit it.\n- Do not use markdown bullets unless they make showtimes easier to scan; blank lines and short lines are encouraged.";
         $response = wp_remote_post(self::endpoint() . '/api/chat', [
             'timeout' => 90,
             'headers' => ['Content-Type' => 'application/json'],
