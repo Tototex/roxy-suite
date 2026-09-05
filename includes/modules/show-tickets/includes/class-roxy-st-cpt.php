@@ -457,7 +457,7 @@ class CPT {
     // The duplicate helper copies _roxy_start after wp_insert_post fires save_post.
     // Generate the social campaign only after the complete new weekend exists.
     if ($new_post_ids && class_exists('\\RoxySocial\\Campaigns')) {
-      \\RoxySocial\\Campaigns::generate_for_showing((int) $new_post_ids[0]);
+      \RoxySocial\Campaigns::generate_for_showing((int) $new_post_ids[0]);
     }
 
     $url = add_query_arg([
