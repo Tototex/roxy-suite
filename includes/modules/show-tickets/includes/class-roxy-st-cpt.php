@@ -445,11 +445,19 @@ class CPT {
     }
 
     $created = 0;
+    $new_post_ids = [];
     foreach ($weekend_posts as $source) {
       $new_post_id = self::duplicate_showing_to_next_weekend((int) $source->ID);
       if ($new_post_id > 0) {
         $created++;
+        $new_post_ids[] = $new_post_id;
       }
+    }
+
+    // The duplicate helper copies _roxy_start after wp_insert_post fires save_post.
+    // Generate the social campaign only after the complete new weekend exists.
+    if ($new_post_ids && class_exists('\\RoxySocial\\Campaigns')) {
+      \\RoxySocial\\Campaigns::generate_for_showing((int) $new_post_ids[0]);
     }
 
     $url = add_query_arg([
