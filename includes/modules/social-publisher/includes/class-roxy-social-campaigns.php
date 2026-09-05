@@ -64,7 +64,12 @@ final class Campaigns {
         foreach ($templates as [$key, $offset, $heading, $trailer_post]) {
             $scheduled = $friday->modify($offset . ' days')->setTime(10, 0);
             $post_key = $campaign_key . '-' . $key;
-            $text = $heading . ":\n\n" . $title . "\n\nShowtimes:\n" . $times . "\n\nTickets: " . get_permalink($post_id);
+            $day_times = match ($key) {
+                'sat' => implode("\n", array_slice(explode("\n", $times), 1)),
+                'sun' => implode("\n", array_slice(explode("\n", $times), 2)),
+                default => $times,
+            };
+            $text = $heading . ":\n\n" . $title . "\n\nShowtimes:\n" . $day_times . "\n\nTickets: " . get_permalink($post_id);
             Store::upsert([
                 'campaign_key' => $campaign_key,
                 'post_key' => $post_key,
