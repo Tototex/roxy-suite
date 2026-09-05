@@ -77,15 +77,24 @@ final class AI {
     }
 
     private static function schedule_footer(array $draft, string $day): string {
-        $times = ['fri' => '7:30 PM', 'sat' => '7:30 PM', 'sun' => '2:30 PM'];
-        preg_match_all('/^\s*(Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)[^\r\n]*?(\d{1,2}:\d{2}\s*[AP]M)/im', (string) ($draft['post_text'] ?? ''), $matches, PREG_SET_ORDER);
-        foreach ($matches as $match) $times[strtolower(substr((string) $match[1], 0, 3))] = strtoupper(preg_replace('/\s+/', ' ', (string) $match[2]));
+        $showings = [];
+        $year = date('Y', strtotime((string) ($draft['scheduled_for'] ?? '')) ?: current_time('timestamp'));
+        preg_match_all('/^\s*(Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?),?\s+([A-Za-z]{3,9}\s+\d{1,2})\s+at\s+(\d{1,2}:\d{2}\s*[AP]M)/im', (string) ($draft['post_text'] ?? ''), $matches, PREG_SET_ORDER);
+        foreach ($matches as $match) {
+            $key = strtolower(substr((string) $match[1], 0, 3));
+            $date = date_create((string) $match[2] . ' ' . $year, wp_timezone());
+            $showings[$key] = [
+                'date' => $date ? wp_date('l, F j, Y', $date->getTimestamp(), wp_timezone()) : (string) $match[2] . ', ' . $year,
+                'time' => strtoupper(preg_replace('/\s+/', ' ', (string) $match[3])),
+            ];
+        }
+        foreach (['fri' => 'Friday', 'sat' => 'Saturday', 'sun' => 'Sunday'] as $key => $label) if (!isset($showings[$key])) $showings[$key] = ['date' => $label . ', ' . $year, 'time' => $key === 'sun' ? '2:30 PM' : '7:30 PM'];
         $lines = match (strtolower($day)) {
-            'monday' => ['Friday — ' . $times['fri'], 'Saturday — ' . $times['sat'], 'Sunday — ' . $times['sun']],
-            'wednesday' => ['Friday & Saturday — ' . $times['fri'], 'Sunday Matinee — ' . $times['sun']],
-            'friday' => ['Tonight — ' . $times['fri']],
-            'saturday' => ['Tonight — ' . $times['sat']],
-            'sunday' => ['Today — ' . $times['sun']],
+            'monday' => [$showings['fri']['date'] . ' — ' . $showings['fri']['time'], $showings['sat']['date'] . ' — ' . $showings['sat']['time'], $showings['sun']['date'] . ' — ' . $showings['sun']['time']],
+            'wednesday' => [$showings['fri']['date'] . ' — ' . $showings['fri']['time'], $showings['sat']['date'] . ' — ' . $showings['sat']['time'], $showings['sun']['date'] . ' — ' . $showings['sun']['time']],
+            'friday' => ['Tonight — ' . $showings['fri']['date'] . ' — ' . $showings['fri']['time']],
+            'saturday' => ['Tonight — ' . $showings['sat']['date'] . ' — ' . $showings['sat']['time']],
+            'sunday' => ['Today — ' . $showings['sun']['date'] . ' — ' . $showings['sun']['time']],
             default => [],
         };
         $ticket_url = 'https://newportroxy.com/tickets/';
