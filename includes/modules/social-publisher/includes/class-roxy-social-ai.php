@@ -84,17 +84,17 @@ final class AI {
             $key = strtolower(substr((string) $match[1], 0, 3));
             $date = date_create((string) $match[2] . ' ' . $year, wp_timezone());
             $showings[$key] = [
-                'date' => $date ? wp_date('l, F j, Y', $date->getTimestamp(), wp_timezone()) : (string) $match[2] . ', ' . $year,
+                'date' => $date ? wp_date('D, M j', $date->getTimestamp(), wp_timezone()) : (string) $match[2],
                 'time' => strtoupper(preg_replace('/\s+/', ' ', (string) $match[3])),
             ];
         }
-        foreach (['fri' => 'Friday', 'sat' => 'Saturday', 'sun' => 'Sunday'] as $key => $label) if (!isset($showings[$key])) $showings[$key] = ['date' => $label . ', ' . $year, 'time' => $key === 'sun' ? '2:30 PM' : '7:30 PM'];
+        foreach (['fri' => 'Fri', 'sat' => 'Sat', 'sun' => 'Sun'] as $key => $label) if (!isset($showings[$key])) $showings[$key] = ['date' => $label, 'time' => $key === 'sun' ? '2:30 PM' : '7:30 PM'];
         $lines = match (strtolower($day)) {
-            'monday' => [$showings['fri']['date'] . ' — ' . $showings['fri']['time'], $showings['sat']['date'] . ' — ' . $showings['sat']['time'], $showings['sun']['date'] . ' — ' . $showings['sun']['time']],
-            'wednesday' => [$showings['fri']['date'] . ' — ' . $showings['fri']['time'], $showings['sat']['date'] . ' — ' . $showings['sat']['time'], $showings['sun']['date'] . ' — ' . $showings['sun']['time']],
-            'friday' => ['Tonight — ' . $showings['fri']['date'] . ' — ' . $showings['fri']['time']],
-            'saturday' => ['Tonight — ' . $showings['sat']['date'] . ' — ' . $showings['sat']['time']],
-            'sunday' => ['Today — ' . $showings['sun']['date'] . ' — ' . $showings['sun']['time']],
+            'monday' => [$showings['fri']['date'] . ' at ' . $showings['fri']['time'], $showings['sat']['date'] . ' at ' . $showings['sat']['time'], $showings['sun']['date'] . ' at ' . $showings['sun']['time']],
+            'wednesday' => [$showings['fri']['date'] . ' at ' . $showings['fri']['time'], $showings['sat']['date'] . ' at ' . $showings['sat']['time'], $showings['sun']['date'] . ' at ' . $showings['sun']['time']],
+            'friday' => ['Tonight — ' . $showings['fri']['date'] . ' at ' . $showings['fri']['time']],
+            'saturday' => ['Tonight — ' . $showings['sat']['date'] . ' at ' . $showings['sat']['time']],
+            'sunday' => ['Today — ' . $showings['sun']['date'] . ' at ' . $showings['sun']['time']],
             default => [],
         };
         $ticket_url = 'https://newportroxy.com/tickets/';
