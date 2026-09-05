@@ -257,6 +257,7 @@ final class Admin {
         $endpoint = AI::endpoint();
         $model = AI::model();
         $style = AI::style_prompt();
+        $examples = AI::style_examples();
         echo '<h2>AI Post Content</h2><p>Use your own Ollama service to create richer captions for new showing drafts. Local Ollama calls are free; the computer or server hosting Ollama must be reachable from this WordPress site.</p>';
         if (isset($_GET['saved'])) echo '<div class="notice notice-success"><p>AI content settings saved.</p></div>';
         if (isset($_GET['tested'])) { $status = get_transient('roxy_social_ai_test_status'); echo '<div class="notice ' . (strpos((string) $status, 'Connected') === 0 ? 'notice-success' : 'notice-error') . '"><p>' . esc_html((string) $status) . '</p></div>'; }
@@ -265,6 +266,7 @@ final class Admin {
         echo '<tr><th><label for="roxy-ai-endpoint">Ollama endpoint</label></th><td><input class="regular-text" id="roxy-ai-endpoint" name="ai_endpoint" value="' . esc_attr($endpoint) . '"><p class="description">Use a reachable address, such as a secured home-server URL. <code>127.0.0.1</code> works only when Ollama is on the same server as WordPress.</p></td></tr>';
         echo '<tr><th><label for="roxy-ai-model">Model</label></th><td><input class="regular-text" id="roxy-ai-model" name="ai_model" value="' . esc_attr($model) . '"><p class="description">The model name installed in Ollama, for example <code>llama3.2:latest</code>.</p></td></tr>';
         echo '<tr><th><label for="roxy-ai-style">Writing style</label></th><td><textarea class="large-text" rows="4" id="roxy-ai-style" name="ai_style">' . esc_textarea($style) . '</textarea><p class="description">Describe the Roxy voice and any boundaries you want the captions to follow.</p></td></tr></table>';
+        echo '<table class="form-table"><tr><th><label for="roxy-ai-examples">Style examples and patterns</label></th><td><textarea class="large-text" rows="10" id="roxy-ai-examples" name="ai_examples">' . esc_textarea(trim($examples)) . '</textarea><p class="description">These examples guide the tone and structure of every caption. Schedule accuracy and the ticket footer remain enforced by the application.</p></td></tr></table>';
         submit_button('Save AI Settings');
         echo '</form><form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:12px"><input type="hidden" name="action" value="roxy_social_ai_test">' . wp_nonce_field('roxy_social_ai_test', '_wpnonce', true, false) . '<button type="submit" class="button">Test Ollama connection</button></form>';
     }

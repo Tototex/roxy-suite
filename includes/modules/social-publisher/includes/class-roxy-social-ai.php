@@ -26,8 +26,9 @@ final class AI {
         return (string) get_option('roxy_social_ai_style', 'Write in the Newport Roxy Theater voice: warm, local, concise, playful when appropriate, and never misleading. Use short lines, vivid but accurate hooks, and a friendly small-town theater feel.');
     }
 
-    private static function style_examples(): string {
-        return "\n\nRoxy style patterns to imitate, without copying literally:\n- Monday: open with a mysterious or cinematic image, then build anticipation for the weekend. Example rhythm: Something mysterious is washing ashore. Adventure, mystery, and probably one decision that makes everyone yell at the screen.\n- Wednesday: use a funny hypothetical or everyday observation, then invite people to the theater. Example rhythm: If someone suggests exploring a mysterious island, ask a few follow-up questions. Then enjoy the adventure from the safety of a theater seat.\n- Friday: use an opening-night announcement, followed by dark theater, big screen, popcorn, or a clean conversion line. Example rhythm: Opening Night. Dark theater. Big screen. Fresh popcorn. Suspicious island. Friday night could be worse.\n- Saturday: start with Saturday-night plans, use the strongest joke of the week, and make the theater feel better than staying home.\n- Sunday: use a warm matinee or final-chance feeling, then end with a cozy invitation.\nKeep the humor specific and conversational, not generic marketing copy. Do not copy these examples word for word.";
+    public static function style_examples(): string {
+        $default = "Roxy style patterns to imitate, without copying literally:\n- Monday: open with a mysterious or cinematic image, then build anticipation for the weekend. Example rhythm: Something mysterious is washing ashore. Adventure, mystery, and probably one decision that makes everyone yell at the screen.\n- Wednesday: use a funny hypothetical or everyday observation, then invite people to the theater. Example rhythm: If someone suggests exploring a mysterious island, ask a few follow-up questions. Then enjoy the adventure from the safety of a theater seat.\n- Friday: use an opening-night announcement, followed by dark theater, big screen, popcorn, or a clean conversion line. Example rhythm: Opening Night. Dark theater. Big screen. Fresh popcorn. Suspicious island. Friday night could be worse.\n- Saturday: start with Saturday-night plans, use the strongest joke of the week, and make the theater feel better than staying home.\n- Sunday: use a warm matinee or final-chance feeling, then end with a cozy invitation.\nKeep the humor specific and conversational, not generic marketing copy. Do not copy these examples word for word.";
+        return "\n\n" . (string) get_option('roxy_social_ai_examples', $default);
     }
 
     private static function film_context(string $campaign_key): string {
@@ -165,6 +166,7 @@ final class AI {
         update_option('roxy_social_ai_endpoint', untrailingslashit(esc_url_raw((string) ($_POST['ai_endpoint'] ?? ''))), false);
         update_option('roxy_social_ai_model', sanitize_text_field((string) ($_POST['ai_model'] ?? '')), false);
         update_option('roxy_social_ai_style', sanitize_textarea_field((string) ($_POST['ai_style'] ?? '')), false);
+        update_option('roxy_social_ai_examples', sanitize_textarea_field((string) ($_POST['ai_examples'] ?? '')), false);
         wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&tab=ai&saved=1'));
         exit;
     }
