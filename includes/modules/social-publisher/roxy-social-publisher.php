@@ -14,11 +14,11 @@ require_once __DIR__ . '/includes/class-roxy-social-publisher.php';
 require_once __DIR__ . '/includes/class-roxy-social-ai.php';
 
 add_action('plugins_loaded', function () {
-    if (get_option('roxy_social_schema_version') !== '1.5') {
+    if (get_option('roxy_social_schema_version') !== '1.6') {
         \RoxySocial\Store::install_schema();
         global $wpdb;
         $wpdb->query("UPDATE " . \RoxySocial\Store::table_name() . " SET status = 'draft' WHERE status = 'skipped'");
-        update_option('roxy_social_schema_version', '1.5');
+        update_option('roxy_social_schema_version', '1.6');
     }
     \RoxySocial\Campaigns::init();
     \RoxySocial\Admin::init();

@@ -165,6 +165,8 @@ final class AI {
         ]);
         if (is_wp_error($response) || wp_remote_retrieve_response_code($response) >= 300) {
             error_log('Roxy Social AI generation failed for draft ' . $draft_id . ': ' . (is_wp_error($response) ? $response->get_error_message() : 'HTTP ' . wp_remote_retrieve_response_code($response) . ' ' . wp_remote_retrieve_body($response)));
+            Store::update_ai_status($draft_id, 'ready');
+            Campaigns::maybe_auto_approve($draft_id);
             return;
         }
         $body = json_decode((string) wp_remote_retrieve_body($response), true);
@@ -173,6 +175,8 @@ final class AI {
         $footer = self::schedule_footer($draft, $day);
         if ($text !== '' && $footer !== '') Store::update_text($draft_id, $text . "\n\n" . $footer);
         elseif ($text === '') error_log('Roxy Social AI returned no creative body for draft ' . $draft_id);
+        Store::update_ai_status($draft_id, 'ready');
+        Campaigns::maybe_auto_approve($draft_id);
     }
 
     public static function connection_status(): string {

@@ -23,6 +23,7 @@ final class Store {
             platform VARCHAR(24) NOT NULL DEFAULT 'both',
             scheduled_for DATETIME NOT NULL,
             status VARCHAR(24) NOT NULL DEFAULT 'draft',
+            ai_status VARCHAR(24) NOT NULL DEFAULT 'pending',
             post_text LONGTEXT NOT NULL,
             media_type VARCHAR(24) NOT NULL DEFAULT 'image',
             media_url TEXT NULL,
@@ -196,6 +197,12 @@ final class Store {
         $allowed = ['draft', 'approved', 'needs_review', 'skipped', 'publishing', 'posted', 'failed', 'removed'];
         if (!in_array($status, $allowed, true)) return false;
         return false !== $wpdb->update(self::table_name(), ['status' => $status, 'updated_at' => current_time('mysql')], ['id' => $id]);
+    }
+
+    public static function update_ai_status(int $id, string $status): bool {
+        global $wpdb;
+        if (!in_array($status, ['pending', 'ready'], true)) return false;
+        return false !== $wpdb->update(self::table_name(), ['ai_status' => $status, 'updated_at' => current_time('mysql')], ['id' => $id]);
     }
 
     public static function update_publish_result(int $id, string $status, string $error = '', string $facebook_id = '', string $instagram_id = ''): bool {

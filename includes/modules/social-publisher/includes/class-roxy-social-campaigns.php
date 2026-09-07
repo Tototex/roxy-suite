@@ -151,7 +151,16 @@ final class Campaigns {
         $draft = Store::find($draft_id);
         if (!$draft || (string) $draft['campaign_key'] !== $campaign_key || !in_array((string) $draft['status'], ['draft', 'needs_review'], true) || !empty($draft['hangar_asset_id'])) return;
         $attachment_id = Hangar::import_social_asset($asset_id, $filename, $showing_id, $draft_id);
-        if ($attachment_id && get_option('roxy_social_auto_approve', false)) Store::update_status($draft_id, 'approved');
+        if ($attachment_id) self::maybe_auto_approve($draft_id);
+    }
+
+    public static function maybe_auto_approve(int $draft_id): void {
+        if (!get_option('roxy_social_auto_approve', false)) return;
+        $draft = Store::find($draft_id);
+        if (!$draft || !in_array((string) $draft['status'], ['draft', 'needs_review'], true)) return;
+        if (empty($draft['media_url']) && empty($draft['hangar_asset_id'])) return;
+        if (AI::enabled() && (string) ($draft['ai_status'] ?? 'pending') !== 'ready') return;
+        Store::update_status($draft_id, 'approved');
     }
 
     private static function looks_vertical(array $asset): bool {
