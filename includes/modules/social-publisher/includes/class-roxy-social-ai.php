@@ -104,6 +104,9 @@ final class AI {
     }
 
     private static function clean_generated_body(string $text): string {
+        $text = (string) preg_replace('/^\s*(?:Here is|Here\x27s|Below is)\b[^:\r\n]*:\s*/i', '', $text);
+        $text = ltrim($text, " \t\r\n\"'");
+        $text = (string) preg_split('/\R\s*\R\s*(?:This caption|This post|This response|The caption|This uses|This text)\b/i', $text, 2)[0];
         $lines = preg_split('/\R/', trim($text));
         $kept = [];
         foreach ($lines as $line) {
