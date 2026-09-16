@@ -372,5 +372,7 @@ register_deactivation_hook(__FILE__, function () {
         wp_unschedule_event($social_ts, 'roxy_social_cleanup');
         $social_ts = wp_next_scheduled('roxy_social_cleanup');
     }
+    wp_clear_scheduled_hook('roxy_eb_prune_sling_logs_daily');
+    wp_clear_scheduled_hook('roxy_eb_daily_health_check');
     flush_rewrite_rules();
 });

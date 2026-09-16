@@ -293,6 +293,23 @@
   }
   function parseMysqlToDate(mysql){ if (!mysql) return null; return parseDateTime(mysql); }
 
+  function findNextAvailableDate(startDate){
+    var date = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+    var extraHours = Number($('#roxy-eb-extra-hours').val() || 0);
+    var end = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 60);
+    return fetchBlocks(toISODateTimeLocal(date), toISODateTimeLocal(end)).then(function(items){
+      var blocks = normalizeBlocks(items);
+      for (var i = 0; i < 60; i++) {
+        var day = new Date(date.getFullYear(), date.getMonth(), date.getDate() + i);
+        var options = buildTimeOptions(day, extraHours, blocks.filter(function(block){
+          return block.start < new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1) && block.end > day;
+        }));
+        if ((options._enabledCount || 0) > 0) return toYmd(day);
+      }
+      return null;
+    });
+  }
+
   $(function(){
     $(document).on('click', '[data-roxy-eb-close]', function(){ closeModal(); });
     $(document).on('keydown', function(e){ if(e.key === 'Escape') closeModal(); });
@@ -440,9 +457,23 @@
     calendar.render();
 
     $(document).off('click.roxy', '#roxy-eb-book-now').on('click.roxy', '#roxy-eb-book-now', function(){
-      var dateStr = lastSelectedDateStr || toYmd(calendar.getDate());
-      lastSelectedDateStr = dateStr;
-      fetchBlocks(dateStr + ' 00:00:00', dateStr + ' 23:59:59').then(function(items){ openModal(dateStr, normalizeBlocks(items)); }).catch(function(){ openModal(dateStr, []); });
+      var $button = $(this);
+      var selected = lastSelectedDateStr || toYmd(calendar.getDate());
+      var selectedParts = selected.split('-').map(Number);
+      var selectedDate = new Date(selectedParts[0], selectedParts[1]-1, selectedParts[2]);
+      $button.prop('disabled', true).text('Finding an available date…');
+      findNextAvailableDate(selectedDate).then(function(dateStr){
+        if (!dateStr) {
+          openModal(selected, []);
+          $('#roxy-eb-error').show().text('No bookable times are available in the next 60 days. Please contact us for help.');
+          return;
+        }
+        lastSelectedDateStr = dateStr;
+        calendar.gotoDate(dateStr);
+        return fetchBlocks(dateStr + ' 00:00:00', dateStr + ' 23:59:59').then(function(items){ openModal(dateStr, normalizeBlocks(items)); });
+      }).catch(function(){ $('#roxy-eb-error').show().text('Could not load availability right now. Please try again in a moment.'); }).then(function(){
+        $button.prop('disabled', false).text('Book now');
+      });
     });
   });
 })(jQuery);

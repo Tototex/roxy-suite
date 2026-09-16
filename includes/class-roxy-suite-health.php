@@ -196,6 +196,7 @@ class Health {
         $t_b  = $wpdb->prefix . 'roxy_event_bookings';
         $t_bl = $wpdb->prefix . 'roxy_event_blocks';
         $t_l  = $wpdb->prefix . 'roxy_event_sling_logs';
+        $health_cron = defined('ROXY_EB_HEALTH_CHECK_HOOK') ? wp_next_scheduled(ROXY_EB_HEALTH_CHECK_HOOK) : false;
 
         $settings    = function_exists('roxy_eb_get_settings') ? roxy_eb_get_settings() : [];
         $sling_mode  = $settings['sling_mode'] ?? 'disabled';
@@ -212,6 +213,8 @@ class Health {
             self::item('Booking product', $product_ok ? "ID $product_id" : ($product_id > 0 ? "ID $product_id (not found)" : 'Not set'),
                 $product_ok ? self::PASS : self::WARN,
                 $product_ok ? '' : 'Set a booking product ID in EB Settings'),
+            self::item('Daily booking health check', $health_cron ? 'Scheduled' : 'Missing', $health_cron ? self::PASS : self::WARN,
+                $health_cron ? '' : 'Reactivate the plugin to schedule the daily check'),
         ], 'event_booking');
     }
 
