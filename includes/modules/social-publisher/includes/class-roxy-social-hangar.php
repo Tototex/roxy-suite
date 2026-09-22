@@ -5,6 +5,7 @@ if (!defined('ABSPATH')) exit;
 
 final class Hangar {
     private const BASE_URL = 'https://hangar.paperairmedia.com/';
+    private const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
     private const USER_OPTION = 'roxy_social_hangar_user';
     private const PASS_OPTION = 'roxy_social_hangar_pass';
 
@@ -64,11 +65,11 @@ final class Hangar {
             'cookies' => self::login_cookies(),
             'stream' => true,
             'filename' => $tmp,
-            'limit_response_size' => 200 * 1024 * 1024,
+            'limit_response_size' => self::MAX_VIDEO_BYTES,
         ]);
         if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) >= 400) { @unlink($tmp); return 0; }
         $size = filesize($tmp);
-        if ($size === false || $size <= 0 || $size > 200 * 1024 * 1024) { @unlink($tmp); return 0; }
+        if ($size === false || $size <= 0 || $size >= self::MAX_VIDEO_BYTES) { @unlink($tmp); return 0; }
         require_once ABSPATH . 'wp-admin/includes/file.php';
         require_once ABSPATH . 'wp-admin/includes/media.php';
         require_once ABSPATH . 'wp-admin/includes/image.php';
