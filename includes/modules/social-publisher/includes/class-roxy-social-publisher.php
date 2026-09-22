@@ -7,6 +7,9 @@ final class Publisher {
     public static function publish_due(): void {
         if (!Meta::configured() || Meta::page_access_token() === '' || Meta::instagram_user_id() === '') return;
         global $wpdb;
+        $stale_before = wp_date('Y-m-d H:i:s', current_time('timestamp', true) - (15 * MINUTE_IN_SECONDS), wp_timezone());
+        $stale_ids = $wpdb->get_col($wpdb->prepare('SELECT id FROM ' . Store::table_name() . ' WHERE status = %s AND updated_at <= %s', 'publishing', $stale_before)) ?: [];
+        foreach ($stale_ids as $stale_id) Store::update_status((int) $stale_id, 'approved');
         $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . Store::table_name() . ' WHERE ((status = %s) OR (status = %s AND instagram_media_id IS NULL AND (last_error LIKE %s OR last_error LIKE %s))) AND scheduled_for <= %s ORDER BY scheduled_for ASC, id ASC LIMIT 3', 'approved', 'failed', '%Instagram video is still processing%', '%Media ID is not available%', current_time('mysql')), ARRAY_A) ?: [];
         foreach ($rows as $row) self::queue_publish((int) $row['id']);
     }
@@ -20,7 +23,13 @@ final class Publisher {
 
     public static function process_queued(int $id): void {
         $row = Store::find($id);
-        if ($row && (string) $row['status'] === 'publishing') self::publish_row($row);
+        if (!$row || (string) $row['status'] !== 'publishing') return;
+        try {
+            self::publish_row($row);
+        } catch (\Throwable $error) {
+            Store::update_publish_result($id, 'failed', 'Publishing worker error: ' . $error->getMessage());
+            error_log('Roxy Social publishing failed for draft ' . $id . ': ' . $error->getMessage());
+        }
     }
 
     private static function queue_publish(int $id): bool {
