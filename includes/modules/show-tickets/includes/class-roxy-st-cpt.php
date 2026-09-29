@@ -15,6 +15,8 @@ class CPT {
     add_action('manage_' . self::POST_TYPE . '_posts_custom_column', [__CLASS__, 'render_admin_column'], 10, 2);
     add_action('pre_get_posts', [__CLASS__, 'filter_admin_list']);
     add_filter('views_edit-' . self::POST_TYPE, [__CLASS__, 'admin_views']);
+    add_filter('manage_edit-' . self::POST_TYPE . '_sortable_columns', [__CLASS__, 'sortable_admin_columns']);
+    add_action('restrict_manage_posts', [__CLASS__, 'render_admin_filter_state']);
     add_filter('post_row_actions', [__CLASS__, 'row_actions'], 10, 2);
     add_action('admin_action_roxy_duplicate_weekend', [__CLASS__, 'handle_duplicate_weekend']);
     add_action('admin_notices', [__CLASS__, 'admin_notices']);
@@ -265,9 +267,6 @@ class CPT {
     }
 
     $filter = self::get_admin_filter();
-    if ($filter === 'all') {
-      return;
-    }
 
     $cutoff = current_time('Y-m-d') . 'T00:00';
 
@@ -278,33 +277,41 @@ class CPT {
         'compare' => '<',
         'type' => 'CHAR',
       ]]);
-      $query->set('orderby', 'meta_value');
-      $query->set('meta_key', '_roxy_start');
-      $query->set('order', 'DESC');
-      return;
+    } elseif ($filter === 'upcoming') {
+      $query->set('meta_query', [
+        'relation' => 'OR',
+        [
+          'key' => '_roxy_start',
+          'value' => $cutoff,
+          'compare' => '>=',
+          'type' => 'CHAR',
+        ],
+        [
+          'key' => '_roxy_start',
+          'compare' => 'NOT EXISTS',
+        ],
+        [
+          'key' => '_roxy_start',
+          'value' => '',
+          'compare' => '=',
+        ],
+      ]);
     }
 
-    $query->set('meta_query', [
-      'relation' => 'OR',
-      [
-        'key' => '_roxy_start',
-        'value' => $cutoff,
-        'compare' => '>=',
-        'type' => 'CHAR',
-      ],
-      [
-        'key' => '_roxy_start',
-        'compare' => 'NOT EXISTS',
-      ],
-      [
-        'key' => '_roxy_start',
-        'value' => '',
-        'compare' => '=',
-      ],
-    ]);
-    $query->set('orderby', 'meta_value');
-    $query->set('meta_key', '_roxy_start');
-    $query->set('order', 'ASC');
+    // The default list order follows showing time. Respect explicit WordPress
+    // sort requests so the Date and Start headers actually change the query.
+    $orderby = sanitize_key((string) $query->get('orderby'));
+    if ($orderby === '' || $orderby === 'roxy_start') {
+      $requested_order = strtoupper((string) $query->get('order'));
+      if (!in_array($requested_order, ['ASC', 'DESC'], true)) {
+        $requested_order = $filter === 'past' ? 'DESC' : 'ASC';
+      }
+      $query->set('orderby', 'meta_value');
+      $query->set('meta_key', '_roxy_start');
+      $query->set('order', $requested_order);
+    } elseif ($orderby === 'date') {
+      $query->set('meta_key', '');
+    }
   }
 
   public static function admin_views(array $views): array {
@@ -317,7 +324,14 @@ class CPT {
       'past' => 'Past / Archived',
       'all' => 'All',
     ] as $key => $label) {
-      $url = $key === 'upcoming' ? $base_url : add_query_arg('roxy_show_filter', $key, $base_url);
+      $args = [];
+      if ($key !== 'upcoming') {
+        $args['roxy_show_filter'] = $key;
+      }
+      if (!empty($_GET['s'])) {
+        $args['s'] = sanitize_text_field(wp_unslash((string) $_GET['s']));
+      }
+      $url = add_query_arg($args, $base_url);
       $class = $current === $key ? ' class="current" aria-current="page"' : '';
       $custom[$key] = '<a href="' . esc_url($url) . '"' . $class . '>' . esc_html($label) . '</a>';
     }
@@ -327,6 +341,20 @@ class CPT {
     }
 
     return $custom + $views;
+  }
+
+  public static function sortable_admin_columns(array $columns): array {
+    $columns['roxy_start'] = 'roxy_start';
+    return $columns;
+  }
+
+  public static function render_admin_filter_state(string $post_type): void {
+    if ($post_type !== self::POST_TYPE || self::get_admin_filter() === 'upcoming') {
+      return;
+    }
+
+    // Core's search form otherwise drops the custom Past/All view parameter.
+    echo '<input type="hidden" name="roxy_show_filter" value="' . esc_attr(self::get_admin_filter()) . '">';
   }
 
   private static function get_admin_filter(): string {
