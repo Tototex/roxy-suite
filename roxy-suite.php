@@ -2,14 +2,14 @@
 /**
  * Plugin Name: Roxy Suite
  * Description: Unified management plugin for Newport Roxy — Show Tickets, Will Call, Event Booking, Member Check, Arcade, Legacy NFC Redirect, and Grosses.
- * Version: 1.0.15
+ * Version: 1.0.16
  * Author: Newport Roxy (AI Team)
  * Update URI: https://github.com/Tototex/roxy-suite
  */
 
 if (!defined('ABSPATH')) exit;
 
-define('ROXY_SUITE_VERSION', '1.0.15');
+define('ROXY_SUITE_VERSION', '1.0.16');
 define('ROXY_SUITE_PATH', plugin_dir_path(__FILE__));
 define('ROXY_SUITE_URL', plugin_dir_url(__FILE__));
 
@@ -82,6 +82,11 @@ define('ROXY_GROSSES_VER',  '0.4.7');
 define('ROXY_GROSSES_PATH', ROXY_SUITE_PATH . 'includes/modules/grosses/');
 define('ROXY_GROSSES_URL',  ROXY_SUITE_URL  . 'includes/modules/grosses/');
 
+// Inventory module
+define('ROXY_INVENTORY_VER', '0.1.14');
+define('ROXY_INVENTORY_PATH', ROXY_SUITE_PATH . 'includes/modules/inventory/');
+define('ROXY_INVENTORY_URL',  ROXY_SUITE_URL  . 'includes/modules/inventory/');
+
 // ── Shared auto-updater ────────────────────────────────────────────────────────
 require_once ROXY_SUITE_PATH . 'includes/class-roxy-suite-updater.php';
 
@@ -104,7 +109,7 @@ add_action('wp_ajax_roxy_suite_toggle_module', function () {
     }
     $module  = sanitize_key((string) ($_POST['module'] ?? ''));
     $enabled = isset($_POST['enabled']) && $_POST['enabled'] !== '0' && $_POST['enabled'] !== '';
-    $allowed = ['arcade', 'sub_check', 'will_call', 'show_tickets', 'requested_showings', 'event_booking', 'grosses', 'social_publisher'];
+    $allowed = ['arcade', 'sub_check', 'will_call', 'show_tickets', 'requested_showings', 'event_booking', 'grosses', 'inventory', 'social_publisher'];
     if (!in_array($module, $allowed, true)) {
         wp_send_json_error('Unknown module', 400);
     }
@@ -244,6 +249,11 @@ if (roxy_suite_module_enabled('grosses')) {
     require_once ROXY_SUITE_PATH . 'includes/modules/grosses/roxy-grosses.php';
 }
 
+// Inventory
+if (roxy_suite_module_enabled('inventory')) {
+    require_once ROXY_INVENTORY_PATH . 'roxy-inventory.php';
+}
+
 // Social Publisher — draft generation and approval dashboard.
 if (roxy_suite_module_enabled('social_publisher')) {
     require_once ROXY_SUITE_PATH . 'includes/modules/social-publisher/roxy-social-publisher.php';
@@ -348,6 +358,12 @@ register_activation_hook(__FILE__, function () {
         \RoxyGrosses\Scheduler::sync_schedule();
     }
 
+    if (class_exists('\\RoxyInventory\\Store')) {
+        \RoxyInventory\Settings::ensure_defaults();
+        \RoxyInventory\Store::install_schema();
+        \RoxyInventory\Scheduler::sync_schedule();
+    }
+
     if (function_exists('roxy_social_install_schema')) {
         roxy_social_install_schema();
     }
@@ -366,6 +382,9 @@ register_deactivation_hook(__FILE__, function () {
     // Unschedule grosses cron
     if (class_exists('\\RoxyGrosses\\Scheduler')) {
         \RoxyGrosses\Scheduler::clear_schedule();
+    }
+    if (class_exists('\\RoxyInventory\\Scheduler')) {
+        \RoxyInventory\Scheduler::clear_schedule();
     }
     $social_ts = wp_next_scheduled('roxy_social_cleanup');
     while ($social_ts) {
