@@ -26,6 +26,7 @@ class Tickets {
     add_action('woocommerce_checkout_order_processed', [__CLASS__, 'on_order_changed'], 30, 1);
     add_action('woocommerce_order_status_changed', [__CLASS__, 'on_order_changed'], 30, 1);
     add_action('woocommerce_refund_created', [__CLASS__, 'on_refund_created'], 30, 2);
+    add_action('woocommerce_refund_deleted', [__CLASS__, 'on_refund_deleted'], 30, 2);
 
     add_action('admin_post_roxy_st_check_in_ticket', [__CLASS__, 'handle_check_in']);
     add_action('admin_post_roxy_st_uncheck_in_ticket', [__CLASS__, 'handle_uncheck_in']);
@@ -109,6 +110,10 @@ class Tickets {
 
     // Reconcile cumulative persisted refunds, not just this callback's delta.
     self::sync_order_tickets($order_id);
+  }
+
+  public static function on_refund_deleted(int $refund_id, int $order_id): void {
+    if ($order_id > 0) self::sync_order_tickets($order_id);
   }
 
   public static function sync_order_tickets(int $order_id): void {
@@ -462,6 +467,7 @@ class Tickets {
     update_post_meta($ticket_id, self::META_CHECKED_IN, '1');
     update_post_meta($ticket_id, self::META_CHECKED_IN_AT, current_time('mysql'));
     update_post_meta($ticket_id, self::META_CHECKED_IN_BY, (int) $user_id);
+    update_post_meta($ticket_id, '_roxy_checked_in_source', 'ticket');
     update_post_meta($ticket_id, self::META_STATE, 'checked_in');
     self::invalidate_door_stats_cache_for_ticket($ticket_id);
     return true;
@@ -475,6 +481,7 @@ class Tickets {
     delete_post_meta($ticket_id, self::META_CHECKED_IN);
     delete_post_meta($ticket_id, self::META_CHECKED_IN_AT);
     delete_post_meta($ticket_id, self::META_CHECKED_IN_BY);
+    delete_post_meta($ticket_id, '_roxy_checked_in_source');
 
     $order_id = (int) get_post_meta($ticket_id, self::META_ORDER_ID, true);
     $order = wc_get_order($order_id);
@@ -1571,9 +1578,14 @@ class Tickets {
   }
 
   private static function can_check_in(int $ticket_id): bool {
+    return self::ticket_is_eligible($ticket_id, false);
+  }
+
+  public static function ticket_is_eligible(int $ticket_id, bool $include_checked_in = true): bool {
+    if ($ticket_id <= 0 || get_post_type($ticket_id) !== self::POST_TYPE) return false;
     $state = (string) get_post_meta($ticket_id, self::META_STATE, true);
     $checked_in = (int) get_post_meta($ticket_id, self::META_CHECKED_IN, true) === 1;
-    if ($checked_in || $state !== 'valid' || (int) get_post_meta($ticket_id, self::META_REFUNDED, true) === 1) return false;
+    if ((!$include_checked_in && $checked_in) || !in_array($state, $include_checked_in ? ['valid','checked_in'] : ['valid'], true) || (int) get_post_meta($ticket_id, self::META_REFUNDED, true) === 1) return false;
     // Do not trust stale ticket metadata after payment/order state changes.
     $order = wc_get_order((int) get_post_meta($ticket_id, self::META_ORDER_ID, true));
     if (!$order || self::state_for_order_status((string) $order->get_status()) !== 'valid') return false;

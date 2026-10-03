@@ -39,18 +39,18 @@ Current safeguards: preserve live customizations; back up changed files before d
 | I11 | Resolved | Valid vendor form ownership; obsolete row renderer removed. Live unchanged Pepsi save preserves every vendor field. |
 | T1 | Open | See audit; no resolution claimed. |
 | T2 | Resolved for ticket API | Payment/order/item eligibility revalidated at admission. Isolated unpaid/missing-order checks and real $0 on-hold/processing transitions pass. Separate Will Call bypass is T5 and remains open. |
-| T3 | In progress | Stable cumulative refund allocation deployed. Actual $0 Woo order 30623: successive quantity refunds leave two then one eligible ticket; repeated sync and undo cannot revive refunds. Historical bulk reconciliation and refund-deletion lifecycle still need audit. |
+| T3 | In progress | Stable cumulative refund allocation deployed. Orders 30623 and 30629 exercised actual $0 Woo refunds. Refund deletion now triggers ticket reconciliation; actual fixture refund deletion restores eligibility via installed Woo hook contract. Historical bulk reconciliation and attendance-after-refund policy still need audit. |
 | T4 | Open | See audit; no resolution claimed. |
-| T5 | Open | See audit; no resolution claimed. |
+| T5 | In progress | Will Call uses common paid/unrefunded ticket API, preserves actual QR/manual identities and requires explicit undo restricted to Will Call admissions. Same-customer canceled/missing-order fixtures pass. Live order 30629: manual first ticket retained while Will Call admits remainder. Hybrid legacy/new-ticket customers and atomic cross-module locking remain. |
 | T6 | Open | See audit; no resolution claimed. |
 | T7 | Open | See audit; no resolution claimed. |
-| T8 | Open | See audit; no resolution claimed. |
-| T9 | Open | See audit; no resolution claimed. |
-| T10 | Open | See audit; no resolution claimed. |
+| T8 | In progress | Will Call subtracts refunded quantities and collected line/tax refunds; cache includes ticket labels and invalidates on refund creation/deletion. Actual order 30629 quantity 3 → 2 → 3 passes. Sales/capacity/profile mapping/history policies remain open. |
+| T9 | In progress | Will Call initially reads actual ticket check-ins; session-scoped two-hour queue, baseline conflict checks, per-row in-flight controls and operation-specific removal prevent stale state/older completion overwrites. Live stale-page rejection and refresh passed; mocked delayed-completion/client checks pass. Atomic server ledger/two-device simultaneous saves remain T4/T9. |
+| T10 | In progress | Checkbox now explicitly sets Used quantity; member walk-up Used initializes from real admission and is read-only. JavaScript fixtures pass. Historical member rows surviving membership expiry still pending. |
 | T11 | Open | See audit; no resolution claimed. |
 | T12 | In progress | Current-event filters applied before limits; 500-old-event regression passes; live Door Mode shows October events again. Older archive pagination remains open. |
 | T13 | Open | See audit; no resolution claimed. |
-| T14 | Open | See audit; no resolution claimed. |
+| T14 | Resolved | Will Call ticket-type pills use createTextNode/textContent, not raw label HTML. Mock DOM hostile-label regression verifies literal text. Real malicious public product not created for testing; Door Mode label sinks already escape values. |
 | T15 | Open | See audit; no resolution claimed. |
 | T16 | In progress | Site-timezone schema/week anchors and exclusion of generated duplicate identities deployed; timezone/DST/duplicate-exclusion fixtures pass. Full duplicate workflow still needs a disposable fixture. |
 | B1 | Resolved | Buffered intervals compared without start-time prefilter. Boundary/trailing-buffer fixtures and live calendar smoke checks pass. |
@@ -118,3 +118,11 @@ Current safeguards: preserve live customizations; back up changed files before d
 - Real MySQL temporary fixtures test migration, duplicate vendor prevention, cross-connection claim contention, failed-write rollback, stale progress rejection, partial stock increase, and >100-order history. No live vendor row/email/provider changed by fixtures.
 - Live browser Save All succeeded with all 858 editable values across 143 tracked rows unchanged. Pepsi review displays 22 tracked products including zero suggestions, disabled because order is Ordered. History search and itemized checklist work; no real Submit/Cancel/decision clicked.
 - Seven isolated suites pass against deployed source. This does not close the remaining seat-capacity, accounting, subscription, publishing, and cross-module findings.
+
+### Fourth checkpoint
+
+- Ticket admission eligibility API shared with Will Call; no direct promotion of canceled/refunded/unpaid tickets. Explicit source-aware undo protects earlier QR/manual admissions. Will Call financial/refund display and label-sensitive caches corrected.
+- 15 standalone PHP Will Call checks and JavaScript syntax/eight DOM/queue checks pass. Existing ticket/refund and showing-selection fixtures rerun. Midnight exposed a test using the real day; archived-show cutoff now uses WordPress current_datetime and fixture clock is explicit.
+- Authorized live checkout order 30629 totals $0 with tototest and explicit test note; tickets 30630–30632. Manual first admission succeeds; stale Will Call page rejected before overwrite; reload shows one actual admission; numeric controls add remaining two without changing first ticket identity. Actual zero-dollar one-ticket refund produces two eligible tickets; deletion and registered lifecycle hook restores three. Order canceled afterward and all checked/source flags cleared. Cart explicitly cleared and browser confirms no test purchases in Will Call.
+- Cart retention after order-received reproduces. Woo shortcode calls wc_empty_cart but subsequent cart view still had three test tickets; investigate caching/session overlap before changing global cart behavior. No unrelated cart/order modified.
+- Attendance for already-admitted subsequently-refunded tickets needs user policy confirmation; ticket metadata preserves admission history. Full atomic admission/issuance is still open.

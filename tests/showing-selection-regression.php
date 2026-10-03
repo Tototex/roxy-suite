@@ -6,6 +6,7 @@ define('DAY_IN_SECONDS', 86400);
 define('HOUR_IN_SECONDS', 3600);
 function check($ok,$label) { if (!$ok) throw new \RuntimeException($label); echo "PASS: $label\n"; }
 function wp_timezone() { return new \DateTimeZone('America/Los_Angeles'); }
+function current_datetime() { return new \DateTimeImmutable('2026-10-02 12:00', wp_timezone()); }
 function wp_date($format,$timestamp=null) { return '2026-10-02'; }
 function current_time($format) { return strtotime('2026-10-02 18:00'); }
 function date_i18n($format,$ts) { return date($format,$ts); }
