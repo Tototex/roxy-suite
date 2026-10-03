@@ -11,6 +11,7 @@ class Tickets {
   const META_SHOWING_ID = '_roxy_ticket_showing_id';
   const META_PRODUCT_ID = '_roxy_ticket_product_id';
   const META_ORDER_ITEM_ID = '_roxy_ticket_order_item_id';
+  const META_REFUNDED = '_roxy_ticket_refunded';
   const META_TICKET_TYPE = '_roxy_ticket_type';
   const META_CHECKED_IN = '_roxy_checked_in';
   const META_CHECKED_IN_AT = '_roxy_checked_in_at';
@@ -106,9 +107,7 @@ class Tickets {
     $order_id = isset($args['order_id']) ? (int) $args['order_id'] : 0;
     if ($order_id <= 0) return;
 
-    if (!empty($args['line_items']) && is_array($args['line_items'])) {
-      self::invalidate_refunded_line_items($order_id, $args['line_items']);
-    }
+    // Reconcile cumulative persisted refunds, not just this callback's delta.
     self::sync_order_tickets($order_id);
   }
 
@@ -149,6 +148,7 @@ class Tickets {
       foreach (array_slice($existing, $qty) as $extra_id) {
         self::set_ticket_state((int) $extra_id, self::invalid_state_for_order($order_status));
       }
+      self::sync_item_refund_allocation($order, (int) $item_id, $keep, $state_for_order);
 
       if ($existing !== $keep) {
         $item->update_meta_data('_roxy_ticket_ids', $keep);
@@ -211,6 +211,38 @@ class Tickets {
     if ($current_state !== 'checked_in') {
       update_post_meta($ticket_id, self::META_STATE, $state);
     }
+  }
+
+  private static function sync_item_refund_allocation($order, int $item_id, array $ticket_ids, string $order_state): void {
+    $allocated = self::refunded_ticket_ids($order, $item_id, $ticket_ids);
+    foreach ($ticket_ids as $ticket_id) {
+      if (isset($allocated[$ticket_id])) {
+        update_post_meta($ticket_id, self::META_REFUNDED, '1');
+        self::set_ticket_state($ticket_id, 'refunded');
+      } else {
+        delete_post_meta($ticket_id, self::META_REFUNDED);
+        self::set_ticket_state($ticket_id, (int) get_post_meta($ticket_id, self::META_CHECKED_IN, true) === 1 ? 'checked_in' : $order_state);
+      }
+    }
+  }
+
+  private static function refunded_ticket_ids($order, int $item_id, array $ticket_ids): array {
+    $refund_qty = min(count($ticket_ids), (int) ceil(abs((float) $order->get_qty_refunded_for_item($item_id))));
+    $allocated = [];
+    // Preserve previously allocated identities while the cumulative refund still exists.
+    foreach ($ticket_ids as $ticket_id) {
+      if ((int) get_post_meta($ticket_id, self::META_REFUNDED, true) === 1 && count($allocated) < $refund_qty) $allocated[$ticket_id] = true;
+    }
+    // Prefer unused tickets, but a refund of an already-used ticket must survive undo too.
+    foreach ([false, true] as $checked) {
+      foreach (array_reverse($ticket_ids) as $ticket_id) {
+        if (count($allocated) >= $refund_qty) break;
+        if (isset($allocated[$ticket_id])) continue;
+        if (((int) get_post_meta($ticket_id, self::META_CHECKED_IN, true) === 1) !== $checked) continue;
+        $allocated[$ticket_id] = true;
+      }
+    }
+    return $allocated;
   }
 
   private static function invalidate_refunded_line_items(int $order_id, array $line_items): void {
@@ -280,6 +312,7 @@ class Tickets {
       'post_status' => 'publish',
       'numberposts' => 40,
       'meta_key' => '_roxy_start',
+      'meta_query' => [['key' => '_roxy_start', 'value' => wp_date('Y-m-d', time() - DAY_IN_SECONDS), 'compare' => '>=']],
       'orderby' => 'meta_value',
       'order' => 'ASC',
       'no_found_rows' => true,
@@ -312,8 +345,8 @@ class Tickets {
       'order' => 'ASC',
       'meta_query' => [[
         'key' => '_roxy_start',
-        'value' => '',
-        'compare' => '!=',
+        'value' => wp_date('Y-m-d', time() - DAY_IN_SECONDS),
+        'compare' => '>=',
       ]],
       'no_found_rows' => true,
     ]);
@@ -445,7 +478,7 @@ class Tickets {
 
     $order_id = (int) get_post_meta($ticket_id, self::META_ORDER_ID, true);
     $order = wc_get_order($order_id);
-    update_post_meta($ticket_id, self::META_STATE, self::state_for_order_status($order ? (string) $order->get_status() : 'processing'));
+    update_post_meta($ticket_id, self::META_STATE, (int) get_post_meta($ticket_id, self::META_REFUNDED, true) === 1 ? 'refunded' : ($order ? self::state_for_order_status((string) $order->get_status()) : 'cancelled'));
     self::invalidate_door_stats_cache_for_ticket($ticket_id);
     return true;
   }
@@ -1540,7 +1573,17 @@ class Tickets {
   private static function can_check_in(int $ticket_id): bool {
     $state = (string) get_post_meta($ticket_id, self::META_STATE, true);
     $checked_in = (int) get_post_meta($ticket_id, self::META_CHECKED_IN, true) === 1;
-    return !$checked_in && $state === 'valid';
+    if ($checked_in || $state !== 'valid' || (int) get_post_meta($ticket_id, self::META_REFUNDED, true) === 1) return false;
+    // Do not trust stale ticket metadata after payment/order state changes.
+    $order = wc_get_order((int) get_post_meta($ticket_id, self::META_ORDER_ID, true));
+    if (!$order || self::state_for_order_status((string) $order->get_status()) !== 'valid') return false;
+    $item_id = (int) get_post_meta($ticket_id, self::META_ORDER_ITEM_ID, true);
+    $item = $order->get_item($item_id);
+    if (!$item) return false;
+    $ticket_ids = self::normalize_ticket_ids($item->get_meta('_roxy_ticket_ids', true));
+    if (!in_array($ticket_id, $ticket_ids, true)) return false;
+    // Protect historical partial refunds too, before their next resynchronization.
+    return !isset(self::refunded_ticket_ids($order, $item_id, $ticket_ids)[$ticket_id]);
   }
 
   private static function normalize_ticket_ids($raw): array {
@@ -1601,7 +1644,9 @@ class Tickets {
   }
 
   private static function state_for_order_status(string $status): string {
-    return in_array($status, ['refunded', 'cancelled', 'failed'], true) ? self::invalid_state_for_order($status) : 'valid';
+    // Zero-total subscriber/complimentary checkout still becomes processing/completed.
+    // Pending, on-hold and draft orders have not been confirmed for admission.
+    return in_array($status, ['processing', 'completed'], true) ? 'valid' : self::invalid_state_for_order($status);
   }
 
   private static function invalid_state_for_order(string $status): string {

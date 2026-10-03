@@ -104,8 +104,21 @@ class Admin {
         if (in_array((string) $selected['status'], ['pending_manager','approval_emailed','ordered'], true)) echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:8px" onsubmit="return confirm(\'Cancel this order and release the vendor for a new order?\');">' . wp_nonce_field('roxy_inventory_cancel_order','_wpnonce',true,false) . '<input type="hidden" name="action" value="roxy_inventory_cancel_order"><input type="hidden" name="order_id" value="' . esc_attr((int) $selected['id']) . '">' . get_submit_button('Cancel Order', 'secondary', 'submit', false) . '</form>';
     }
     private static function qty(array $p): float { if(($p['tracking_status']??'tracked')!=='tracked') return 0; $override = $p['override_qty'] === null || $p['override_qty']==='' ? null : (float)$p['override_qty']; if ($override !== null) return max(0,$override); $need=max(0,(float)$p['target_stock']-(float)$p['on_hand']); if ($need <= 0 || (float)$p['on_hand'] > (float)$p['reorder_point']) return 0; $pack=max(1,(float)$p['pack_size']); return ceil($need/$pack)*$pack; }
-    private static function products(): void { $vendors=Store::vendors(); echo '<h2>Products</h2><p>Square owns on-hand inventory. These operating rules are editable and survive future Square pulls.</p><table class="widefat striped"><thead><tr><th>Product</th><th>On hand</th><th>Vendor</th><th>Pack size</th><th>Reorder point</th><th>Target</th><th>Unit cost</th><th>Override qty</th><th>Suggested</th><th>Save</th></tr></thead><tbody>'; foreach(Store::products() as $p){ echo '<tr><form method="post" action="'.esc_url(admin_url('admin-post.php')).'"><td>'.esc_html($p['name']).'<br><code>'.esc_html($p['square_variation_id']).'</code></td><td>'.esc_html($p['on_hand']).'</td><td><input name="vendor" value="'.esc_attr($p['vendor']).'" list="roxy-inventory-vendors"></td><td><input type="number" min="1" step="1" name="pack_size" value="'.esc_attr($p['pack_size']).'" style="width:80px"></td><td><input type="number" min="0" step="1" name="reorder_point" value="'.esc_attr($p['reorder_point']).'" style="width:80px"></td><td><input type="number" min="0" step="1" name="target_stock" value="'.esc_attr($p['target_stock']).'" style="width:80px"></td><td><input type="number" min="0" step="0.01" name="unit_cost" value="'.esc_attr($p['unit_cost']).'" style="width:90px"></td><td><input type="number" min="0" step="1" name="override_qty" value="'.esc_attr($p['override_qty']??'').'" placeholder="auto" style="width:80px"></td><td>'.esc_html(self::qty($p)).'</td><td>'.wp_nonce_field('roxy_inventory_save_product','_wpnonce',true,false).'<input type="hidden" name="action" value="roxy_inventory_save_product"><input type="hidden" name="id" value="'.esc_attr($p['id']).'">'.get_submit_button('Save','secondary','submit',false).'</td></form></tr>'; } echo '</tbody></table><datalist id="roxy-inventory-vendors">'; foreach($vendors as $v) echo '<option value="'.esc_attr($v['name']).'">'; echo '</datalist>'; }
-    private static function vendors(): void { echo '<h2>Vendors</h2><table class="widefat striped"><thead><tr><th>Vendor</th><th>Order method</th><th>Email</th><th>Minimum amount</th><th>Delivery / notes</th><th>Save</th></tr></thead><tbody>'; foreach(Store::vendors() as $v) echo '<tr><form method="post" action="'.esc_url(admin_url('admin-post.php')).'"><td>'.esc_html($v['name']).'</td><td><input name="order_method" value="'.esc_attr($v['order_method']).'"></td><td><input type="email" name="email" value="'.esc_attr($v['email']).'"></td><td><input type="number" min="0" step="0.01" name="minimum_amount" value="'.esc_attr($v['minimum_amount']).'"></td><td><input class="large-text" name="delivery_notes" value="'.esc_attr($v['delivery_notes']).'"></td><td>'.wp_nonce_field('roxy_inventory_save_vendor','_wpnonce',true,false).'<input type="hidden" name="action" value="roxy_inventory_save_vendor"><input type="hidden" name="id" value="'.esc_attr($v['id']).'">'.get_submit_button('Save','secondary','submit',false).'</td></form></tr>'; echo '</tbody></table>'; }
+    private static function vendors(): void {
+        echo '<h2>Vendors</h2><table class="widefat striped"><thead><tr><th>Vendor</th><th>Order method</th><th>Email</th><th>Minimum amount</th><th>Delivery / notes</th><th>Save</th></tr></thead><tbody>';
+        foreach (Store::vendors() as $v) {
+            $form_id = 'roxy-vendor-' . (int) $v['id'];
+            $form_attr = ' form="' . esc_attr($form_id) . '"';
+            echo '<tr><td>' . esc_html($v['name']) . '</td>';
+            echo '<td><input' . $form_attr . ' name="order_method" value="' . esc_attr($v['order_method']) . '"></td>';
+            echo '<td><input' . $form_attr . ' type="email" name="email" value="' . esc_attr($v['email']) . '"></td>';
+            echo '<td><input' . $form_attr . ' type="number" min="0" step="0.01" name="minimum_amount" value="' . esc_attr($v['minimum_amount']) . '"></td>';
+            echo '<td><input' . $form_attr . ' class="large-text" name="delivery_notes" value="' . esc_attr($v['delivery_notes']) . '"></td>';
+            echo '<td><form id="' . esc_attr($form_id) . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+            echo wp_nonce_field('roxy_inventory_save_vendor','_wpnonce',true,false) . '<input type="hidden" name="action" value="roxy_inventory_save_vendor"><input type="hidden" name="id" value="' . esc_attr($v['id']) . '">' . get_submit_button('Save','secondary','submit',false) . '</form></td></tr>';
+        }
+        echo '</tbody></table>';
+    }
     private static function settings(): void {
         $s = Settings::all();
         echo '<h2>Inventory settings</h2><form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">' . wp_nonce_field('roxy_inventory_save_settings','_wpnonce',true,false) . '<input type="hidden" name="action" value="roxy_inventory_save_settings"><table class="form-table">';
@@ -225,9 +238,11 @@ class Admin {
     private static function products_all(): void {
         $vendors = Store::vendors();
         echo '<h2>Products</h2><p>Change product rules, then save all rows at once.</p>';
-        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">' . wp_nonce_field('roxy_inventory_products_bulk_save','_wpnonce',true,false);
+        echo '<form id="roxy-inventory-products" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">' . wp_nonce_field('roxy_inventory_products_bulk_save','_wpnonce',true,false);
+        $products = Store::products();
+        echo '<input type="hidden" name="product_row_count" value="' . count($products) . '"><input type="hidden" name="product_rows_json" value="">';
         echo '<input type="hidden" name="action" value="roxy_inventory_products_bulk_save"><table class="widefat striped"><thead><tr><th>Product</th><th>On hand</th><th>Vendor</th><th>Pack</th><th>Reorder</th><th>Target</th><th>Cost</th><th>Override</th><th>Suggested</th></tr></thead><tbody>';
-        foreach (Store::products() as $product) {
+        foreach ($products as $product) {
             $id = (int) $product['id'];
             $on_hand = number_format((float) $product['on_hand'], 0, '.', '');
             $pack = number_format((float) $product['pack_size'], 0, '.', '');
@@ -239,13 +254,61 @@ class Admin {
             foreach ($vendors as $vendor) echo '<option value="' . esc_attr($vendor['name']) . '"' . selected($product['vendor'],$vendor['name'],false) . '>' . esc_html($vendor['name']) . '</option>';
             echo '</select></td><td><input name="pack_size[' . $id . ']" type="number" min="1" step="1" value="' . esc_attr($pack) . '"></td><td><input name="reorder_point[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($reorder) . '"></td><td><input name="target_stock[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($target) . '"></td><td><input name="unit_cost[' . $id . ']" type="number" min="0" step="0.01" value="' . esc_attr($cost) . '"></td><td><input name="override_qty[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($override) . '" placeholder="auto"></td><td>' . esc_html(number_format((float) self::qty($product), 0, '.', '')) . '</td></tr>';
         }
-        echo '</tbody></table><p>' . get_submit_button('Save all product changes','primary','submit',false) . '</p></form>';
+        echo '</tbody></table><input type="hidden" name="product_rows_complete" value="1"><p>' . get_submit_button('Save all product changes','primary','submit',false) . '</p></form>';
+        // Send the table as one variable, avoiding PHP max_input_vars truncation.
+        // The complete marker still rejects an incomplete non-JavaScript submission.
+        echo <<<'JS'
+<script>
+document.getElementById('roxy-inventory-products').addEventListener('submit', function () {
+    var rows = {};
+    var fields = this.querySelectorAll('select[name], input[name]');
+    fields.forEach(function (field) {
+        var match = field.name.match(/^(vendor|pack_size|reorder_point|target_stock|unit_cost|override_qty)\[(\d+)\]$/);
+        if (!match) return;
+        if (!rows[match[2]]) rows[match[2]] = {};
+        rows[match[2]][match[1]] = field.value;
+    });
+    this.elements.product_rows_json.value = JSON.stringify(rows);
+    fields.forEach(function (field) {
+        if (/^(vendor|pack_size|reorder_point|target_stock|unit_cost|override_qty)\[/.test(field.name)) field.removeAttribute('name');
+    });
+});
+</script>
+JS;
+    }
+    public static function product_rows_from_submission(array $post): ?array {
+        if (($post['product_rows_complete'] ?? '') !== '1' || !isset($post['product_row_count'])) return null;
+        $rows = [];
+        if (!empty($post['product_rows_json'])) {
+            $rows = json_decode(wp_unslash($post['product_rows_json']), true);
+            if (!is_array($rows)) return null;
+        } else {
+            foreach ((array) ($post['vendor'] ?? []) as $id => $vendor) {
+                foreach (['vendor','pack_size','reorder_point','target_stock','unit_cost','override_qty'] as $field) {
+                    if (!isset($post[$field]) || !is_array($post[$field]) || !array_key_exists($id, $post[$field])) return null;
+                    $rows[$id][$field] = $post[$field][$id];
+                }
+            }
+        }
+        if (count($rows) !== (int) $post['product_row_count']) return null;
+        foreach ($rows as $id => $row) {
+            if (!ctype_digit((string) $id) || (int) $id < 1 || !is_array($row)) return null;
+            foreach (['vendor','pack_size','reorder_point','target_stock','unit_cost','override_qty'] as $field) {
+                if (!array_key_exists($field, $row) || !is_scalar($row[$field])) return null;
+                if ($field === 'vendor' || ($field === 'override_qty' && $row[$field] === '')) continue;
+                if (!is_numeric($row[$field]) || !is_finite((float) $row[$field]) || (float) $row[$field] < 0) return null;
+                if ($field !== 'unit_cost' && floor((float) $row[$field]) !== (float) $row[$field]) return null;
+                if ($field === 'pack_size' && (float) $row[$field] < 1) return null;
+            }
+        }
+        return $rows;
     }
     public static function products_bulk_save(): void {
         self::guard(); check_admin_referer('roxy_inventory_products_bulk_save');
-        foreach ((array) ($_POST['vendor'] ?? array()) as $id => $vendor) {
-            $id = absint($id);
-            Store::update_product($id,array('vendor'=>sanitize_text_field(wp_unslash($vendor)),'pack_size'=>max(1,(float)($_POST['pack_size'][$id] ?? 1)),'reorder_point'=>max(0,(float)($_POST['reorder_point'][$id] ?? 0)),'target_stock'=>max(0,(float)($_POST['target_stock'][$id] ?? 0)),'unit_cost'=>max(0,(float)($_POST['unit_cost'][$id] ?? 0)),'override_qty'=>(($_POST['override_qty'][$id] ?? '') === '' ? null : max(0,(float)$_POST['override_qty'][$id]))));
+        $rows = self::product_rows_from_submission($_POST);
+        if ($rows === null) self::redirect('products','The product form was incomplete or invalid. Nothing was saved; reload and try again.',false);
+        foreach ($rows as $id => $row) {
+            Store::update_product((int) $id,array('vendor'=>sanitize_text_field(wp_unslash($row['vendor'])),'pack_size'=>(float)$row['pack_size'],'reorder_point'=>(float)$row['reorder_point'],'target_stock'=>(float)$row['target_stock'],'unit_cost'=>(float)$row['unit_cost'],'override_qty'=>($row['override_qty'] === '' ? null : (float)$row['override_qty'])));
         }
         self::redirect('products','All product changes saved.',true);
     }

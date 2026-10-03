@@ -103,10 +103,6 @@ function roxy_eb_get_showing_blocks_for_range(DateTimeImmutable $rangeStart, Dat
             continue;
         }
 
-        if ($show_start < $rangeStart || $show_start >= $rangeEnd) {
-            continue;
-        }
-
         // Public showings reserve the room around the actual showtime.
         $reserved_start = $show_start->modify('-2 hours');
         $reserved_end = $show_start->modify('+2 hours');

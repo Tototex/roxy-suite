@@ -703,12 +703,11 @@ class CPT {
     if ($start === '') {
       return null;
     }
-    $timestamp = strtotime($start);
-    if (!$timestamp) {
+    try {
+      $dt = (new \DateTimeImmutable($start, wp_timezone()))->setTimezone(wp_timezone())->setTime(0, 0);
+    } catch (\Exception $e) {
       return null;
     }
-    $dt = new \DateTimeImmutable('@' . $timestamp);
-    $dt = $dt->setTimezone(wp_timezone())->setTime(0, 0);
     $day = (int) $dt->format('N');
     if ($day === 5) {
       return $dt;
@@ -780,6 +779,7 @@ class CPT {
     $excluded = [
       '_roxy_pid_adult', '_roxy_pid_discount', '_roxy_pid_matinee', '_roxy_pid_live1', '_roxy_pid_live2', '_roxy_pid_subscriber',
       '_roxy_sales_stats', '_roxy_schedule_generated', '_roxy_generated_from_builder', '_edit_lock', '_edit_last', '_thumbnail_id',
+      '_roxy_legacy_product_ids', '_roxy_rs_request_id',
     ];
     foreach ($all_meta as $meta_key => $values) {
       if (in_array($meta_key, $excluded, true)) {

@@ -49,6 +49,8 @@ class Health {
             self::module_event_booking_structural(),
             self::module_arcade_structural(),
             self::module_grosses_structural(),
+            self::module_inventory_structural(),
+            self::module_social_structural(),
         ];
     }
 
@@ -65,6 +67,8 @@ class Health {
             'Will Call'          => self::functional_will_call(),
             'Arcade'             => self::functional_arcade(),
             'Grosses'            => self::functional_grosses(),
+            'Inventory'          => self::functional_inventory(),
+            'Social Publisher'   => self::functional_social(),
         ];
 
         foreach ($modules as &$mod) {
@@ -90,7 +94,7 @@ class Health {
     // ── Structural module checks ────────────────────────────────────────────────
 
     private static function module_core_structural(): array {
-        $php_ok = version_compare(PHP_VERSION, '7.4', '>=');
+        $php_ok = version_compare(PHP_VERSION, '8.0', '>=');
         $wp_ok  = version_compare(get_bloginfo('version'), '6.0', '>=');
         $wc_ok  = class_exists('WooCommerce');
         $as_ok  = class_exists('ActionScheduler') || function_exists('as_enqueue_async_action');
@@ -98,7 +102,7 @@ class Health {
         // Core has no toggle key — it is always enabled
         return self::module('Core / Environment', null, [
             self::item('PHP version', PHP_VERSION,
-                $php_ok ? self::PASS : self::FAIL, $php_ok ? '' : 'Requires PHP 7.4+'),
+                $php_ok ? self::PASS : self::FAIL, $php_ok ? '' : 'Requires PHP 8.0+'),
             self::item('WordPress version', get_bloginfo('version'),
                 $wp_ok ? self::PASS : self::WARN, $wp_ok ? '' : 'Recommend WP 6.0+'),
             self::item('WooCommerce', $wc_ok ? 'Active' : 'Not found',
@@ -282,6 +286,72 @@ class Health {
     }
 
     // ── Functional checks (on-demand only) ─────────────────────────────────────
+
+    private static function module_inventory_structural(): array {
+        $link = admin_url('admin.php?page=roxy-inventory');
+        if (!self::module_enabled('inventory')) return self::module('Inventory', $link, [], 'inventory');
+        global $wpdb;
+        $items = [];
+        foreach (['products', 'vendors', 'orders', 'runs'] as $suffix) {
+            $table = $wpdb->prefix . 'roxy_inventory_' . $suffix;
+            $exists = self::table_exists($table);
+            $items[] = self::item($table, $exists ? 'Exists' : 'Missing', $exists ? self::PASS : self::FAIL);
+        }
+        $enabled = (get_option('roxy_inventory_settings', [])['schedule_enabled'] ?? '1') === '1';
+        $scheduled = wp_next_scheduled('roxy_inventory_nightly_pull');
+        $items[] = self::item('Nightly pull cron', $scheduled ? 'Scheduled' : ($enabled ? 'Missing' : 'Disabled'),
+            !$enabled || $scheduled ? self::PASS : self::FAIL);
+        return self::module('Inventory', $link, $items, 'inventory');
+    }
+
+    private static function module_social_structural(): array {
+        $link = admin_url('admin.php?page=roxy-social-posts');
+        if (!self::module_enabled('social_publisher')) return self::module('Social Publisher', $link, [], 'social_publisher');
+        global $wpdb;
+        $table = $wpdb->prefix . 'roxy_social_posts';
+        $exists = self::table_exists($table);
+        $items = [self::item($table, $exists ? 'Exists' : 'Missing', $exists ? self::PASS : self::FAIL)];
+        foreach (['roxy_social_publish_due', 'roxy_social_cleanup'] as $hook) {
+            $scheduled = wp_next_scheduled($hook);
+            $items[] = self::item($hook, $scheduled ? 'Scheduled' : 'Missing', $scheduled ? self::PASS : self::WARN);
+        }
+        return self::module('Social Publisher', $link, $items, 'social_publisher');
+    }
+
+    private static function functional_inventory(): array {
+        if (!self::module_enabled('inventory')) return [];
+        global $wpdb;
+        $table = $wpdb->prefix . 'roxy_inventory_runs';
+        if (!self::table_exists($table)) return [];
+        $latest = $wpdb->get_row("SELECT status,created_at FROM $table WHERE run_type='pull' ORDER BY id DESC LIMIT 1", ARRAY_A);
+        $success = $wpdb->get_var("SELECT created_at FROM $table WHERE run_type='pull' AND status='success' ORDER BY id DESC LIMIT 1");
+        $enabled = (get_option('roxy_inventory_settings', [])['schedule_enabled'] ?? '1') === '1';
+        $stale = false;
+        if ($success) {
+            try { $stale = time() - (new \DateTimeImmutable($success, wp_timezone()))->getTimestamp() > 36 * HOUR_IN_SECONDS; }
+            catch (\Exception $e) { $stale = true; }
+        }
+        return [
+            self::item('Last inventory pull', $latest ? $latest['created_at'] . ' — ' . $latest['status'] : 'No runs recorded',
+                $latest && $latest['status'] === 'success' ? self::PASS : self::WARN),
+            self::item('Last successful inventory pull', $success ?: 'None recorded',
+                $enabled && (!$success || $stale) ? self::WARN : self::PASS,
+                $enabled && (!$success || $stale) ? 'Automatic pulls are enabled, but no success was recorded in the last 36 hours. No email is sent by this diagnostic.' : ''),
+        ];
+    }
+
+    private static function functional_social(): array {
+        if (!self::module_enabled('social_publisher')) return [];
+        global $wpdb;
+        $table = $wpdb->prefix . 'roxy_social_posts';
+        if (!self::table_exists($table)) return [];
+        $failed = (int) $wpdb->get_var("SELECT COUNT(*) FROM $table WHERE status='failed'");
+        $overdue = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $table WHERE status IN ('approved','publishing') AND scheduled_for < %s", wp_date('Y-m-d H:i:s', time() - HOUR_IN_SECONDS)));
+        return [
+            self::item('Failed social jobs', (string) $failed, $failed ? self::WARN : self::PASS, $failed ? 'Review failed drafts; do not blindly republish an ambiguous provider result.' : ''),
+            self::item('Social jobs overdue by over an hour', (string) $overdue, $overdue ? self::WARN : self::PASS),
+        ];
+    }
 
     private static function functional_core(): array {
         $items = [];
@@ -646,12 +716,12 @@ class Health {
         </style>
 
         <div class="rs-health-bar">
-            <strong id="rs-summary-text"><?php echo esc_html("$pass_count / $total modules operational (structural)"); ?></strong>
+            <strong id="rs-summary-text"><?php echo esc_html("$pass_count / $total modules passed structural diagnostics"); ?></strong>
             <span>Roxy Suite v<?php echo esc_html(ROXY_SUITE_VERSION); ?></span>
         </div>
 
         <div class="rs-health-actions">
-            <button id="rs-run-tests" class="button button-primary">&#9654; Run Full Tests</button>
+            <button id="rs-run-tests" class="button button-primary">&#9654; Run Diagnostics</button>
             <span class="rs-health-timestamp" id="rs-timestamp"></span>
         </div>
 
@@ -710,7 +780,7 @@ class Health {
 
             // ── Full test run ─────────────────────────────────────────────────
             btn.addEventListener('click', function() {
-                btn.textContent = '⏳ Running tests…';
+                btn.textContent = '⏳ Running diagnostics…';
                 btn.classList.add('rs-loading');
 
                 fetch(ajaxUrl, {
@@ -723,7 +793,7 @@ class Health {
                 })
                 .then(r => r.json())
                 .then(data => {
-                    btn.textContent = '▶ Run Full Tests';
+                    btn.textContent = '▶ Run Diagnostics';
                     btn.classList.remove('rs-loading');
 
                     if (!data.success) {
@@ -736,7 +806,7 @@ class Health {
                     const active   = modules.filter(m => m.enabled !== false);
                     const passCount = active.filter(m => m.overall === 'pass').length;
 
-                    summary.textContent = passCount + ' / ' + active.length + ' modules fully operational (full test)';
+                    summary.textContent = passCount + ' / ' + active.length + ' modules passed diagnostics (not an end-to-end checkout test)';
 
                     const bar = summary.closest('.rs-health-bar');
                     bar.style.background = passCount === active.length ? '#00a32a'
@@ -747,7 +817,7 @@ class Health {
                     grid.innerHTML = modules.map(mod => renderCard(mod)).join('');
                 })
                 .catch(err => {
-                    btn.textContent = '▶ Run Full Tests';
+                    btn.textContent = '▶ Run Diagnostics';
                     btn.classList.remove('rs-loading');
                     alert('Request failed: ' + err.message);
                 });

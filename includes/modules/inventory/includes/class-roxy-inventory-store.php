@@ -74,7 +74,7 @@ class Store {
             ['Popcorn County', 'email', 'craigwelty@popcorncounty.com', 0, 'Inactive by default until this vendor is needed again.'],
         ] as $v) {
             $active = $v[0] === 'Popcorn County' ? 0 : 1;
-            $wpdb->query($wpdb->prepare("INSERT INTO " . self::vendors_table() . " (name,order_method,email,minimum_amount,delivery_notes,active,updated_at) VALUES (%s,%s,%s,%f,%s,%d,%s) ON DUPLICATE KEY UPDATE email=IF(email='',VALUES(email),email), minimum_amount=IF(minimum_amount=0,VALUES(minimum_amount),minimum_amount), delivery_notes=IF(delivery_notes='',VALUES(delivery_notes),delivery_notes), updated_at=VALUES(updated_at)", $v[0], $v[1], $v[2], $v[3], $v[4], $active, $now));
+            $wpdb->query($wpdb->prepare("INSERT INTO " . self::vendors_table() . " (name,order_method,email,minimum_amount,delivery_notes,active,updated_at) VALUES (%s,%s,%s,%f,%s,%d,%s) ON DUPLICATE KEY UPDATE name=name", $v[0], $v[1], $v[2], $v[3], $v[4], $active, $now));
         }
     }
 

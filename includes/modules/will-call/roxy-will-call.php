@@ -687,10 +687,11 @@ function roxy_will_call_showing_dropdown($selected, bool $show_archived = false)
     'numberposts' => 200,
     'orderby' => 'meta_value',
     'meta_key' => '_roxy_start',
-    'order' => 'ASC',
+    'order' => $show_archived ? 'DESC' : 'ASC',
     'meta_query' => [[
       'key' => '_roxy_start',
-      'compare' => 'EXISTS',
+      'compare' => $show_archived ? 'EXISTS' : '>=',
+      'value' => $show_archived ? '' : wp_date('Y-m-d'),
     ]],
   ]);
 

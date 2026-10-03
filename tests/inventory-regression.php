@@ -15,6 +15,8 @@ namespace {
     function wp_json_encode($value) { return json_encode($value); }
     function get_option($key, $default = false) { return $GLOBALS['test_options'][$key] ?? ($key === 'admin_email' ? 'manager@example.test' : $default); }
     function wp_parse_args($saved, $defaults) { return array_merge($defaults, $saved); }
+    function wp_unslash($value) { return $value; }
+    function wp_get_scheduled_event($hook) { return (object) ['schedule' => '']; }
     function sanitize_email($value) { return (string) $value; }
     function sanitize_textarea_field($value) { return (string) $value; }
     function admin_url($path) { return 'https://example.test/wp-admin/' . $path; }
@@ -61,7 +63,7 @@ namespace {
             return $this->orders[(int) ($match[1] ?? 0)] ?? null;
         }
         public function get_results($sql, $format) { return []; }
-        public function query($sql) { return 0; }
+        public function query($sql) { $GLOBALS['test_queries'][] = $sql; return 0; }
         public function insert($table, $data) {
             if (strpos($table, 'products') !== false) $this->products[$data['square_variation_id']] = $data + ['id' => 1];
             return 1;
@@ -137,6 +139,14 @@ namespace {
     check(\RoxyInventory\Store::update_order_status(1, 'ordered'), 'Direct email marks order Ordered');
     check(\RoxyInventory\Settings::get('direct_vendor_sending_enabled') === '0', 'Approval remains enabled by default');
     check(\RoxyInventory\Settings::sanitize(['direct_vendor_sending_enabled' => '1'])['direct_vendor_sending_enabled'] === '1', 'Direct setting can be saved');
+    $seed = new \ReflectionMethod(\RoxyInventory\Store::class, 'seed_vendors');
+    $seed->setAccessible(true);
+    $GLOBALS['test_queries'] = [];
+    $seed->invoke(null);
+    foreach ($GLOBALS['test_queries'] as $query) {
+        check(strpos($query, 'ON DUPLICATE KEY UPDATE name=name') !== false, 'Existing vendor settings are never replaced by seed defaults');
+        check(strpos($query, 'email=IF') === false && strpos($query, 'minimum_amount=IF') === false, 'Blank email and zero minimum remain intentional');
+    }
     echo "PASS: order statuses, cancellation, pagination, stock-state filtering, zero initial costs, preserved costs, failed-page preservation, silent nightly failure.\n";
     echo "PASS: Tripp/Odom instructions, forwarding addresses, manager and direct recipients, no forwarded decision tokens, direct status and settings.\n";
 }

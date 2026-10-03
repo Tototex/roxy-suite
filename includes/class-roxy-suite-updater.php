@@ -143,6 +143,7 @@ class Updater {
     private static function clear_update_cache(): void {
         self::$release = null;
         delete_site_transient(self::get_cache_key());
+        delete_site_transient(self::get_cache_key() . '_failed');
         delete_site_transient('update_plugins');
         if (function_exists('wp_clean_plugins_cache')) {
             wp_clean_plugins_cache(true);
@@ -160,6 +161,12 @@ class Updater {
             self::$release = $cached;
             return self::$release;
         }
+        // A provider outage must not add a network timeout to every admin request.
+        if (get_site_transient($cache_key . '_failed')) {
+            return null;
+        }
+        // Reserve a short retry window before the request, including malformed responses.
+        set_site_transient($cache_key . '_failed', 1, 5 * MINUTE_IN_SECONDS);
 
         $url      = 'https://api.github.com/repos/' . self::$config['github_repo'] . '/releases/latest';
         $response = wp_remote_get($url, [
@@ -211,6 +218,7 @@ class Updater {
         ];
 
         set_site_transient($cache_key, self::$release, 10 * MINUTE_IN_SECONDS);
+        delete_site_transient($cache_key . '_failed');
 
         return self::$release;
     }
