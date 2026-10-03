@@ -84,7 +84,7 @@ define('ROXY_GROSSES_PATH', ROXY_SUITE_PATH . 'includes/modules/grosses/');
 define('ROXY_GROSSES_URL',  ROXY_SUITE_URL  . 'includes/modules/grosses/');
 
 // Inventory module
-define('ROXY_INVENTORY_VER', '0.1.14');
+define('ROXY_INVENTORY_VER', '0.1.15');
 define('ROXY_INVENTORY_PATH', ROXY_SUITE_PATH . 'includes/modules/inventory/');
 define('ROXY_INVENTORY_URL',  ROXY_SUITE_URL  . 'includes/modules/inventory/');
 

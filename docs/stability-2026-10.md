@@ -27,15 +27,15 @@ Current safeguards: preserve live customizations; back up changed files before d
 | A3 | Open | See audit; no resolution claimed. |
 | A4 | Open | See audit; no resolution claimed. |
 | I1 | Resolved | Bulk rules sent as one validated JSON field; completion/count checks reject truncation before writes. 500-row fixture passes. Live Save All preserves all 858 values across 143 rows. DB write failures remain I9. |
-| I2 | Open | See audit; no resolution claimed. |
+| I2 | Resolved, normal connection lifecycle | Serialized state lock plus transactional open-order check and unique submission identity; replay returns existing order without second email. Real MySQL two-connection contention and duplicate-open-order fixtures pass. Database disconnect/reconnect fault injection remains I9. |
 | I3 | Resolved, confirmation workflow | GET only renders confirmation; signed links expire after 30 days; POST requires token-scoped nonce and preserves conditional status update. Prefetch, tampering, expiry, replay, confirmed POST/history redirect fixtures pass. Anonymous legacy links fail; signed-in authorized managers retain confirmation access. No real order changed for this test. |
-| I4 | Open | See audit; no resolution claimed. |
+| I4 | In progress | Stock compared against pre-pull inventory, not only original submission snapshot; 40 → 20 → 25 arrival fixture unlocks order. Triggering item/from/to/time retained; concurrent cancellation cannot be overwritten. Net changes between pulls can still miss delivery plus sales or mistake corrections for receipts; adjustment-event reconciliation remains. |
 | I5 | Resolved | Next local 23:00 single event replaces fixed daily recurrence. DST/migration fixtures pass; live 2026-10-02 23:00:52 pull succeeded. |
 | I6 | Open | See audit; no resolution claimed. |
 | I7 | Resolved | Vendor seeds no longer replace existing blank email/zero minimum/custom rules. Regression verifies no duplicate-key rule updates. |
-| I8 | Open | See audit; no resolution claimed. |
-| I9 | Open | See audit; no resolution claimed. |
-| I10 | Open | See audit; no resolution claimed. |
+| I8 | Resolved | All tracked vendor items shown, including zero suggestions; server requires exact reviewed snapshot and explicit complete integer quantities, validates fresh costs/minimum/recipient. Missing/stale quantities never fall back to suggestions. Isolated fixtures pass; live Pepsi has all 22 items, remains locked Ordered with no Submit control. |
+| I9 | In progress | Bulk rules, pulls, order creation/status/progress use serialized transactions and checked reads/writes. Injected later-write failure rolls back earlier change in actual temporary MySQL tables. Schema deployment caught a missing additive column: immediately rolled back, fixed explicit repeatable upgrade, tested and redeployed with all row hashes intact. Logging/legacy handler errors and DB reconnect failure remain. |
+| I10 | Resolved for history/progress | 50-row pages and escaped vendor search; real 103-order fixture returns 50/50/3. Live search returns Pepsi, itemized checklist opens. Payload revision compare-and-swap prevents stale checklist overwrite, records actor/time when changed; stock-reset evidence retained. |
 | I11 | Resolved | Valid vendor form ownership; obsolete row renderer removed. Live unchanged Pepsi save preserves every vendor field. |
 | T1 | Open | See audit; no resolution claimed. |
 | T2 | Resolved for ticket API | Payment/order/item eligibility revalidated at admission. Isolated unpaid/missing-order checks and real $0 on-hold/processing transitions pass. Separate Will Call bypass is T5 and remains open. |
@@ -110,3 +110,11 @@ Current safeguards: preserve live customizations; back up changed files before d
 - Request-page calendar lookup and backing deadline display work for November 7 at 14:00 (deadline October 24 at 14:00). No request or backing submitted.
 - Existing four vendor orders remain Ordered with their original totals. No order decisions submitted against real vendor orders.
 - User confirmed studio reports retain nominal ticket gross; financial totals use actual collections and refunds. Advertiser monthly attendance retains the current week-start month rule (no calendar-month splitting). Label this policy clearly. No historical numbers recalculated in these checkpoints.
+
+### Third checkpoint
+
+- Inventory integrity source deployed selectively. Additive submission identity upgrade verified; old orders keep NULL identity and unchanged payload/status/total. Private four-table SQL backup and changed-file rollback copies retained. See deployment checkpoint 3.
+- Initial upgrade failed because existing compressed dbDelta SQL did not add the new column. Previous files restored immediately; complete original row hashes verified. Explicit additive migration tested twice against temporary tables; optional-module migration failure no longer throws through global checkout bootstrap. Retry succeeded (inventory schema 0.1.15).
+- Real MySQL temporary fixtures test migration, duplicate vendor prevention, cross-connection claim contention, failed-write rollback, stale progress rejection, partial stock increase, and >100-order history. No live vendor row/email/provider changed by fixtures.
+- Live browser Save All succeeded with all 858 editable values across 143 tracked rows unchanged. Pepsi review displays 22 tracked products including zero suggestions, disabled because order is Ordered. History search and itemized checklist work; no real Submit/Cancel/decision clicked.
+- Seven isolated suites pass against deployed source. This does not close the remaining seat-capacity, accounting, subscription, publishing, and cross-module findings.

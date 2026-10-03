@@ -64,6 +64,7 @@ namespace {
             return $this->orders[(int) ($match[1] ?? 0)] ?? null;
         }
         public function get_results($sql, $format) { return []; }
+        public function get_var($sql) { return 1; }
         public function query($sql) { $GLOBALS['test_queries'][] = $sql; return 0; }
         public function insert($table, $data) {
             if (strpos($table, 'products') !== false) $this->products[$data['square_variation_id']] = $data + ['id' => 1];

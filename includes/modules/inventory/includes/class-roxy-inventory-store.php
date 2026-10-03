@@ -3,6 +3,47 @@ namespace RoxyInventory;
 if (!defined('ABSPATH')) exit;
 
 class Store {
+    private static int $transaction_depth = 0;
+    public static function with_lock(string $resource, callable $callback) {
+        global $wpdb;
+        $key = 'roxy_inv_' . substr(hash('sha256', self::products_table() . '|' . $resource), 0, 48);
+        if ((string) $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $key)) !== '1') {
+            throw new \RuntimeException('Inventory is busy. Please refresh and try again.');
+        }
+        try { return $callback(); }
+        finally { $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $key)); }
+    }
+    public static function transaction(callable $callback) {
+        global $wpdb;
+        if (self::$transaction_depth > 0) return $callback();
+        return self::with_lock('state', static function () use ($callback, $wpdb) {
+            self::checked_write($wpdb->query('START TRANSACTION'));
+            self::$transaction_depth++;
+            try {
+                $result = $callback();
+                self::checked_write($wpdb->query('COMMIT'));
+                return $result;
+            } catch (\Throwable $e) { $wpdb->query('ROLLBACK'); throw $e; }
+            finally { self::$transaction_depth--; }
+        });
+    }
+    private static function checked_write($result): void {
+        if ($result === false) throw new \RuntimeException('Inventory could not be saved. No success is being reported; please refresh and retry.');
+    }
+    private static function checked_read(): void {
+        global $wpdb;
+        if (!empty($wpdb->last_error)) throw new \RuntimeException('Inventory could not be read. Please refresh and retry.');
+    }
+    private static function rows(string $sql): array {
+        global $wpdb; $rows=$wpdb->get_results($sql,ARRAY_A); self::checked_read();
+        if (!is_array($rows)) throw new \RuntimeException('Inventory could not be read.');
+        return $rows;
+    }
+    public static function stock_snapshot(): array {
+        $stock=[];
+        foreach(self::rows('SELECT square_variation_id,on_hand FROM ' . self::products_table()) as $p) $stock[(string)$p['square_variation_id']]=(float)$p['on_hand'];
+        return $stock;
+    }
     public static function products_table(): string { global $wpdb; return $wpdb->prefix . 'roxy_inventory_products'; }
     public static function vendors_table(): string { global $wpdb; return $wpdb->prefix . 'roxy_inventory_vendors'; }
     public static function runs_table(): string { global $wpdb; return $wpdb->prefix . 'roxy_inventory_runs'; }
@@ -33,25 +74,45 @@ class Store {
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, vendor VARCHAR(100) NOT NULL,
             status VARCHAR(30) NOT NULL DEFAULT 'approval_emailed', estimated_total DECIMAL(12,2) NOT NULL DEFAULT 0,
             minimum_amount DECIMAL(12,2) NOT NULL DEFAULT 0, item_count INT NOT NULL DEFAULT 0,
-            payload LONGTEXT NULL, created_at DATETIME NOT NULL, PRIMARY KEY (id), KEY vendor (vendor), KEY created_at (created_at)
+            payload LONGTEXT NULL, submission_key VARCHAR(64) NULL, created_at DATETIME NOT NULL,
+            PRIMARY KEY (id), UNIQUE KEY submission_key (submission_key), KEY vendor (vendor), KEY created_at (created_at)
         ) $charset;");
         if (!$wpdb->get_var("SHOW COLUMNS FROM " . self::products_table() . " LIKE 'tracking_status'")) {
-            $wpdb->query("ALTER TABLE " . self::products_table() . " ADD tracking_status VARCHAR(20) NOT NULL DEFAULT 'tracked' AFTER vendor");
+            self::checked_write($wpdb->query("ALTER TABLE " . self::products_table() . " ADD tracking_status VARCHAR(20) NOT NULL DEFAULT 'tracked' AFTER vendor"));
         }
         self::seed_vendors();
-        self::apply_vendor_assignments();
+        if (!get_option('roxy_inventory_db_version')) self::apply_vendor_assignments();
+        self::upgrade_submission_identity();
         update_option('roxy_inventory_db_version', defined('ROXY_INVENTORY_VER') ? ROXY_INVENTORY_VER : '0.1.0');
     }
 
     public static function maybe_upgrade_schema(): void {
-        if (get_option('roxy_inventory_db_version') !== (defined('ROXY_INVENTORY_VER') ? ROXY_INVENTORY_VER : '0.1.0')) self::install_schema();
+        if (get_option('roxy_inventory_db_version') === (defined('ROXY_INVENTORY_VER') ? ROXY_INVENTORY_VER : '0.1.0')) return;
+        try { self::install_schema(); }
+        catch (\Throwable $e) {
+            // A failed optional-module upgrade must not take down ticket checkout.
+            error_log('Roxy Inventory schema upgrade failed: ' . $e->getMessage());
+            add_action('admin_notices', static function () { echo '<div class="notice notice-error"><p>Inventory schema upgrade did not finish. Existing data is preserved; contact the administrator before submitting orders.</p></div>'; });
+        }
+    }
+
+    public static function upgrade_submission_identity(): void {
+        global $wpdb;
+        $table = self::orders_table();
+        $column = $wpdb->get_var("SHOW COLUMNS FROM $table LIKE 'submission_key'"); self::checked_read();
+        if (!$column) self::checked_write($wpdb->query("ALTER TABLE $table ADD COLUMN submission_key VARCHAR(64) NULL"));
+        $index = $wpdb->get_row("SHOW INDEX FROM $table WHERE Key_name='submission_key'", ARRAY_A); self::checked_read();
+        if (!$index) self::checked_write($wpdb->query("ALTER TABLE $table ADD UNIQUE KEY submission_key (submission_key)"));
+        $column = $wpdb->get_var("SHOW COLUMNS FROM $table LIKE 'submission_key'"); self::checked_read();
+        $index = $wpdb->get_row("SHOW INDEX FROM $table WHERE Key_name='submission_key'", ARRAY_A); self::checked_read();
+        if (!$column || !$index || (int)$index['Non_unique'] !== 0) throw new \RuntimeException('Inventory submission identity upgrade did not finish.');
     }
 
     public static function apply_vendor_assignments(): void {
         global $wpdb;
-        foreach ((array) $wpdb->get_results("SELECT id,name FROM " . self::products_table() . " WHERE vendor IS NULL OR vendor=''", ARRAY_A) as $product) {
+        foreach (self::rows("SELECT id,name FROM " . self::products_table() . " WHERE vendor IS NULL OR vendor=''") as $product) {
             $vendor = Vendor_Map::assign((string) $product['name']);
-            if ($vendor !== '') $wpdb->update(self::products_table(), ['vendor' => $vendor], ['id' => (int) $product['id']]);
+            if ($vendor !== '') self::checked_write($wpdb->update(self::products_table(), ['vendor' => $vendor], ['id' => (int) $product['id']]));
         }
     }
 
@@ -74,15 +135,15 @@ class Store {
             ['Popcorn County', 'email', 'craigwelty@popcorncounty.com', 0, 'Inactive by default until this vendor is needed again.'],
         ] as $v) {
             $active = $v[0] === 'Popcorn County' ? 0 : 1;
-            $wpdb->query($wpdb->prepare("INSERT INTO " . self::vendors_table() . " (name,order_method,email,minimum_amount,delivery_notes,active,updated_at) VALUES (%s,%s,%s,%f,%s,%d,%s) ON DUPLICATE KEY UPDATE name=name", $v[0], $v[1], $v[2], $v[3], $v[4], $active, $now));
+            self::checked_write($wpdb->query($wpdb->prepare("INSERT INTO " . self::vendors_table() . " (name,order_method,email,minimum_amount,delivery_notes,active,updated_at) VALUES (%s,%s,%s,%f,%s,%d,%s) ON DUPLICATE KEY UPDATE name=name", $v[0], $v[1], $v[2], $v[3], $v[4], $active, $now)));
         }
     }
 
-    public static function products(): array { global $wpdb; return $wpdb->get_results("SELECT * FROM " . self::products_table() . " WHERE active=1 AND tracking_status='tracked' ORDER BY vendor,name", ARRAY_A) ?: []; }
-    public static function unassigned_products(): array { global $wpdb; return $wpdb->get_results("SELECT * FROM " . self::products_table() . " WHERE active=1 AND (vendor IS NULL OR vendor='') ORDER BY name", ARRAY_A) ?: []; }
-    public static function review_products(): array { global $wpdb; return $wpdb->get_results("SELECT * FROM " . self::products_table() . " WHERE active=1 AND ((vendor IS NULL OR vendor='') OR tracking_status='not_tracked') ORDER BY tracking_status DESC, name", ARRAY_A) ?: []; }
-    public static function vendors(): array { global $wpdb; return $wpdb->get_results("SELECT * FROM " . self::vendors_table() . " WHERE active=1 ORDER BY name", ARRAY_A) ?: []; }
-    public static function all_vendors(): array { global $wpdb; return $wpdb->get_results("SELECT * FROM " . self::vendors_table() . " ORDER BY active DESC, name", ARRAY_A) ?: []; }
+    public static function products(): array { return self::rows("SELECT * FROM " . self::products_table() . " WHERE active=1 AND tracking_status='tracked' ORDER BY vendor,name"); }
+    public static function unassigned_products(): array { return self::rows("SELECT * FROM " . self::products_table() . " WHERE active=1 AND (vendor IS NULL OR vendor='') ORDER BY name"); }
+    public static function review_products(): array { return self::rows("SELECT * FROM " . self::products_table() . " WHERE active=1 AND ((vendor IS NULL OR vendor='') OR tracking_status='not_tracked') ORDER BY tracking_status DESC, name"); }
+    public static function vendors(): array { return self::rows("SELECT * FROM " . self::vendors_table() . " WHERE active=1 ORDER BY name"); }
+    public static function all_vendors(): array { return self::rows("SELECT * FROM " . self::vendors_table() . " ORDER BY active DESC, name"); }
     public static function upsert_product(array $p): void {
         global $wpdb; $now = current_time('mysql');
         $data = [
@@ -91,47 +152,68 @@ class Store {
             'calculated_at' => sanitize_text_field($p['calculated_at'] ?? ''), 'updated_at' => $now,
         ];
         $existing = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::products_table() . " WHERE square_variation_id=%s", $data['square_variation_id']), ARRAY_A);
+        self::checked_read();
         if ($existing) {
             if (trim((string) ($existing['vendor'] ?? '')) === '') {
                 $assigned = Vendor_Map::assign((string) $data['name']);
                 if ($assigned !== '') $data['vendor'] = $assigned;
             }
-            $wpdb->update(self::products_table(), $data, ['id' => $existing['id']]);
+            self::checked_write($wpdb->update(self::products_table(), $data, ['id' => $existing['id']]));
         } else {
             $data['vendor'] = Vendor_Map::assign((string) $data['name']);
             $data['pack_size'] = 1;
             $data['reorder_point'] = 0;
             $data['target_stock'] = 0;
             $data['unit_cost'] = 0;
-            $wpdb->insert(self::products_table(), $data);
+            self::checked_write($wpdb->insert(self::products_table(), $data));
         }
     }
-    public static function update_product(int $id, array $data): void { global $wpdb; $wpdb->update(self::products_table(), $data, ['id' => $id]); }
+    public static function update_product(int $id, array $data): void { global $wpdb; self::transaction(static function () use ($id,$data,$wpdb) { self::checked_write($wpdb->update(self::products_table(), $data, ['id' => $id])); }); }
     public static function deactivate_missing(array $square_variation_ids): int {
         global $wpdb;
         $ids = array_values(array_filter(array_map('strval', $square_variation_ids)));
         if (!$ids) return 0;
         $placeholders = implode(',', array_fill(0, count($ids), '%s'));
         $sql = $wpdb->prepare("UPDATE " . self::products_table() . " SET active=0, updated_at=%s WHERE active=1 AND square_variation_id NOT IN ($placeholders)", array_merge([current_time('mysql')], $ids));
-        return (int) $wpdb->query($sql);
+        $result = $wpdb->query($sql); self::checked_write($result); return (int) $result;
     }
-    public static function update_vendor(int $id, array $data): void { global $wpdb; $wpdb->update(self::vendors_table(), $data, ['id' => $id]); }
+    public static function update_vendor(int $id, array $data): void { global $wpdb; self::transaction(static function () use ($id,$data,$wpdb) { self::checked_write($wpdb->update(self::vendors_table(), $data, ['id' => $id])); }); }
     public static function log(string $type, string $status, string $message): void { global $wpdb; $wpdb->insert(self::runs_table(), ['run_type'=>$type,'status'=>$status,'message'=>$message,'created_at'=>current_time('mysql')]); }
     public static function latest_run(string $type): ?array { global $wpdb; $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::runs_table() . " WHERE run_type=%s ORDER BY id DESC LIMIT 1", $type), ARRAY_A); return is_array($row) ? $row : null; }
-    public static function create_order(string $vendor, array $lines, float $total, float $minimum, string $status = 'approval_emailed'): int {
+    public static function create_order(string $vendor, array $lines, float $total, float $minimum, string $status = 'approval_emailed', ?string $submission_key = null): int {
         global $wpdb;
-        $wpdb->insert(self::orders_table(), ['vendor'=>$vendor,'status'=>$status,'estimated_total'=>round($total,2),'minimum_amount'=>round($minimum,2),'item_count'=>count($lines),'payload'=>wp_json_encode($lines),'created_at'=>current_time('mysql')]);
-        return (int) $wpdb->insert_id;
+        return self::transaction(static function () use ($vendor,$lines,$total,$minimum,$status,$submission_key,$wpdb) {
+            if (self::open_order_for_vendor($vendor)) throw new \RuntimeException('An open order already exists for this vendor.');
+            self::checked_write($wpdb->insert(self::orders_table(), ['vendor'=>$vendor,'status'=>$status,'estimated_total'=>round($total,2),'minimum_amount'=>round($minimum,2),'item_count'=>count($lines),'payload'=>wp_json_encode($lines),'submission_key'=>$submission_key,'created_at'=>current_time('mysql')]));
+            if (!$wpdb->insert_id) throw new \RuntimeException('Could not save this order.');
+            return (int) $wpdb->insert_id;
+        });
     }
-    public static function orders(): array { global $wpdb; return $wpdb->get_results("SELECT * FROM " . self::orders_table() . " ORDER BY created_at DESC, id DESC LIMIT 100", ARRAY_A) ?: []; }
+    public static function order_for_submission(string $key): ?array {
+        global $wpdb; $row=$wpdb->get_row($wpdb->prepare('SELECT * FROM ' . self::orders_table() . ' WHERE submission_key=%s', $key), ARRAY_A); self::checked_read();
+        return is_array($row) ? $row : null;
+    }
+    private static function history_where(string $search): string {
+        global $wpdb;
+        return $search === '' ? '' : $wpdb->prepare(' WHERE vendor LIKE %s','%'.$wpdb->esc_like($search).'%');
+    }
+    public static function orders(int $page = 1, string $search = ''): array {
+        $offset=(max(1,$page)-1)*50;
+        return self::rows('SELECT * FROM ' . self::orders_table() . self::history_where($search) . ' ORDER BY created_at DESC, id DESC LIMIT 50 OFFSET '.$offset);
+    }
+    public static function order_count(string $search = ''): int {
+        global $wpdb; $count=$wpdb->get_var('SELECT COUNT(*) FROM '.self::orders_table().self::history_where($search)); self::checked_read(); return (int)$count;
+    }
     public static function order(int $id): ?array {
         global $wpdb;
         $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::orders_table() . " WHERE id=%d", $id), ARRAY_A);
+        self::checked_read();
         return is_array($row) ? $row : null;
     }
 
     public static function update_order_status(int $id, string $status): bool {
         global $wpdb;
+        return self::transaction(static function () use ($id,$status,$wpdb) {
         $allowed = [
             'pending_manager' => ['approval_emailed', 'ordered', 'email_failed', 'cancelled'],
             'approval_emailed' => ['ordered', 'rejected', 'cancelled'],
@@ -140,28 +222,41 @@ class Store {
         $order = self::order($id);
         if (!$order || !in_array($status, $allowed[$order['status']] ?? [], true)) return false;
         return $wpdb->update(self::orders_table(), ['status' => $status], ['id' => $id, 'status' => $order['status']]) === 1;
+        });
     }
 
-    public static function update_order_payload(int $id, array $lines): bool {
+    public static function update_order_payload(int $id, array $lines, ?string $expected_payload = null): bool {
         global $wpdb;
-        return (bool) $wpdb->update(self::orders_table(), ['payload' => wp_json_encode(array_values($lines))], ['id' => $id]);
+        return self::transaction(static function () use ($id,$lines,$expected_payload,$wpdb) {
+            $order=self::order($id);
+            if (!$order || ($expected_payload !== null && !hash_equals($expected_payload,(string)$order['payload']))) return false;
+            $payload=wp_json_encode(array_values($lines));
+            if ($payload === (string)$order['payload']) return true;
+            return $wpdb->update(self::orders_table(), ['payload'=>$payload], ['id'=>$id,'payload'=>(string)$order['payload']]) === 1;
+        });
     }
     public static function open_order_for_vendor(string $vendor): ?array {
         global $wpdb;
         $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::orders_table() . " WHERE vendor=%s AND status IN ('pending_manager','approval_emailed','ordered') ORDER BY id DESC LIMIT 1", $vendor), ARRAY_A);
+        self::checked_read();
         return is_array($row) ? $row : null;
     }
 
-    public static function mark_stock_increases(): int {
+    public static function mark_stock_increases(array $previous_stock = []): int {
+        return self::transaction(static function () use ($previous_stock) { return self::mark_stock_increases_locked($previous_stock); });
+    }
+    private static function mark_stock_increases_locked(array $previous_stock): int {
         global $wpdb;
-$products = $wpdb->get_results("SELECT square_variation_id,name,on_hand FROM " . self::products_table(), ARRAY_A) ?: [];
+$products = self::rows("SELECT square_variation_id,name,on_hand FROM " . self::products_table());
         $current = [];
         $by_name = [];
         foreach ($products as $product) {
             $current[(string) $product['square_variation_id']] = (float) $product['on_hand'];
-            $by_name[strtolower((string) $product['name'])] = ['square_variation_id' => (string) $product['square_variation_id'], 'on_hand' => (float) $product['on_hand']];
+            $name_key=strtolower((string)$product['name']);
+            if (array_key_exists($name_key,$by_name)) $by_name[$name_key]=null; // Ambiguous names cannot establish receipt identity.
+            else $by_name[$name_key] = ['square_variation_id' => (string) $product['square_variation_id'], 'on_hand' => (float) $product['on_hand']];
         }
-        $orders = $wpdb->get_results("SELECT id,payload FROM " . self::orders_table() . " WHERE status='ordered'", ARRAY_A) ?: [];
+        $orders = self::rows("SELECT id,payload FROM " . self::orders_table() . " WHERE status='ordered'");
         $marked = 0;
         foreach ($orders as $order) {
             $lines = json_decode((string) ($order['payload'] ?? ''), true);
@@ -173,16 +268,31 @@ $products = $wpdb->get_results("SELECT square_variation_id,name,on_hand FROM " .
                     $name_key = strtolower((string) ($line['product'] ?? ''));
                     if (isset($by_name[$name_key])) {
                         $line['square_variation_id'] = $by_name[$name_key]['square_variation_id'];
-                        $line['on_hand'] = $by_name[$name_key]['on_hand'];
+                        if (!array_key_exists('on_hand',$line)) $line['on_hand'] = $by_name[$name_key]['on_hand'];
                         $variation_id = (string) $line['square_variation_id'];
                         $changed = true;
                     }
                 }
-                if ($variation_id !== '' && array_key_exists($variation_id, $current) && array_key_exists('on_hand', $line) && $current[$variation_id] > (float) $line['on_hand']) $increased = true;
+                if ($variation_id !== '' && array_key_exists($variation_id, $current) && array_key_exists('on_hand', $line)) {
+                    $before = $previous_stock[$variation_id] ?? ($line['last_observed_on_hand'] ?? $line['on_hand']);
+                    if ($current[$variation_id] > (float) $before) {
+                        $increased = true;
+                        $line['stock_increase_detected_at'] = current_time('mysql');
+                        $line['stock_increase_from'] = (float) $before;
+                        $line['stock_increase_to'] = $current[$variation_id];
+                    }
+                    $line['last_observed_on_hand'] = $current[$variation_id];
+                    $changed = true;
+                }
             }
             unset($line);
-            if ($changed) $wpdb->update(self::orders_table(), ['payload' => wp_json_encode($lines)], ['id' => (int) $order['id']]);
-            if ($increased && $wpdb->update(self::orders_table(), ['status' => 'stock_increased'], ['id' => (int) $order['id']])) $marked++;
+            if ($changed) {
+                $data=['payload'=>wp_json_encode($lines)];
+                if ($increased) $data['status']='stock_increased';
+                $result=$wpdb->update(self::orders_table(), $data, ['id'=>(int)$order['id'],'status'=>'ordered']);
+                self::checked_write($result);
+                if ($increased && $result===1) $marked++;
+            }
         }
         return $marked;
     }

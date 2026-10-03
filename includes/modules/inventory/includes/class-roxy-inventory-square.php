@@ -6,6 +6,9 @@ class Square {
     private const API_VERSION = '2026-09-16';
 
     public static function pull(): array {
+        return Store::with_lock('pull', static function () { return self::retrieve_and_commit(); });
+    }
+    private static function retrieve_and_commit(): array {
         if (!class_exists('\\RoxyGrosses\\Settings')) throw new \RuntimeException('Enable Grosses or configure the shared Square connection first.');
         $settings = \RoxyGrosses\Settings::get_all(); $locations = \RoxyGrosses\Settings::line_list((string) ($settings['square_location_ids'] ?? ''));
         if (!$locations) throw new \RuntimeException('Add at least one Square location ID in Grosses → Settings.');
@@ -34,9 +37,11 @@ class Square {
             foreach ($ids as $id) $items[$id]['on_hand'] = $counts[$id] ?? 0;
         }
         // Finish retrieving every inventory page before changing stored stock.
-        foreach ($items as $item) Store::upsert_product($item);
-        $deactivated = Store::deactivate_missing(array_keys($items));
-        $reset = Store::mark_stock_increases();
+        [$deactivated,$reset] = Store::transaction(static function () use ($items) {
+            $previous=Store::stock_snapshot();
+            foreach ($items as $item) Store::upsert_product($item);
+            return [Store::deactivate_missing(array_keys($items)), Store::mark_stock_increases($previous)];
+        });
         Store::log('pull', 'success', count($items) . ' Square variations pulled; ' . $deactivated . ' missing variations deactivated; ' . $reset . ' orders reset after stock increases.'); return $items;
     }
 
