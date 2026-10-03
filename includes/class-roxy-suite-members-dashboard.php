@@ -64,8 +64,8 @@ class Members_Dashboard {
                 <?php self::kpi('Active Subs', number_format_i18n($snapshot['active_subs']), 'Quantity across counted active and pending-cancel subscriptions.'); ?>
                 <?php self::kpi('Woo Subscription Records', number_format_i18n($snapshot['active_subscriptions']), 'Counted Woo subscription records.'); ?>
                 <?php self::kpi('Monthly Revenue', self::money($snapshot['mrr']), 'Normalized to monthly recurring revenue.'); ?>
-                <?php self::kpi('Visits This Month', number_format_i18n($snapshot['visits_month']), 'From the Roxy member scan log.'); ?>
-                <?php self::kpi('Estimated Monthly Cost', self::money($snapshot['estimated_cost']), self::money($visit_cost) . ' per scan + fixed monthly cost.'); ?>
+                <?php self::kpi('Visits This Month', number_format_i18n($snapshot['visits_month']), 'People recorded in active admission events; lookups and inactive scans excluded.'); ?>
+                <?php self::kpi('Estimated Monthly Cost', self::money($snapshot['estimated_cost']), self::money($visit_cost) . ' per admitted person + fixed monthly cost.'); ?>
                 <?php self::kpi('Estimated Net', self::money($snapshot['estimated_net']), 'Monthly revenue minus estimated visit and fixed costs.'); ?>
                 <?php self::kpi('Missing Photos', number_format_i18n($snapshot['missing_photos']), 'Click a missing photo cell to add one.'); ?>
                 <?php self::kpi('Trade / Comp Records', number_format_i18n($snapshot['trade_records']), 'Flagged subscriptions excluded from totals.'); ?>
@@ -441,11 +441,13 @@ class Members_Dashboard {
             $wpdb->prepare(
                 "SELECT
                     subscription_id,
-                    SUM(CASE WHEN scanned_at >= %s THEN 1 ELSE 0 END) AS visits_month,
-                    COUNT(*) AS visits_lifetime,
+                    SUM(CASE WHEN scanned_at >= %s THEN quantity ELSE 0 END) AS visits_month,
+                    SUM(quantity) AS visits_lifetime,
                     MAX(scanned_at) AS last_visit
                  FROM {$table}
                  WHERE subscription_id IN ({$placeholders})
+                   AND is_active=1
+                   AND source IN ('manual_admit','nfc_admit','manual_admit_reserved','nfc_admit_reserved','manual_admit_walkup','nfc_admit_walkup')
                  GROUP BY subscription_id",
                 $params
             ),

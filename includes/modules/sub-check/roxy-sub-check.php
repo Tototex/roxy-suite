@@ -13,8 +13,12 @@ if (!defined('ABSPATH')) exit;
 class Roxy_Sub_Check {
   const META_PHOTO_ID = '_roxy_member_photo_id';
   const TABLE_LOG     = 'roxy_member_scans';
+  const SCHEMA_VERSION = '1';
+  private static bool $schema_ready = false;
+  private static bool $schema_attempted = false;
 
   public static function init() {
+    add_action('init', [__CLASS__, 'maybe_upgrade_schema'], 1);
     add_action('init', [__CLASS__, 'rewrite_rule']);
     add_filter('query_vars', [__CLASS__, 'query_vars']);
     add_action('template_redirect', [__CLASS__, 'template_redirect']);
@@ -30,6 +34,8 @@ class Roxy_Sub_Check {
     add_action('woocommerce_subscription_details_table', [__CLASS__, 'render_myaccount_photo_uploader'], 50);
     add_action('init', [__CLASS__, 'handle_myaccount_photo_upload']);
     add_action('wp_ajax_roxy_sub_check_lookup', [__CLASS__, 'ajax_lookup']);
+    add_action('admin_post_roxy_sub_export_scans', [__CLASS__, 'handle_scan_export']);
+    add_action('admin_init', [__CLASS__, 'redirect_legacy_export']);
   }
 
   public static function activate() {
@@ -41,13 +47,21 @@ class Roxy_Sub_Check {
     return $wpdb->prefix . self::TABLE_LOG;
   }
 
-  private static function create_log_table() {
+  public static function maybe_upgrade_schema(): void {
+    if (!self::create_log_table()) error_log('Roxy Member Check schema upgrade did not finish.');
+  }
+
+  private static function create_log_table(): bool {
+    if (self::$schema_ready) return true;
+    if (self::$schema_attempted) return false;
     global $wpdb;
 
     $table = self::table_name();
+    if (get_option('roxy_member_scans_schema_version') === self::SCHEMA_VERSION && $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($table))) === $table) { self::$schema_ready=true; return true; }
     $charset = $wpdb->get_charset_collate();
 
     require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+    self::$schema_attempted=true;
 
     $sql = "CREATE TABLE {$table} (
       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -69,6 +83,11 @@ class Roxy_Sub_Check {
     ) {$charset};";
 
     dbDelta($sql);
+    $columns=$wpdb->get_col("SHOW COLUMNS FROM {$table}");
+    if ($wpdb->last_error || array_diff(['id','scanned_at','subscription_id','user_id','status','is_active','showing_id','source','quantity','ip','user_agent'],(array)$columns)) return false;
+    update_option('roxy_member_scans_schema_version',self::SCHEMA_VERSION,false);
+    self::$schema_ready=true;
+    return true;
   }
 
   public static function rewrite_rule() {
@@ -152,7 +171,7 @@ class Roxy_Sub_Check {
     ];
 
     if ($sub_id && empty($result['error']) && $log_scan) {
-      self::log_scan(
+      $payload['scan_log_saved'] = self::log_scan(
         $sub_id,
         !empty($result['user_id']) ? absint($result['user_id']) : null,
         !empty($result['status']) ? (string)$result['status'] : null,
@@ -313,6 +332,7 @@ class Roxy_Sub_Check {
     $out['active'] = in_array($status, $allowed, true);
 
     $out['membership_qty'] = self::subscription_quantity($sub);
+    $out['last_visit'] = self::get_last_visit((int)$sub_id);
 
     $start = $sub->get_date('start');
     if ($start) {
@@ -347,7 +367,7 @@ class Roxy_Sub_Check {
 
     $max_qty = max(1, (int) ($result['membership_qty'] ?? 1));
     $quantity = max(1, min($quantity, $max_qty));
-    self::log_scan(
+    $saved = self::log_scan(
       $sub_id,
       !empty($result['user_id']) ? absint($result['user_id']) : null,
       !empty($result['status']) ? (string) $result['status'] : null,
@@ -356,6 +376,7 @@ class Roxy_Sub_Check {
       $source,
       $quantity
     );
+    if (!$saved) return ['ok'=>false,'message'=>'Member admission could not be recorded. Do not admit the guest until the record is saved.','payload'=>self::get_member_payload($sub_id,false)];
 
     $payload = self::get_member_payload($sub_id, false);
     $payload['admitted'] = true;
@@ -504,18 +525,16 @@ class Roxy_Sub_Check {
       $sub_id = (int) ($row['subscription_id'] ?? 0);
       if ($sub_id <= 0) continue;
       $payload = self::get_member_payload($sub_id, false);
-      if (empty($payload['found']) || ($payload['status'] ?? '') !== 'valid') continue;
-
       $qty = max(1, (int) ($row['quantity'] ?? 1));
       $key = 'subscriber-walkup-' . $sub_id;
       $out[] = [
         'customer_key' => $key,
-        'name' => (string) ($payload['member_name'] ?? 'Subscriber'),
+        'name' => (string) (($payload['member_name'] ?? '') ?: ('Subscriber #' . $sub_id)),
         'email' => (string) ($payload['customer_email'] ?? ''),
         'qty' => $qty,
         'ticket_types' => ['Subscriber walk-up' => $qty],
         'orders' => [],
-        'latest_order_ts' => strtotime((string) ($row['scanned_at'] ?? '')) ?: 0,
+        'latest_order_ts' => self::scan_timestamp((string)($row['scanned_at']??'')),
         'source' => 'member_admit',
         'subscription_id' => $sub_id,
       ];
@@ -543,9 +562,9 @@ class Roxy_Sub_Check {
     ));
   }
 
-  private static function log_scan($sub_id, $user_id, $status, $is_active, int $showing_id = 0, string $source = 'nfc_scan', int $quantity = 1) {
+  private static function log_scan($sub_id, $user_id, $status, $is_active, int $showing_id = 0, string $source = 'nfc_scan', int $quantity = 1): bool {
     global $wpdb;
-    self::create_log_table();
+    if (!self::create_log_table()) return false;
     $table = self::table_name();
 
     $ip = '';
@@ -557,7 +576,7 @@ class Roxy_Sub_Check {
 
     $ua = !empty($_SERVER['HTTP_USER_AGENT']) ? substr(sanitize_text_field($_SERVER['HTTP_USER_AGENT']), 0, 900) : '';
 
-    $wpdb->insert(
+    $saved = $wpdb->insert(
       $table,
       [
         'scanned_at'      => current_time('mysql'),
@@ -573,6 +592,7 @@ class Roxy_Sub_Check {
       ],
       ['%s','%d','%d','%s','%d','%d','%s','%d','%s','%s']
     );
+    return $saved === 1;
   }
 
   private static function get_last_visit($sub_id) {
@@ -583,9 +603,10 @@ class Roxy_Sub_Check {
       $wpdb->prepare(
         "SELECT scanned_at 
          FROM {$table} 
-         WHERE subscription_id=%d 
+         WHERE subscription_id=%d AND is_active=1
+           AND source IN ('manual_admit','nfc_admit','manual_admit_reserved','nfc_admit_reserved','manual_admit_walkup','nfc_admit_walkup')
          ORDER BY scanned_at DESC 
-         LIMIT 1 OFFSET 1",
+         LIMIT 1",
         (int)$sub_id
       )
     );
@@ -594,7 +615,13 @@ class Roxy_Sub_Check {
 
     $fmt_date = get_option('date_format');
     $fmt_time = get_option('time_format');
-    return date_i18n($fmt_date . ' ' . $fmt_time, strtotime($dt));
+    $timestamp=self::scan_timestamp((string)$dt);
+    return $timestamp ? wp_date($fmt_date . ' ' . $fmt_time, $timestamp, wp_timezone()) : '';
+  }
+
+  private static function scan_timestamp(string $value): int {
+    $date=DateTimeImmutable::createFromFormat('!Y-m-d H:i:s',$value,wp_timezone());
+    return $date && $date->format('Y-m-d H:i:s')===$value ? $date->getTimestamp() : 0;
   }
 
   public static function admin_menu() {
@@ -622,11 +649,6 @@ class Roxy_Sub_Check {
 
     $filter_sub = isset($_GET['sub']) ? absint($_GET['sub']) : 0;
 
-    if (isset($_GET['roxy_export']) && $_GET['roxy_export'] === 'csv') {
-      self::export_scan_log_csv($filter_sub);
-      exit;
-    }
-
     $where = '';
     $params = [];
     if ($filter_sub) {
@@ -646,11 +668,13 @@ class Roxy_Sub_Check {
 
     $page_slug = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : 'roxy-scan-log';
     $base_url = admin_url('admin.php?page=' . $page_slug);
+    $active_tab = $page_slug === 'roxy-ticket-ops' ? 'member-check-log' : '';
+    if ($active_tab !== '') $base_url=add_query_arg('tab',$active_tab,$base_url);
     if (!function_exists('WC') && $page_slug === 'roxy-scan-log') {
       $base_url = admin_url('tools.php?page=roxy-scan-log');
     }
 
-    $export_url = add_query_arg(['roxy_export' => 'csv'] + ($filter_sub ? ['sub' => $filter_sub] : []), $base_url);
+    $export_url = self::scan_export_url($filter_sub);
 
     if ($wrap) {
       echo '<div class="wrap">';
@@ -661,6 +685,7 @@ class Roxy_Sub_Check {
 
     echo '<form method="get" style="margin:12px 0;">';
     echo '<input type="hidden" name="page" value="' . esc_attr($page_slug) . '">';
+    if ($active_tab !== '') echo '<input type="hidden" name="tab" value="member-check-log">';
     echo '<label>Filter by Subscription ID: </label> ';
     echo '<input type="number" name="sub" value="' . esc_attr($filter_sub ?: '') . '" style="width:160px;"> ';
     echo '<button class="button">Filter</button> ';
@@ -712,6 +737,22 @@ class Roxy_Sub_Check {
     }
   }
 
+  public static function scan_export_url(int $filter_sub = 0): string {
+    return wp_nonce_url(add_query_arg(['action'=>'roxy_sub_export_scans','sub'=>$filter_sub],admin_url('admin-post.php')),'roxy_sub_export_scans');
+  }
+
+  public static function redirect_legacy_export(): void {
+    if (($_GET['roxy_export']??'')!=='csv' || !in_array($_GET['page']??'', ['roxy-ticket-ops','roxy-scan-log'],true)) return;
+    if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
+    wp_safe_redirect(self::scan_export_url(absint($_GET['sub']??0))); exit;
+  }
+
+  public static function handle_scan_export(): void {
+    if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
+    check_admin_referer('roxy_sub_export_scans');
+    self::export_scan_log_csv(absint($_GET['sub']??0)); exit;
+  }
+
   private static function export_scan_log_csv($filter_sub) {
     if (!roxy_suite_user_can_access_admin()) {
       wp_die('Insufficient permissions.');
@@ -720,33 +761,30 @@ class Roxy_Sub_Check {
     global $wpdb;
     $table = self::table_name();
 
-    $where = '';
-    $params = [];
-    if ($filter_sub) {
-      $where = 'WHERE subscription_id = %d';
-      $params[] = $filter_sub;
-    }
-
-    $sql = "SELECT scanned_at, subscription_id, is_active, status, user_id, ip, user_agent
-            FROM {$table} {$where} ORDER BY scanned_at DESC";
-    $rows = $params ? $wpdb->get_results($wpdb->prepare($sql, ...$params), ARRAY_A) : $wpdb->get_results($sql, ARRAY_A);
+    $maximum=(int)$wpdb->get_var("SELECT COALESCE(MAX(id),0) FROM {$table}");
+    if ($wpdb->last_error) wp_die('Could not read scan log for export.');
 
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename=roxy-scan-log.csv');
+    header('Cache-Control: no-store');
+    header('X-Content-Type-Options: nosniff');
 
     $out = fopen('php://output', 'w');
-    fputcsv($out, ['scanned_at','subscription_id','is_active','status','user_id','ip','user_agent']);
-
-    foreach ($rows as $r) {
-      fputcsv($out, [
-        $r['scanned_at'],
-        $r['subscription_id'],
-        $r['is_active'],
-        $r['status'],
-        $r['user_id'],
-        $r['ip'],
-        $r['user_agent']
-      ]);
+    $columns=['scanned_at','subscription_id','is_active','status','user_id','ip','user_agent','showing_id','source','quantity'];
+    fputcsv($out,$columns,',','"','');
+    $last=0;
+    while($last<$maximum) {
+      $sql="SELECT id," . implode(',',$columns) . " FROM {$table} WHERE id>%d AND id<=%d";
+      $params=[$last,$maximum];
+      if($filter_sub){$sql.=' AND subscription_id=%d';$params[]=$filter_sub;}
+      $rows=$wpdb->get_results($wpdb->prepare($sql.' ORDER BY id ASC LIMIT 500',...$params),ARRAY_A);
+      if($wpdb->last_error || !is_array($rows)){fputcsv($out,['EXPORT_INCOMPLETE','Database read failed; retry export.'],',','"','');break;}
+      if(!$rows)break;
+      foreach($rows as $r){
+        $values=[];
+        foreach($columns as $column){$value=(string)($r[$column]??'');$values[]=preg_match('/^[=+@\-\t\r]/',$value)?"'".$value:$value;}
+        fputcsv($out,$values,',','"','');$last=(int)$r['id'];
+      }
     }
 
     fclose($out);

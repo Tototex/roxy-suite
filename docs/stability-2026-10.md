@@ -16,12 +16,12 @@ Current safeguards: preserve live customizations; back up changed files before d
 | C4 | Open | See audit; no resolution claimed. |
 | C5 | Resolved | Five-minute failure backoff; error/HTTP/malformed/missing-asset and successful-cache regression checks pass. |
 | C6 | Open | See audit; no resolution claimed. |
-| M1 | Open | See audit; no resolution claimed. |
-| M2 | Open | See audit; no resolution claimed. |
-| M3 | Open | See audit; no resolution claimed. |
-| M4 | Open | See audit; no resolution claimed. |
-| M5 | Open | See audit; no resolution claimed. |
-| M6 | Open | See audit; no resolution claimed. |
+| M1 | In progress | Dashboard sums active admission quantities, excluding verification/inactive scans. Actual SQL fixture and live baseline pass. Undo reconciliation and historical requested-vs-actual quantities remain open. |
+| M2 | Resolved | Versioned schema, one request-local check; real dbDelta against disposable legacy table preserves history and recovers missing table even with current version. Live 128 rows unchanged. |
+| M3 | In progress | Failed log inserts return failure, not admitted. PHP and actual SQL failure fixtures pass. Reserved-ticket/log atomicity and safe concurrent retries remain open. |
+| M4 | Resolved | Unified log filters/pagination/export preserve tab; nonce-protected admin-post export before HTML. Live log and export link inspected; standalone navigation checks pass. |
+| M5 | Resolved | Nonlogging lookup includes last actual admission, excluding lookups/inactive scans; strict site-timezone dates. PHP and actual SQL assertions pass. |
+| M6 | In progress | CSV streams 500-row keyset batches with fixed upper boundary and literal formula escaping; 1,201-row fixture passes. Dashboard subscription pagination remains open. |
 | A1 | Open | See audit; no resolution claimed. |
 | A2 | Open | See audit; no resolution claimed. |
 | A3 | Open | See audit; no resolution claimed. |
