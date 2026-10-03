@@ -38,6 +38,41 @@ class CPT {
         add_filter('manage_edit-' . self::POST_TYPE . '_columns', [__CLASS__, 'admin_columns']);
         add_action('manage_' . self::POST_TYPE . '_posts_custom_column', [__CLASS__, 'render_admin_column'], 10, 2);
         add_action('admin_notices', [__CLASS__, 'render_admin_tabs']);
+        add_filter('get_the_excerpt', [__CLASS__, 'filter_public_excerpt'], 10, 2);
+        add_filter('rest_prepare_' . self::POST_TYPE, [__CLASS__, 'filter_rest_excerpt'], 10, 2);
+        add_filter('rest_prepare_roxy_showing', [__CLASS__, 'filter_rest_excerpt'], 10, 2);
+    }
+
+    /** Strip only the legacy machine-generated contact summary; keep editorial copy. */
+    public static function public_excerpt(string $excerpt): string {
+        if (preg_match('/^Requested by\s+(.+?)\s+\(([^)]+)\)$/', trim($excerpt), $matches)
+            && is_email(trim($matches[2]))) {
+            return '';
+        }
+        return $excerpt;
+    }
+
+    public static function filter_public_excerpt(string $excerpt, $post): string {
+        if ($post && ($post->post_type === self::POST_TYPE
+            || ($post->post_type === 'roxy_showing' && get_post_meta($post->ID, '_roxy_rs_request_id', true)))) {
+            return self::public_excerpt($excerpt);
+        }
+        return $excerpt;
+    }
+
+    public static function filter_rest_excerpt($response, $post) {
+        if (!$post || ($post->post_type !== self::POST_TYPE
+            && !($post->post_type === 'roxy_showing' && get_post_meta($post->ID, '_roxy_rs_request_id', true)))) {
+            return $response;
+        }
+        // Protect old raw and rendered excerpts, including authenticated edit-context reads.
+        if (self::public_excerpt((string) $post->post_excerpt) === '' && trim((string) $post->post_excerpt) !== '') {
+            $data = $response->get_data();
+            if (isset($data['excerpt']['raw'])) $data['excerpt']['raw'] = '';
+            if (isset($data['excerpt']['rendered'])) $data['excerpt']['rendered'] = '';
+            $response->set_data($data);
+        }
+        return $response;
     }
 
     public static function register(): void {

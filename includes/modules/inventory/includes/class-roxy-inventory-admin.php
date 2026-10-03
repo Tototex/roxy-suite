@@ -192,7 +192,18 @@ class Admin {
         }
         return ['to' => sanitize_email((string) ($direct ? $vendor['email'] : Settings::get('jason_email'))), 'subject' => 'Newport Roxy ' . ($direct ? 'order' : 'order for review') . ' #' . $order_id . ' — ' . $name, 'body' => $body];
     }
-    private static function decision_token(int $order_id, string $decision): string { return hash_hmac('sha256', $order_id . '|' . $decision, wp_salt('auth')); }
+    private static function decision_token(int $order_id, string $decision, int $expires = 0): string {
+        $message = $order_id . '|' . $decision;
+        if ($expires > 0) $message .= '|' . $expires;
+        return hash_hmac('sha256', $message, wp_salt('auth'));
+    }
+
+    public static function valid_decision_token(int $order_id, string $decision, string $token, int $expires, ?int $now = null): bool {
+        if ($order_id <= 0 || !in_array($decision, ['ordered', 'rejected'], true)) return false;
+        $now = $now ?? time();
+        if ($expires <= $now || $expires > $now + 30 * DAY_IN_SECONDS) return false;
+        return hash_equals(self::decision_token($order_id, $decision, $expires), $token);
+    }
     public static function save_order_items(): void {
         self::guard();
         check_admin_referer('roxy_inventory_save_order_items');
@@ -220,15 +231,40 @@ class Admin {
         Store::log('order_cancelled', 'success', 'Order #' . $order_id . ' cancelled for ' . $order['vendor'] . '.');
         self::redirect('history', 'Order cancelled and vendor unlocked.', true, $order_id);
     }
-    private static function decision_url(int $order_id, string $decision): string { return add_query_arg(['action'=>'roxy_inventory_order_decision','order_id'=>$order_id,'decision'=>$decision,'token'=>self::decision_token($order_id,$decision)], admin_url('admin-post.php')); }
+    private static function decision_url(int $order_id, string $decision): string {
+        $expires = time() + 30 * DAY_IN_SECONDS;
+        return add_query_arg(['action'=>'roxy_inventory_order_decision','order_id'=>$order_id,'decision'=>$decision,'expires'=>$expires,'token'=>self::decision_token($order_id,$decision,$expires)], admin_url('admin-post.php'));
+    }
     public static function order_decision(): void {
-        $order_id = absint($_GET['order_id'] ?? 0);
-        $decision = sanitize_key($_GET['decision'] ?? '');
-        $token = sanitize_text_field(wp_unslash($_GET['token'] ?? ''));
-        if (!$order_id || !in_array($decision, ['ordered','rejected'], true) || !hash_equals(self::decision_token($order_id, $decision), $token)) wp_die('This order link is invalid or expired.');
+        $is_post = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST';
+        $input = $is_post ? $_POST : $_GET;
+        $order_id = absint($input['order_id'] ?? 0);
+        $decision = sanitize_key($input['decision'] ?? '');
+        $token = sanitize_text_field(wp_unslash($input['token'] ?? ''));
+        $expires = absint($input['expires'] ?? 0);
+        $valid = self::valid_decision_token($order_id, $decision, $token, $expires);
+        // Old emailed links no longer grant anonymous, indefinite write access.
+        // A signed-in authorized manager can still confirm one from Order History.
+        if (!$expires && roxy_suite_user_can_access_admin() && $order_id > 0 && in_array($decision, ['ordered','rejected'], true)) {
+            $valid = hash_equals(self::decision_token($order_id, $decision), $token);
+        }
+        if (!$valid) wp_die('This order link is invalid or expired. Please open Order History while signed in to mark the order.');
         $found = Store::order($order_id);
         if (!$found) wp_die('Order not found.');
         if ((string) $found['status'] !== 'approval_emailed') wp_die('This order has already been marked.');
+        $nonce_action = 'roxy_inventory_order_decision_' . $token;
+        if (!$is_post) {
+            // Email scanners/prefetchers may open links. GET must never change an order.
+            $html = '<h1>Confirm ' . esc_html(ucfirst($decision)) . '</h1><p>Order #' . esc_html((string)$order_id) . ' — ' . esc_html((string)$found['vendor']) . '</p>';
+            $html .= '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+            foreach (['action'=>'roxy_inventory_order_decision','order_id'=>$order_id,'decision'=>$decision,'expires'=>$expires,'token'=>$token] as $name=>$value) {
+                $html .= '<input type="hidden" name="' . esc_attr($name) . '" value="' . esc_attr((string)$value) . '">';
+            }
+            $html .= wp_nonce_field($nonce_action, '_wpnonce', true, false);
+            $html .= '<p><button type="submit">Confirm ' . esc_html(ucfirst($decision)) . '</button></p></form>';
+            wp_die($html, 'Confirm order status', ['response'=>200]);
+        }
+        check_admin_referer($nonce_action);
         if (!Store::update_order_status($order_id, $decision)) wp_die('Could not update this order. It may already have been marked.');
         Store::log('order_decision', 'success', 'Order #' . $order_id . ' marked ' . $decision . ' for ' . $found['vendor'] . '.');
         $message = $decision === 'ordered' ? 'Order marked as Ordered.' : 'Order marked as Rejected.';

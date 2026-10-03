@@ -10,6 +10,7 @@ namespace RoxyGrosses {
 namespace {
     define('ABSPATH', __DIR__);
     define('ARRAY_A', 'ARRAY_A');
+    define('DAY_IN_SECONDS', 86400);
     function sanitize_text_field($value) { return (string) $value; }
     function current_time($format) { return '2026-10-01 12:00:00'; }
     function wp_json_encode($value) { return json_encode($value); }

@@ -28,7 +28,7 @@ Current safeguards: preserve live customizations; back up changed files before d
 | A4 | Open | See audit; no resolution claimed. |
 | I1 | Resolved | Bulk rules sent as one validated JSON field; completion/count checks reject truncation before writes. 500-row fixture passes. Live Save All preserves all 858 values across 143 rows. DB write failures remain I9. |
 | I2 | Open | See audit; no resolution claimed. |
-| I3 | Open | See audit; no resolution claimed. |
+| I3 | Resolved, confirmation workflow | GET only renders confirmation; signed links expire after 30 days; POST requires token-scoped nonce and preserves conditional status update. Prefetch, tampering, expiry, replay, confirmed POST/history redirect fixtures pass. Anonymous legacy links fail; signed-in authorized managers retain confirmation access. No real order changed for this test. |
 | I4 | Open | See audit; no resolution claimed. |
 | I5 | Resolved | Next local 23:00 single event replaces fixed daily recurrence. DST/migration fixtures pass; live 2026-10-02 23:00:52 pull succeeded. |
 | I6 | Open | See audit; no resolution claimed. |
@@ -59,11 +59,11 @@ Current safeguards: preserve live customizations; back up changed files before d
 | B4 | Open | See audit; no resolution claimed. |
 | B5 | Open | See audit; no resolution claimed. |
 | B6 | Open | See audit; no resolution claimed. |
-| R1 | Open | See audit; no resolution claimed. |
+| R1 | Resolved for current data | New requests store contacts only in protected metadata; conversion strips legacy contact summaries; excerpt/REST filters protect legacy copies. Production scan found zero requests and zero generated contact excerpts across showings, so no historical edits/cache purge needed. Pure fixtures and actual WordPress excerpt/REST hooks pass; anonymous REST 200 and public date picker checked. |
 | R2 | Open | See audit; no resolution claimed. |
 | R3 | Open | See audit; no resolution claimed. |
 | R4 | Open | See audit; no resolution claimed. |
-| R5 | Open | See audit; no resolution claimed. |
+| R5 | In progress | Server-side backing deadline added, shared with rendering; exact/minute-only boundary, future, expired and invalid deadline fixtures pass. Monetary-unit guessing/versioned migration remains open. No backer charged for verification. |
 | G1 | Open | See audit; no resolution claimed. |
 | G2 | Open | See audit; no resolution claimed. |
 | G3 | Open | See audit; no resolution claimed. |
@@ -103,3 +103,10 @@ Current safeguards: preserve live customizations; back up changed files before d
 - Existing Elementor frontend error observed on cart/checkout/booking: `window.elementorCommon.helpers.softDeprecated is not a function`. Paid Pro/core version compatibility requires separate review; no unrequested dependency upgrade performed.
 - Cart retained test ticket quantities after checkout in the multi-tab session. Explicit cleanup verified. Investigate checkout/cart session clearing; do not assume normal customer sessions behave identically.
 - All deployed PHP files linted; isolated stability, inventory, ticket eligibility, and showing-selection suites rerun against live source. These do not certify the remaining concurrency, gateway, accounting, or Social-provider findings.
+
+### Second checkpoint
+
+- Requested-showing privacy/deadline fixes and Inventory email-link confirmation deployed selectively with private file backups. No existing requester records found; no historical financial data edited.
+- Request-page calendar lookup and backing deadline display work for November 7 at 14:00 (deadline October 24 at 14:00). No request or backing submitted.
+- Existing four vendor orders remain Ordered with their original totals. No order decisions submitted against real vendor orders.
+- User confirmed studio reports retain nominal ticket gross; financial totals use actual collections and refunds. Week/month advertiser attendance attribution still awaits an answer. No historical numbers recalculated in these checkpoints.

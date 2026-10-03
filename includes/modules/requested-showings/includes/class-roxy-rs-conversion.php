@@ -156,7 +156,7 @@ class Conversion {
                 'post_status' => 'publish',
                 'post_title' => $post->post_title,
                 'post_content' => $post->post_content,
-                'post_excerpt' => $post->post_excerpt,
+                'post_excerpt' => CPT::public_excerpt((string) $post->post_excerpt),
             ], true);
             if (is_wp_error($showing_id)) {
                 return $showing_id;

@@ -202,8 +202,7 @@ class Frontend {
             return (string) ob_get_clean();
         }
 
-        $deadline_dt = self::parse_local_datetime($deadline_at);
-        if ($deadline_dt && $deadline_dt < self::current_site_datetime()) {
+        if (!self::backing_window_open($deadline_at)) {
             echo '<p>The backing window has closed.</p>';
             return (string) ob_get_clean();
         }
@@ -284,7 +283,8 @@ class Frontend {
             'post_status' => 'draft',
             'post_title' => $title,
             'post_content' => $notes,
-            'post_excerpt' => 'Requested by ' . $requester_name . ' (' . $requester_email . ')',
+            // Contact belongs only in protected metadata, never in a public excerpt.
+            'post_excerpt' => '',
             'post_author' => get_current_user_id(),
         ], true);
 
@@ -328,6 +328,11 @@ class Frontend {
         $status = CPT::get_status($request_id);
         if (!in_array($status, ['active', 'threshold_met'], true)) {
             self::redirect_request_notice($request_id, 'error', 'This request is not currently accepting backers.');
+        }
+
+        // A stale form must not bypass the same deadline enforced during rendering.
+        if (!self::backing_window_open((string) get_post_meta($request_id, CPT::META_DEADLINE_AT, true))) {
+            self::redirect_request_notice($request_id, 'error', 'The backing window has closed.');
         }
 
         $general_qty = max(0, (int) wp_unslash($_POST['general_qty'] ?? 0));
@@ -682,6 +687,12 @@ class Frontend {
         return current_datetime();
     }
 
+    public static function backing_window_open(string $deadline, ?\DateTimeImmutable $now = null): bool {
+        if (trim($deadline) === '') return true; // Preserve explicitly undated requests.
+        $deadline_dt = self::parse_local_datetime($deadline);
+        return $deadline_dt !== null && $deadline_dt > ($now ?? self::current_site_datetime());
+    }
+
     public static function parse_local_datetime(string $value): ?\DateTimeImmutable {
         $value = trim($value);
         if ($value === '') {
@@ -691,7 +702,7 @@ class Frontend {
         $timezone = wp_timezone();
         $formats = ['Y-m-d\TH:i:s', 'Y-m-d\TH:i', 'Y-m-d H:i:s', 'Y-m-d H:i'];
         foreach ($formats as $format) {
-            $dt = \DateTimeImmutable::createFromFormat($format, $value, $timezone);
+            $dt = \DateTimeImmutable::createFromFormat('!' . $format, $value, $timezone);
             if ($dt instanceof \DateTimeImmutable) {
                 return $dt;
             }
