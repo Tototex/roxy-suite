@@ -109,4 +109,4 @@ Current safeguards: preserve live customizations; back up changed files before d
 - Requested-showing privacy/deadline fixes and Inventory email-link confirmation deployed selectively with private file backups. No existing requester records found; no historical financial data edited.
 - Request-page calendar lookup and backing deadline display work for November 7 at 14:00 (deadline October 24 at 14:00). No request or backing submitted.
 - Existing four vendor orders remain Ordered with their original totals. No order decisions submitted against real vendor orders.
-- User confirmed studio reports retain nominal ticket gross; financial totals use actual collections and refunds. Week/month advertiser attendance attribution still awaits an answer. No historical numbers recalculated in these checkpoints.
+- User confirmed studio reports retain nominal ticket gross; financial totals use actual collections and refunds. Advertiser monthly attendance retains the current week-start month rule (no calendar-month splitting). Label this policy clearly. No historical numbers recalculated in these checkpoints.
