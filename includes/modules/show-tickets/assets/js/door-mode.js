@@ -157,7 +157,7 @@
     const kicker = status === 'valid' ? 'Ready to Admit' : (status === 'used' ? 'Already Used' : 'Review');
     return `<div class="roxy-door-state roxy-door-state-${status}"><div class="roxy-door-kicker">${kicker}</div><div class="roxy-door-title" id="roxy-door-modal-title">${escapeHtml(payload.headline || 'Ticket')}</div><p>${escapeHtml(payload.subline || '')}</p><dl class="roxy-door-details"><div><dt>Guest</dt><dd>${escapeHtml(payload.customer_name || 'Unknown')}</dd></div><div><dt>Event</dt><dd>${escapeHtml(payload.showing_title || '')}</dd></div><div><dt>Ticket</dt><dd>${escapeHtml(payload.ticket_label || '')}</dd></div><div><dt>Order</dt><dd>#${escapeHtml(payload.order_number || '')}</dd></div></dl>${payload.customer_email ? `<div class="roxy-door-meta"><strong>Email:</strong> ${escapeHtml(payload.customer_email)}</div>`:''}${payload.checked_in_at ? `<div class="roxy-door-meta"><strong>Checked in:</strong> ${escapeHtml(formatDateTime(payload.checked_in_at))} <span class="roxy-door-time-ago">${escapeHtml(timeAgo(payload.checked_in_at))}</span></div>`:''}${payload.token ? `<div class="roxy-door-token">${escapeHtml(payload.token)}</div>`:''}<div class="roxy-door-result-actions">${payload.can_check_in ? `<button type="button" class="button button-primary roxy-door-admit" data-ticket-id="${escapeHtml(String(payload.ticket_id||''))}">Admit / Check In</button>` : ''}${payload.can_undo ? `<button type="button" class="button roxy-door-undo" data-ticket-id="${escapeHtml(String(payload.ticket_id||''))}" data-undo="1">Undo Check-In</button>` : ''}<button type="button" class="button roxy-door-rescan">Rescan</button><a href="${cfg.manualPage || '#'}&s=${encodeURIComponent(payload.token || '')}" class="button">Manual Check-In</a></div></div>`;
   }
-  function render(payload){ resultEl.innerHTML = stateHtml(payload); bindResultActions(); }
+  function render(payload){ resultEl.innerHTML = stateHtml(payload); bindResultActions(payload); }
 
   function timeLabel(){
     try { return new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit', second:'2-digit'}); }
@@ -200,7 +200,17 @@
     } catch (e) {}
   }
   function idle(){ resultEl.innerHTML = '<div class="roxy-door-state roxy-door-state-idle"><div class="roxy-door-kicker">Ready</div><div class="roxy-door-title" id="roxy-door-modal-title">Waiting for next ticket</div><p>Use the camera for normal flow. Manual Check-In remains available for edge cases.</p></div>'; bindResultActions(); hideModal(); }
-  function bindResultActions(){
+  function bindResultActions(payload){
+    if (payload && payload.credential_type === 'member' && payload.status === 'valid' && !payload.admitted && !payload.already_admitted && currentLockShowingId()) {
+      const actions = resultEl.querySelector('.roxy-door-result-actions');
+      if (actions) {
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'button button-primary roxy-door-member-admit';
+        button.textContent = 'Admit Member';
+        button.addEventListener('click', () => doMemberAdmission(payload.subscription_id));
+        actions.prepend(button);
+      }
+    }
     resultEl.querySelectorAll('.roxy-door-rescan').forEach((btn) => btn.addEventListener('click', () => { idle(); resumeScanning(); }));
     const admit = resultEl.querySelector('.roxy-door-admit');
     if (admit) admit.addEventListener('click', () => doCheckin(admit.dataset.ticketId, false, true));
@@ -208,16 +218,36 @@
     if (undo) undo.addEventListener('click', () => doCheckin(undo.dataset.ticketId, true, false));
   }
   async function post(data){ const body = new URLSearchParams(data); const r = await fetch(cfg.ajaxUrl, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'}, body: body.toString(), credentials:'same-origin'}); return r.json(); }
+  async function doMemberAdmission(subscriptionId){
+    if (busy || !subscriptionId || !currentLockShowingId()) return;
+    busy = true; setNote('Admitting member…');
+    try {
+      const json = await post({action:'roxy_st_member_admit',nonce:cfg.checkInNonce,subscription_id:String(subscriptionId),showing_id:String(currentLockShowingId()),quantity:'1'});
+      if (!json || !json.success) throw new Error((json && json.data && json.data.message) || 'Member admission failed');
+      const payload = json.data || {};
+      if (payload.credential_type === 'member' && payload.admit_error) payload.subline = payload.admit_error;
+      render(payload); showModal();
+      if (payload.attendance) renderAttendance(payload.attendance);
+      addRecentScan('admitted', payload); triggerFlash('valid'); playSound('valid');
+      setNote('Member admitted. Tap Done / Next Scan for the next guest.');
+    } catch (e) { setNote(e.message || 'Member admission failed'); triggerFlash('invalid'); }
+    finally { busy = false; }
+  }
   async function validateToken(token){
     if (!token || busy) return;
     busy = true; pauseScanning(); setOverlay('Ticket found — review result'); setNote('Validating ticket…');
     try {
-      const json = await post({action:'roxy_st_door_validate', nonce:cfg.nonce, token, lock_showing_id:String(currentLockShowingId())});
+      const json = await post({action:'roxy_st_door_validate', nonce:cfg.nonce, token, lock_showing_id:String(currentLockShowingId()), auto_admit:autoResumeEnabled() ? '1' : '0'});
       if (!json || !json.success) throw new Error((json && json.data && json.data.message) || 'Validation failed');
       const payload = json.data || {};
+      if (payload.credential_type === 'member' && payload.admit_error) payload.subline = payload.admit_error;
       render(payload); showModal();
       if (payload.attendance) renderAttendance(payload.attendance);
       if (payload.credential_type === 'member') {
+        if (payload.admit_error && !payload.already_admitted) {
+          setNote(payload.admit_error); setOverlay('Member admission needs review');
+          triggerFlash('invalid'); playSound('invalid'); return;
+        }
         const activeMember = payload.status === 'valid';
         addRecentScan(activeMember ? 'member_active' : 'member_inactive', payload);
         triggerFlash(activeMember ? 'valid' : 'invalid');

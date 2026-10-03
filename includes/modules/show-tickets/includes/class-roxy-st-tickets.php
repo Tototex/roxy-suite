@@ -1247,6 +1247,7 @@ class Tickets {
       $already_checked = 0;
       $available = 0;
       foreach ($reserved_tickets as $ticket_id) {
+        if (!self::ticket_is_eligible($ticket_id, true)) continue;
         if ((int) get_post_meta($ticket_id, self::META_CHECKED_IN, true) === 1) {
           $already_checked++;
           continue;
@@ -1269,6 +1270,13 @@ class Tickets {
         $member_payload['attendance'] = self::door_stats_payload($showing_id);
         return ['ok' => false, 'message' => 'This subscriber reservation is already marked arrived.', 'payload' => $member_payload];
       }
+      if ($reserved_changed <= 0) {
+        $member_payload['admitted']=false;
+        $member_payload['admit_quantity']=0;
+        return ['ok'=>false,'message'=>'No eligible subscriber reservation could be admitted. Review its order and refund status.','payload'=>$member_payload];
+      }
+      // Record only the tickets this request actually changed, never the requested count.
+      $quantity=$reserved_changed;
     } elseif (method_exists('\Roxy_Sub_Check', 'admitted_quantity_for_showing')) {
       $already_walkup = \Roxy_Sub_Check::admitted_quantity_for_showing($sub_id, $showing_id, '%_walkup');
       if ($already_walkup >= $max_qty) {
@@ -1288,7 +1296,7 @@ class Tickets {
     $payload = is_array($visit['payload'] ?? null) ? $visit['payload'] : $member_payload;
     self::invalidate_door_stats_cache($showing_id);
     $payload['admitted'] = !empty($visit['ok']);
-    $payload['admit_quantity'] = $quantity;
+    $payload['admit_quantity'] = !empty($visit['ok']) ? (int) ($payload['admit_quantity'] ?? $quantity) : 0;
     $payload['admit_source'] = $source;
     $payload['admit_reserved_count'] = $reserved_count;
     $payload['admit_reserved_changed'] = $reserved_changed;
@@ -1311,13 +1319,14 @@ class Tickets {
 
     $token = isset($_POST['token']) ? sanitize_text_field(wp_unslash($_POST['token'])) : '';
     $lock_showing_id = isset($_POST['lock_showing_id']) ? max(0, (int) $_POST['lock_showing_id']) : 0;
+    $auto_admit = isset($_POST['auto_admit']) && (string) $_POST['auto_admit'] === '1';
     if ($token === '') {
       wp_send_json_error(['message' => 'Missing ticket token.'], 400);
     }
 
     $member_payload = self::member_payload_from_value($token);
     if (is_array($member_payload)) {
-      if ($lock_showing_id > 0 && !empty($member_payload['subscription_id']) && ($member_payload['status'] ?? '') === 'valid') {
+      if ($auto_admit && $lock_showing_id > 0 && !empty($member_payload['subscription_id']) && ($member_payload['status'] ?? '') === 'valid') {
         $admit = self::member_admission_payload((int) $member_payload['subscription_id'], $lock_showing_id, 1, 'nfc_admit');
         if (!empty($admit['ok'])) {
           wp_send_json_success($admit['payload']);
@@ -1326,8 +1335,6 @@ class Tickets {
           $member_payload = $admit['payload'];
         }
         $member_payload['admit_error'] = (string) ($admit['message'] ?? 'Unable to admit member.');
-      } elseif ($lock_showing_id <= 0 && !empty($member_payload['subscription_id']) && class_exists('\Roxy_Sub_Check') && method_exists('\Roxy_Sub_Check', 'log_member_visit')) {
-        \Roxy_Sub_Check::log_member_visit((int) $member_payload['subscription_id'], 0, 1, 'nfc_scan');
       }
       if ($lock_showing_id > 0) {
         $member_payload['attendance'] = self::door_stats_payload($lock_showing_id);
