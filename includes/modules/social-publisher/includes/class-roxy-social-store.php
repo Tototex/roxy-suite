@@ -253,6 +253,11 @@ final class Store {
         return self::save_draft_snapshot($expected, ['status' => 'approved']);
     }
 
+    public static function review_snapshot(array $expected, string $error): bool {
+        if (($expected['status'] ?? '') !== 'draft' || $error === '') return false;
+        return self::save_draft_snapshot($expected, ['status' => 'needs_review', 'last_error' => sanitize_textarea_field($error)]);
+    }
+
     public static function save_ai_result(array $expected, string $text, string $error = ''): bool {
         if (($expected['status'] ?? '') !== 'draft' || ($expected['ai_status'] ?? 'pending') !== 'pending') return false;
         if ($error !== '') return self::save_draft_snapshot($expected, ['status' => 'needs_review', 'ai_status' => 'pending', 'last_error' => sanitize_textarea_field($error)]);

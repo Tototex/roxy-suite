@@ -6,11 +6,12 @@ $source=file_get_contents($root.'/includes/modules/social-publisher/includes/cla
 $source=str_replace(['final class Store {','wp_get_attachment_url('],['final class DraftFixtureStore {','\\roxy_snapshot_attachment_url('],$source);
 eval(substr($source,5));
 $campaign=file_get_contents($root.'/includes/modules/social-publisher/includes/class-roxy-social-campaigns.php');
-$campaign=str_replace(['final class Campaigns {','Store::',"get_option('roxy_social_auto_approve', false)",'AI::enabled()','self::verified_caption_schedule($draft)'],['final class SnapshotFixtureCampaigns {','DraftFixtureStore::','\\roxy_snapshot_auto_approve()','\\roxy_snapshot_ai_enabled()','true'],$campaign);
+$campaign=str_replace(['final class Campaigns {','Store::',"get_option('roxy_social_auto_approve', false)",'AI::enabled()','self::verified_caption_schedule($draft)'],['final class SnapshotFixtureCampaigns {','DraftFixtureStore::','\\roxy_snapshot_auto_approve()','\\roxy_snapshot_ai_enabled()','\\roxy_snapshot_schedule_verified()'],$campaign);
 eval(substr($campaign,5));
 function roxy_snapshot_attachment_url($id){return 'https://fixture.test/'.$id.'.jpg';}
 function roxy_snapshot_auto_approve(){return true;}
 function roxy_snapshot_ai_enabled(){return $GLOBALS['snapshot_ai_enabled']??true;}
+function roxy_snapshot_schedule_verified(){return $GLOBALS['snapshot_schedule_verified']??true;}
 function roxy_snapshot_check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS: $label\n";}
 function roxy_snapshot_row($overrides=[]){
     global $wpdb;
@@ -78,6 +79,14 @@ try {
     $row=roxy_snapshot_row(['status'=>'posted','facebook_post_id'=>'123']);
     roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::update_draft(1,'Invalid edit','2026-10-06 10:00:00',null,null,\RoxySocial\DraftFixtureStore::draft_revision($row)),'posted payload stays frozen');
     roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::update_text(1,'Invalid text')&&!\RoxySocial\DraftFixtureStore::update_media(1,999,'invalid.jpg')&&!\RoxySocial\DraftFixtureStore::update_ai_status(1,'pending'),'legacy mutators cannot rewrite published payload');
+    $GLOBALS['snapshot_schedule_verified']=false;$GLOBALS['snapshot_ai_enabled']=true;
+    $row=roxy_snapshot_row(['ai_status'=>'ready']);\RoxySocial\SnapshotFixtureCampaigns::maybe_auto_approve(1);
+    roxy_snapshot_check(\RoxySocial\DraftFixtureStore::find(1)['status']==='needs_review','actual Campaigns-to-Store rejection path persists review instead of calling a private helper');
+    $GLOBALS['snapshot_schedule_verified']=true;
+    $row=roxy_snapshot_row(['ai_status'=>'ready']);$wpdb->update($table,['post_text'=>'Changed caption'],['id'=>1]);
+    roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::review_snapshot($row,'Stale schedule'),'stale schedule rejection cannot overwrite newer snapshot');
+    $row=roxy_snapshot_row(['status'=>'approved','ai_status'=>'ready']);
+    roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::review_snapshot($row,'Late error'),'background schedule rejection cannot demote an approved snapshot');
     $row=roxy_snapshot_row();$claim=\RoxySocial\DraftFixtureStore::acquire_publish_lock(1);$first=$wpdb;$second=new wpdb(DB_USER,DB_PASSWORD,DB_NAME,DB_HOST);$second->prefix=$fixture_prefix;
     try {$wpdb=$second;roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::save_ai_result($row,'Competing result'),'AI completion cannot claim another worker-owned draft');}
     finally {$wpdb=$first;if($claim)\RoxySocial\DraftFixtureStore::release_publish_lock($claim);$second->close();}

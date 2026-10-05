@@ -11,6 +11,7 @@ namespace RoxySocial {
         }
         public static function campaign_rows($key){return [];}
         public static function save_draft_snapshot($expected,$values){if($expected!==self::$row)return false;self::$row=array_merge(self::$row,$values);return true;}
+        public static function review_snapshot($expected,$error){return self::save_draft_snapshot($expected,['status'=>'needs_review','last_error'=>$error]);}
         public static function approve_snapshot($expected){if($expected!==self::$row)return false;self::$row['status']='approved';return true;}
     }
     final class Hangar {public static function has_credentials(){return false;}}

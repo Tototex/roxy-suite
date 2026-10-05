@@ -165,7 +165,7 @@ final class Campaigns {
         if (empty($draft['media_url']) || empty($draft['hangar_asset_id'])) return;
         if (AI::enabled() && (string) ($draft['ai_status'] ?? 'pending') !== 'ready') return;
         if (!self::verified_caption_schedule($draft)) {
-            Store::save_draft_snapshot($draft, ['status' => 'needs_review', 'last_error' => 'The caption schedule no longer matches the published showings. Review before approving.']);
+            Store::review_snapshot($draft, 'The caption schedule no longer matches the published showings. Review before approving.');
             return;
         }
         Store::approve_snapshot($draft);
