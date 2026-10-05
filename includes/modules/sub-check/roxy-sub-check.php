@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Roxy Subscription Check
  * Description: NFC-friendly membership verification page for WooCommerce Subscriptions. Per-subscription photo, scan log, and customer photo upload.
- * Version: 1.3.8
+ * Version: 1.3.9
  * Author: Newport Roxy (AI Team)
  * Update URI: https://github.com/Tototex/roxy-sub-check
  */
@@ -355,7 +355,19 @@ class Roxy_Sub_Check {
     return $out;
   }
 
-  public static function log_member_visit(int $sub_id, int $showing_id = 0, int $quantity = 1, string $source = 'manual_admit'): array {
+  public static function prepare_admission_log(): bool {
+    // Admission is never a schema-repair path: even a caller-owned transaction
+    // must not be implicitly committed by dbDelta before our service rejects it.
+    if (self::$schema_ready) return true;
+    if (self::$schema_attempted) return false;
+    global $wpdb;
+    $table=self::table_name();
+    if (get_option('roxy_member_scans_schema_version') !== self::SCHEMA_VERSION || $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($table))) !== $table) return false;
+    self::$schema_ready=true;
+    return true;
+  }
+
+  public static function log_member_visit(int $sub_id, int $showing_id = 0, int $quantity = 1, string $source = 'manual_admit', ?callable $writer = null): array {
     $result = self::check_subscription($sub_id);
     if (!empty($result['error'])) {
       return ['ok' => false, 'message' => (string) $result['error'], 'payload' => self::get_member_payload($sub_id, false)];
@@ -366,6 +378,9 @@ class Roxy_Sub_Check {
     }
 
     $max_qty = max(1, (int) ($result['membership_qty'] ?? 1));
+    // A transaction caller has already changed this many tickets: never silently
+    // clamp its log if the membership entitlement changed in the meantime.
+    if ($writer && ($quantity < 1 || $quantity > $max_qty)) return ['ok'=>false,'message'=>'Membership quantity changed. Refresh and retry.'];
     $quantity = max(1, min($quantity, $max_qty));
     $saved = self::log_scan(
       $sub_id,
@@ -374,7 +389,8 @@ class Roxy_Sub_Check {
       !empty($result['active']) ? 1 : 0,
       $showing_id,
       $source,
-      $quantity
+      $quantity,
+      $writer
     );
     if (!$saved) return ['ok'=>false,'message'=>'Member admission could not be recorded. Do not admit the guest until the record is saved.','payload'=>self::get_member_payload($sub_id,false)];
 
@@ -562,9 +578,10 @@ class Roxy_Sub_Check {
     ));
   }
 
-  private static function log_scan($sub_id, $user_id, $status, $is_active, int $showing_id = 0, string $source = 'nfc_scan', int $quantity = 1): bool {
+  private static function log_scan($sub_id, $user_id, $status, $is_active, int $showing_id = 0, string $source = 'nfc_scan', int $quantity = 1, ?callable $writer = null): bool {
     global $wpdb;
-    if (!self::create_log_table()) return false;
+    // Schema work must happen before START TRANSACTION (DDL implicitly commits).
+    if ($writer ? !self::$schema_ready : !self::create_log_table()) return false;
     $table = self::table_name();
 
     $ip = '';
@@ -576,9 +593,7 @@ class Roxy_Sub_Check {
 
     $ua = !empty($_SERVER['HTTP_USER_AGENT']) ? substr(sanitize_text_field($_SERVER['HTTP_USER_AGENT']), 0, 900) : '';
 
-    $saved = $wpdb->insert(
-      $table,
-      [
+    $row = [
         'scanned_at'      => current_time('mysql'),
         'subscription_id' => (int)$sub_id,
         'user_id'         => $user_id ? (int)$user_id : null,
@@ -589,7 +604,11 @@ class Roxy_Sub_Check {
         'quantity'        => max(1, (int)$quantity),
         'ip'              => $ip,
         'user_agent'      => $ua
-      ],
+      ];
+    if ($writer) return $writer($row) === true;
+    $saved = $wpdb->insert(
+      $table,
+      $row,
       ['%s','%d','%d','%s','%d','%d','%s','%d','%s','%s']
     );
     return $saved === 1;

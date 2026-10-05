@@ -100,6 +100,20 @@ final class Issuance {
     $this->write($wpdb->prepare("INSERT INTO `$table` (product_id,customer_key,checked_in,used_qty,updated_at) SELECT %d,%s,%d,%d,%s FROM DUAL WHERE $guard ON DUPLICATE KEY UPDATE checked_in=VALUES(checked_in),used_qty=VALUES(used_qty),updated_at=VALUES(updated_at)",$context_id,$customer_key,$quantity>0?1:0,$quantity,current_time('mysql')));
     if ($this->will_call_quantity($context_id,$customer_key)!==$quantity) throw new \RuntimeException('Attendance summary verification failed');
   }
+  public function member_visit(array $row): bool {
+    global $wpdb;
+    $this->assert_owner();
+    $table=$wpdb->prefix.'roxy_member_scans';
+    if ($wpdb->get_var($wpdb->prepare('SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s',$table)) !== 'InnoDB') throw new \RuntimeException('Transactional membership log storage required');
+    $columns=['scanned_at','subscription_id','user_id','status','is_active','showing_id','source','quantity','ip','user_agent'];
+    if (array_keys($row)!==$columns) throw new \RuntimeException('Invalid membership log fields');
+    $values=[];
+    foreach($columns as $column) $values[]=$row[$column]===null ? 'NULL' : $wpdb->prepare('%s',(string)$row[$column]);
+    $sql="INSERT INTO `$table` (`".implode('`,`',$columns)."`) SELECT ".implode(',',$values).' FROM DUAL WHERE '.$this->predicate();
+    if ($this->write($sql)!==1) throw new \RuntimeException('Membership visit was not saved');
+    return true;
+  }
+
   private function write(string $sql): int {
     global $wpdb;
     $this->assert_owner();

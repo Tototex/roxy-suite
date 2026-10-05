@@ -1345,6 +1345,52 @@ class Tickets {
     return $matches;
   }
 
+  /** Reserved admission and its visit log share all QR/Will Call order locks. */
+  private static function admit_member_reservation(int $sub_id, int $showing_id, int $quantity, string $source, array $ticket_ids): array {
+    if (self::$issuance !== null || !\Roxy_Sub_Check::prepare_admission_log()) throw new \RuntimeException('Membership log is unavailable.');
+    $identities=[];
+    foreach($ticket_ids as $id) {
+      $order_id=(int)get_post_meta($id,self::META_ORDER_ID,true);
+      if($order_id<=0) throw new \RuntimeException('Reservation identity changed. Refresh and retry.');
+      $identities[(int)$id]=$order_id;
+    }
+    $result=(new Issuance(array_values($identities),'member:'.$sub_id.':'.$showing_id))->run(static function(Issuance $operation)use($identities,$sub_id,$showing_id,$quantity,$source):array {
+      self::$issuance=$operation;
+      try {
+        clean_post_cache($sub_id);
+        foreach(array_unique($identities) as $order_id){clean_post_cache($order_id);wp_cache_delete('order-items-'.$order_id,'orders');}
+        foreach(array_keys($identities) as $id) clean_post_cache($id);
+        $member=\Roxy_Sub_Check::get_member_payload($sub_id,false);
+        if(empty($member['found']) || ($member['status']??'')!=='valid') throw new \RuntimeException('Membership is not active.');
+        $fresh=self::find_reserved_subscriber_tickets($showing_id,$member);
+        $expected=array_keys($identities);sort($fresh);sort($expected);
+        if($fresh!==$expected) throw new \RuntimeException('Reservation changed. Refresh and retry.');
+        $target=min($quantity,count($identities),max(1,(int)($member['membership_qty']??1)));
+        $checked=0;$available=[];
+        foreach($identities as $id=>$order_id) {
+          if(!self::is_ticket_record($id) || (int)self::read_ticket_meta($id,self::META_ORDER_ID)!==$order_id || (int)self::read_ticket_meta($id,self::META_SHOWING_ID)!==$showing_id || self::read_ticket_meta($id,self::META_TICKET_TYPE)!=='subscriber') throw new \RuntimeException('Reservation identity changed. Refresh and retry.');
+          if(!self::ticket_is_eligible($id,true)) continue;
+          if((int)self::read_ticket_meta($id,self::META_CHECKED_IN)===1) $checked++;
+          else $available[]=$id;
+        }
+        $changed=0;
+        foreach($available as $id) {
+          if($checked+$changed >= $target) break;
+          if(!self::apply_admission($id,get_current_user_id(),'member')) throw new \RuntimeException('Reservation admission failed.');
+          $changed++;
+        }
+        $visit=null;
+        if($changed>0) {
+          $visit=\Roxy_Sub_Check::log_member_visit($sub_id,$showing_id,$changed,$source,static fn(array $row):bool=>$operation->member_visit($row));
+          if(empty($visit['ok'])) throw new \RuntimeException('Membership visit was not saved. Refresh and retry.');
+        }
+        return ['changed'=>$changed,'already'=>$checked,'target'=>$target,'visit'=>$visit];
+      } finally {self::$issuance=null;}
+    });
+    if($result['changed']>0) self::invalidate_door_stats_cache($showing_id);
+    return $result;
+  }
+
   private static function member_admission_payload(int $sub_id, int $showing_id, int $quantity, string $source_prefix): array {
     if (!class_exists('\Roxy_Sub_Check') || !method_exists('\Roxy_Sub_Check', 'get_member_payload')) {
       return ['ok' => false, 'message' => 'Membership tools are unavailable.'];
@@ -1364,24 +1410,22 @@ class Tickets {
     $source = $source_prefix . '_walkup';
     $reserved_changed = 0;
     $reserved_count = count($reserved_tickets);
+    $visit = null;
 
     if ($reserved_tickets) {
       $source = $source_prefix . '_reserved';
-      $target = min($quantity, $reserved_count);
-      $already_checked = 0;
-      $available = 0;
-      foreach ($reserved_tickets as $ticket_id) {
-        if (!self::ticket_is_eligible($ticket_id, true)) continue;
-        if ((int) get_post_meta($ticket_id, self::META_CHECKED_IN, true) === 1) {
-          $already_checked++;
-          continue;
-        }
-        if ($available >= $target) break;
-        if (self::check_in_ticket($ticket_id, get_current_user_id())) {
-          $reserved_changed++;
-          $available++;
-        }
+      try {
+        $reservation=self::admit_member_reservation($sub_id,$showing_id,$quantity,$source,$reserved_tickets);
+      } catch (\Throwable $e) {
+        Log::error('Member reservation admission was not saved; staff must refresh and retry',['subscription_id'=>$sub_id,'showing_id'=>$showing_id]);
+        $member_payload['admitted']=false;
+        $member_payload['admit_quantity']=0;
+        return ['ok'=>false,'message'=>'Member admission was not saved. Refresh and retry before admitting the guest.','payload'=>$member_payload];
       }
+      $target=$reservation['target'];
+      $already_checked=$reservation['already'];
+      $reserved_changed=$reservation['changed'];
+      $visit=$reservation['visit'];
       if ($reserved_changed <= 0 && $already_checked >= $target) {
         $member_payload['admitted'] = false;
         $member_payload['already_admitted'] = true;
@@ -1416,7 +1460,7 @@ class Tickets {
       $quantity = min($quantity, max(1, $max_qty - $already_walkup));
     }
 
-    $visit = \Roxy_Sub_Check::log_member_visit($sub_id, $showing_id, $quantity, $source);
+    if ($visit === null) $visit = \Roxy_Sub_Check::log_member_visit($sub_id, $showing_id, $quantity, $source);
     $payload = is_array($visit['payload'] ?? null) ? $visit['payload'] : $member_payload;
     self::invalidate_door_stats_cache($showing_id);
     $payload['admitted'] = !empty($visit['ok']);

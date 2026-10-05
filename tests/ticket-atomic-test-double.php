@@ -14,6 +14,7 @@ namespace RoxyST {
       if($remove)\delete_post_meta($id,$key);else \update_post_meta($id,$key,$value);
     }
     public function will_call_quantity(int $id,string $key):int{return (int)($GLOBALS['baseline']??0);}
+    public function member_visit(array $row):bool{return true;}
     public function will_call_summary(int $id,string $key,int $qty):void {
       if($GLOBALS['wpdb']->replace()===false)throw new \RuntimeException('Attendance summary write failed');
       $GLOBALS['baseline']=$qty;

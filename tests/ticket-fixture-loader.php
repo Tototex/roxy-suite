@@ -12,5 +12,12 @@ function roxy_fixture_tickets(string $root,string $class): void {
     $code=preg_replace('/^<\?php\s*/','',file_get_contents($root.'/includes/modules/show-tickets/includes/class-roxy-st-tickets.php'),1);
     $code=str_replace('class Tickets {','class '.$class.' {',$code);
     $code=preg_replace('/\bIssuance\b/','FixtureIssuance',$code);
+    if(class_exists('Fixture_Roxy_Sub_Check')) $code=str_replace('Roxy_Sub_Check','Fixture_Roxy_Sub_Check',$code);
+    eval($code);
+}
+function roxy_fixture_members(string $root): void {
+    $code=preg_replace('/^<\?php\s*/','',file_get_contents($root.'/includes/modules/sub-check/roxy-sub-check.php'),1);
+    $code=str_replace('Roxy_Sub_Check','Fixture_Roxy_Sub_Check',$code);
+    $code=str_replace('Fixture_Roxy_Sub_Check::init();','',$code);
     eval($code);
 }

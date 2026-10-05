@@ -19,8 +19,9 @@ function wp_send_json_success($payload){throw new JsonResult($payload);}
 function wp_send_json_error($payload,$code=400){throw new RuntimeException($payload['message']);}
 class Roxy_Sub_Check {
     static $logs=[]; static $fail=false;
+    static function prepare_admission_log(){return true;}
     static function get_member_payload($id,$log=false){return ['found'=>true,'status'=>'valid','credential_type'=>'member','subscription_id'=>$id,'membership_qty'=>3,'customer_email'=>'fixture@example.test'];}
-    static function log_member_visit($id,$show,$qty,$source){if(self::$fail)return ['ok'=>false,'message'=>'Fixture persistence failure'];self::$logs[]=[$qty,$source];return ['ok'=>true,'payload'=>self::get_member_payload($id)+['admit_quantity'=>$qty]];}
+    static function log_member_visit($id,$show,$qty,$source,$writer=null){if(self::$fail)return ['ok'=>false,'message'=>'Fixture persistence failure'];if($writer)$writer([]);self::$logs[]=[$qty,$source];return ['ok'=>true,'payload'=>self::get_member_payload($id)+['admit_quantity'=>$qty]];}
     static function admitted_quantity_for_showing(...$args){return $GLOBALS['walkup']??0;}
 }
 class TestOrder {
@@ -38,7 +39,7 @@ $code=str_replace(['self::door_stats_payload($showing_id)','self::door_stats_pay
 $code=str_replace(['self::invalidate_door_stats_cache($showing_id);','self::invalidate_door_stats_cache_for_ticket($ticket_id);'],'',$code);
 eval($code);
 $GLOBALS['order']=new TestOrder;$GLOBALS['reserved']=[101,102,103];
-$reset=static function(){Roxy_Sub_Check::$logs=[];Roxy_Sub_Check::$fail=false;foreach([101,102,103] as $id)$GLOBALS['meta'][$id]=['_roxy_ticket_state'=>'valid','_roxy_ticket_order_id'=>1,'_roxy_ticket_order_item_id'=>10,'_roxy_ticket_customer_email'=>'fixture@example.test'];};
+$reset=static function(){Roxy_Sub_Check::$logs=[];Roxy_Sub_Check::$fail=false;foreach([101,102,103] as $id)$GLOBALS['meta'][$id]=['_roxy_ticket_state'=>'valid','_roxy_ticket_order_id'=>1,'_roxy_ticket_order_item_id'=>10,'_roxy_ticket_showing_id'=>50,'_roxy_ticket_type'=>'subscriber','_roxy_ticket_customer_email'=>'fixture@example.test'];};
 $admit=new ReflectionMethod(\RoxyST\Tickets::class,'member_admission_payload');$admit->setAccessible(true);
 $reset();$GLOBALS['meta'][101]['_roxy_checked_in']=1;$GLOBALS['meta'][101]['_roxy_ticket_state']='checked_in';$GLOBALS['order']->refunded=1;
 $result=$admit->invoke(null,1,50,3,'manual_admit');
@@ -52,8 +53,12 @@ unset($_POST['auto_admit']);try{\RoxyST\Tickets::ajax_door_validate();}catch(Jso
 check(empty($result['admitted'])&&!Roxy_Sub_Check::$logs,'missing Auto Admit flag defaults to verification only');
 $_POST['auto_admit']='1';try{\RoxyST\Tickets::ajax_door_validate();}catch(JsonResult $json){$result=$json->payload;}
 check(!empty($result['admitted'])&&$result['admit_quantity']===1&&count(Roxy_Sub_Check::$logs)===1,'explicit Auto Admit on admits exactly one reserved member');
+$result=$admit->invoke(null,1,50,1,'manual_admit');
+check(!$result['ok']&&count(Roxy_Sub_Check::$logs)===1&&!get_post_meta(102,'_roxy_checked_in'),'repeat target-one scan does not admit another reservation');
+$reset();Roxy_Sub_Check::$fail=true;$result=$admit->invoke(null,1,50,3,'manual_admit');
+check(!$result['ok']&&!get_post_meta(101,'_roxy_checked_in')&&!get_post_meta(102,'_roxy_checked_in')&&!get_post_meta(103,'_roxy_checked_in'),'failed reserved log rolls back every ticket admission');
 $reset();$GLOBALS['reserved']=[];$GLOBALS['walkup']=2;$result=$admit->invoke(null,1,50,3,'manual_admit');
 check($result['ok']&&$result['payload']['admit_quantity']===1,'walk-up request capped at remaining membership quantity');
 $GLOBALS['walkup']=0;Roxy_Sub_Check::$fail=true;$result=$admit->invoke(null,1,50,3,'manual_admit');
 check(!$result['ok']&&$result['payload']['admit_quantity']===0,'failed member log reports zero admission');
-echo "NOTE: stats bypassed; reserved-ticket/log atomicity and concurrent retries remain open.\n";
+echo "NOTE: unit transaction double; real persistence and concurrency require MySQL/Woo fixtures.\n";
