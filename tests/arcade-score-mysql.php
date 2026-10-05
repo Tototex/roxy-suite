@@ -11,7 +11,7 @@ if($real->last_error)throw new RuntimeException('Cannot capture score baseline')
 $digest=hash('sha256',wp_json_encode($original));
 $code=file_get_contents($root.'/includes/modules/arcade/roxy-arcade.php');
 $code=preg_replace('/^<\?php\s*/','',$code,1);
-$code=str_replace("define('ROXY_ARCADE_VERSION', '0.4.5');",'', $code);
+$code=preg_replace("/define\('ROXY_ARCADE_VERSION', '[^']+'\);/",'', $code);
 $code=str_replace('class Roxy_Arcade {','class Roxy_Arcade_Score_Fixture {',$code);
 $code=str_replace('Roxy_Arcade::init();','',$code);eval($code);
 $save=new ReflectionMethod('Roxy_Arcade_Score_Fixture','upsert_best_score');
