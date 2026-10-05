@@ -24,12 +24,21 @@ function roxy_fixture_tickets(string $root,string $class): void {
     if(class_exists('RoxyST\\FixtureCapacity')) $code=preg_replace('/\bCapacity\b/','FixtureCapacity',$code);
     eval($code);
 }
+function roxy_fixture_holds(string $root): void {
+    roxy_fixture_capacity($root);roxy_fixture_issuance($root);
+    $code=preg_replace('/^<\?php\s*/','',file_get_contents($root.'/includes/modules/show-tickets/includes/class-roxy-st-holds.php'),1);
+    $code=str_replace('final class Holds {','final class FixtureHolds {',$code);
+    foreach(['Issuance','Reservations','Capacity'] as $class)$code=preg_replace('/\b'.$class.'\b/','Fixture'.$class,$code);
+    if(class_exists('Fixture_Roxy_Sub_Check'))$code=str_replace('Roxy_Sub_Check','Fixture_Roxy_Sub_Check',$code);
+    eval($code);
+}
 function roxy_fixture_capacity(string $root): void {
     roxy_fixture_reservations($root);
     $code=preg_replace('/^<\?php\s*/','',file_get_contents($root.'/includes/modules/show-tickets/includes/class-roxy-st-capacity.php'),1);
     $code=str_replace('class Capacity {','class FixtureCapacity {',$code);
     $code=preg_replace('/\bReservations\b/','FixtureReservations',$code);
     if(class_exists('Fixture_Roxy_Sub_Check')) $code=str_replace('Roxy_Sub_Check','Fixture_Roxy_Sub_Check',$code);
+    $code=preg_replace('/\bHolds\b/','FixtureHolds',$code);
     eval($code);
 }
 function roxy_fixture_members(string $root): void {

@@ -151,6 +151,7 @@ class Tickets {
 
     $order_status = (string) $order->get_status();
     $state_for_order = self::state_for_order_status($order_status);
+    if((int)self::read_ticket_meta($order_id,'_roxy_seat_review')===1)$state_for_order='pending';
 
     foreach ($order->get_items() as $item_id => $item) {
       $product_id = (int) $item->get_product_id();
@@ -678,6 +679,10 @@ class Tickets {
     $order_id = (int) $order->get_id();
     if (isset($rendered[$order_id])) return;
     $rendered[$order_id] = true;
+    if((int)get_post_meta($order_id,'_roxy_seat_review',true)===1) {
+      echo '<section class="woocommerce-order-details roxy-st-tickets"><h2>Your Tickets</h2><p>Your order requires a seat availability review. Please contact the theater. Payment records are preserved; no automatic refund was made. Tickets are not valid for admission until this is resolved.</p></section>';
+      return;
+    }
 
     $ticket_ids = self::get_order_ticket_ids($order_id);
     if (!$ticket_ids) {
@@ -1776,6 +1781,7 @@ class Tickets {
     // Do not trust stale ticket metadata after payment/order state changes.
     $order = wc_get_order((int) self::read_ticket_meta($ticket_id, self::META_ORDER_ID));
     if (!$order || self::state_for_order_status((string) $order->get_status()) !== 'valid') return false;
+    if((int)self::read_ticket_meta((int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID),'_roxy_seat_review')===1)return false;
     $item_id = (int) self::read_ticket_meta($ticket_id, self::META_ORDER_ITEM_ID);
     $item = $order->get_item($item_id);
     if (!$item) return false;

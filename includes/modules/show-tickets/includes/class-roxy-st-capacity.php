@@ -106,7 +106,7 @@ class Capacity {
     if ($capacity === null) return $passed;
 
     $in_cart = self::cart_qty_for_showing($sid);
-    $sold = self::sold_qty_for_showing($sid);
+    $sold = self::sold_qty_for_showing($sid, true);
 
     if (($sold + $in_cart + $quantity) > $capacity) {
       wc_add_notice('This show is sold out (or does not have enough seats remaining).', 'error');
@@ -143,7 +143,7 @@ class Capacity {
     if ($capacity === null) return $passed;
 
     $other_qty = max(0, self::cart_qty_for_showing($sid) - (int) ($values['quantity'] ?? 0));
-    $sold = self::sold_qty_for_showing($sid);
+    $sold = self::sold_qty_for_showing($sid, true);
     if (($sold + $other_qty + $quantity) > $capacity) {
       wc_add_notice('This show does not have enough seats remaining.', 'error');
       return false;
@@ -183,7 +183,7 @@ class Capacity {
     foreach ($by_showing as $sid => $qty) {
       $capacity = self::capacity_limit_for_showing($sid);
       if ($capacity === null) continue;
-      $sold = self::sold_qty_for_showing($sid);
+      $sold = self::sold_qty_for_showing($sid, true);
       if (($sold + $qty) > $capacity) {
         wc_add_notice('Not enough remaining seats for: ' . esc_html(get_the_title($sid)) . '.', 'error');
       }
@@ -297,11 +297,12 @@ class Capacity {
     return $qty;
   }
 
-  private static function sold_qty_for_showing(int $showing_id): int {
+  private static function sold_qty_for_showing(int $showing_id, bool $checkout_retry = false): int {
     try { $walkups=class_exists('\Roxy_Sub_Check') ? \Roxy_Sub_Check::walkup_quantity_for_showing($showing_id) : 0; }
     catch(\Throwable $e){return PHP_INT_MAX;} // Fail closed without crashing public pages.
     try {
-      $reserved=Reservations::quantity_for_showing($showing_id);
+      $exclude=$checkout_retry && class_exists(__NAMESPACE__.'\\Holds') ? Holds::retry_order_id() : 0;
+      $reserved=Reservations::quantity_for_showing($showing_id,$exclude);
       if($reserved>PHP_INT_MAX-$walkups)return PHP_INT_MAX;
       return $reserved+$walkups;
     } catch(\Throwable $e){return PHP_INT_MAX;}

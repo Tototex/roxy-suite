@@ -64,6 +64,21 @@ try {
   }finally{$wpdb->query('ROLLBACK');}
   $check((int)$wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->postmeta}` WHERE post_id IN (888,999)")===0,'no nested or stray writes remain');
   echo 'TICKET_ISSUANCE_MYSQL_OK'.PHP_EOL;
+  $lease=new \RoxyST\FixtureIssuance([123,456],['lease-showing-a','lease-showing-b']);$lease_keys=$locks->getValue($lease);
+  try {
+    $lease->acquire_lease();$owner=(int)$wpdb->get_var('SELECT CONNECTION_ID()');
+    $check((string)$wpdb->get_var('SELECT @@SESSION.autocommit')==='1','confirmation lease does not start an external transaction');
+    $owned=true;foreach($lease_keys as $key)$owned=$owned&&(int)$second->get_var($second->prepare('SELECT IS_USED_LOCK(%s)',$key))===$owner;
+    $check($owned,'confirmation lease owns all deterministic order/showing locks');
+    $check((new \RoxyST\FixtureIssuance([456,123],['lease-showing-b','lease-showing-a']))->run(static fn($writer)=>true),'hold transaction can reenter its own confirmation lease');
+    $owned=true;foreach($lease_keys as $key)$owned=$owned&&(int)$second->get_var($second->prepare('SELECT IS_USED_LOCK(%s)',$key))===$owner;
+    $check($owned,'inner transaction releases only its references, leaving confirmation lease intact');
+  } finally{$lease->release_lease();}
+  $free=true;foreach($lease_keys as $key)$free=$free&&(int)$wpdb->get_var($wpdb->prepare('SELECT IS_FREE_LOCK(%s)',$key))===1;$check($free,'explicit confirmation release frees every leased lock');
+  $blocked=end($lease_keys);$second->get_var($second->prepare('SELECT GET_LOCK(%s,0)',$blocked));
+  try{try{$lease->acquire_lease();throw new RuntimeException('Contended lease acquired');}catch(RuntimeException $e){$check($e->getMessage()==='Seat confirmation is busy','competing confirmation refuses a partial lease');}}
+  finally{$lease->release_lease();$free=true;foreach(array_slice($lease_keys,0,-1) as $key)$free=$free&&(int)$wpdb->get_var($wpdb->prepare('SELECT IS_FREE_LOCK(%s)',$key))===1;$check($free,'partial confirmation failure releases earlier acquired references');$second->get_var($second->prepare('SELECT RELEASE_LOCK(%s)',$blocked));}
+  echo 'TICKET_LEASE_MYSQL_OK'.PHP_EOL;
 }finally{
   $second->close();$wpdb->prefix=$original['prefix'];$wpdb->posts=$original['posts'];$wpdb->postmeta=$original['postmeta'];
   foreach($created as $table)if($wpdb->query("DROP TABLE `$table`")===false)throw new RuntimeException('Fixture cleanup failed');

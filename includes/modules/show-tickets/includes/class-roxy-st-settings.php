@@ -16,6 +16,7 @@ class Settings {
       'discount_price' => '8',
       'matinee_price' => '8',
       'default_capacity' => '250',
+      'ticket_hold_minutes' => '',
       'discount_note' => 'Under 12, over 65, military.',
       'subscriber_url' => 'https://newportroxy.com/product/friends-of-the-roxy/',
     ];
@@ -64,6 +65,7 @@ class Settings {
       'discount_price' => 'Discount ticket price',
       'matinee_price' => 'Matinee ticket price',
       'default_capacity' => 'Default showing capacity',
+      'ticket_hold_minutes' => 'Unpaid ticket seat hold (minutes)',
       'discount_note' => 'Discount helper note',
       'subscriber_url' => 'Subscriber signup URL',
     ];
@@ -83,12 +85,15 @@ class Settings {
   public static function sanitize($input): array {
     $defaults = self::defaults();
     $input = is_array($input) ? $input : [];
+    $saved=get_option(self::OPTION_KEY,[]);
+    $hold=$input['ticket_hold_minutes']??(is_array($saved)?($saved['ticket_hold_minutes']??''):'');
 
     return [
       'general_price' => wc_format_decimal($input['general_price'] ?? $defaults['general_price']),
       'discount_price' => wc_format_decimal($input['discount_price'] ?? $defaults['discount_price']),
       'matinee_price' => wc_format_decimal($input['matinee_price'] ?? $defaults['matinee_price']),
       'default_capacity' => (string) max(0, (int) ($input['default_capacity'] ?? $defaults['default_capacity'])),
+      'ticket_hold_minutes' => trim((string)$hold)==='' ? '' : (string)max(1,min(525600,(int)$hold)),
       'discount_note' => sanitize_text_field($input['discount_note'] ?? $defaults['discount_note']),
       'subscriber_url' => esc_url_raw($input['subscriber_url'] ?? $defaults['subscriber_url']),
     ];
@@ -104,6 +109,11 @@ class Settings {
       return;
     }
 
+    if ($key === 'ticket_hold_minutes') {
+      echo '<input type="number" min="1" max="525600" step="1" name="'.esc_attr($name).'" value="'.esc_attr($value).'">';
+      echo '<p class="description">Blank inherits WooCommerce’s unpaid-order hold duration. This override applies only to ticket seats; rentals and other Woo orders keep their existing setting. Expired holds release seats without requiring cron.</p>';
+      return;
+    }
     if ($key === 'default_capacity') {
       echo '<input type="number" min="0" step="1" class="regular-text" name="' . esc_attr($name) . '" value="' . esc_attr((string) $value) . '">';
       return;

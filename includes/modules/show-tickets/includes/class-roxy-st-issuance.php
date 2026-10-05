@@ -9,6 +9,7 @@ final class Issuance {
   private int $owner = 0;
   private array $posts = [];
   private array $items = [];
+  private array $leased = [];
 
   public function __construct(int|array $order_ids, string|array $scope = '') {
     global $wpdb;
@@ -68,6 +69,29 @@ final class Issuance {
       foreach ($this->items as $id) { wp_cache_delete($id, 'order_item_meta'); wp_cache_delete('item-'.$id, 'order-items'); }
       if ($this->items && class_exists('WC_Cache_Helper')) \WC_Cache_Helper::invalidate_cache_group('order-items');
     }
+  }
+
+  /** Named locks only: span Woo's status save without wrapping provider hooks in a transaction. */
+  public function acquire_lease(): void {
+    global $wpdb;
+    if($this->leased)throw new \RuntimeException('Seat lease already acquired');
+    $this->owner=(int)$wpdb->get_var('SELECT CONNECTION_ID()');
+    try {
+      $deadline=microtime(true)+5;
+      foreach($this->locks as $lock) {
+        if((string)$wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s,%d)',$lock,max(0,(int)ceil($deadline-microtime(true)))))!=='1')throw new \RuntimeException('Seat confirmation is busy');
+        $this->leased[]=$lock;
+      }
+      $this->assert_owner();
+    } catch(\Throwable $e){$this->release_lease();throw $e;}
+  }
+
+  public function release_lease(): void {
+    global $wpdb;
+    if($this->owner>0 && (int)$wpdb->get_var('SELECT CONNECTION_ID()')===$this->owner) {
+      foreach(array_reverse($this->leased) as $lock)if((int)$wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)',$lock))===$this->owner)$wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)',$lock));
+    }
+    $this->leased=[];
   }
 
   private function owns_connection(): bool {

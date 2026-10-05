@@ -53,6 +53,10 @@ try {
   $order->set_customer_id($users[0]);$order->set_billing_email(get_userdata($users[0])->user_email);
   foreach($order->get_items() as $item){$item->set_quantity(3);$item->save();}
   $order->save();$order->update_status('processing');
+  $check(wc_get_order($order->get_id())->get_status()==='on-hold'&&(int)get_post_meta($order->get_id(),'_roxy_seat_review',true)===1,'confirmation rejects three more subscriber seats after one of three already arrived');
+  // The reservation is for the two remaining people, not all three including the walk-up.
+  foreach($order->get_items() as $item){$item->set_quantity(2);$item->save();}
+  $order->save();$order->update_status('processing');
   $check(\RoxyST\WalkupFixtureTickets::sync_order_tickets($order->get_id()),'later private subscriber reservation issued after initial walk-up');
   $ticket_ids=\RoxyST\WalkupFixtureTickets::get_order_ticket_ids($order->get_id());$result=$admit(3);
   $checked=count(array_filter($ticket_ids,static fn($id)=>(int)get_post_meta($id,'_roxy_checked_in',true)===1));
