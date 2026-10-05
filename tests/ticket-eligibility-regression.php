@@ -2,6 +2,7 @@
 // Isolated payment/refund/admission checks, with no WP/database/email load.
 define('ABSPATH', __DIR__);
 $root = $argv[1] ?? dirname(__DIR__);
+require __DIR__.'/ticket-atomic-test-double.php';
 function check($condition, $label) { if (!$condition) throw new RuntimeException($label); echo "PASS: $label\n"; }
 function get_post_meta($id, $key, $single = true) { return $GLOBALS['meta'][$id][$key] ?? ''; }
 function update_post_meta($id, $key, $value) { $GLOBALS['meta'][$id][$key] = $value; return true; }

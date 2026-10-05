@@ -2,7 +2,7 @@
 // Actual Woo CRUD + staged ticket implementation; private disposable $0 order, no payment/mail.
 if (!defined('WP_CLI') || !WP_CLI) exit;
 $root=$args[0]??dirname(__DIR__);
-require_once $root.'/includes/modules/show-tickets/includes/class-roxy-st-issuance.php';
+if (!class_exists(\RoxyST\Issuance::class)) require_once $root.'/includes/modules/show-tickets/includes/class-roxy-st-issuance.php';
 $source=file_get_contents($root.'/includes/modules/show-tickets/includes/class-roxy-st-tickets.php');
 $source=preg_replace('/^<\?php\s*/','',$source,1);
 $source=str_replace('class Tickets {','class IssuanceFixtureTickets {',$source);
@@ -33,6 +33,50 @@ try{
   $order=wc_get_order($order->get_id());$order->update_status('processing');
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'paid status reconciles through guarded transaction');
   foreach($ids as $id)$check(get_post_meta($id,'_roxy_ticket_state',true)==='valid'&&(int)get_post_meta($id,'_roxy_ticket_order_item_id',true)===$item_id,'ticket payment state and item identity match');
+  if(!function_exists('proc_open'))throw new RuntimeException('Independent admission worker test requires proc_open');
+  $workers=[];
+  try{
+    foreach([[9,'will_call'],[10,'ticket']] as [$actor,$source]){
+      $pipes=[];$process=proc_open([PHP_BINARY,'/usr/local/bin/wp','--path='.ABSPATH,'eval-file',__DIR__.'/ticket-admission-worker.php',$root,(string)$order->get_id(),(string)$ids[0],(string)$actor,$source],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);
+      if(!is_resource($process))throw new RuntimeException('Cannot start private worker');
+      fclose($pipes[0]);stream_set_blocking($pipes[1],false);stream_set_blocking($pipes[2],false);
+      $workers[]=['process'=>$process,'pipes'=>$pipes,'out'=>'','error'=>'','exit'=>null];
+    }
+    $deadline=microtime(true)+40;
+    do{
+      $running=false;
+      foreach($workers as &$worker){$worker['out'].=stream_get_contents($worker['pipes'][1]);$worker['error'].=stream_get_contents($worker['pipes'][2]);$status=proc_get_status($worker['process']);if($status['running'])$running=true;elseif($worker['exit']===null)$worker['exit']=$status['exitcode'];}unset($worker);
+      if($running&&microtime(true)>$deadline)throw new RuntimeException('Private admission workers timed out');
+      if($running)usleep(100000);
+    }while($running);
+    $results=[];
+    foreach($workers as $worker){if($worker['exit']!==0||!preg_match('/ADMISSION_RESULT=([01])/',$worker['out'],$match))throw new RuntimeException('Private admission worker failed');$results[]=(int)$match[1];}
+    $check(array_sum($results)===1,'two independent overlapping staff workers produce exactly one admission');
+    wp_cache_delete($ids[0],'post_meta');$winner=$results[0]===1?[9,'will_call']:[10,'ticket'];
+    $check((int)get_post_meta($ids[0],'_roxy_checked_in_by',true)===$winner[0]&&get_post_meta($ids[0],'_roxy_checked_in_source',true)===$winner[1],'concurrent winner retains matching staff actor and source');
+    $check(\RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0]),'concurrent fixture admission explicitly cleared');
+  }finally{
+    foreach($workers as $worker){if(proc_get_status($worker['process'])['running'])proc_terminate($worker['process']);fclose($worker['pipes'][1]);fclose($worker['pipes'][2]);proc_close($worker['process']);}
+  }
+  $check(\RoxyST\IssuanceFixtureTickets::check_in_ticket($ids[0],9,'will_call'),'common admission saves actual transition');
+  $check(get_post_meta($ids[0],'_roxy_checked_in_source',true)==='will_call'&&(int)get_post_meta($ids[0],'_roxy_checked_in_by',true)===9,'source and staff actor commit with admission');
+  $check(!\RoxyST\IssuanceFixtureTickets::check_in_ticket($ids[0],10,'ticket')&&(int)get_post_meta($ids[0],'_roxy_checked_in_by',true)===9,'repeat scan does not report a second admission or replace first actor');
+  $check(!\RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0],'ticket')&&(int)get_post_meta($ids[0],'_roxy_checked_in',true)===1,'source mismatch rejects stale undo');
+  $check(\RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0],'will_call')&&get_post_meta($ids[0],'_roxy_checked_in_source',true)===''&&get_post_meta($ids[0],'_roxy_ticket_state',true)==='valid','matching explicit undo removes complete admission record');
+  $check(!\RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0]),'repeat undo does not report a phantom transition');
+  global $wpdb;
+  $fail_admit=static function($sql)use($wpdb){return strpos($sql,"INSERT INTO `{$wpdb->postmeta}`")===0&&str_contains($sql,'_roxy_checked_in_by')?'INSERT INTO `roxy_missing_admission_failure_target` VALUES (1)':$sql;};
+  add_filter('query',$fail_admit);$suppressed=$wpdb->suppress_errors(true);
+  try{$check(!\RoxyST\IssuanceFixtureTickets::check_in_ticket($ids[0],9),'later admission write failure reports no admission');}
+  finally{remove_filter('query',$fail_admit);$wpdb->suppress_errors($suppressed);}
+  $check(!get_post_meta($ids[0],'_roxy_checked_in',true)&&!get_post_meta($ids[0],'_roxy_checked_in_at',true)&&get_post_meta($ids[0],'_roxy_ticket_state',true)==='valid','failed admission rolls back earlier flag and timestamp');
+  $check(\RoxyST\IssuanceFixtureTickets::check_in_ticket($ids[0],9,'ticket'),'fresh staff retry succeeds after rollback');
+  $fail_undo=static function($sql)use($wpdb){return strpos($sql,"DELETE FROM `{$wpdb->postmeta}`")===0&&str_contains($sql,'_roxy_checked_in_at')?'DELETE FROM `roxy_missing_undo_failure_target`':$sql;};
+  add_filter('query',$fail_undo);$suppressed=$wpdb->suppress_errors(true);
+  try{$check(!\RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0]),'later undo write failure reports no undo');}
+  finally{remove_filter('query',$fail_undo);$wpdb->suppress_errors($suppressed);}
+  $check((int)get_post_meta($ids[0],'_roxy_checked_in',true)===1&&get_post_meta($ids[0],'_roxy_checked_in_source',true)==='ticket'&&get_post_meta($ids[0],'_roxy_ticket_state',true)==='checked_in','failed undo retains original complete admission');
+  $check(\RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0]),'explicit retry successfully undoes private fixture');
   $refund=wc_create_refund(['order_id'=>$order->get_id(),'amount'=>0,'reason'=>'PRIVATE ISSUANCE FIXTURE','refund_payment'=>false,'restock_items'=>false,'line_items'=>[$item_id=>['qty'=>1,'refund_total'=>0,'refund_tax'=>[]]]]);if(is_wp_error($refund))throw new RuntimeException('Fixture refund failed');
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'actual zero-dollar line refund reconciles');
   $check(count(array_filter($ids,static fn($id)=>get_post_meta($id,'_roxy_ticket_state',true)==='refunded'))===1,'one refund invalidates exactly one existing ticket');

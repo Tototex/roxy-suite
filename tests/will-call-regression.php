@@ -50,6 +50,7 @@ class TestDatabase {
 define('ARRAY_A','ARRAY_A');
 $GLOBALS['wpdb']=new TestDatabase;
 $root=$argv[1]??dirname(__DIR__);
+require __DIR__.'/ticket-atomic-test-double.php';
 require $root.'/includes/modules/show-tickets/includes/class-roxy-st-tickets.php';
 require $root.'/includes/modules/will-call/roxy-will-call.php';
 $GLOBALS['orders']=[1=>new WC_Order];

@@ -2,7 +2,7 @@
 // WP-CLI only: four disposable tables, no order hooks/provider calls/emails.
 if (!defined('WP_CLI') || !WP_CLI) exit;
 $root = $args[0] ?? dirname(__DIR__);
-require_once $root.'/includes/modules/show-tickets/includes/class-roxy-st-issuance.php';
+if (!class_exists(\RoxyST\Issuance::class)) require_once $root.'/includes/modules/show-tickets/includes/class-roxy-st-issuance.php';
 global $wpdb;
 $original = ['prefix'=>$wpdb->prefix,'posts'=>$wpdb->posts,'postmeta'=>$wpdb->postmeta];
 $prefix = $wpdb->prefix.'roxy_issue_test_20261005_';

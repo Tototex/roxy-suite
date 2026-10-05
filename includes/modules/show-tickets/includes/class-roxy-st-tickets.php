@@ -494,42 +494,51 @@ class Tickets {
     return $out;
   }
 
-  public static function check_in_ticket(int $ticket_id, int $user_id = 0): bool {
-    if ($ticket_id <= 0 || get_post_type($ticket_id) !== self::POST_TYPE) {
+  private static function ticket_operation(int $ticket_id, callable $callback): bool {
+    if ($ticket_id <= 0 || get_post_type($ticket_id) !== self::POST_TYPE || self::$issuance !== null) return false;
+    $order_id = (int)get_post_meta($ticket_id, self::META_ORDER_ID, true);
+    if ($order_id <= 0) return false;
+    try {
+      $result = (new Issuance($order_id))->run(static function (Issuance $operation) use ($ticket_id,$order_id,$callback): bool {
+        self::$issuance = $operation;
+        try {
+          clean_post_cache($order_id);
+          wp_cache_delete('order-items-'.$order_id, 'orders');
+          if (!self::is_ticket_record($ticket_id) || (int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID) !== $order_id) return false;
+          return (bool)$callback();
+        } finally { self::$issuance = null; }
+      });
+      if ($result) self::invalidate_door_stats_cache_for_ticket($ticket_id);
+      return (bool)$result;
+    } catch (\Throwable $e) {
+      Log::error('Ticket admission change was not saved; staff must refresh and retry', ['ticket_id'=>$ticket_id,'order_id'=>$order_id]);
+      // Never replay an admission later without a staff member present.
       return false;
     }
-    if (!self::can_check_in($ticket_id)) {
-      return false;
-    }
-
-    if ($user_id <= 0) {
-      $user_id = get_current_user_id();
-    }
-
-    update_post_meta($ticket_id, self::META_CHECKED_IN, '1');
-    update_post_meta($ticket_id, self::META_CHECKED_IN_AT, current_time('mysql'));
-    update_post_meta($ticket_id, self::META_CHECKED_IN_BY, (int) $user_id);
-    update_post_meta($ticket_id, '_roxy_checked_in_source', 'ticket');
-    update_post_meta($ticket_id, self::META_STATE, 'checked_in');
-    self::invalidate_door_stats_cache_for_ticket($ticket_id);
-    return true;
   }
 
-  public static function undo_check_in_ticket(int $ticket_id): bool {
-    if ($ticket_id <= 0 || get_post_type($ticket_id) !== self::POST_TYPE) {
-      return false;
-    }
+  public static function check_in_ticket(int $ticket_id, int $user_id = 0, string $source = 'ticket'): bool {
+    if (!in_array($source,['ticket','will_call','member'],true)) return false;
+    return self::ticket_operation($ticket_id, static function () use ($ticket_id,$user_id,$source): bool {
+      if (!self::can_check_in($ticket_id)) return false;
+      self::write_ticket_meta($ticket_id, self::META_CHECKED_IN, '1');
+      self::write_ticket_meta($ticket_id, self::META_CHECKED_IN_AT, current_time('mysql'));
+      self::write_ticket_meta($ticket_id, self::META_CHECKED_IN_BY, $user_id > 0 ? $user_id : get_current_user_id());
+      self::write_ticket_meta($ticket_id, '_roxy_checked_in_source', $source);
+      self::write_ticket_meta($ticket_id, self::META_STATE, 'checked_in');
+      return true;
+    });
+  }
 
-    delete_post_meta($ticket_id, self::META_CHECKED_IN);
-    delete_post_meta($ticket_id, self::META_CHECKED_IN_AT);
-    delete_post_meta($ticket_id, self::META_CHECKED_IN_BY);
-    delete_post_meta($ticket_id, '_roxy_checked_in_source');
-
-    $order_id = (int) get_post_meta($ticket_id, self::META_ORDER_ID, true);
-    $order = wc_get_order($order_id);
-    update_post_meta($ticket_id, self::META_STATE, (int) get_post_meta($ticket_id, self::META_REFUNDED, true) === 1 ? 'refunded' : ($order ? self::state_for_order_status((string) $order->get_status()) : 'cancelled'));
-    self::invalidate_door_stats_cache_for_ticket($ticket_id);
-    return true;
+  public static function undo_check_in_ticket(int $ticket_id, string $expected_source = ''): bool {
+    return self::ticket_operation($ticket_id, static function () use ($ticket_id,$expected_source): bool {
+      if ((int)self::read_ticket_meta($ticket_id,self::META_CHECKED_IN) !== 1) return false;
+      if ($expected_source !== '' && self::read_ticket_meta($ticket_id,'_roxy_checked_in_source') !== $expected_source) return false;
+      foreach ([self::META_CHECKED_IN,self::META_CHECKED_IN_AT,self::META_CHECKED_IN_BY,'_roxy_checked_in_source'] as $key) self::remove_ticket_meta($ticket_id,$key);
+      $order = wc_get_order((int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID));
+      self::write_ticket_meta($ticket_id,self::META_STATE,(int)self::read_ticket_meta($ticket_id,self::META_REFUNDED) === 1 ? 'refunded' : ($order ? self::state_for_order_status((string)$order->get_status()) : 'cancelled'));
+      return true;
+    });
   }
 
   public static function set_order_item_check_in_qty(int $order_id, int $item_id, int $target_qty, int $user_id = 0): array {
@@ -1162,11 +1171,8 @@ class Tickets {
       wp_die('Invalid request.');
     }
 
-    if ($check_in) {
-      self::check_in_ticket($ticket_id, get_current_user_id());
-    } else {
-      self::undo_check_in_ticket($ticket_id);
-    }
+    $changed = $check_in ? self::check_in_ticket($ticket_id, get_current_user_id()) : self::undo_check_in_ticket($ticket_id);
+    if (!$changed) wp_die('This admission change was not saved. It may have already changed, become ineligible, or failed to save. Refresh the ticket and try again.', 'Admission not changed', ['response'=>409]);
 
     $tab = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : 'check-in';
     if (!in_array($tab, ['check-in', 'manual-checkin', 'door-mode'], true)) {
@@ -1436,7 +1442,7 @@ class Tickets {
     }
 
     if ($undo) {
-      self::undo_check_in_ticket($ticket_id);
+      if (!self::undo_check_in_ticket($ticket_id)) wp_send_json_error(['message'=>'Admission was not undone. Refresh the ticket before trying again.'],409);
     } else {
       if (!self::check_in_ticket($ticket_id, get_current_user_id())) {
         wp_send_json_error(['message' => 'Ticket is not eligible for check-in.'], 400);
@@ -1641,16 +1647,17 @@ class Tickets {
   }
 
   public static function ticket_is_eligible(int $ticket_id, bool $include_checked_in = true): bool {
-    if ($ticket_id <= 0 || get_post_type($ticket_id) !== self::POST_TYPE) return false;
-    $state = (string) get_post_meta($ticket_id, self::META_STATE, true);
-    $checked_in = (int) get_post_meta($ticket_id, self::META_CHECKED_IN, true) === 1;
-    if ((!$include_checked_in && $checked_in) || !in_array($state, $include_checked_in ? ['valid','checked_in'] : ['valid'], true) || (int) get_post_meta($ticket_id, self::META_REFUNDED, true) === 1) return false;
+    if ($ticket_id <= 0 || !self::is_ticket_record($ticket_id)) return false;
+    $state = (string) self::read_ticket_meta($ticket_id, self::META_STATE);
+    $checked_in = (int) self::read_ticket_meta($ticket_id, self::META_CHECKED_IN) === 1;
+    if ((!$include_checked_in && $checked_in) || !in_array($state, $include_checked_in ? ['valid','checked_in'] : ['valid'], true) || (int) self::read_ticket_meta($ticket_id, self::META_REFUNDED) === 1) return false;
     // Do not trust stale ticket metadata after payment/order state changes.
-    $order = wc_get_order((int) get_post_meta($ticket_id, self::META_ORDER_ID, true));
+    $order = wc_get_order((int) self::read_ticket_meta($ticket_id, self::META_ORDER_ID));
     if (!$order || self::state_for_order_status((string) $order->get_status()) !== 'valid') return false;
-    $item_id = (int) get_post_meta($ticket_id, self::META_ORDER_ITEM_ID, true);
+    $item_id = (int) self::read_ticket_meta($ticket_id, self::META_ORDER_ITEM_ID);
     $item = $order->get_item($item_id);
     if (!$item) return false;
+    if (self::$issuance !== null && method_exists($item,'read_meta_data')) $item->read_meta_data(true);
     $ticket_ids = self::normalize_ticket_ids($item->get_meta('_roxy_ticket_ids', true));
     if (!in_array($ticket_id, $ticket_ids, true)) return false;
     // Protect historical partial refunds too, before their next resynchronization.

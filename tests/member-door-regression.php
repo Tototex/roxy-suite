@@ -31,6 +31,7 @@ class TestOrder {
 }
 eval('namespace RoxyST; class CPT {const POST_TYPE="roxy_showing";}');
 $root=$argv[1]??dirname(__DIR__);
+require __DIR__.'/ticket-atomic-test-double.php';
 $code=preg_replace('/^<\?php\s*/','',file_get_contents($root.'/includes/modules/show-tickets/includes/class-roxy-st-tickets.php'),1);
 // Stats computation is tested elsewhere; bypass only unrelated cache/stat calls.
 $code=str_replace(['self::door_stats_payload($showing_id)','self::door_stats_payload($lock_showing_id)'],['[]','[]'],$code);

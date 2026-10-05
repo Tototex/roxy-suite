@@ -1211,15 +1211,13 @@ function roxy_will_call_apply_ticket_checkin_state(array $ticket_ids, int $used_
     if (count($undoable)<$needed) throw new RuntimeException('A QR or manual admission cannot be undone here. Use the ticket Undo Check-In control.');
     $undo = array_slice($undoable, 0, $needed);
     foreach ($undo as $ticket_id) {
-      if (!\RoxyST\Tickets::undo_check_in_ticket($ticket_id)) throw new RuntimeException('Admission could not be undone. Refresh the list.');
-      delete_post_meta($ticket_id,'_roxy_checked_in_source');
+      if (!\RoxyST\Tickets::undo_check_in_ticket($ticket_id,'will_call')) throw new RuntimeException('Admission could not be undone. Refresh the list.');
       $checked=array_values(array_diff($checked,[$ticket_id]));
     }
   } else {
     foreach ($available as $ticket_id) {
       if (count($checked) >= $used_qty) break;
-      if (!\RoxyST\Tickets::check_in_ticket($ticket_id,get_current_user_id())) throw new RuntimeException('Ticket eligibility changed. Refresh the list before admitting anyone else.');
-      update_post_meta($ticket_id,'_roxy_checked_in_source','will_call');
+      if (!\RoxyST\Tickets::check_in_ticket($ticket_id,get_current_user_id(),'will_call')) throw new RuntimeException('Ticket eligibility changed. Refresh the list before admitting anyone else.');
       $checked[]=$ticket_id;
     }
   }
