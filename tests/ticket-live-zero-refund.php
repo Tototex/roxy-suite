@@ -4,7 +4,7 @@
 if (!defined('WP_CLI') || !WP_CLI) exit('WP-CLI only');
 $test_id = (int) ($args[0] ?? 0);
 $order = wc_get_order($test_id);
-if (!$order || (float)$order->get_total() !== 0.0 || strpos($order->get_customer_note(),'ROXY STABILITY REFUND TEST 2026-10-02') !== 0 || !in_array('tototest',$order->get_coupon_codes(),true)) throw new RuntimeException('Not an authorized zero-dollar test order');
+if (!$order || (float)$order->get_total() !== 0.0 || (!str_starts_with($order->get_customer_note(),'ROXY STABILITY REFUND TEST 2026-10-02') && !str_starts_with($order->get_customer_note(),'ROXY STABILITY ISSUANCE TEST 2026-10-05')) || !in_array('tototest',$order->get_coupon_codes(),true)) throw new RuntimeException('Not an authorized zero-dollar test order');
 $items = $order->get_items();
 if (count($items) !== 1) throw new RuntimeException('Expected exactly one ticket line');
 $item = reset($items); $item_id = (int)$item->get_id();

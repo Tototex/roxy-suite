@@ -17,6 +17,7 @@ require_once ROXY_ST_PATH . 'includes/class-roxy-st-log.php';
 require_once ROXY_ST_PATH . 'includes/class-roxy-st-settings.php';
 require_once ROXY_ST_PATH . 'includes/class-roxy-st-sales.php';
 require_once ROXY_ST_PATH . 'includes/lib/psyon/qrcode.php';
+require_once ROXY_ST_PATH . 'includes/class-roxy-st-issuance.php';
 require_once ROXY_ST_PATH . 'includes/class-roxy-st-tickets.php';
 require_once ROXY_ST_PATH . 'includes/class-roxy-st-products.php';
 require_once ROXY_ST_PATH . 'includes/class-roxy-st-capacity.php';

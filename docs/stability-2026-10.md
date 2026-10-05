@@ -40,7 +40,7 @@ Current safeguards: preserve live customizations; back up changed files before d
 | T1 | Open | See audit; no resolution claimed. |
 | T2 | Resolved for ticket API | Payment/order/item eligibility revalidated at admission. Isolated unpaid/missing-order checks and real $0 on-hold/processing transitions pass. Separate Will Call bypass is T5 and remains open. |
 | T3 | In progress | Stable cumulative refund allocation deployed. Orders 30623 and 30629 exercised actual $0 Woo refunds. Refund deletion now triggers ticket reconciliation; actual fixture refund deletion restores eligibility via installed Woo hook contract. Historical bulk reconciliation and attendance-after-refund policy still need audit. |
-| T4 | Open | See audit; no resolution claimed. |
+| T4 | In progress | Checkpoint 19: serialized connection-owned order issuance, checked transactional ticket/metadata/item-link writes, guarded reconnect replay, stable sequence recovery, and bounded reconciliation retries. Twelve actual MySQL and seventeen real Woo fixture assertions pass; live $0 three-ticket checkout/refund/status tests pass. All 1,220 pre-existing ticket row digests unchanged. Shared atomic admission/undo and member log coordination remain open. |
 | T5 | In progress | Will Call uses common paid/unrefunded ticket API, preserves actual QR/manual identities and requires explicit undo restricted to Will Call admissions. Same-customer canceled/missing-order fixtures pass. Live order 30629: manual first ticket retained while Will Call admits remainder. Hybrid legacy/new-ticket customers and atomic cross-module locking remain. |
 | T6 | Open | See audit; no resolution claimed. |
 | T7 | Open | See audit; no resolution claimed. |

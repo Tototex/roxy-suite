@@ -20,6 +20,7 @@ class Tickets {
   private const QR_RATE_LIMIT_WINDOW = 60;
   private const QR_RATE_LIMIT_MAX = 60;
   private const DOOR_STATS_CACHE_TTL = 5;
+  private static ?Issuance $issuance = null;
 
   public static function init(): void {
     add_action('init', [__CLASS__, 'register_post_type']);
@@ -27,6 +28,7 @@ class Tickets {
     add_action('woocommerce_order_status_changed', [__CLASS__, 'on_order_changed'], 30, 1);
     add_action('woocommerce_refund_created', [__CLASS__, 'on_refund_created'], 30, 2);
     add_action('woocommerce_refund_deleted', [__CLASS__, 'on_refund_deleted'], 30, 2);
+    add_action('roxy_st_retry_order_tickets', [__CLASS__, 'on_order_changed'], 10, 2);
 
     add_action('admin_post_roxy_st_check_in_ticket', [__CLASS__, 'handle_check_in']);
     add_action('admin_post_roxy_st_uncheck_in_ticket', [__CLASS__, 'handle_uncheck_in']);
@@ -100,8 +102,8 @@ class Tickets {
     ]);
   }
 
-  public static function on_order_changed(int $order_id): void {
-    self::sync_order_tickets($order_id);
+  public static function on_order_changed(int $order_id, int $attempt = 0): void {
+    self::sync_order_tickets($order_id, $attempt);
   }
 
   public static function on_refund_created(int $refund_id, array $args = []): void {
@@ -116,14 +118,39 @@ class Tickets {
     if ($order_id > 0) self::sync_order_tickets($order_id);
   }
 
-  public static function sync_order_tickets(int $order_id): void {
+  public static function sync_order_tickets(int $order_id, int $attempt = 0): bool {
+    if ($order_id <= 0) return false;
+    if (self::$issuance !== null) return false;
+    $attempt = max(0, $attempt);
+    try {
+      $operation = new Issuance($order_id);
+      $operation->run(static function (Issuance $operation) use ($order_id): void {
+        self::$issuance = $operation;
+        try {
+          clean_post_cache($order_id);
+          wp_cache_delete('order-items-'.$order_id, 'orders');
+          self::sync_order_tickets_locked($order_id);
+        } finally { self::$issuance = null; }
+      });
+      self::invalidate_door_stats_cache_for_order($order_id);
+      return true;
+    } catch (\Throwable $e) {
+      // Payment may already be complete: never retry charging, expose SQL/PII, or claim tickets saved.
+      Log::error('Ticket issuance incomplete; reconciliation required', ['order_id'=>$order_id,'attempt'=>$attempt]);
+      if ($attempt < 3) {
+        $retry_args = [$order_id, $attempt + 1];
+        if (!wp_next_scheduled('roxy_st_retry_order_tickets', $retry_args)) wp_schedule_single_event(time() + [60,300,900][$attempt], 'roxy_st_retry_order_tickets', $retry_args);
+      }
+      return false;
+    }
+  }
+
+  private static function sync_order_tickets_locked(int $order_id): void {
     $order = wc_get_order($order_id);
     if (!$order) return;
 
     $order_status = (string) $order->get_status();
     $state_for_order = self::state_for_order_status($order_status);
-    $order_changed = false;
-    $used_ticket_ids = [];
 
     foreach ($order->get_items() as $item_id => $item) {
       $product_id = (int) $item->get_product_id();
@@ -134,37 +161,61 @@ class Tickets {
 
       $ticket_type = (string) get_post_meta($product_id, ROXY_ST_META_TICKET_TYPE, true);
       $qty = max(0, (int) $item->get_quantity());
+      $item->read_meta_data(true);
       $existing = self::normalize_ticket_ids($item->get_meta('_roxy_ticket_ids', true));
+      $owned = self::$issuance->tickets_for_item($order_id, (int)$item_id);
+      foreach ($existing as $ticket_id) {
+        wp_cache_delete($ticket_id, 'post_meta');
+        if (self::is_ticket_record($ticket_id) && ((int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID) !== $order_id || (int)self::read_ticket_meta($ticket_id,self::META_ORDER_ITEM_ID) !== (int)$item_id)) throw new \RuntimeException('Ticket issuance identity mismatch');
+      }
 
       $keep = [];
       for ($i = 0; $i < $qty; $i++) {
         $ticket_id = isset($existing[$i]) ? (int) $existing[$i] : 0;
-        if ($ticket_id > 0 && get_post_type($ticket_id) === self::POST_TYPE) {
+        $canonical = self::$issuance->ticket_for_sequence($order_id, (int)$item_id, $i + 1);
+        if ($canonical > 0) $ticket_id = $canonical;
+        if ($ticket_id > 0 && self::is_ticket_record($ticket_id)) {
+          wp_cache_delete($ticket_id, 'post_meta');
+          if ((int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID) !== $order_id || (int)self::read_ticket_meta($ticket_id,self::META_ORDER_ITEM_ID) !== (int)$item_id) throw new \RuntimeException('Ticket issuance identity mismatch');
           self::update_ticket_record($ticket_id, $order, $item, $showing_id, $ticket_type, $state_for_order);
         } else {
+          // Do not replace an unlinked legacy ticket when its sequence cannot be proven.
+          foreach (array_diff($owned, $existing) as $unlinked) {
+            if (self::read_ticket_meta($unlinked, '_roxy_ticket_sequence') === '') throw new \RuntimeException('Legacy ticket references require review');
+          }
           $ticket_id = self::create_ticket_record($order, $item, $showing_id, $ticket_type, $state_for_order, $i + 1);
         }
         if ($ticket_id > 0) {
+          self::write_ticket_meta($ticket_id, '_roxy_ticket_sequence', $i + 1);
           $keep[] = $ticket_id;
-          $used_ticket_ids[$ticket_id] = $ticket_id;
         }
       }
 
-      foreach (array_slice($existing, $qty) as $extra_id) {
+      foreach (array_diff($owned, $keep) as $extra_id) {
         self::set_ticket_state((int) $extra_id, self::invalid_state_for_order($order_status));
       }
       self::sync_item_refund_allocation($order, (int) $item_id, $keep, $state_for_order);
 
       if ($existing !== $keep) {
+        self::$issuance->item_ids((int)$item_id, $keep);
         $item->update_meta_data('_roxy_ticket_ids', $keep);
-        $order_changed = true;
       }
     }
+  }
 
-    if ($order_changed) {
-      $order->save();
-    }
-    self::invalidate_door_stats_cache_for_order($order_id);
+  private static function write_ticket_meta(int $id, string $key, $value): void {
+    if (self::$issuance !== null) self::$issuance->post_meta($id, $key, $value);
+    else update_post_meta($id, $key, $value);
+  }
+  private static function read_ticket_meta(int $id, string $key) {
+    return self::$issuance !== null ? self::$issuance->post_meta_value($id, $key) : get_post_meta($id, $key, true);
+  }
+  private static function is_ticket_record(int $id): bool {
+    return self::$issuance !== null ? self::$issuance->is_ticket($id) : get_post_type($id) === self::POST_TYPE;
+  }
+  private static function remove_ticket_meta(int $id, string $key): void {
+    if (self::$issuance !== null) self::$issuance->post_meta($id, $key, null, true);
+    else delete_post_meta($id, $key);
   }
 
   private static function create_ticket_record($order, $item, int $showing_id, string $ticket_type, string $state, int $sequence): int {
@@ -174,18 +225,9 @@ class Tickets {
     $ticket_label = self::ticket_label($showing_id, $ticket_type);
     $title = trim(sprintf('%s — %s — Order #%d — Ticket %d', $showing_title, $ticket_label, $order_id, $sequence));
 
-    $ticket_id = wp_insert_post([
-      'post_type' => self::POST_TYPE,
-      'post_status' => 'publish',
-      'post_title' => $title,
-    ], true);
-
-    if (is_wp_error($ticket_id) || !$ticket_id) {
-      return 0;
-    }
-
-    update_post_meta($ticket_id, self::META_TOKEN, self::generate_token());
-    update_post_meta($ticket_id, self::META_QR_URL, self::qr_image_url((string) get_post_meta($ticket_id, self::META_TOKEN, true)));
+    $ticket_id = self::$issuance->create($title);
+    self::write_ticket_meta($ticket_id, self::META_TOKEN, self::generate_token());
+    self::write_ticket_meta($ticket_id, self::META_QR_URL, self::qr_image_url((string) self::read_ticket_meta($ticket_id, self::META_TOKEN)));
     self::update_ticket_record((int) $ticket_id, $order, $item, $showing_id, $ticket_type, $state);
     return (int) $ticket_id;
   }
@@ -194,27 +236,27 @@ class Tickets {
     $order_id = (int) $order->get_id();
     $product_id = (int) $item->get_product_id();
     $ticket_label = self::ticket_label($showing_id, $ticket_type);
-    $token = (string) get_post_meta($ticket_id, self::META_TOKEN, true);
+    $token = (string) self::read_ticket_meta($ticket_id, self::META_TOKEN);
     if ($token === '') {
       $token = self::generate_token();
-      update_post_meta($ticket_id, self::META_TOKEN, $token);
+      self::write_ticket_meta($ticket_id, self::META_TOKEN, $token);
     }
-    update_post_meta($ticket_id, self::META_QR_URL, self::qr_image_url($token));
+    self::write_ticket_meta($ticket_id, self::META_QR_URL, self::qr_image_url($token));
 
-    update_post_meta($ticket_id, self::META_ORDER_ID, $order_id);
-    update_post_meta($ticket_id, self::META_SHOWING_ID, $showing_id);
-    update_post_meta($ticket_id, self::META_PRODUCT_ID, $product_id);
-    update_post_meta($ticket_id, self::META_ORDER_ITEM_ID, (int) $item->get_id());
-    update_post_meta($ticket_id, self::META_TICKET_TYPE, $ticket_type);
-    update_post_meta($ticket_id, '_roxy_ticket_order_number', $order->get_order_number());
-    update_post_meta($ticket_id, '_roxy_ticket_ticket_label', $ticket_label);
-    update_post_meta($ticket_id, '_roxy_ticket_showing_title', get_the_title($showing_id));
-    update_post_meta($ticket_id, '_roxy_ticket_customer_name', trim($order->get_formatted_billing_full_name()));
-    update_post_meta($ticket_id, '_roxy_ticket_customer_email', (string) $order->get_billing_email());
+    self::write_ticket_meta($ticket_id, self::META_ORDER_ID, $order_id);
+    self::write_ticket_meta($ticket_id, self::META_SHOWING_ID, $showing_id);
+    self::write_ticket_meta($ticket_id, self::META_PRODUCT_ID, $product_id);
+    self::write_ticket_meta($ticket_id, self::META_ORDER_ITEM_ID, (int) $item->get_id());
+    self::write_ticket_meta($ticket_id, self::META_TICKET_TYPE, $ticket_type);
+    self::write_ticket_meta($ticket_id, '_roxy_ticket_order_number', $order->get_order_number());
+    self::write_ticket_meta($ticket_id, '_roxy_ticket_ticket_label', $ticket_label);
+    self::write_ticket_meta($ticket_id, '_roxy_ticket_showing_title', get_the_title($showing_id));
+    self::write_ticket_meta($ticket_id, '_roxy_ticket_customer_name', trim($order->get_formatted_billing_full_name()));
+    self::write_ticket_meta($ticket_id, '_roxy_ticket_customer_email', (string) $order->get_billing_email());
 
-    $current_state = (string) get_post_meta($ticket_id, self::META_STATE, true);
+    $current_state = (string) self::read_ticket_meta($ticket_id, self::META_STATE);
     if ($current_state !== 'checked_in') {
-      update_post_meta($ticket_id, self::META_STATE, $state);
+      self::write_ticket_meta($ticket_id, self::META_STATE, $state);
     }
   }
 
@@ -222,11 +264,11 @@ class Tickets {
     $allocated = self::refunded_ticket_ids($order, $item_id, $ticket_ids);
     foreach ($ticket_ids as $ticket_id) {
       if (isset($allocated[$ticket_id])) {
-        update_post_meta($ticket_id, self::META_REFUNDED, '1');
+        self::write_ticket_meta($ticket_id, self::META_REFUNDED, '1');
         self::set_ticket_state($ticket_id, 'refunded');
       } else {
-        delete_post_meta($ticket_id, self::META_REFUNDED);
-        self::set_ticket_state($ticket_id, (int) get_post_meta($ticket_id, self::META_CHECKED_IN, true) === 1 ? 'checked_in' : $order_state);
+        self::remove_ticket_meta($ticket_id, self::META_REFUNDED);
+        self::set_ticket_state($ticket_id, (int) self::read_ticket_meta($ticket_id, self::META_CHECKED_IN) === 1 ? 'checked_in' : $order_state);
       }
     }
   }
@@ -236,14 +278,14 @@ class Tickets {
     $allocated = [];
     // Preserve previously allocated identities while the cumulative refund still exists.
     foreach ($ticket_ids as $ticket_id) {
-      if ((int) get_post_meta($ticket_id, self::META_REFUNDED, true) === 1 && count($allocated) < $refund_qty) $allocated[$ticket_id] = true;
+      if ((int) self::read_ticket_meta($ticket_id, self::META_REFUNDED) === 1 && count($allocated) < $refund_qty) $allocated[$ticket_id] = true;
     }
     // Prefer unused tickets, but a refund of an already-used ticket must survive undo too.
     foreach ([false, true] as $checked) {
       foreach (array_reverse($ticket_ids) as $ticket_id) {
         if (count($allocated) >= $refund_qty) break;
         if (isset($allocated[$ticket_id])) continue;
-        if (((int) get_post_meta($ticket_id, self::META_CHECKED_IN, true) === 1) !== $checked) continue;
+        if (((int) self::read_ticket_meta($ticket_id, self::META_CHECKED_IN) === 1) !== $checked) continue;
         $allocated[$ticket_id] = true;
       }
     }
@@ -566,7 +608,17 @@ class Tickets {
     $rendered[$order_id] = true;
 
     $ticket_ids = self::get_order_ticket_ids($order_id);
-    if (!$ticket_ids) return;
+    if (!$ticket_ids) {
+      foreach ($order->get_items() as $item) {
+        if ((int)get_post_meta((int)$item->get_product_id(), ROXY_ST_META_SHOWING_ID, true) <= 0) continue;
+        $message = in_array($order->get_status(), ['processing','completed'], true)
+          ? 'Your tickets are being prepared. Please check My Account → My Orders → View Order again shortly. Contact the theater if they do not appear.'
+          : 'Your tickets will appear here once your order is confirmed.';
+        echo '<section class="woocommerce-order-details roxy-st-tickets"><h2>Your Tickets</h2><p>'.esc_html($message).'</p></section>';
+        break;
+      }
+      return;
+    }
 
     echo '<section class="woocommerce-order-details roxy-st-tickets" style="margin-top:24px">';
     echo '<h2 class="woocommerce-order-details__title">Your Tickets</h2>';
@@ -1675,8 +1727,8 @@ class Tickets {
   }
 
   private static function set_ticket_state(int $ticket_id, string $state): void {
-    if ($ticket_id <= 0 || get_post_type($ticket_id) !== self::POST_TYPE) return;
-    update_post_meta($ticket_id, self::META_STATE, $state);
+    if ($ticket_id <= 0 || !self::is_ticket_record($ticket_id)) return;
+    self::write_ticket_meta($ticket_id, self::META_STATE, $state);
   }
 
   private static function state_label(string $state, bool $checked_in): string {
