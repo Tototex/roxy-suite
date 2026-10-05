@@ -83,7 +83,7 @@ Current safeguards: preserve live customizations; back up changed files before d
 | S6 | Open | See audit; no resolution claimed. |
 | S7 | Open | See audit; no resolution claimed. |
 | S8 | Resolved | Draft picker renders provider filenames via textContent/dataset, rejects legacy cached HTML, stores structured search results, checks IDs, and uses one handler. Five mocked DOM assertions pass; six actual PHP-rendered scripts compile. Live chooser opens once, Hangar search returns 200 assets and safe cached reopen works; Media Library opens. No import/assignment/save/publish clicked. |
-| S9 | In progress | Social new saves use versioned authenticated GCM; encryption outage preserves existing settings, corrupted/key-rotated credentials fail closed with reconnect notices. Fifteen isolated crypto checks plus two disabled-crypto checks; live legacy Meta/Hangar readable and complete credential-option hash unchanged. Legacy CBC migration and Grosses plaintext fallback/migration remain open. |
+| S9 | Resolved | Social and Grosses authenticated versioned encryption; crypto outage preserves existing settings, corrupted/key-rotated credentials fail closed with reconnect notices. Legacy CBC/old plaintext migrated using actual SQL compare-and-swap; 15 Social/7 Grosses crypto checks, disabled-crypto fixtures, 7 Social/8 Grosses MySQL checks pass. Live decoded credentials preserved, other Grosses settings unchanged, Square locations read succeeds; no credentials printed. |
 | S10 | Open | See audit; no resolution claimed. |
 
 ## Deferred opportunities

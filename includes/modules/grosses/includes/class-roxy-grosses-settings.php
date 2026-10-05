@@ -7,9 +7,24 @@ class Settings {
   public const STATUS_KEY='roxy_grosses_last_report';
   private const WORKBOOK_TEMPLATE_UPLOAD_KEY='workbook_template_upload';
   private const ENCRYPTION_PREFIX='gcm:';
+  private const ENCRYPTION_PREFIX_V2='gcm:v2:';
 
   public static function init(): void {
+    add_action('admin_init',[__CLASS__,'migrate_legacy_token'],1);
     add_action('admin_init',[__CLASS__,'register_settings']);
+  }
+  public static function migrate_legacy_token(): bool {
+    global $wpdb;
+    $saved=get_option(self::OPTION_KEY,[]);
+    if (!is_array($saved)) return false;
+    $old=(string)($saved['square_access_token']??'');
+    if ($old==='' || str_starts_with($old,self::ENCRYPTION_PREFIX)) return true;
+    try { $updated=$saved;$updated['square_access_token']=self::encrypt_secret($old); } catch (\Throwable $error) { return false; }
+    // Single-value compare-and-swap preserves concurrent settings edits.
+    $changed=$wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value=%s WHERE option_name=%s AND BINARY option_value=BINARY %s",maybe_serialize($updated),self::OPTION_KEY,maybe_serialize($saved)));
+    if ($changed!==1) return false;
+    wp_cache_delete(self::OPTION_KEY,'options');wp_cache_delete('alloptions','options');wp_cache_delete('notoptions','options');
+    return true;
   }
   public static function current_tab(): string {
     $tab=isset($_GET['tab'])?sanitize_key((string) wp_unslash($_GET['tab'])):'database';
@@ -91,9 +106,15 @@ class Settings {
       $existing = [];
     }
     $incoming_square_token = sanitize_text_field((string) ($input['square_access_token'] ?? ''));
-    $square_token = $incoming_square_token !== ''
-      ? self::encrypt_secret($incoming_square_token)
-      : sanitize_text_field((string) ($existing['square_access_token'] ?? $d['square_access_token']));
+    $previous_token=(string)($existing['square_access_token']??$d['square_access_token']);
+    try {
+      $square_token=$incoming_square_token!=='' ? self::encrypt_secret($incoming_square_token) : $previous_token;
+      // Migrate legacy plaintext during a normal settings save, even if token is blank.
+      if ($square_token!=='' && !str_starts_with($square_token,self::ENCRYPTION_PREFIX)) $square_token=self::encrypt_secret($square_token);
+    } catch (\Throwable $error) {
+      add_settings_error(self::OPTION_KEY,'credential_encryption','Secure token storage failed. Existing settings and token were not changed.','error');
+      return $existing;
+    }
     $sanitized=[
       'square_environment'=>in_array(($input['square_environment']??''),['production','sandbox'],true)?$input['square_environment']:$d['square_environment'],
       'square_access_token'=>$square_token,
@@ -147,6 +168,8 @@ class Settings {
         foreach(['production'=>'Production','sandbox'=>'Sandbox'] as $ov=>$label){ echo '<option value="'.esc_attr($ov).'" '.selected($value,$ov,false).'>'.esc_html($label).'</option>'; }
         echo '</select><p class="description">Use sandbox only for testing with a Square sandbox token.</p>'; return;
       case 'square_access_token':
+        $saved=get_option(self::OPTION_KEY,[]);
+        if (!empty($saved['square_access_token']) && self::decrypt_secret((string)$saved['square_access_token'])==='') echo '<p class="description" style="color:#b32d2e">The saved Square token could not be read. Re-enter the token; the saved value has not been erased.</p>';
         echo '<input type="password" class="regular-text code" name="'.esc_attr($name).'" value="" autocomplete="off"'.(self::has_square_access_token() ? ' placeholder="Token saved - leave blank to keep current token"' : '').'><p class="description">Personal access token or OAuth token with Orders read access. Leave blank to keep the current token.</p>'; return;
       case 'square_location_ids': case 'ticket_keywords': case 'exclude_keywords': case 'film_mappings': case 'studio_mappings': case 'email_body': case 'advertiser_email_body':
         $rows=$key==='film_mappings'?'8':'5';
@@ -1148,13 +1171,14 @@ class Settings {
     if ($plain === '') {
       return '';
     }
+    if (!function_exists('openssl_encrypt')) throw new \RuntimeException('Secure token encryption is unavailable.');
     $iv = random_bytes(12);
     $tag = '';
-    $cipher = openssl_encrypt($plain, 'aes-256-gcm', self::encryption_key(), OPENSSL_RAW_DATA, $iv, $tag);
-    if ($cipher === false || $tag === '') {
-      return $plain;
+    $cipher = openssl_encrypt($plain, 'aes-256-gcm', hash('sha256',wp_salt('auth').'|roxy-grosses:v2',true), OPENSSL_RAW_DATA, $iv, $tag, 'roxy-grosses:v2',16);
+    if (!is_string($cipher) || strlen($tag)!==16) {
+      throw new \RuntimeException('Secure token encryption failed.');
     }
-    return self::ENCRYPTION_PREFIX . base64_encode($iv . $tag . $cipher);
+    return self::ENCRYPTION_PREFIX_V2 . base64_encode($iv . $tag . $cipher);
   }
 
   private static function decrypt_secret(string $value): string {
@@ -1163,16 +1187,19 @@ class Settings {
       return '';
     }
     if (!str_starts_with($value, self::ENCRYPTION_PREFIX)) {
+      if (str_contains($value,':')) return '';
       return $value;
     }
-    $raw = base64_decode(substr($value, strlen(self::ENCRYPTION_PREFIX)), true);
+    if (!function_exists('openssl_decrypt')) return '';
+    $v2=str_starts_with($value,self::ENCRYPTION_PREFIX_V2);
+    $raw = base64_decode(substr($value, strlen($v2?self::ENCRYPTION_PREFIX_V2:self::ENCRYPTION_PREFIX)), true);
     if ($raw === false || strlen($raw) < 29) {
       return '';
     }
     $iv = substr($raw, 0, 12);
     $tag = substr($raw, 12, 16);
     $cipher = substr($raw, 28);
-    $plain = openssl_decrypt($cipher, 'aes-256-gcm', self::encryption_key(), OPENSSL_RAW_DATA, $iv, $tag);
+    $plain = openssl_decrypt($cipher, 'aes-256-gcm', $v2?hash('sha256',wp_salt('auth').'|roxy-grosses:v2',true):self::encryption_key(), OPENSSL_RAW_DATA, $iv, $tag, $v2?'roxy-grosses:v2':'');
     return $plain === false ? '' : $plain;
   }
 }

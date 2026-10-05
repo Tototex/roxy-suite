@@ -6,6 +6,22 @@ if (!defined('ABSPATH')) exit;
 final class Secrets {
     private const PREFIX='roxy:v2:';
     private const AAD='roxy-social-secret:v2';
+    private const OPTIONS=['roxy_social_hangar_pass','roxy_social_meta_app_secret','roxy_social_meta_access_token','roxy_social_meta_page_access_token'];
+    public static function migrate_legacy_options(): bool {
+        global $wpdb;
+        $ok=true;
+        foreach (self::OPTIONS as $key) {
+            $old=(string)get_option($key,'');
+            if ($old==='' || str_starts_with($old,self::PREFIX)) continue;
+            $plain=self::decrypt($old);
+            if ($plain==='') {$ok=false;continue;}
+            try {$encrypted=self::encrypt($plain);}catch(\Throwable $error){$ok=false;continue;}
+            $changed=$wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value=%s WHERE option_name=%s AND BINARY option_value=BINARY %s",$encrypted,$key,$old));
+            if ($changed!==1) {$ok=false;continue;}
+            wp_cache_delete($key,'options');wp_cache_delete('alloptions','options');wp_cache_delete('notoptions','options');
+        }
+        return $ok;
+    }
     public static function encrypt(string $value): string {
         if ($value==='' || !function_exists('openssl_encrypt')) throw new \RuntimeException('Secure credential storage is unavailable. Existing credentials were not replaced.');
         $key=hash('sha256',wp_salt('auth').'|'.self::AAD,true);
