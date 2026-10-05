@@ -5,6 +5,7 @@
 
 if (!defined('ABSPATH')) exit;
 
+require_once __DIR__ . '/includes/class-roxy-social-secrets.php';
 require_once __DIR__ . '/includes/class-roxy-social-store.php';
 require_once __DIR__ . '/includes/class-roxy-social-campaigns.php';
 require_once __DIR__ . '/includes/class-roxy-social-admin.php';

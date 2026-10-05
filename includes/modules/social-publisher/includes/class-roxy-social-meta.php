@@ -18,15 +18,19 @@ final class Meta {
     public static function save_settings(): void {
         if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
         check_admin_referer('roxy_social_meta_settings');
+        $prepared=[];
+        try {
+            foreach (['app_secret','access_token','page_access_token'] as $key) {
+                $value=(string)wp_unslash($_POST['meta_'.$key]??'');
+                if ($value!=='') $prepared[$key]=self::encrypt($value);
+            }
+        } catch (\Throwable $error) { wp_die('Credential encryption failed. Existing connection settings were not replaced.'); }
         update_option(self::OPTIONS['app_id'], sanitize_text_field((string) ($_POST['meta_app_id'] ?? '')), false);
         update_option(self::OPTIONS['page_id'], sanitize_text_field((string) ($_POST['meta_page_id'] ?? '')), false);
         update_option(self::OPTIONS['page_name'], sanitize_text_field((string) ($_POST['meta_page_name'] ?? '')), false);
         update_option(self::OPTIONS['instagram_user_id'], sanitize_text_field((string) ($_POST['meta_instagram_user_id'] ?? '')), false);
         update_option(self::OPTIONS['instagram_username'], sanitize_text_field((string) ($_POST['meta_instagram_username'] ?? '')), false);
-        foreach (['app_secret', 'access_token', 'page_access_token'] as $key) {
-            $value = (string) ($_POST['meta_' . $key] ?? '');
-            if ($value !== '') update_option(self::OPTIONS[$key], self::encrypt($value), false);
-        }
+        foreach ($prepared as $key=>$encrypted) update_option(self::OPTIONS[$key],$encrypted,false);
         wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&tab=meta&saved=1'));
         exit;
     }
@@ -34,7 +38,15 @@ final class Meta {
     public static function configured(): bool {
         return (string) get_option(self::OPTIONS['app_id'], '') !== ''
             && (string) get_option(self::OPTIONS['page_id'], '') !== ''
-            && (string) get_option(self::OPTIONS['access_token'], '') !== '';
+            && self::access_token() !== '';
+    }
+
+    public static function credentials_unreadable(): bool {
+        foreach (['app_secret','access_token','page_access_token'] as $key) {
+            $value=(string)get_option(self::OPTIONS[$key],'');
+            if ($value!=='' && self::decrypt($value)==='') return true;
+        }
+        return false;
     }
 
     public static function app_secret_saved(): bool {
@@ -62,11 +74,13 @@ final class Meta {
         if (!$state || !wp_verify_nonce($state, 'roxy_social_meta_connect')) wp_die('Meta authorization could not be verified.');
         $code = sanitize_text_field((string) ($_GET['code'] ?? ''));
         if ($code === '' || !self::app_secret_saved()) wp_die('Meta authorization is missing required information.');
+        $app_secret=self::decrypt((string)get_option(self::OPTIONS['app_secret'],''));
+        if ($app_secret==='') wp_die('The saved Meta app secret could not be read. Existing credentials were not changed.');
         $response = wp_remote_post('https://graph.facebook.com/oauth/access_token', [
             'timeout' => 30,
             'body' => [
                 'client_id' => self::app_id(),
-                'client_secret' => self::decrypt((string) get_option(self::OPTIONS['app_secret'], '')),
+                'client_secret' => $app_secret,
                 'redirect_uri' => self::redirect_url(),
                 'code' => $code,
             ],
@@ -74,7 +88,8 @@ final class Meta {
         $data = !is_wp_error($response) ? json_decode((string) wp_remote_retrieve_body($response), true) : null;
         $token = is_array($data) ? (string) ($data['access_token'] ?? '') : '';
         if ($token === '') { wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&tab=meta&meta_error=token')); exit; }
-        update_option(self::OPTIONS['access_token'], self::encrypt($token), false);
+        try { $encrypted=self::encrypt($token); } catch (\Throwable $error) { wp_die('Credential encryption failed. Existing Meta token was not replaced.'); }
+        update_option(self::OPTIONS['access_token'], $encrypted, false);
         wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&tab=meta&meta_connected=1'));
         exit;
     }
@@ -99,9 +114,13 @@ final class Meta {
             if (!empty($page['instagram_business_account']['id'])) { $selected = $page; break; }
         }
         if (!$selected) $selected = $pages[0];
+        $encrypted_page_token='';
+        if (!empty($selected['access_token'])) {
+            try { $encrypted_page_token=self::encrypt((string)$selected['access_token']); } catch (\Throwable $error) { self::redirect_with_verify_status('failed'); }
+        }
         update_option(self::OPTIONS['page_id'], sanitize_text_field((string) ($selected['id'] ?? '')), false);
         update_option(self::OPTIONS['page_name'], sanitize_text_field((string) ($selected['name'] ?? '')), false);
-        if (!empty($selected['access_token'])) update_option(self::OPTIONS['page_access_token'], self::encrypt((string) $selected['access_token']), false);
+        if ($encrypted_page_token!=='') update_option(self::OPTIONS['page_access_token'], $encrypted_page_token, false);
         $instagram = is_array($selected['instagram_business_account'] ?? null) ? $selected['instagram_business_account'] : [];
         update_option(self::OPTIONS['instagram_user_id'], sanitize_text_field((string) ($instagram['id'] ?? '')), false);
         update_option(self::OPTIONS['instagram_username'], sanitize_text_field((string) ($instagram['username'] ?? '')), false);
@@ -142,18 +161,10 @@ final class Meta {
     }
 
     private static function encrypt(string $value): string {
-        if ($value === '' || !function_exists('openssl_encrypt')) return '';
-        $key = hash('sha256', wp_salt('auth'), true);
-        $iv = random_bytes(16);
-        $encrypted = openssl_encrypt($value, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
-        return base64_encode($iv . $encrypted);
+        return Secrets::encrypt($value);
     }
 
     private static function decrypt(string $value): string {
-        if ($value === '' || !function_exists('openssl_decrypt')) return '';
-        $raw = base64_decode($value, true);
-        if (!is_string($raw) || strlen($raw) <= 16) return '';
-        $key = hash('sha256', wp_salt('auth'), true);
-        return (string) openssl_decrypt(substr($raw, 16), 'AES-256-CBC', $key, OPENSSL_RAW_DATA, substr($raw, 0, 16));
+        return Secrets::decrypt($value);
     }
 }

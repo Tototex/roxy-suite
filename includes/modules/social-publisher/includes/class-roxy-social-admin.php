@@ -231,6 +231,7 @@ final class Admin {
 
     private static function render_hangar_page(): void {
         echo '<h2>Hangar Connection</h2><p>Connect your Hangar account to search approved campaign assets. Credentials are encrypted before storage.</p>';
+        if ((string)get_option('roxy_social_hangar_pass','')!=='' && !Hangar::has_credentials()) echo '<div class="notice notice-error"><p>The saved Hangar credentials could not be read. Re-enter the connection details. The saved password has not been erased.</p></div>';
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="max-width:560px">';
         echo '<input type="hidden" name="action" value="roxy_social_hangar_settings">';
         wp_nonce_field('roxy_social_hangar_settings');
@@ -267,6 +268,7 @@ final class Admin {
     }
 
     private static function render_meta_page(): void {
+        if (Meta::credentials_unreadable()) echo '<div class="notice notice-error"><p>Saved Meta credentials could not be read. Reconnect or re-enter the credentials. Existing values have not been erased.</p></div>';
         $guide_url = content_url('plugins/roxy-suite/docs/meta-social-connection-setup.txt');
         echo '<h2>Meta Connection</h2><p>Connect the Facebook Page and Instagram professional account used for Roxy social posts. Nothing will publish until a draft is approved. <a href="' . esc_url($guide_url) . '" target="_blank" rel="noopener">Meta setup instructions</a></p>';
         if (isset($_GET['saved'])) echo '<div class="notice notice-success is-dismissible"><p>Meta connection settings saved.</p></div>';
@@ -296,8 +298,9 @@ final class Admin {
         check_admin_referer('roxy_social_hangar_settings');
         $user = sanitize_text_field((string) ($_POST['hangar_user'] ?? ''));
         $pass = (string) ($_POST['hangar_pass'] ?? '');
-        if ($user !== '') update_option('roxy_social_hangar_user', $user, false);
-        if ($pass !== '') Hangar::save_credentials($user ?: (string) get_option('roxy_social_hangar_user', ''), $pass);
+        if ($pass !== '') {
+            if (!Hangar::save_credentials($user ?: (string) get_option('roxy_social_hangar_user', ''), (string)wp_unslash($pass))) wp_die('Secure credential storage failed. The existing password was not cleared. Please retry or contact the administrator.');
+        } elseif ($user !== '') update_option('roxy_social_hangar_user', $user, false);
         if (Hangar::has_credentials()) foreach (Store::all_recent() as $draft) {
             $showing_ids = array_filter(array_map('absint', explode(',', (string) $draft['showing_ids'])));
             $title = $showing_ids ? trim((string) get_the_title((int) reset($showing_ids))) : '';

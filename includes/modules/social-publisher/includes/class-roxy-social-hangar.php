@@ -9,13 +9,15 @@ final class Hangar {
     private const USER_OPTION = 'roxy_social_hangar_user';
     private const PASS_OPTION = 'roxy_social_hangar_pass';
 
-    public static function save_credentials(string $user, string $password): void {
+    public static function save_credentials(string $user, string $password): bool {
+        try { $encrypted=self::encrypt($password); } catch (\Throwable $error) { return false; }
         update_option(self::USER_OPTION, sanitize_text_field($user), false);
-        update_option(self::PASS_OPTION, self::encrypt($password), false);
+        update_option(self::PASS_OPTION, $encrypted, false);
+        return (string)get_option(self::USER_OPTION,'')===sanitize_text_field($user) && hash_equals($encrypted,(string)get_option(self::PASS_OPTION,''));
     }
 
     public static function has_credentials(): bool {
-        return (string) get_option(self::USER_OPTION, '') !== '' && (string) get_option(self::PASS_OPTION, '') !== '';
+        return (string) get_option(self::USER_OPTION, '') !== '' && self::decrypt((string) get_option(self::PASS_OPTION, '')) !== '';
     }
 
     public static function search(string $term, string $type = '', string $date_sort = ''): array {
@@ -168,12 +170,14 @@ final class Hangar {
     }
 
     private static function login_cookies(): array {
+        $password=self::decrypt((string)get_option(self::PASS_OPTION,''));
+        if ($password==='') return [];
         $login = wp_remote_post(self::BASE_URL . 'login.php', [
             'timeout' => 20,
             'redirection' => 3,
             'body' => [
                 'user' => (string) get_option(self::USER_OPTION, ''),
-                'pass' => self::decrypt((string) get_option(self::PASS_OPTION, '')),
+                'pass' => $password,
             ],
         ]);
         if (is_wp_error($login) || (int) wp_remote_retrieve_response_code($login) >= 400) return [];
@@ -181,18 +185,10 @@ final class Hangar {
     }
 
     private static function encrypt(string $value): string {
-        if ($value === '' || !function_exists('openssl_encrypt')) return '';
-        $key = hash('sha256', wp_salt('auth'), true);
-        $iv = random_bytes(16);
-        $encrypted = openssl_encrypt($value, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
-        return base64_encode($iv . $encrypted);
+        return Secrets::encrypt($value);
     }
 
     private static function decrypt(string $value): string {
-        if ($value === '' || !function_exists('openssl_decrypt')) return '';
-        $raw = base64_decode($value, true);
-        if (!is_string($raw) || strlen($raw) <= 16) return '';
-        $key = hash('sha256', wp_salt('auth'), true);
-        return (string) openssl_decrypt(substr($raw, 16), 'AES-256-CBC', $key, OPENSSL_RAW_DATA, substr($raw, 0, 16));
+        return Secrets::decrypt($value);
     }
 }
