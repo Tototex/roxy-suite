@@ -21,7 +21,7 @@ Current safeguards: preserve live customizations; back up changed files before d
 | M3 | In progress | Checkpoints 23–27 commit reserved member ticket/log/link changes together, serialize walk-ups/managed checkout holds, and couple linked reserved Undo with visit quantity/audit. Failure, duplicate, independent last-seat/Undo and mixed QR tests pass; original ticket/log digests unchanged. Historical reconciliation, walk-up Undo, arbitrary writers and refund policy remain open. |
 | M4 | Resolved | Unified log filters/pagination/export preserve tab; nonce-protected admin-post export before HTML. Live log and export link inspected; standalone navigation checks pass. |
 | M5 | Resolved | Nonlogging lookup includes last actual admission, excluding lookups/inactive scans; strict site-timezone dates. PHP and actual SQL assertions pass. |
-| M6 | In progress | CSV streams 500-row keyset batches with fixed upper boundary and literal formula escaping; 1,201-row fixture passes. Dashboard subscription pagination remains open. |
+| M6 | In progress | CSV streams 500-row keyset batches with fixed upper boundary and literal formula escaping; 1,201-row fixture passes. Checkpoint 28 adds 50-row dashboard display pages, full-result totals, lightweight subscription identity queries and 100-ID metadata/attendance batches; extension-filtered collections retain the original API. 170 synthetic and 162 live parity checks pass. Aggregate/filter queries still require a full identity scan and WordPress/Woo caches are not bounded; indexed query-level reporting remains open. |
 | A1 | Open | See audit; no resolution claimed. |
 | A2 | Open | See audit; no resolution claimed. |
 | A3 | Open | See audit; no resolution claimed. |
