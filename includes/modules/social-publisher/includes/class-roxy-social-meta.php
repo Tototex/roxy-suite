@@ -101,19 +101,10 @@ final class Meta {
         if ($token === '') {
             self::redirect_with_verify_status('missing');
         }
-        $response = wp_remote_get(add_query_arg([
-            'fields' => 'id,name,access_token,instagram_business_account{id,username}',
-            'limit' => 100,
-            'access_token' => $token,
-        ], 'https://graph.facebook.com/me/accounts'), ['timeout' => 30]);
-        $data = !is_wp_error($response) ? json_decode((string) wp_remote_retrieve_body($response), true) : null;
-        $pages = is_array($data) && !empty($data['data']) && is_array($data['data']) ? $data['data'] : [];
-        if (!$pages) self::redirect_with_verify_status('failed');
-        $selected = null;
-        foreach ($pages as $page) {
-            if (!empty($page['instagram_business_account']['id'])) { $selected = $page; break; }
-        }
-        if (!$selected) $selected = $pages[0];
+        try {$selected=self::connected_page($token,self::page_id());}catch(\RuntimeException $error){self::redirect_with_verify_status(in_array($error->getMessage(),['select_page','page_missing'],true)?$error->getMessage():'failed');}
+        $instagram = is_array($selected['instagram_business_account'] ?? null) ? $selected['instagram_business_account'] : [];
+        if (self::instagram_user_id()!=='' && (string)($instagram['id']??'')!==self::instagram_user_id()) self::redirect_with_verify_status('instagram_mismatch');
+        if (empty($selected['access_token'])) self::redirect_with_verify_status('failed');
         $encrypted_page_token='';
         if (!empty($selected['access_token'])) {
             try { $encrypted_page_token=self::encrypt((string)$selected['access_token']); } catch (\Throwable $error) { self::redirect_with_verify_status('failed'); }
@@ -121,10 +112,32 @@ final class Meta {
         update_option(self::OPTIONS['page_id'], sanitize_text_field((string) ($selected['id'] ?? '')), false);
         update_option(self::OPTIONS['page_name'], sanitize_text_field((string) ($selected['name'] ?? '')), false);
         if ($encrypted_page_token!=='') update_option(self::OPTIONS['page_access_token'], $encrypted_page_token, false);
-        $instagram = is_array($selected['instagram_business_account'] ?? null) ? $selected['instagram_business_account'] : [];
         update_option(self::OPTIONS['instagram_user_id'], sanitize_text_field((string) ($instagram['id'] ?? '')), false);
         update_option(self::OPTIONS['instagram_username'], sanitize_text_field((string) ($instagram['username'] ?? '')), false);
         self::redirect_with_verify_status(!empty($instagram['id']) ? 'success' : 'no_instagram');
+    }
+
+    private static function connected_page(string $token,string $configured_id): array {
+        if ($configured_id==='' || !preg_match('/^\d+$/',$configured_id)) throw new \RuntimeException('select_page');
+        $cursor='';$seen=[];$started=microtime(true);
+        for($page_number=0;$page_number<10;$page_number++) {
+            $remaining=30-(microtime(true)-$started);
+            if($remaining<=0)throw new \RuntimeException('failed');
+            $query=['fields'=>'id,name,access_token,instagram_business_account{id,username}','limit'=>100,'access_token'=>$token];
+            if($cursor!=='')$query['after']=$cursor;
+            // Reconstruct the trusted endpoint; never follow a provider-supplied URL.
+            $response=wp_remote_get(add_query_arg($query,'https://graph.facebook.com/me/accounts'),['timeout'=>min(12,max(1,(int)ceil($remaining))),'redirection'=>0]);
+            if(is_wp_error($response))throw new \RuntimeException('failed');
+            $status=(int)wp_remote_retrieve_response_code($response);
+            $data=json_decode((string)wp_remote_retrieve_body($response),true);
+            if($status<200||$status>=300||!is_array($data)||!isset($data['data'])||!is_array($data['data'])||isset($data['error']))throw new \RuntimeException('failed');
+            foreach($data['data'] as $candidate)if(is_array($candidate)&&(string)($candidate['id']??'')===$configured_id)return $candidate;
+            if(empty($data['paging']['next']))throw new \RuntimeException('page_missing');
+            $cursor=(string)($data['paging']['cursors']['after']??'');
+            if($cursor===''||strlen($cursor)>4096||isset($seen[$cursor]))throw new \RuntimeException('failed');
+            $seen[$cursor]=true;
+        }
+        throw new \RuntimeException('failed');
     }
 
     private static function redirect_with_verify_status(string $status): void {

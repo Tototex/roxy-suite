@@ -278,6 +278,9 @@ final class Admin {
         if ($verified === 'success') echo '<div class="notice notice-success is-dismissible"><p>Meta connection verified for ' . esc_html(Meta::page_name()) . ' and Instagram @' . esc_html(Meta::instagram_username()) . '.</p></div>';
         elseif ($verified === 'no_instagram') echo '<div class="notice notice-warning is-dismissible"><p>Facebook Page verified, but no linked Instagram professional account was found.</p></div>';
         elseif ($verified === 'missing') echo '<div class="notice notice-error is-dismissible"><p>Authorize Meta first, then verify the connection.</p></div>';
+        elseif ($verified === 'select_page') echo '<div class="notice notice-error is-dismissible"><p>Enter and save the Facebook Page ID you intend to use, then verify it. No account was selected automatically.</p></div>';
+        elseif ($verified === 'page_missing') echo '<div class="notice notice-error is-dismissible"><p>The configured Facebook Page was not returned for this authorization. Check its ID and permissions. Existing account settings were not replaced.</p></div>';
+        elseif ($verified === 'instagram_mismatch') echo '<div class="notice notice-error is-dismissible"><p>The configured Instagram account does not match the account returned for this Facebook Page. Review the IDs and permissions. Existing account settings were not replaced.</p></div>';
         elseif ($verified === 'failed') echo '<div class="notice notice-error is-dismissible"><p>Meta could not return any Pages for this authorization. Check the Page permissions and try again.</p></div>';
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="max-width:720px">';
         echo '<input type="hidden" name="action" value="roxy_social_meta_settings">';

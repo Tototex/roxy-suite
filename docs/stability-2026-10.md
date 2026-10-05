@@ -77,7 +77,7 @@ Current safeguards: preserve live customizations; back up changed files before d
 | G11 | Open | See audit; no resolution claimed. |
 | S1 | Open | See audit; no resolution claimed. |
 | S2 | Open | See audit; no resolution claimed. |
-| S3 | Open | See audit; no resolution claimed. |
+| S3 | Resolved | Exact configured Page selection across bounded cursor pages; no auto-selection of unrelated business. Configured Instagram mismatch preserves settings. Eleven fixture checks; actual live Graph read matches configured Page/Instagram without option writes; deployed error guidance inspected. |
 | S4 | Open | See audit; no resolution claimed. |
 | S5 | Open | See audit; no resolution claimed. |
 | S6 | Open | See audit; no resolution claimed. |
