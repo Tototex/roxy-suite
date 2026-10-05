@@ -15,6 +15,33 @@ try {
     if(false===$wpdb->query("CREATE TEMPORARY TABLE `$table` (id BIGINT PRIMARY KEY, status VARCHAR(24), last_error TEXT NULL, updated_at DATETIME, facebook_post_id VARCHAR(190) NULL, instagram_media_id VARCHAR(190) NULL, instagram_container_id VARCHAR(190) NULL)"))throw new RuntimeException('Temporary fixture table creation failed');
     $wpdb->prefix=$fixture_prefix;
     $wpdb->insert($table,['id'=>1,'status'=>'approved','updated_at'=>current_time('mysql')]);
+    roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::compare_publish_status(1,'approved','publishing'),'atomic status claim wins once');
+    roxy_publish_fixture_check(!\RoxySocial\PublishFixtureStore::compare_publish_status(1,'approved','publishing'),'stale status claim cannot win twice');
+    $claim=\RoxySocial\PublishFixtureStore::acquire_publish_lock(1);
+    roxy_publish_fixture_check($claim&&\RoxySocial\PublishFixtureStore::owns_publish_lock($claim),'actual connection owns named worker lock');
+    roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::update_publish_result(1,'publishing','','123','',$claim),'owned guarded SQL durably persists ID');
+    $wrong_claim=$claim;$wrong_claim['connection']='0';
+    roxy_publish_fixture_check(!\RoxySocial\PublishFixtureStore::update_publish_result(1,'posted','','999','',$wrong_claim)&&\RoxySocial\PublishFixtureStore::find(1)['facebook_post_id']==='123','wrong-connection claim cannot overwrite durable ID');
+    roxy_publish_fixture_check(!\RoxySocial\PublishFixtureStore::compare_publish_status(1,'publishing','posted',$wrong_claim),'SQL status transition rejects wrong-connection claim');
+    $first_connection=$wpdb;
+    $second_connection=new wpdb(DB_USER,DB_PASSWORD,DB_NAME,DB_HOST);
+    $second_connection->prefix=$fixture_prefix;
+    try {
+        $wpdb=$second_connection;
+        roxy_publish_fixture_check(!\RoxySocial\PublishFixtureStore::acquire_publish_lock(1),'second actual database connection cannot claim same worker');
+        roxy_publish_fixture_check(!\RoxySocial\PublishFixtureStore::owns_publish_lock($claim),'reconnected/other connection cannot impersonate first owner');
+        $wpdb=$first_connection;
+        \RoxySocial\PublishFixtureStore::release_publish_lock($claim);
+        roxy_publish_fixture_check(!\RoxySocial\PublishFixtureStore::update_publish_result(1,'posted','','999','',$claim),'released worker cannot save a late result');
+        $wpdb=$second_connection;
+        $second_claim=\RoxySocial\PublishFixtureStore::acquire_publish_lock(1);
+        roxy_publish_fixture_check($second_claim!==null,'next worker can claim after explicit release');
+        if($second_claim)\RoxySocial\PublishFixtureStore::release_publish_lock($second_claim);
+    } finally {
+        $wpdb=$first_connection;
+        if($claim)\RoxySocial\PublishFixtureStore::release_publish_lock($claim);
+        $second_connection->close();
+    }
     roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::update_publish_result(1,'publishing','','123'),'real SQL persists platform success');
     roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::update_publish_result(1,'publishing','','123'),'unchanged same-second update correctly verifies existing row');
     roxy_publish_fixture_check(!\RoxySocial\PublishFixtureStore::update_publish_result(999,'posted','','123'),'missing row cannot report durable success');

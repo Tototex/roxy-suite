@@ -12,7 +12,14 @@ namespace RoxySocial {
     final class Store {
         public static $row;
         public static $fail_id = false;
+        public static $locked = false;
+        public static $deny_lock = false;
+        public static function acquire_publish_lock($id){if(self::$deny_lock||self::$locked)return null;self::$locked=true;return ['name'=>'fixture','connection'=>'1'];}
+        public static function owns_publish_lock($claim){return self::$locked;}
+        public static function release_publish_lock($claim){self::$locked=false;}
+        public static function compare_publish_status($id,$expected,$status){if(self::$row['status']!==$expected)return false;self::$row['status']=$status;return true;}
         public static function find($id){return self::$row;}
+        public static function table_name(){return 'fixture_social';}
         public static function update_publish_result($id,$status,$error='',$fb='',$ig=''){
             if (self::$fail_id && ($fb!=='' || $ig!=='')) return false;
             self::$row['status']=$status;self::$row['last_error']=$error;
@@ -27,14 +34,25 @@ namespace RoxySocial {
 }
 namespace {
     define('ABSPATH',__DIR__);
+    define('MINUTE_IN_SECONDS',60);define('ARRAY_A','ARRAY_A');
+    function current_time($kind,$gmt=false){return $kind==='mysql'?'2026-10-04 12:00:00':1791133200;}
+    function wp_timezone(){return new \DateTimeZone('UTC');}
+    function wp_date($format,$stamp,$zone){return gmdate($format,$stamp);}
+    final class PublisherFixtureDb {
+        public function prepare($sql,...$args){return $sql;}
+        public function get_col($sql){return [1];}
+        public function get_results($sql,$format){return [];}
+    }
     function esc_url_raw($s){return $s;}
     function sanitize_text_field($s){return $s;}
-    function wp_schedule_single_event(...$args){return true;}
+    function wp_schedule_single_event(...$args){$GLOBALS['schedule_state']=\RoxySocial\Store::$row['status'];return $GLOBALS['schedule_ok'];}
+    function wp_next_scheduled(...$args){return false;}
     function is_wp_error($r){return $r instanceof \RuntimeException;}
     function wp_remote_retrieve_response_code($r){return $r['status'];}
     function wp_remote_retrieve_body($r){return $r['body'];}
     function http_fixture($url,$args){
         $GLOBALS['calls'][]=[$url,$args,\RoxySocial\Store::$row];
+        if(!empty($GLOBALS['lose_lock']))\RoxySocial\Store::$locked=false;
         if(!$GLOBALS['responses'])throw new \LogicException('Unexpected HTTP fixture call');
         return array_shift($GLOBALS['responses']);
     }
@@ -42,9 +60,10 @@ namespace {
     function wp_remote_request($url,$args){return http_fixture($url,$args);}
     function response($data,$status=200){return ['status'=>$status,'body'=>json_encode($data)];}
     function reset_fixture($platform='both',$status='approved'){
-        \RoxySocial\Store::$row=['id'=>1,'status'=>$status,'platform'=>$platform,'post_text'=>'Fixture caption','media_type'=>'image','media_url'=>'https://fixture.test/poster.jpg','facebook_post_id'=>null,'instagram_media_id'=>null,'instagram_container_id'=>null];
-        \RoxySocial\Store::$fail_id=false;\RoxySocial\Meta::$facebook=true;\RoxySocial\Meta::$instagram=true;
+        \RoxySocial\Store::$row=['id'=>1,'status'=>$status,'platform'=>$platform,'post_text'=>'Fixture caption','media_type'=>'image','media_url'=>'https://fixture.test/poster.jpg','facebook_post_id'=>null,'instagram_media_id'=>null,'instagram_container_id'=>null,'updated_at'=>'2020-01-01 00:00:00'];
+        \RoxySocial\Store::$fail_id=false;\RoxySocial\Store::$locked=false;\RoxySocial\Store::$deny_lock=false;\RoxySocial\Meta::$facebook=true;\RoxySocial\Meta::$instagram=true;
         $GLOBALS['calls']=[];$GLOBALS['responses']=[];
+        $GLOBALS['lose_lock']=false;$GLOBALS['schedule_ok']=true;$GLOBALS['schedule_state']=null;
     }
     function check($ok,$label){if(!$ok)throw new \RuntimeException($label);echo "PASS: $label\n";}
     require ($argv[1]??dirname(__DIR__)).'/includes/modules/social-publisher/includes/class-roxy-social-publisher.php';
@@ -78,4 +97,27 @@ namespace {
     check(!\RoxySocial\Publisher::remove_published(1)&&!$GLOBALS['calls']&&\RoxySocial\Store::$row['status']==='posted','missing recorded IDs cannot report removed');
     reset_fixture('facebook','posted');\RoxySocial\Store::$row['facebook_post_id']='123';$GLOBALS['responses']=[response(['success'=>false])];
     check(!\RoxySocial\Publisher::remove_published(1)&&\RoxySocial\Store::$row['facebook_post_id']==='123','false success cannot erase published ID');
+    reset_fixture();\RoxySocial\Store::$deny_lock=true;
+    check(!\RoxySocial\Publisher::publish_now(1)&&!$GLOBALS['calls']&&\RoxySocial\Store::$row['status']==='approved','competing worker cannot publish or change status');
+    reset_fixture();$GLOBALS['responses']=[response(['id'=>'123']),response(['id'=>'234']),response(['id'=>'345'])];
+    \RoxySocial\Publisher::publish_now(1);
+    check(!\RoxySocial\Store::$locked,'successful worker releases ownership');
+    $GLOBALS['calls']=[];\RoxySocial\Publisher::process_queued(1);
+    check(!$GLOBALS['calls'],'delivered-again completed cron cannot republish');
+    reset_fixture('facebook','publishing');$GLOBALS['responses']=[];
+    \RoxySocial\Publisher::process_queued(1);
+    check(\RoxySocial\Store::$row['status']==='needs_review'&&!\RoxySocial\Store::$locked,'interrupted provider call requires review and releases ownership');
+    reset_fixture();$GLOBALS['schedule_ok']=false;
+    check(!\RoxySocial\Publisher::queue_publish_now(1)&&$GLOBALS['schedule_state']==='publishing'&&\RoxySocial\Store::$row['status']==='approved','queue claims before scheduling and restores status on schedule failure');
+    reset_fixture();
+    check(\RoxySocial\Publisher::queue_publish_now(1)&&!\RoxySocial\Publisher::queue_publish_now(1),'second queue request cannot claim an already queued draft');
+    reset_fixture();$GLOBALS['lose_lock']=true;$GLOBALS['responses']=[response(['id'=>'123'])];
+    check(!\RoxySocial\Publisher::publish_now(1)&&count($GLOBALS['calls'])===1&&\RoxySocial\Store::$row['facebook_post_id']===null&&\RoxySocial\Store::$row['status']==='publishing','lost worker cannot persist IDs, overwrite next worker or call next provider');
+    $GLOBALS['wpdb']=new PublisherFixtureDb();reset_fixture('both','publishing');\RoxySocial\Store::$deny_lock=true;
+    \RoxySocial\Publisher::publish_due();
+    check(\RoxySocial\Store::$row['status']==='publishing'&&!$GLOBALS['calls'],'stale sweep cannot disturb active owner');
+    reset_fixture('both','publishing');\RoxySocial\Store::$row['facebook_post_id']='123';\RoxySocial\Publisher::publish_due();
+    check(\RoxySocial\Store::$row['status']==='needs_review'&&\RoxySocial\Store::$row['facebook_post_id']==='123'&&!$GLOBALS['calls'],'abandoned worker enters review, preserves IDs and never automatically republishes');
+    reset_fixture('both','publishing');\RoxySocial\Store::$row['updated_at']='2099-01-01 00:00:00';\RoxySocial\Publisher::publish_due();
+    check(\RoxySocial\Store::$row['status']==='publishing','stale read rechecks latest row before recovery');
 }

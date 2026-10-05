@@ -199,13 +199,43 @@ final class Store {
         return false !== $wpdb->update(self::table_name(), ['status' => $status, 'updated_at' => current_time('mysql')], ['id' => $id]);
     }
 
+    public static function acquire_publish_lock(int $id): ?array {
+        global $wpdb;
+        if ($id <= 0) return null;
+        $name = 'roxy-social-' . substr(hash('sha256', DB_NAME . ':' . self::table_name() . ':' . $id), 0, 48);
+        if ((string) $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $name)) !== '1') return null;
+        $claim = ['name' => $name, 'connection' => (string) $wpdb->get_var('SELECT CONNECTION_ID()')];
+        if (!self::owns_publish_lock($claim)) return null;
+        return $claim;
+    }
+
+    public static function owns_publish_lock(array $claim): bool {
+        global $wpdb;
+        $connection = (string) $wpdb->get_var('SELECT CONNECTION_ID()');
+        return $connection !== '' && $connection === (string) ($claim['connection'] ?? '')
+            && (string) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', (string) ($claim['name'] ?? ''))) === $connection;
+    }
+
+    public static function release_publish_lock(array $claim): void {
+        global $wpdb;
+        if (self::owns_publish_lock($claim)) $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $claim['name']));
+    }
+
+    public static function compare_publish_status(int $id, string $expected, string $status, ?array $claim = null): bool {
+        global $wpdb;
+        if ($claim !== null) {
+            return 1 === $wpdb->query($wpdb->prepare('UPDATE ' . self::table_name() . ' SET status = %s, updated_at = %s WHERE id = %d AND status = %s AND IS_USED_LOCK(%s) = CONNECTION_ID() AND CONNECTION_ID() = %d', $status, current_time('mysql'), $id, $expected, $claim['name'], $claim['connection']));
+        }
+        return 1 === $wpdb->update(self::table_name(), ['status' => $status, 'updated_at' => current_time('mysql')], ['id' => $id, 'status' => $expected]);
+    }
+
     public static function update_ai_status(int $id, string $status): bool {
         global $wpdb;
         if (!in_array($status, ['pending', 'ready'], true)) return false;
         return false !== $wpdb->update(self::table_name(), ['ai_status' => $status, 'updated_at' => current_time('mysql')], ['id' => $id]);
     }
 
-    public static function update_publish_result(int $id, string $status, string $error = '', string $facebook_id = '', string $instagram_id = ''): bool {
+    public static function update_publish_result(int $id, string $status, string $error = '', string $facebook_id = '', string $instagram_id = '', ?array $claim = null): bool {
         global $wpdb;
         $values = [
             'status' => sanitize_key($status),
@@ -214,31 +244,48 @@ final class Store {
         ];
         if ($facebook_id !== '') $values['facebook_post_id'] = sanitize_text_field($facebook_id);
         if ($instagram_id !== '') $values['instagram_media_id'] = sanitize_text_field($instagram_id);
-        return self::save_publish_values($id, $values);
+        return self::save_publish_values($id, $values, $claim);
     }
 
-    public static function clear_publish_id(int $id, string $platform): bool {
+    public static function clear_publish_id(int $id, string $platform, ?array $claim = null): bool {
         global $wpdb;
         $column = $platform === 'facebook' ? 'facebook_post_id' : ($platform === 'instagram' ? 'instagram_media_id' : '');
         if ($column === '') return false;
-        return self::save_publish_values($id, [$column => null, 'updated_at' => current_time('mysql')]);
+        return self::save_publish_values($id, [$column => null, 'updated_at' => current_time('mysql')], $claim);
     }
 
-    public static function set_instagram_container_id(int $id, string $container_id): bool {
+    public static function set_instagram_container_id(int $id, string $container_id, ?array $claim = null): bool {
         global $wpdb;
-        return self::save_publish_values($id, ['instagram_container_id' => sanitize_text_field($container_id), 'updated_at' => current_time('mysql')]);
+        return self::save_publish_values($id, ['instagram_container_id' => sanitize_text_field($container_id), 'updated_at' => current_time('mysql')], $claim);
     }
 
-    public static function clear_instagram_container_id(int $id): bool {
+    public static function clear_instagram_container_id(int $id, ?array $claim = null): bool {
         global $wpdb;
-        return self::save_publish_values($id, ['instagram_container_id' => null, 'updated_at' => current_time('mysql')]);
+        return self::save_publish_values($id, ['instagram_container_id' => null, 'updated_at' => current_time('mysql')], $claim);
     }
 
     // A zero-row update may mean unchanged values OR a missing row. Verify the
     // durable values before reporting success; this is not a worker claim.
-    private static function save_publish_values(int $id, array $values): bool {
+    private static function save_publish_values(int $id, array $values, ?array $claim = null): bool {
         global $wpdb;
-        if ($id <= 0 || false === $wpdb->update(self::table_name(), $values, ['id' => $id])) return false;
+        if ($id <= 0) return false;
+        if ($claim !== null) {
+            if (!self::owns_publish_lock($claim)) return false;
+            $sets = [];
+            $parameters = [];
+            foreach ($values as $column => $value) {
+                $sets[] = '`' . $column . '` = ' . ($value === null ? 'NULL' : '%s');
+                if ($value !== null) $parameters[] = $value;
+            }
+            $parameters[] = $id;
+            $parameters[] = $claim['name'];
+            // SQL itself rejects a reconnected or stale worker, not just PHP.
+            $updated = $wpdb->query($wpdb->prepare('UPDATE ' . self::table_name() . ' SET ' . implode(', ', $sets) . ' WHERE id = %d AND IS_USED_LOCK(%s) = CONNECTION_ID()', $parameters));
+            if (!self::owns_publish_lock($claim)) return false;
+        } else {
+            $updated = $wpdb->update(self::table_name(), $values, ['id' => $id]);
+        }
+        if ($updated === false) return false;
         $saved = self::find($id);
         if (!$saved) return false;
         foreach ($values as $key => $value) {

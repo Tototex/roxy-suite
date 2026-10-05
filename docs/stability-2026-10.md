@@ -75,7 +75,7 @@ Current safeguards: preserve live customizations; back up changed files before d
 | G9 | Open | See audit; no resolution claimed. |
 | G10 | Open | See audit; no resolution claimed. |
 | G11 | Open | See audit; no resolution claimed. |
-| S1 | In progress | Per-platform IDs now persisted immediately; uncertain provider outcomes enter needs_review and halt publication. Retained Instagram container until final ID persists. Atomic worker ownership, stale-job reconciliation and bounded video jobs remain open. |
+| S1 | In progress | Connection-owned advisory locks serialize all publisher/remover entry points; SQL guards reject wrong/released owners. Queue claims before scheduling, checks recovery; stale jobs require review rather than auto-approval. 33 provider/worker fixtures and 18 real SQL/contention checks pass. Production post-row digest unchanged. Admin/AI mutation ownership, review confirmation and resumable video work remain separate follow-ups. |
 | S2 | In progress | Social validates HTTP status, JSON and required IDs; unknown publish outcomes require review. Deletion requires strict success:true. 23 provider fixtures and eight real temporary-table checks pass against deployed source. Grosses Square malformed-success handling remains open. |
 | S3 | Resolved | Exact configured Page selection across bounded cursor pages; no auto-selection of unrelated business. Configured Instagram mismatch preserves settings. Eleven fixture checks; actual live Graph read matches configured Page/Instagram without option writes; deployed error guidance inspected. |
 | S4 | Open | See audit; no resolution claimed. |
