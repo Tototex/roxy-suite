@@ -5,7 +5,6 @@ if (!defined('ABSPATH')) exit;
 
 final class Publisher {
     public static function publish_due(): void {
-        if (!Meta::configured() || Meta::page_access_token() === '' || Meta::instagram_user_id() === '') return;
         global $wpdb;
         $stale_before = wp_date('Y-m-d H:i:s', current_time('timestamp', true) - (15 * MINUTE_IN_SECONDS), wp_timezone());
         $stale_ids = $wpdb->get_col($wpdb->prepare('SELECT id FROM ' . Store::table_name() . ' WHERE status = %s AND updated_at <= %s', 'publishing', $stale_before)) ?: [];
@@ -39,7 +38,6 @@ final class Publisher {
     }
 
     public static function publish_now(int $id): bool {
-        if (!Meta::configured() || Meta::page_access_token() === '' || Meta::instagram_user_id() === '') return false;
         $row = Store::find($id);
         if (!$row || !in_array((string) $row['status'], ['approved', 'failed'], true)) return false;
         if ((string) $row['status'] === 'failed' && !empty($row['facebook_post_id']) && !empty($row['instagram_media_id'])) return false;
@@ -48,19 +46,18 @@ final class Publisher {
 
     public static function remove_published(int $id): bool {
         $row = Store::find($id);
-        if (!$row || (string) $row['status'] !== 'posted') return false;
-        $platform = (string) ($row['platform'] ?? 'both');
-        $facebook = $platform === 'instagram' ? [] : self::delete_remote((string) ($row['facebook_post_id'] ?? ''), Meta::page_access_token());
-        $instagram = $platform === 'facebook' ? [] : self::delete_remote((string) ($row['instagram_media_id'] ?? ''), Meta::page_access_token());
-        if (empty($facebook['error']) && $platform !== 'instagram') Store::clear_publish_id($id, 'facebook');
-        if (empty($instagram['error']) && $platform !== 'facebook') Store::clear_publish_id($id, 'instagram');
+        if (!$row || !in_array((string) $row['status'], ['posted', 'failed', 'needs_review'], true)) return false;
+        if (empty($row['facebook_post_id']) && empty($row['instagram_media_id'])) {Store::update_publish_result($id,(string)$row['status'],'No published IDs are recorded; verify the remote accounts manually before marking removed.');return false;}
+        $facebook = empty($row['facebook_post_id']) ? [] : self::delete_remote((string) $row['facebook_post_id'], Meta::page_access_token());
+        $instagram = empty($row['instagram_media_id']) ? [] : self::delete_remote((string) $row['instagram_media_id'], Meta::access_token());
+        if (!empty($facebook['success']) && !Store::clear_publish_id($id, 'facebook')) $facebook=['error'=>'Remote removal succeeded but its local record could not be saved. Review before retrying.'];
+        if (!empty($instagram['success']) && !Store::clear_publish_id($id, 'instagram')) $instagram=['error'=>'Remote removal succeeded but its local record could not be saved. Review before retrying.'];
         $errors = array_filter([
             !empty($facebook['error']) ? 'Facebook: ' . $facebook['error'] : '',
             !empty($instagram['error']) ? 'Instagram: ' . $instagram['error'] : '',
         ]);
-        if ($errors) { Store::update_publish_result($id, 'posted', implode(' ', $errors)); return false; }
-        Store::update_publish_result($id, 'removed', '');
-        return true;
+        if ($errors) { Store::update_publish_result($id, (string) $row['status'], implode(' ', $errors)); return false; }
+        return Store::update_publish_result($id, 'removed', '');
     }
 
     private static function publish_row(array $row): bool {
@@ -68,21 +65,37 @@ final class Publisher {
         $media_url = esc_url_raw((string) ($row['media_url'] ?? ''));
         $caption = trim((string) ($row['post_text'] ?? ''));
         $platform = (string) ($row['platform'] ?? 'both');
+        if (!in_array($platform, ['facebook', 'instagram', 'both'], true)) return false;
+        if (($platform !== 'instagram' && empty($row['facebook_post_id']) && (Meta::page_id() === '' || Meta::page_access_token() === ''))
+            || ($platform !== 'facebook' && empty($row['instagram_media_id']) && (Meta::instagram_user_id() === '' || Meta::access_token() === ''))) {
+            Store::update_publish_result($id, 'failed', 'Connect the selected platform before publishing.');
+            return false;
+        }
         if ($id <= 0 || $caption === '' || ($media_url === '' && $platform !== 'facebook')) { Store::update_publish_result($id, 'failed', 'The draft is missing public media or post text.'); return false; }
-        Store::update_publish_result($id, 'publishing');
+        if (!Store::update_publish_result($id, 'publishing')) return false;
         $facebook = ($platform === 'instagram' || !empty($row['facebook_post_id'])) ? [] : self::publish_facebook($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
+        if (!empty($facebook['id'])) {
+            if (!Store::update_publish_result($id,'publishing','',(string)$facebook['id'])) {Store::update_publish_result($id,'needs_review','Facebook accepted the post but its ID could not be saved. Review remote posts before any retry.');return false;}
+            $row['facebook_post_id']=(string)$facebook['id'];
+        }
+        if (!empty($facebook['ambiguous'])) {Store::update_publish_result($id,'needs_review','Facebook: '.(string)$facebook['error']);return false;}
         $instagram = ($platform === 'facebook' || !empty($row['instagram_media_id'])) ? [] : self::publish_instagram($media_url, $caption, (string) ($row['media_type'] ?? 'image'), $id, (string) ($row['instagram_container_id'] ?? ''));
+        if (!empty($instagram['id'])) {
+            if (!Store::update_publish_result($id,'publishing','',(string)($facebook['id']??''),(string)$instagram['id'])) {Store::update_publish_result($id,'needs_review','Instagram accepted the post but its ID could not be saved. Review remote posts before retrying.');return false;}
+            $row['instagram_media_id']=(string)$instagram['id'];
+        }
         $errors = array_filter([
             !empty($facebook['error']) ? 'Facebook: ' . $facebook['error'] : '',
             !empty($instagram['error']) ? 'Instagram: ' . $instagram['error'] : '',
         ]);
-        if (!empty($instagram['id'])) Store::clear_instagram_container_id($id);
         if ($errors) {
-            Store::update_publish_result($id, 'failed', implode(' ', $errors), (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? ''));
+            Store::update_publish_result($id, !empty($instagram['ambiguous']) ? 'needs_review' : 'failed', implode(' ', $errors), (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? ''));
             if (!empty($instagram['error']) && stripos((string) $instagram['error'], 'still processing') !== false) wp_schedule_single_event(time() + 300, 'roxy_social_publish_single', [$id]);
             return false;
         }
-        Store::update_publish_result($id, 'posted', '', (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? ''));
+        if (($platform!=='instagram' && empty($row['facebook_post_id']) && empty($facebook['id'])) || ($platform!=='facebook' && empty($row['instagram_media_id']) && empty($instagram['id']))) {Store::update_publish_result($id,'needs_review','A platform returned no published ID. Review remote posts before retrying.');return false;}
+        $saved=Store::update_publish_result($id, 'posted', '', (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? ''));
+        if (!$saved) return false;
         Store::clear_instagram_container_id($id);
         return true;
     }
@@ -102,7 +115,7 @@ final class Publisher {
         else { $body['image_url'] = $url; }
         $container = $existing_container_id !== '' ? ['id' => $existing_container_id] : self::request($endpoint, $body);
         if (!empty($container['error']) || empty($container['id'])) return $container;
-        Store::set_instagram_container_id($post_id, (string) $container['id']);
+        if (!Store::set_instagram_container_id($post_id, (string) $container['id'])) return ['error'=>'Instagram container ID could not be saved. Review before retrying.','ambiguous'=>true];
         if ($type === 'video') {
             $ready = false;
             for ($attempt = 0; $attempt < 30; $attempt++) {
@@ -121,35 +134,35 @@ final class Publisher {
             $published = self::request($publish_url, $publish_body);
             if (empty($published['error']) || stripos((string) $published['error'], 'Media ID is not available') === false) break;
         }
-        if (empty($published['error']) && !empty($published['id'])) Store::clear_instagram_container_id($post_id);
         return $published;
     }
 
     private static function delete_remote(string $object_id, string $token): array {
         if ($object_id === '') return ['error' => 'The published media ID is missing.'];
+        if ($token === '') return ['error' => 'Connect the selected platform before removing the published post.'];
         $response = wp_remote_request('https://graph.facebook.com/' . rawurlencode($object_id), ['method' => 'DELETE', 'timeout' => 45, 'body' => ['access_token' => $token]]);
-        if (is_wp_error($response)) return ['error' => $response->get_error_message()];
-        $data = json_decode((string) wp_remote_retrieve_body($response), true);
-        if (!is_array($data)) return ['error' => 'Meta returned an unreadable response.'];
-        if (!empty($data['error']['message'])) return ['error' => sanitize_text_field((string) $data['error']['message'])];
-        return $data;
+        return self::decode_response($response,false,true);
     }
 
     private static function request(string $url, array $body): array {
         $response = wp_remote_post($url, ['timeout' => 45, 'body' => $body]);
-        if (is_wp_error($response)) return ['error' => $response->get_error_message()];
-        $data = json_decode((string) wp_remote_retrieve_body($response), true);
-        if (!is_array($data)) return ['error' => 'Meta returned an unreadable response.'];
-        if (!empty($data['error']['message'])) return ['error' => sanitize_text_field((string) $data['error']['message'])];
-        return $data;
+        return self::decode_response($response,true,false);
     }
 
     private static function get(string $url, array $query): array {
         $response = wp_remote_get(add_query_arg($query, $url), ['timeout' => 45]);
-        if (is_wp_error($response)) return ['error' => $response->get_error_message()];
-        $data = json_decode((string) wp_remote_retrieve_body($response), true);
-        if (!is_array($data)) return ['error' => 'Meta returned an unreadable response.'];
-        if (!empty($data['error']['message'])) return ['error' => sanitize_text_field((string) $data['error']['message'])];
+        return self::decode_response($response,false,false);
+    }
+
+    private static function decode_response($response,bool $require_id,bool $require_success): array {
+        if (is_wp_error($response)) return ['error'=>'Meta request outcome is unknown. Review the remote account before retrying.','ambiguous'=>$require_id];
+        $status=(int)wp_remote_retrieve_response_code($response);
+        $data=json_decode((string)wp_remote_retrieve_body($response),true);
+        if($status<200||$status>=300) return ['error'=>'Meta returned HTTP '.$status.': '.sanitize_text_field((string)($data['error']['message']??'No success was recorded.')),'ambiguous'=>$require_id&&($status>=500||$status===0)];
+        if(!is_array($data))return ['error'=>'Meta returned an unreadable response. Review the remote account before retrying.','ambiguous'=>$require_id];
+        if(isset($data['error']))return ['error'=>sanitize_text_field((string)($data['error']['message']??'Meta reported an error.'))];
+        if($require_success&&($data['success']??null)!==true)return ['error'=>'Meta did not confirm removal; the recorded ID was retained.'];
+        if($require_id&&(!isset($data['id'])||!is_scalar($data['id'])||!preg_match('/^\d+(?:_\d+)?$/',(string)$data['id'])))return ['error'=>'Meta did not return a valid published ID. Review the remote account before retrying.','ambiguous'=>true];
         return $data;
     }
 }

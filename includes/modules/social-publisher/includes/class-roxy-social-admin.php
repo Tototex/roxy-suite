@@ -70,6 +70,10 @@ final class Admin {
         $filter = isset($_GET['status']) ? sanitize_key((string) $_GET['status']) : 'all';
         if ($filter !== 'all') $rows = array_values(array_filter($rows, static function ($row) use ($filter) { return (string) $row['status'] === $filter; }));
         echo '<p>Review showing-based drafts here. Only approved posts publish when their scheduled time arrives.</p>';
+        if (isset($_GET['removed_live'])) {
+            $removed = (string) $_GET['removed_live'] === '1';
+            echo '<div class="notice ' . ($removed ? 'notice-success' : 'notice-error') . '"><p>' . ($removed ? 'The recorded live posts were removed.' : 'Removal was not confirmed. Review the draft error and the remote accounts before retrying; unconfirmed IDs have been retained.') . '</p></div>';
+        }
         echo '<p><strong>After publishing:</strong> View, edit, or delete live posts in <a href="https://business.facebook.com/latest/posts/published_posts/?asset_id=297533574006330&amp;ir_qe_exposed=1&amp;business_id=624729991216395" target="_blank" rel="noopener noreferrer">Meta Business Suite</a>.</p>';
         echo '<p><strong>Show:</strong> ';
         foreach (['all' => 'All', 'draft' => 'Drafts', 'approved' => 'Approved', 'publishing' => 'Publishing', 'posted' => 'Posted', 'failed' => 'Failed'] as $key => $label) echo '<a class="button' . ($filter === $key ? ' button-primary' : '') . '" style="margin-right:5px" href="' . esc_url(add_query_arg(['page' => 'roxy-social-posts', 'status' => $key], admin_url('admin.php'))) . '">' . esc_html($label) . '</a>';
@@ -112,12 +116,14 @@ final class Admin {
                 $publish_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_publish_now&id=' . (int) $row['id']), 'roxy_social_publish_now_' . (int) $row['id']);
                 echo ' <a class="button button-primary" href="' . esc_url($publish_url) . '" onclick="return confirm(\'Retry publishing the missing social account?\')">Retry publish</a>';
             }
-            if ($status === 'failed' && $has_published_ids) {
+            if (in_array($status, ['failed', 'needs_review'], true) && $has_published_ids) {
                 $remove_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_remove_published&id=' . (int) $row['id']), 'roxy_social_remove_published_' . (int) $row['id']);
                 echo '<a class="button" style="margin-top:6px" href="' . esc_url($remove_url) . '" onclick="return confirm(\'Remove this post from Facebook and Instagram?\')">Retry remove</a>';
                 $delete_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_delete_draft&id=' . (int) $row['id']), 'roxy_social_delete_draft_' . (int) $row['id']);
                 echo ' <a class="button" href="' . esc_url($delete_url) . '" onclick="return confirm(\'Delete this local draft? Any remaining social post must be removed in Meta Business Suite.\')">Delete</a>';
             } elseif ($status === 'posted') {
+                $remove_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_remove_published&id=' . (int) $row['id']), 'roxy_social_remove_published_' . (int) $row['id']);
+                echo '<a class="button" href="' . esc_url($remove_url) . '" onclick="return confirm(\'Remove the recorded live posts?\')">Remove live post</a>';
                 $delete_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_delete_draft&id=' . (int) $row['id']), 'roxy_social_delete_draft_' . (int) $row['id']);
                 echo ' <a class="button" href="' . esc_url($delete_url) . '" onclick="return confirm(\'Delete this local draft? The live Facebook and Instagram posts will remain in Meta Business Suite.\')">Delete</a>';
             } elseif (!in_array($status, ['publishing', 'posted', 'removed'], true)) {
@@ -224,8 +230,8 @@ final class Admin {
         if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
         $id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
         check_admin_referer('roxy_social_remove_published_' . $id);
-        Publisher::remove_published($id);
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&removed_live=1'));
+        $removed = Publisher::remove_published($id);
+        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&removed_live=' . ($removed ? '1' : '0')));
         exit;
     }
 

@@ -214,24 +214,37 @@ final class Store {
         ];
         if ($facebook_id !== '') $values['facebook_post_id'] = sanitize_text_field($facebook_id);
         if ($instagram_id !== '') $values['instagram_media_id'] = sanitize_text_field($instagram_id);
-        return false !== $wpdb->update(self::table_name(), $values, ['id' => $id]);
+        return self::save_publish_values($id, $values);
     }
 
     public static function clear_publish_id(int $id, string $platform): bool {
         global $wpdb;
         $column = $platform === 'facebook' ? 'facebook_post_id' : ($platform === 'instagram' ? 'instagram_media_id' : '');
         if ($column === '') return false;
-        return false !== $wpdb->update(self::table_name(), [$column => null, 'updated_at' => current_time('mysql')], ['id' => $id]);
+        return self::save_publish_values($id, [$column => null, 'updated_at' => current_time('mysql')]);
     }
 
     public static function set_instagram_container_id(int $id, string $container_id): bool {
         global $wpdb;
-        return false !== $wpdb->update(self::table_name(), ['instagram_container_id' => sanitize_text_field($container_id), 'updated_at' => current_time('mysql')], ['id' => $id]);
+        return self::save_publish_values($id, ['instagram_container_id' => sanitize_text_field($container_id), 'updated_at' => current_time('mysql')]);
     }
 
     public static function clear_instagram_container_id(int $id): bool {
         global $wpdb;
-        return false !== $wpdb->update(self::table_name(), ['instagram_container_id' => null, 'updated_at' => current_time('mysql')], ['id' => $id]);
+        return self::save_publish_values($id, ['instagram_container_id' => null, 'updated_at' => current_time('mysql')]);
+    }
+
+    // A zero-row update may mean unchanged values OR a missing row. Verify the
+    // durable values before reporting success; this is not a worker claim.
+    private static function save_publish_values(int $id, array $values): bool {
+        global $wpdb;
+        if ($id <= 0 || false === $wpdb->update(self::table_name(), $values, ['id' => $id])) return false;
+        $saved = self::find($id);
+        if (!$saved) return false;
+        foreach ($values as $key => $value) {
+            if (!array_key_exists($key, $saved) || $saved[$key] !== $value) return false;
+        }
+        return true;
     }
 
     public static function delete_unposted(int $id): ?int {

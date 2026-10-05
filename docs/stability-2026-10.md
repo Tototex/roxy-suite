@@ -75,12 +75,12 @@ Current safeguards: preserve live customizations; back up changed files before d
 | G9 | Open | See audit; no resolution claimed. |
 | G10 | Open | See audit; no resolution claimed. |
 | G11 | Open | See audit; no resolution claimed. |
-| S1 | Open | See audit; no resolution claimed. |
-| S2 | Open | See audit; no resolution claimed. |
+| S1 | In progress | Per-platform IDs now persisted immediately; uncertain provider outcomes enter needs_review and halt publication. Retained Instagram container until final ID persists. Atomic worker ownership, stale-job reconciliation and bounded video jobs remain open. |
+| S2 | In progress | Social validates HTTP status, JSON and required IDs; unknown publish outcomes require review. Deletion requires strict success:true. 23 provider fixtures and eight real temporary-table checks pass against deployed source. Grosses Square malformed-success handling remains open. |
 | S3 | Resolved | Exact configured Page selection across bounded cursor pages; no auto-selection of unrelated business. Configured Instagram mismatch preserves settings. Eleven fixture checks; actual live Graph read matches configured Page/Instagram without option writes; deployed error guidance inspected. |
 | S4 | Open | See audit; no resolution claimed. |
 | S5 | Open | See audit; no resolution claimed. |
-| S6 | Open | See audit; no resolution claimed. |
+| S6 | Resolved for confirmed outcomes | Failed/partially published rows can remove recorded IDs; retries target only remaining confirmed IDs. Per-platform connection checks permit Facebook-only/Instagram-only publication. Removal redirect reports actual result and UI exposes removal. Live ten rows, nine Remove live post links and one Retry remove inspected; no actual publish/delete performed. Concurrent workers/removals and ambiguous reconciliation remain S1 work. |
 | S7 | Open | See audit; no resolution claimed. |
 | S8 | Resolved | Draft picker renders provider filenames via textContent/dataset, rejects legacy cached HTML, stores structured search results, checks IDs, and uses one handler. Five mocked DOM assertions pass; six actual PHP-rendered scripts compile. Live chooser opens once, Hangar search returns 200 assets and safe cached reopen works; Media Library opens. No import/assignment/save/publish clicked. |
 | S9 | Resolved | Social and Grosses authenticated versioned encryption; crypto outage preserves existing settings, corrupted/key-rotated credentials fail closed with reconnect notices. Legacy CBC/old plaintext migrated using actual SQL compare-and-swap; 15 Social/7 Grosses crypto checks, disabled-crypto fixtures, 7 Social/8 Grosses MySQL checks pass. Live decoded credentials preserved, other Grosses settings unchanged, Square locations read succeeds; no credentials printed. |
