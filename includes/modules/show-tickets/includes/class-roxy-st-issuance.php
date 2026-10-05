@@ -2,24 +2,36 @@
 namespace RoxyST;
 if (!defined('ABSPATH')) exit;
 
-/** Private ticket projection writes: one order, one connection, one transaction. */
+/** Private ticket projection writes: ordered locks, one connection, one transaction. */
 final class Issuance {
   private string $lock;
+  private array $locks = [];
   private int $owner = 0;
   private array $posts = [];
   private array $items = [];
 
-  public function __construct(int $order_id) {
+  public function __construct(int|array $order_ids, string $scope = '') {
     global $wpdb;
-    $this->lock = 'roxy_ticket_' . substr(hash('sha256', $wpdb->prefix . ':' . $order_id), 0, 48);
+    $ids = array_unique(array_map('intval', (array)$order_ids));
+    if (count($ids)>64) throw new \RuntimeException('Too many orders in this group. Use individual ticket check-in.');
+    if (($ids && min($ids)<=0) || (!$ids && $scope==='')) throw new \RuntimeException('Invalid admission lock scope');
+    foreach ($ids as $id) $this->locks[] = 'roxy_ticket_' . substr(hash('sha256', $wpdb->prefix . ':' . $id), 0, 48);
+    if ($scope !== '') $this->locks[] = 'roxy_scope_' . substr(hash('sha256', $wpdb->prefix . ':' . $scope), 0, 48);
+    sort($this->locks, SORT_STRING);
+    $this->lock = $this->locks[0];
   }
 
   public function run(callable $callback) {
     global $wpdb;
-    if ((string)$wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 5)', $this->lock)) !== '1') throw new \RuntimeException('Ticket issuance is busy');
     $this->owner = (int)$wpdb->get_var('SELECT CONNECTION_ID()');
     $started = false;
+    $acquired = [];
     try {
+      $deadline = microtime(true)+5;
+      foreach ($this->locks as $lock) {
+        if ((string)$wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, %d)', $lock, max(0,(int)ceil($deadline-microtime(true))))) !== '1') throw new \RuntimeException('Ticket issuance is busy');
+        $acquired[] = $lock;
+      }
       $this->assert_owner();
       foreach ([$wpdb->posts, $wpdb->postmeta, $wpdb->prefix.'woocommerce_order_items', $wpdb->prefix.'woocommerce_order_itemmeta'] as $table) {
         $engine = $wpdb->get_var($wpdb->prepare('SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s', $table));
@@ -45,9 +57,11 @@ final class Issuance {
       return $result;
     } finally {
       // Do not rollback or release anything on a reconnected/unrelated connection.
-      if ($this->owns_connection()) {
+      if ($this->owner > 0 && (int)$wpdb->get_var('SELECT CONNECTION_ID()') === $this->owner) {
         if ($started) $wpdb->query('ROLLBACK');
-        $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $this->lock));
+        foreach (array_reverse($acquired) as $lock) {
+          if ((int)$wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', $lock)) === $this->owner) $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock));
+        }
       }
       foreach ($this->posts as $id) { wp_cache_delete($id, 'posts'); wp_cache_delete($id, 'post_meta'); }
       foreach ($this->items as $id) { wp_cache_delete($id, 'order_item_meta'); wp_cache_delete('item-'.$id, 'order-items'); }
@@ -57,14 +71,34 @@ final class Issuance {
 
   private function owns_connection(): bool {
     global $wpdb;
-    return $this->owner > 0 && (string)$wpdb->get_var($wpdb->prepare('SELECT IF(CONNECTION_ID()=%d AND IS_USED_LOCK(%s)=%d,1,0)', $this->owner, $this->lock, $this->owner)) === '1';
+    return $this->owner > 0 && (string)$wpdb->get_var('SELECT IF('.$this->predicate().',1,0)') === '1';
   }
   public function assert_owner(): void {
     if (!$this->owns_connection()) throw new \RuntimeException('Ticket connection ownership lost');
   }
   private function predicate(): string {
     global $wpdb;
-    return $wpdb->prepare('(CONNECTION_ID()=%d AND IS_USED_LOCK(%s)=%d)', $this->owner, $this->lock, $this->owner);
+    $checks = [$wpdb->prepare('CONNECTION_ID()=%d', $this->owner)];
+    foreach ($this->locks as $lock) $checks[] = $wpdb->prepare('IS_USED_LOCK(%s)=%d', $lock, $this->owner);
+    return '('.implode(' AND ', $checks).')';
+  }
+  public function will_call_quantity(int $context_id, string $customer_key): int {
+    global $wpdb;
+    $this->assert_owner();
+    $table=$wpdb->prefix.'roxy_will_call_checkins';
+    if ($wpdb->get_var($wpdb->prepare('SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s',$table)) !== 'InnoDB') throw new \RuntimeException('Transactional attendance storage required');
+    $value=$wpdb->get_var($wpdb->prepare("SELECT used_qty FROM `$table` WHERE product_id=%d AND customer_key=%s",$context_id,$customer_key));
+    if ($wpdb->last_error) throw new \RuntimeException('Attendance summary read failed');
+    $this->assert_owner();
+    return (int)$value;
+  }
+  public function will_call_summary(int $context_id, string $customer_key, int $quantity): void {
+    global $wpdb;
+    $this->will_call_quantity($context_id,$customer_key);
+    $table=$wpdb->prefix.'roxy_will_call_checkins';
+    $guard=$this->predicate();
+    $this->write($wpdb->prepare("INSERT INTO `$table` (product_id,customer_key,checked_in,used_qty,updated_at) SELECT %d,%s,%d,%d,%s FROM DUAL WHERE $guard ON DUPLICATE KEY UPDATE checked_in=VALUES(checked_in),used_qty=VALUES(used_qty),updated_at=VALUES(updated_at)",$context_id,$customer_key,$quantity>0?1:0,$quantity,current_time('mysql')));
+    if ($this->will_call_quantity($context_id,$customer_key)!==$quantity) throw new \RuntimeException('Attendance summary verification failed');
   }
   private function write(string $sql): int {
     global $wpdb;

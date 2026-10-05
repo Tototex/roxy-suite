@@ -2,15 +2,21 @@
 // Unit-test plumbing only. Real transaction/locking assertions live in MySQL/Woo fixtures.
 namespace RoxyST {
   class Issuance {
-    public function __construct(int $id) {}
+    public function __construct(int|array $ids,string $scope='') {}
     public function run(callable $callback) {
       $before=$GLOBALS['meta']??[];
-      try{return $callback($this);}catch(\Throwable $e){$GLOBALS['meta']=$before;throw $e;}
+      $baseline=$GLOBALS['baseline']??0;
+      try{return $callback($this);}catch(\Throwable $e){$GLOBALS['meta']=$before;$GLOBALS['baseline']=$baseline;throw $e;}
     }
     public function post_meta_value(int $id,string $key){return \get_post_meta($id,$key,true);}
     public function is_ticket(int $id):bool{return \get_post_type($id)==='roxy_ticket';}
     public function post_meta(int $id,string $key,$value,bool $remove=false):void {
       if($remove)\delete_post_meta($id,$key);else \update_post_meta($id,$key,$value);
+    }
+    public function will_call_quantity(int $id,string $key):int{return (int)($GLOBALS['baseline']??0);}
+    public function will_call_summary(int $id,string $key,int $qty):void {
+      if($GLOBALS['wpdb']->replace()===false)throw new \RuntimeException('Attendance summary write failed');
+      $GLOBALS['baseline']=$qty;
     }
   }
   class Log {public static function error(...$args):void{}}

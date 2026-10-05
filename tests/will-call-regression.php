@@ -83,9 +83,12 @@ $save=$GLOBALS['actions']['wp_ajax_roxy_will_call_save'];
 $GLOBALS['meta']=[]; $GLOBALS['baseline']=0;
 $_POST=['nonce'=>'test','context_id'=>8,'customer_key'=>$key,'used_qty'=>1,'baseline_used'=>'0','issued_at'=>(int)(microtime(true)*1000)];
 try{$save();}catch(JsonResult $e){check($e->success,'valid legacy customer admits within paid unrefunded quantity');}
+$_POST['baseline_used']='1';$_POST['used_qty']=0;
+try{$save();}catch(JsonResult $e){check(!$e->success&&$GLOBALS['baseline']===1,'legacy decrease also requires explicit undo');}
+$_POST['used_qty']=1;
 $_POST['baseline_used']='99';$before=$GLOBALS['wpdb']->writes;
 try{$save();}catch(JsonResult $e){check(!$e->success && $GLOBALS['wpdb']->writes===$before,'stale baseline rejected before attendance write');}
-$_POST['baseline_used']='0';$_POST['issued_at']=((time()-3*HOUR_IN_SECONDS)*1000);
+$_POST['baseline_used']='1';$_POST['issued_at']=((time()-3*HOUR_IN_SECONDS)*1000);
 try{$save();}catch(JsonResult $e){check(!$e->success && $GLOBALS['wpdb']->writes===$before,'expired offline admission rejected');}
 $_POST['issued_at']=(int)(microtime(true)*1000);$_POST['customer_key']='fake-customer';
 try{$save();}catch(JsonResult $e){check(!$e->success && $GLOBALS['wpdb']->writes===$before,'unknown customer cannot create attendance');}

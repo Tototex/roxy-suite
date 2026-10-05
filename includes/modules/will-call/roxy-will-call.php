@@ -1195,33 +1195,8 @@ function roxy_will_call_authoritative_checkins(int $context_id, array $saved): a
 }
 
 function roxy_will_call_apply_ticket_checkin_state(array $ticket_ids, int $used_qty, bool $allow_undo = false): array {
-  $used_qty = max(0, $used_qty);
   if (!class_exists('RoxyST\\Tickets')) throw new RuntimeException('Ticket admission is unavailable.');
-  $checked = []; $available = [];
-  foreach (array_unique(array_map('intval', $ticket_ids)) as $ticket_id) {
-    if (!\RoxyST\Tickets::ticket_is_eligible($ticket_id)) continue;
-    if ((int)get_post_meta($ticket_id,'_roxy_checked_in',true) === 1) $checked[]=$ticket_id;
-    else $available[]=$ticket_id;
-  }
-  if ($used_qty > count($checked)+count($available)) throw new RuntimeException('Quantity exceeds eligible paid, unrefunded tickets. Refresh the list.');
-  if ($used_qty < count($checked)) {
-    if (!$allow_undo) throw new RuntimeException('Reducing admission requires explicit Undo confirmation.');
-    $undoable = array_values(array_filter(array_reverse($checked), static fn($ticket_id)=>get_post_meta($ticket_id,'_roxy_checked_in_source',true)==='will_call'));
-    $needed = count($checked)-$used_qty;
-    if (count($undoable)<$needed) throw new RuntimeException('A QR or manual admission cannot be undone here. Use the ticket Undo Check-In control.');
-    $undo = array_slice($undoable, 0, $needed);
-    foreach ($undo as $ticket_id) {
-      if (!\RoxyST\Tickets::undo_check_in_ticket($ticket_id,'will_call')) throw new RuntimeException('Admission could not be undone. Refresh the list.');
-      $checked=array_values(array_diff($checked,[$ticket_id]));
-    }
-  } else {
-    foreach ($available as $ticket_id) {
-      if (count($checked) >= $used_qty) break;
-      if (!\RoxyST\Tickets::check_in_ticket($ticket_id,get_current_user_id(),'will_call')) throw new RuntimeException('Ticket eligibility changed. Refresh the list before admitting anyone else.');
-      $checked[]=$ticket_id;
-    }
-  }
-  return $checked;
+  return \RoxyST\Tickets::apply_will_call_group($ticket_ids,max(0,$used_qty),$allow_undo);
 }
 
 add_action('wp_ajax_roxy_will_call_save', function () {
@@ -1258,24 +1233,18 @@ add_action('wp_ajax_roxy_will_call_save', function () {
   $current_map=roxy_will_call_authoritative_checkins($context_id,roxy_will_call_get_checkins_map($context_id));
   $current_used=(int)($current_map[$customer_key]['used_qty']??0);
   if (!isset($_POST['baseline_used']) || !ctype_digit((string)$_POST['baseline_used']) || (int)$_POST['baseline_used'] !== $current_used) wp_send_json_error(['message'=>'Another admission changed this customer. Refresh before retrying.','conflict'=>true]);
-  $updated_ticket_ids = [];
-  if ($ticket_ids) {
-    try { $updated_ticket_ids=roxy_will_call_apply_ticket_checkin_state($ticket_ids,$used_qty,($_POST['allow_undo']??'')==='1'); }
-    catch (Throwable $e) { wp_send_json_error(['message'=>$e->getMessage(),'conflict'=>true]); }
-  }
-
-  global $wpdb;
-  $table = $wpdb->prefix . 'roxy_will_call_checkins';
-
-  $saved=$wpdb->replace($table, [
-    'product_id' => $context_id,
-    'customer_key' => $customer_key,
-    'checked_in' => $checked_in,
-    'used_qty' => $used_qty,
-    'updated_at' => current_time('mysql'),
-  ], ['%d', '%s', '%d', '%d', '%s']);
-
-  if ($saved===false) wp_send_json_error(['message'=>'The attendance summary could not be saved. Refresh to check actual ticket admissions.','conflict'=>true]);
+  try {
+    $updated_ticket_ids=\RoxyST\Tickets::apply_will_call_group($ticket_ids,$used_qty,($_POST['allow_undo']??'')==='1',[
+      'context_id'=>$context_id,'customer_key'=>$customer_key,'baseline_used'=>(int)$_POST['baseline_used'],
+    ],static function()use($context_id,$customer_key,$ticket_ids,$products,$used_qty):void {
+      $current_ids=roxy_will_call_ticket_ids_for_customer($context_id,$customer_key);
+      $expected=$ticket_ids;sort($current_ids,SORT_NUMERIC);sort($expected,SORT_NUMERIC);
+      if($current_ids!==$expected)throw new RuntimeException('Ticket set changed. Refresh the list.');
+      $list=roxy_will_call_get_list($products,[],true);$match=null;
+      foreach($list['rows'] as $row)if($row['customer_key']===$customer_key)$match=$row;
+      if(!$match || $used_qty>(int)$match['qty'])throw new RuntimeException('Customer or paid ticket quantity changed. Refresh the list.');
+    });
+  } catch (Throwable $e) {wp_send_json_error(['message'=>$e->getMessage(),'conflict'=>true]);}
 
   wp_send_json_success([
     'saved' => true,

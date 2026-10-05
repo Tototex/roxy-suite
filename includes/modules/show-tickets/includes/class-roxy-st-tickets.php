@@ -520,25 +520,91 @@ class Tickets {
   public static function check_in_ticket(int $ticket_id, int $user_id = 0, string $source = 'ticket'): bool {
     if (!in_array($source,['ticket','will_call','member'],true)) return false;
     return self::ticket_operation($ticket_id, static function () use ($ticket_id,$user_id,$source): bool {
-      if (!self::can_check_in($ticket_id)) return false;
+      return self::apply_admission($ticket_id,$user_id,$source);
+    });
+  }
+
+  private static function apply_admission(int $ticket_id, int $user_id, string $source): bool {
+      if (!self::$issuance || !self::can_check_in($ticket_id)) return false;
       self::write_ticket_meta($ticket_id, self::META_CHECKED_IN, '1');
       self::write_ticket_meta($ticket_id, self::META_CHECKED_IN_AT, current_time('mysql'));
       self::write_ticket_meta($ticket_id, self::META_CHECKED_IN_BY, $user_id > 0 ? $user_id : get_current_user_id());
       self::write_ticket_meta($ticket_id, '_roxy_checked_in_source', $source);
       self::write_ticket_meta($ticket_id, self::META_STATE, 'checked_in');
       return true;
-    });
   }
 
   public static function undo_check_in_ticket(int $ticket_id, string $expected_source = ''): bool {
     return self::ticket_operation($ticket_id, static function () use ($ticket_id,$expected_source): bool {
-      if ((int)self::read_ticket_meta($ticket_id,self::META_CHECKED_IN) !== 1) return false;
+      return self::apply_undo($ticket_id,$expected_source);
+    });
+  }
+
+  private static function apply_undo(int $ticket_id, string $expected_source): bool {
+      if (!self::$issuance || (int)self::read_ticket_meta($ticket_id,self::META_CHECKED_IN) !== 1) return false;
       if ($expected_source !== '' && self::read_ticket_meta($ticket_id,'_roxy_checked_in_source') !== $expected_source) return false;
       foreach ([self::META_CHECKED_IN,self::META_CHECKED_IN_AT,self::META_CHECKED_IN_BY,'_roxy_checked_in_source'] as $key) self::remove_ticket_meta($ticket_id,$key);
       $order = wc_get_order((int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID));
       self::write_ticket_meta($ticket_id,self::META_STATE,(int)self::read_ticket_meta($ticket_id,self::META_REFUNDED) === 1 ? 'refunded' : ($order ? self::state_for_order_status((string)$order->get_status()) : 'cancelled'));
       return true;
-    });
+  }
+
+  /** Will Call group, optionally with its summary: commit every change or none. */
+  public static function apply_will_call_group(array $ticket_ids, int $quantity, bool $allow_undo = false, ?array $summary = null, ?callable $validate = null): array {
+    if (self::$issuance !== null || $quantity<0) throw new \RuntimeException('Invalid group admission request.');
+    $identities=[];
+    foreach (array_unique(array_map('intval',$ticket_ids)) as $id) {
+      $order_id=(int)get_post_meta($id,self::META_ORDER_ID,true);
+      if ($id<=0 || get_post_type($id)!==self::POST_TYPE || $order_id<=0) throw new \RuntimeException('Ticket identity changed. Refresh the list.');
+      $identities[$id]=$order_id;
+    }
+    $scope=$summary ? 'will_call:'.(int)$summary['context_id'].':'.hash('sha256',(string)$summary['customer_key']) : '';
+    if (!$identities && !$summary) {
+      if ($quantity===0) return [];
+      throw new \RuntimeException('No eligible tickets.');
+    }
+    try {
+      $checked=(new Issuance(array_values($identities),$scope))->run(static function(Issuance $operation)use($identities,$quantity,$allow_undo,$summary,$validate):array {
+        self::$issuance=$operation;
+        try {
+          foreach(array_unique($identities) as $order_id){clean_post_cache($order_id);wp_cache_delete('order-items-'.$order_id,'orders');}
+          $checked=[];$available=[];
+          foreach($identities as $id=>$order_id) {
+            if (!self::is_ticket_record($id) || (int)self::read_ticket_meta($id,self::META_ORDER_ID)!==$order_id) throw new \RuntimeException('Ticket identity changed. Refresh the list.');
+            if (!self::ticket_is_eligible($id)) continue;
+            if ((int)self::read_ticket_meta($id,self::META_CHECKED_IN)===1) $checked[]=$id;
+            else $available[]=$id;
+          }
+          if ($summary) {
+            $stored=$operation->will_call_quantity((int)$summary['context_id'],(string)$summary['customer_key']);
+            $current=$identities ? count($checked) : $stored;
+            if ($current!==(int)$summary['baseline_used']) throw new \RuntimeException('Another admission changed this customer. Refresh before retrying.');
+            if (!$identities && $quantity<$stored && !$allow_undo) throw new \RuntimeException('Reducing admission requires explicit Undo confirmation.');
+          }
+          if ($validate) $validate(); // Read-only paid/customer validation, under the same locks.
+          if ($identities && $quantity>count($checked)+count($available)) throw new \RuntimeException('Quantity exceeds eligible paid, unrefunded tickets. Refresh the list.');
+          if ($quantity<count($checked)) {
+            if (!$allow_undo) throw new \RuntimeException('Reducing admission requires explicit Undo confirmation.');
+            $undoable=array_values(array_filter(array_reverse($checked),static fn($id)=>self::read_ticket_meta($id,'_roxy_checked_in_source')==='will_call'));
+            $needed=count($checked)-$quantity;
+            if (count($undoable)<$needed) throw new \RuntimeException('A QR or manual admission cannot be undone here. Use the ticket Undo Check-In control.');
+            foreach(array_slice($undoable,0,$needed) as $id) {
+              if(!self::apply_undo($id,'will_call')) throw new \RuntimeException('Admission could not be undone. Refresh the list.');
+              $checked=array_values(array_diff($checked,[$id]));
+            }
+          } else {
+            foreach($available as $id){if(count($checked)>=$quantity)break;if(!self::apply_admission($id,get_current_user_id(),'will_call'))throw new \RuntimeException('Ticket eligibility changed. Refresh the list.');$checked[]=$id;}
+          }
+          if ($summary) $operation->will_call_summary((int)$summary['context_id'],(string)$summary['customer_key'],$quantity);
+          return $checked;
+        } finally {self::$issuance=null;}
+      });
+      foreach(array_keys($identities) as $id)self::invalidate_door_stats_cache_for_ticket($id);
+      return $checked;
+    } catch (\Throwable $e) {
+      Log::error('Group admission was not saved; staff must refresh and retry', ['ticket_count'=>count($identities)]);
+      throw new \RuntimeException('Group admission was not saved. '.$e->getMessage(),0,$e);
+    }
   }
 
   public static function set_order_item_check_in_qty(int $order_id, int $item_id, int $target_qty, int $user_id = 0): array {
