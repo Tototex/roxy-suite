@@ -129,7 +129,7 @@ final class AI {
     public static function queue_campaign(string $campaign_key): void {
         if (!self::enabled()) return;
         foreach (Store::campaign_rows($campaign_key) as $index => $draft) {
-            if (!in_array((string) $draft['status'], ['draft', 'needs_review'], true)) continue;
+            if ((string) $draft['status'] !== 'draft' || (string) ($draft['ai_status'] ?? 'pending') !== 'pending') continue;
             if (!wp_next_scheduled('roxy_social_generate_ai_text', [(int) $draft['id'], $campaign_key])) wp_schedule_single_event(time() + 10 + ($index * 30), 'roxy_social_generate_ai_text', [(int) $draft['id'], $campaign_key]);
         }
     }
@@ -137,7 +137,7 @@ final class AI {
     public static function generate_text(int $draft_id, string $campaign_key): void {
         if (!self::enabled()) return;
         $draft = Store::find($draft_id);
-        if (!$draft || (string) $draft['campaign_key'] !== $campaign_key || !in_array((string) $draft['status'], ['draft', 'needs_review'], true)) return;
+        if (!$draft || (string) $draft['campaign_key'] !== $campaign_key || (string) $draft['status'] !== 'draft' || (string) ($draft['ai_status'] ?? 'pending') !== 'pending') return;
         $scheduled = date_create((string) $draft['scheduled_for'], wp_timezone());
         $day = $scheduled ? wp_date('l', $scheduled->getTimestamp(), wp_timezone()) : 'scheduled day';
         $title = ucwords(str_replace('-', ' ', (string) preg_replace('/-\d{8}$/', '', $campaign_key)));
@@ -163,20 +163,30 @@ final class AI {
                 'options' => ['temperature' => 0.85],
             ]),
         ]);
-        if (is_wp_error($response) || wp_remote_retrieve_response_code($response) >= 300) {
-            error_log('Roxy Social AI generation failed for draft ' . $draft_id . ': ' . (is_wp_error($response) ? $response->get_error_message() : 'HTTP ' . wp_remote_retrieve_response_code($response) . ' ' . wp_remote_retrieve_body($response)));
-            Store::update_ai_status($draft_id, 'ready');
-            Campaigns::maybe_auto_approve($draft_id);
+        if (is_wp_error($response) || wp_remote_retrieve_response_code($response) < 200 || wp_remote_retrieve_response_code($response) >= 300) {
+            error_log('Roxy Social AI generation failed for draft ' . $draft_id . '.');
+            Store::save_ai_result($draft, '', 'AI generation failed. Review the draft manually; it has not been auto-approved.');
             return;
         }
         $body = json_decode((string) wp_remote_retrieve_body($response), true);
         $text = trim((string) ($body['message']['content'] ?? ''));
         $text = self::clean_generated_body($text);
         $footer = self::schedule_footer($draft, $day);
-        if ($text !== '' && $footer !== '') Store::update_text($draft_id, $text . "\n\n" . $footer);
-        elseif ($text === '') error_log('Roxy Social AI returned no creative body for draft ' . $draft_id);
-        Store::update_ai_status($draft_id, 'ready');
-        Campaigns::maybe_auto_approve($draft_id);
+        if ($text !== '' && $footer !== '') {
+            if (Store::save_ai_result($draft, $text . "\n\n" . $footer)) Campaigns::maybe_auto_approve($draft_id);
+            else self::retry_changed_draft($draft_id, $campaign_key);
+        } else {
+            Store::save_ai_result($draft, '', 'AI returned no usable caption or verified schedule. Review the draft manually.');
+        }
+    }
+
+    private static function retry_changed_draft(int $id, string $campaign_key): void {
+        $current = Store::find($id);
+        if (!$current || ($current['status'] ?? '') !== 'draft' || ($current['ai_status'] ?? '') !== 'pending'
+            || ($current['campaign_key'] ?? '') !== $campaign_key || !empty($current['last_error'])
+            || !empty($current['facebook_post_id']) || !empty($current['instagram_media_id']) || !empty($current['instagram_container_id'])) return;
+        $args = [$id, $campaign_key];
+        if (!wp_next_scheduled('roxy_social_generate_ai_text', $args)) wp_schedule_single_event(time() + 30, 'roxy_social_generate_ai_text', $args);
     }
 
     public static function connection_status(): string {

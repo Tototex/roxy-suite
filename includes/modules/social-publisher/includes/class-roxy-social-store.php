@@ -47,12 +47,13 @@ final class Store {
     }
 
     public static function update_media(int $id, int $asset_id, string $filename): bool {
-        global $wpdb;
-        return false !== $wpdb->update(self::table_name(), [
+        $expected = self::find($id);
+        if (!$expected || $expected['status'] !== 'draft') return false;
+        return self::save_draft_snapshot($expected, [
             'hangar_asset_id' => $asset_id,
             'hangar_filename' => sanitize_file_name($filename),
             'updated_at' => current_time('mysql'),
-        ], ['id' => $id]);
+        ]);
     }
 
     public static function cleanup_expired(): int {
@@ -78,10 +79,22 @@ final class Store {
         return is_array($row) ? $row : null;
     }
 
-    public static function update_imported_media(int $id, int $attachment_id, string $media_type, ?string $cleanup_after, int $asset_id = 0, string $filename = ''): bool {
-        global $wpdb;
+    public static function update_imported_media(int $id, int $attachment_id, string $media_type, ?string $cleanup_after, int $asset_id = 0, string $filename = '', ?array $expected = null): bool {
+        if (!$expected || (int) ($expected['id'] ?? 0) !== $id || ($expected['status'] ?? '') !== 'draft') return false;
+        $current = self::find($id);
+        // Caption generation and media download may finish in either order.
+        // Only rebase a completed AI caption, never a manager edit/approval.
+        if ($current && ($expected['ai_status'] ?? '') === 'pending' && ($current['ai_status'] ?? '') === 'ready') {
+            $matches = true;
+            foreach ($expected as $key => $value) {
+                if (in_array($key, ['post_text', 'ai_status', 'updated_at'], true)) continue;
+                if (!array_key_exists($key, $current) || $current[$key] !== $value) { $matches = false; break; }
+            }
+            if ($matches) $expected = $current;
+        }
         $url = wp_get_attachment_url($attachment_id) ?: '';
-        return false !== $wpdb->update(self::table_name(), [
+        if ($url === '') return false;
+        return self::save_draft_snapshot($expected, [
             'media_type' => sanitize_key($media_type),
             'media_url' => esc_url_raw($url),
             'hangar_asset_id' => $asset_id > 0 ? $asset_id : null,
@@ -89,21 +102,27 @@ final class Store {
             'temporary_attachment_id' => $media_type === 'video' ? $attachment_id : null,
             'cleanup_after' => $media_type === 'video' ? $cleanup_after : null,
             'updated_at' => current_time('mysql'),
-        ], ['id' => $id]);
+        ]);
     }
 
     public static function clear_media(int $id): ?int {
+        $claim = self::acquire_publish_lock($id);
+        if (!$claim) return null;
+        try { return self::clear_media_owned($id, $claim); }
+        finally { self::release_publish_lock($claim); }
+    }
+
+    private static function clear_media_owned(int $id, array $claim): ?int {
         global $wpdb;
         $row = self::find($id);
-        if (!$row) return null;
-        $temporary_id = !empty($row['temporary_attachment_id']) ? (int) $row['temporary_attachment_id'] : 0;
+        if (!$row || $row['status'] !== 'draft' || !empty($row['facebook_post_id']) || !empty($row['instagram_media_id']) || !empty($row['instagram_container_id'])) return null;
         $showing_ids = array_filter(array_map('absint', explode(',', (string) $row['showing_ids'])));
         $poster_url = '';
         if ($showing_ids) {
             $poster_id = get_post_thumbnail_id((int) reset($showing_ids));
             if ($poster_id) $poster_url = wp_get_attachment_url($poster_id) ?: '';
         }
-        $updated = $wpdb->update(self::table_name(), [
+        $updated = self::save_publish_values($id, [
             'media_type' => 'image',
             'media_url' => $poster_url,
             'hangar_asset_id' => null,
@@ -111,8 +130,9 @@ final class Store {
             'temporary_attachment_id' => null,
             'cleanup_after' => null,
             'updated_at' => current_time('mysql'),
-        ], ['id' => $id]);
-        return false === $updated ? null : $temporary_id;
+        ], $claim);
+        // Preserve old uploads until reference-aware cleanup can verify ownership.
+        return $updated ? 0 : null;
     }
 
     public static function upsert(array $data): int {
@@ -132,8 +152,8 @@ final class Store {
             'updated_at' => $now,
         ];
         if ($existing) {
-            if (!in_array($existing['status'], ['draft', 'needs_review'], true)) return (int) $existing['id'];
-            $wpdb->update(self::table_name(), $values, ['id' => (int) $existing['id']]);
+            if ($existing['status'] !== 'draft' || in_array(($existing['ai_status'] ?? ''), ['ready', 'manual'], true) || !empty($existing['last_error'])) return (int) $existing['id'];
+            self::save_draft_snapshot($existing, $values);
             return (int) $existing['id'];
         }
         $values['status'] = 'draft';
@@ -166,22 +186,28 @@ final class Store {
         global $wpdb;
         $rows = $wpdb->get_results('SELECT * FROM ' . self::table_name() . ' ORDER BY scheduled_for ASC, id ASC', ARRAY_A) ?: [];
         foreach ($rows as &$row) {
+            if ((string) $row['status'] !== 'draft') continue;
+            $expected = $row;
+            $values = [];
             if (empty($row['hangar_asset_id']) && !empty($row['temporary_attachment_id'])) {
                 $asset_id = (int) get_post_meta((int) $row['temporary_attachment_id'], '_roxy_hangar_asset_id', true);
                 if ($asset_id > 0) {
                     $row['hangar_asset_id'] = $asset_id;
                     $row['hangar_filename'] = basename((string) get_post_meta((int) $row['temporary_attachment_id'], '_wp_attached_file', true));
-                    $wpdb->update(self::table_name(), ['hangar_asset_id' => $asset_id, 'hangar_filename' => sanitize_file_name($row['hangar_filename']), 'updated_at' => current_time('mysql')], ['id' => (int) $row['id']]);
+                    $values['hangar_asset_id'] = $asset_id;
+                    $values['hangar_filename'] = sanitize_file_name($row['hangar_filename']);
                 }
             }
-            if (!empty($row['media_url']) || !empty($row['hangar_asset_id'])) continue;
-            $showing_ids = array_filter(array_map('absint', explode(',', (string) $row['showing_ids'])));
-            $poster_id = $showing_ids ? get_post_thumbnail_id((int) reset($showing_ids)) : 0;
-            $poster_url = $poster_id ? (wp_get_attachment_url($poster_id) ?: '') : '';
-            if ($poster_url !== '') {
-                $row['media_url'] = $poster_url;
-                $wpdb->update(self::table_name(), ['media_type' => 'image', 'media_url' => esc_url_raw($poster_url), 'updated_at' => current_time('mysql')], ['id' => (int) $row['id']]);
+            if (empty($row['media_url']) && empty($row['hangar_asset_id'])) {
+                $showing_ids = array_filter(array_map('absint', explode(',', (string) $row['showing_ids'])));
+                $poster_id = $showing_ids ? get_post_thumbnail_id((int) reset($showing_ids)) : 0;
+                $poster_url = $poster_id ? (wp_get_attachment_url($poster_id) ?: '') : '';
+                if ($poster_url !== '') {
+                    $values['media_type'] = 'image';
+                    $values['media_url'] = esc_url_raw($poster_url);
+                }
             }
+            if ($values) { self::save_draft_snapshot($expected, $values); $row = self::find((int) $expected['id']) ?? $expected; }
         }
         unset($row);
         return $rows;
@@ -192,11 +218,46 @@ final class Store {
         return $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . self::table_name() . ' WHERE campaign_key = %s ORDER BY scheduled_for ASC, id ASC', $campaign_key), ARRAY_A) ?: [];
     }
 
-    public static function update_status(int $id, string $status): bool {
-        global $wpdb;
-        $allowed = ['draft', 'approved', 'needs_review', 'skipped', 'publishing', 'posted', 'failed', 'removed'];
-        if (!in_array($status, $allowed, true)) return false;
-        return false !== $wpdb->update(self::table_name(), ['status' => $status, 'updated_at' => current_time('mysql')], ['id' => $id]);
+    public static function update_status(int $id, string $status, string $revision = ''): bool {
+        $claim = self::acquire_publish_lock($id);
+        if (!$claim) return false;
+        try {
+            $row = self::find($id);
+            if (!$row || $revision === '' || !hash_equals(self::draft_revision($row), $revision)) return false;
+            $transitions = ['draft' => ['approved', 'skipped'], 'approved' => ['draft', 'skipped'], 'needs_review' => ['approved', 'draft', 'skipped'], 'failed' => ['approved', 'draft', 'skipped']];
+            if (!$row || !in_array($status, $transitions[(string) $row['status']] ?? [], true)) return false;
+            return self::compare_publish_status($id, (string) $row['status'], $status, $claim);
+        } finally { self::release_publish_lock($claim); }
+    }
+
+    public static function draft_revision(array $row): string {
+        return hash('sha256', wp_json_encode($row));
+    }
+
+    private static function save_draft_snapshot(array $expected, array $values, bool $allow_approved = false): bool {
+        $id = (int) ($expected['id'] ?? 0);
+        $claim = self::acquire_publish_lock($id);
+        if (!$claim) return false;
+        try {
+            $current = self::find($id);
+            if (!$current || !in_array((string) $current['status'], $allow_approved ? ['draft', 'needs_review', 'approved', 'failed'] : ['draft', 'needs_review'], true)
+                || !hash_equals(self::draft_revision($expected), self::draft_revision($current))
+                || !empty($current['facebook_post_id']) || !empty($current['instagram_media_id']) || !empty($current['instagram_container_id'])) return false;
+            $values['updated_at'] = current_time('mysql');
+            return self::save_publish_values($id, $values, $claim);
+        } finally { self::release_publish_lock($claim); }
+    }
+
+    public static function approve_snapshot(array $expected): bool {
+        if (($expected['status'] ?? '') !== 'draft' || !empty($expected['last_error'])) return false;
+        return self::save_draft_snapshot($expected, ['status' => 'approved']);
+    }
+
+    public static function save_ai_result(array $expected, string $text, string $error = ''): bool {
+        if (($expected['status'] ?? '') !== 'draft' || ($expected['ai_status'] ?? 'pending') !== 'pending') return false;
+        if ($error !== '') return self::save_draft_snapshot($expected, ['status' => 'needs_review', 'ai_status' => 'pending', 'last_error' => sanitize_textarea_field($error)]);
+        if ($text === '') return false;
+        return self::save_draft_snapshot($expected, ['post_text' => sanitize_textarea_field($text), 'ai_status' => 'ready', 'last_error' => null]);
     }
 
     public static function acquire_publish_lock(int $id): ?array {
@@ -230,9 +291,10 @@ final class Store {
     }
 
     public static function update_ai_status(int $id, string $status): bool {
-        global $wpdb;
         if (!in_array($status, ['pending', 'ready'], true)) return false;
-        return false !== $wpdb->update(self::table_name(), ['ai_status' => $status, 'updated_at' => current_time('mysql')], ['id' => $id]);
+        $expected = self::find($id);
+        if (!$expected || $expected['status'] !== 'draft') return false;
+        return self::save_draft_snapshot($expected, ['ai_status' => $status]);
     }
 
     public static function update_publish_result(int $id, string $status, string $error = '', string $facebook_id = '', string $instagram_id = '', ?array $claim = null): bool {
@@ -289,26 +351,34 @@ final class Store {
         $saved = self::find($id);
         if (!$saved) return false;
         foreach ($values as $key => $value) {
-            if (!array_key_exists($key, $saved) || $saved[$key] !== $value) return false;
+            if (!array_key_exists($key, $saved)) return false;
+            if ($value === null ? $saved[$key] !== null : (!is_scalar($saved[$key]) || (string) $saved[$key] !== (string) $value)) return false;
         }
         return true;
     }
 
     public static function delete_unposted(int $id): ?int {
         global $wpdb;
-        $row = self::find($id);
-        if (!$row || (string) $row['status'] === 'publishing') return null;
-        $temporary_id = !empty($row['temporary_attachment_id']) ? (int) $row['temporary_attachment_id'] : 0;
-        if (false === $wpdb->delete(self::table_name(), ['id' => $id], ['%d'])) return null;
-        return $temporary_id;
+        $claim = self::acquire_publish_lock($id);
+        if (!$claim) return null;
+        try {
+            $row = self::find($id);
+            if (!$row || (string) $row['status'] === 'publishing') return null;
+            $deleted = $wpdb->query($wpdb->prepare('DELETE FROM ' . self::table_name() . ' WHERE id = %d AND status <> %s AND IS_USED_LOCK(%s) = CONNECTION_ID() AND CONNECTION_ID() = %d', $id, 'publishing', $claim['name'], $claim['connection']));
+            return $deleted === 1 ? 0 : null;
+        } finally { self::release_publish_lock($claim); }
     }
 
-    public static function update_draft(int $id, string $text, string $scheduled_for, ?string $media_url = null, ?string $media_type = null): bool {
-        global $wpdb;
+    public static function update_draft(int $id, string $text, string $scheduled_for, ?string $media_url = null, ?string $media_type = null, string $revision = ''): bool {
+        $expected = self::find($id);
+        if (!$expected || $revision === '' || !hash_equals(self::draft_revision($expected), $revision)) return false;
         $values = [
             'post_text' => sanitize_textarea_field($text),
             'scheduled_for' => sanitize_text_field($scheduled_for),
             'updated_at' => current_time('mysql'),
+            'status' => 'draft',
+            'ai_status' => 'manual',
+            'last_error' => null,
         ];
         if ($media_url !== null) {
             $values['media_url'] = esc_url_raw($media_url);
@@ -318,11 +388,12 @@ final class Store {
             $values['temporary_attachment_id'] = null;
             $values['cleanup_after'] = null;
         }
-        return false !== $wpdb->update(self::table_name(), $values, ['id' => $id]);
+        return self::save_draft_snapshot($expected, $values, true);
     }
 
     public static function update_text(int $id, string $text): bool {
-        global $wpdb;
-        return false !== $wpdb->update(self::table_name(), ['post_text' => sanitize_textarea_field($text), 'updated_at' => current_time('mysql')], ['id' => $id]);
+        $expected = self::find($id);
+        if (!$expected || $expected['status'] !== 'draft') return false;
+        return self::save_draft_snapshot($expected, ['post_text' => sanitize_textarea_field($text)]);
     }
 }

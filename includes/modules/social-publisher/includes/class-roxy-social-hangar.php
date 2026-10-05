@@ -59,6 +59,8 @@ final class Hangar {
         $extension = strtolower((string) pathinfo($filename, PATHINFO_EXTENSION));
         $allowed = ['jpg', 'jpeg', 'png', 'webp', 'mp4', 'mov', 'm4v'];
         if ($asset_id <= 0 || $draft_id <= 0 || !in_array($extension, $allowed, true) || !self::has_credentials()) return 0;
+        $draft = Store::find($draft_id);
+        if (!$draft || (string) $draft['status'] !== 'draft' || !empty($draft['facebook_post_id']) || !empty($draft['instagram_media_id']) || !empty($draft['instagram_container_id'])) return 0;
         $tmp = wp_tempnam($filename);
         if (!$tmp) return 0;
         $response = wp_remote_get(self::download_url($asset_id), [
@@ -77,8 +79,12 @@ final class Hangar {
         require_once ABSPATH . 'wp-admin/includes/image.php';
         $attachment_id = media_handle_sideload(['name' => sanitize_file_name($filename), 'tmp_name' => $tmp], $post_id);
         if (is_wp_error($attachment_id)) { @unlink($tmp); return 0; }
-        $draft = Store::find($draft_id);
-        if (!$draft || !Store::update_imported_media($draft_id, (int) $attachment_id, in_array($extension, ['mp4', 'mov', 'm4v'], true) ? 'video' : 'image', self::cleanup_time($draft), $asset_id, $filename)) return 0;
+        if (!Store::update_imported_media($draft_id, (int) $attachment_id, in_array($extension, ['mp4', 'mov', 'm4v'], true) ? 'video' : 'image', self::cleanup_time($draft), $asset_id, $filename, $draft)) {
+            // This new upload was never assigned. Do not touch the previously
+            // selected media or any approved publication on a stale response.
+            wp_delete_attachment((int) $attachment_id, true);
+            return 0;
+        }
         update_post_meta((int) $attachment_id, '_roxy_social_temporary', in_array($extension, ['mp4', 'mov', 'm4v'], true) ? '1' : '0');
         update_post_meta((int) $attachment_id, '_roxy_hangar_asset_id', $asset_id);
         if (in_array($extension, ['mp4', 'mov', 'm4v'], true)) self::save_video_thumbnail((int) $attachment_id, $asset_id, $filename);

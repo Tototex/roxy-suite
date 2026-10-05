@@ -149,7 +149,7 @@ final class Campaigns {
 
     public static function auto_assign_asset(string $campaign_key, int $showing_id, int $draft_id, int $asset_id, string $filename): void {
         $draft = Store::find($draft_id);
-        if (!$draft || (string) $draft['campaign_key'] !== $campaign_key || !in_array((string) $draft['status'], ['draft', 'needs_review'], true) || !empty($draft['hangar_asset_id'])) return;
+        if (!$draft || (string) $draft['campaign_key'] !== $campaign_key || (string) $draft['status'] !== 'draft' || ($draft['ai_status'] ?? '') === 'manual' || !empty($draft['last_error']) || !empty($draft['hangar_asset_id'])) return;
         $attachment_id = Hangar::import_social_asset($asset_id, $filename, $showing_id, $draft_id);
         if ($attachment_id) self::maybe_auto_approve($draft_id);
     }
@@ -157,10 +157,12 @@ final class Campaigns {
     public static function maybe_auto_approve(int $draft_id): void {
         if (!get_option('roxy_social_auto_approve', false)) return;
         $draft = Store::find($draft_id);
-        if (!$draft || !in_array((string) $draft['status'], ['draft', 'needs_review'], true)) return;
-        if (empty($draft['media_url']) && empty($draft['hangar_asset_id'])) return;
+        if (!$draft || (string) $draft['status'] !== 'draft') return;
+        if (($draft['ai_status'] ?? '') === 'manual') return;
+        if (!empty($draft['facebook_post_id']) || !empty($draft['instagram_media_id']) || !empty($draft['instagram_container_id']) || !empty($draft['last_error'])) return;
+        if (empty($draft['media_url']) || empty($draft['hangar_asset_id'])) return;
         if (AI::enabled() && (string) ($draft['ai_status'] ?? 'pending') !== 'ready') return;
-        Store::update_status($draft_id, 'approved');
+        Store::approve_snapshot($draft);
     }
 
     private static function looks_vertical(array $asset): bool {
