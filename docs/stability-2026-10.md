@@ -93,6 +93,9 @@ Current safeguards: preserve live customizations; back up changed files before d
 
 ## Environment constraints
 
+- 2026-10-05: user-authorized core prerequisite completed: posts, postmeta, Woo order items, and itemmeta now InnoDB. Real offsite restore/conversion tests and four-table rollback passed with identical original record digests. This does not close remaining transactional code findings. See deployment checkpoint 18.
+- Server Updraft archive cleanup preserved checksum-verified copies on the user's I: Google Drive. Quota now approximately 3,662 MB / 10,240 MB. Actual new database backup uploaded to Drive and its downloaded gzip validated; delete-local enabled. Earlier zero-byte DB archives are not usable backups.
+
 - Live server account quota on initial inspection: 9,872 MB / 10,240 MB; do not create a full staging clone there without first allocating space. Filesystem free space is not account quota.
 - Live plugin contains production edits relative to its old server Git checkout. Compare file content to local baseline before any overwrite. Health Check has known drift to reconcile deliberately.
 
