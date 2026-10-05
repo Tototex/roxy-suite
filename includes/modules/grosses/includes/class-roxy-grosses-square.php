@@ -13,12 +13,20 @@ class Square {
     if (!$location_ids) {
       throw new \RuntimeException('Add at least one Square location ID before sending grosses reports.');
     }
+    if (count($location_ids) > 10) throw new \RuntimeException('Square order search supports at most ten locations per report.');
 
     $orders = [];
     $cursor = null;
+    $seen_cursors = [];
+    $seen_orders = [];
+    $pages = 0;
+    $deadline = microtime(true) + 120;
 
     do {
+      if (++$pages > 100 || microtime(true) >= $deadline) throw new \RuntimeException('Square order retrieval exceeded its safety limit. No partial report was returned.');
       $body = [
+        'return_entries' => false,
+        'limit' => 500,
         'query' => [
           'filter' => [
             'date_time_filter' => [
@@ -46,15 +54,22 @@ class Square {
         $body['cursor'] = $cursor;
       }
 
-      $data = self::request('POST', '/v2/orders/search', $body);
+      $data = self::request('POST', '/v2/orders/search', $body, $deadline);
+      if (isset($data['order_entries'])) throw new \RuntimeException('Square returned order summaries instead of complete orders. No report was returned.');
+      if (array_key_exists('orders', $data) && (!is_array($data['orders']) || !array_is_list($data['orders']))) throw new \RuntimeException('Square returned an invalid order list. No report was returned.');
 
       foreach ((array) ($data['orders'] ?? []) as $order) {
-        if (is_array($order)) {
-          $orders[] = $order;
-        }
+        if (!is_array($order) || !isset($order['id']) || !is_string($order['id']) || $order['id'] === '' || isset($seen_orders[$order['id']])) throw new \RuntimeException('Square returned invalid or repeated orders. No partial report was returned.');
+        $seen_orders[$order['id']] = true;
+        $orders[] = $order;
       }
 
-      $cursor = !empty($data['cursor']) ? (string) $data['cursor'] : null;
+      if (array_key_exists('cursor', $data) && (!is_string($data['cursor']) || $data['cursor'] === '' || strlen($data['cursor']) > 10000)) throw new \RuntimeException('Square returned an invalid pagination cursor. No partial report was returned.');
+      $cursor = $data['cursor'] ?? null;
+      if ($cursor !== null) {
+        if (isset($seen_cursors[$cursor])) throw new \RuntimeException('Square repeated a pagination cursor. No partial report was returned.');
+        $seen_cursors[$cursor] = true;
+      }
     } while ($cursor);
 
     return $orders;
@@ -151,7 +166,7 @@ class Square {
     return $category_name !== '' && strcasecmp($category_name, self::IN_STORE_PURCHASE_CATEGORY) === 0;
   }
 
-  private static function request(string $method, string $path, array $body = null): array {
+  private static function request(string $method, string $path, array $body = null, ?float $deadline = null): array {
     $settings = Settings::get_all();
     $token = Settings::square_access_token();
 
@@ -170,7 +185,8 @@ class Square {
         'Accept' => 'application/json',
         'Square-Version' => self::API_VERSION,
       ],
-      'timeout' => 25,
+      'timeout' => $deadline === null ? 25 : max(1, min(25, (int) ceil($deadline - microtime(true)))),
+      'redirection' => 0,
     ];
 
     if ($body !== null) {
@@ -186,7 +202,9 @@ class Square {
     }
 
     $code = (int) wp_remote_retrieve_response_code($response);
-    $data = json_decode(wp_remote_retrieve_body($response), true);
+    $raw = (string) wp_remote_retrieve_body($response);
+    $object = json_decode($raw);
+    $data = json_decode($raw, true);
 
     if ($code < 200 || $code >= 300) {
       $message = 'Square request failed.';
@@ -196,7 +214,12 @@ class Square {
       throw new \RuntimeException($message);
     }
 
-    return is_array($data) ? $data : [];
+    if (json_last_error() !== JSON_ERROR_NONE || !is_object($object) || !is_array($data)) throw new \RuntimeException('Square returned an unreadable response. No report was returned.');
+    foreach (['orders', 'order_entries', 'objects', 'related_objects', 'locations', 'errors'] as $list) {
+      if (property_exists($object, $list) && !is_array($object->$list)) throw new \RuntimeException('Square returned an invalid response list. No report was returned.');
+    }
+    if (!empty($data['errors'])) throw new \RuntimeException('Square reported an API error. No report was returned.');
+    return $data;
   }
 
   private static function catalog_reporting_category_name(string $catalog_object_id, array $all_objects): string {
@@ -230,7 +253,8 @@ class Square {
 
   private static function date_window(string $report_date, string $timezone): array {
     $tz = new \DateTimeZone($timezone);
-    $start = new \DateTimeImmutable($report_date . ' 00:00:00', $tz);
+    $start = \DateTimeImmutable::createFromFormat('!Y-m-d', $report_date, $tz);
+    if (!$start || $start->format('Y-m-d') !== $report_date) throw new \RuntimeException('Use a valid calendar date for Square reports.');
     $end = $start->modify('+1 day');
 
     return [$start->setTimezone(new \DateTimeZone('UTC'))->format('c'), $end->setTimezone(new \DateTimeZone('UTC'))->format('c')];
