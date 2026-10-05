@@ -1,0 +1,22 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path');
+const root=process.argv[2]||path.resolve(__dirname,'..');
+let code=fs.readFileSync(path.join(root,'includes/modules/social-publisher/assets/draft-media-picker.js'),'utf8');
+code=code.replace(/\}\(\)\);\s*$/,'window.pickerFixture={assetTable,showCached};}());');
+class Element{constructor(tag){this.tag=tag;this.children=[];this.dataset={};}appendChild(child){this.children.push(child);}querySelector(tag){return this.children.find(x=>x.tag===tag)||null;}querySelectorAll(){return [];}set innerHTML(value){if(value.includes('<img')||value.includes('onerror'))throw new Error('Unsafe HTML insertion');this.html=value;}get innerHTML(){return this.html;}}
+let cached=null;
+const context={window:{},document:{createElement(tag){return new Element(tag);},addEventListener(){}},localStorage:{getItem(){return cached;}},URLSearchParams};
+vm.runInNewContext(code,context);
+const filename='poster" onmouseover="alert(1)<img src=x onerror=alert(2)>.jpg';
+const table=context.window.pickerFixture.assetTable([{asset_id:17,filename,asset_category:'<script>bad</script>',runtime:'1:00'}]);
+const row=table.children[1].children[0],use=row.children[3].children[0];
+assert.equal(row.children[0].textContent,filename);assert.equal(use.dataset.name,filename);assert.equal(use.dataset.id,'17');assert.equal(use.onmouseover,undefined);
+console.log('PASS: quoted filenames and markup remain literal text/dataset, never attributes');
+cached=JSON.stringify({html:'<img src=x onerror=alert(1)>'});assert.equal(context.window.pickerFixture.showCached(new Element('div'),null,null,null),false);
+console.log('PASS: legacy cached HTML is ignored without parsing or inserting it');
+cached=JSON.stringify({version:2,assets:[{asset_id:17,filename}]});const panel=new Element('div');assert.equal(context.window.pickerFixture.showCached(panel,null,null,null),true);assert.equal(panel.children[0].children[1].children[0].children[0].textContent,filename);
+console.log('PASS: structured cached results render safely');
+assert.equal(context.window.pickerFixture.assetTable([{asset_id:NaN},{asset_id:-1},{asset_id:'invalid'}]).children[1].children.length,0);
+console.log('PASS: invalid asset IDs are not rendered as import buttons');
+const admin=fs.readFileSync(path.join(root,'includes/modules/social-publisher/includes/class-roxy-social-admin.php'),'utf8');
+assert(!admin.includes('var activeForm=null;document.addEventListener'));assert(!admin.includes('div[style*=position'));
+console.log('PASS: redundant draft picker and observer scripts removed');

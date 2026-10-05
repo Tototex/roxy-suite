@@ -82,7 +82,7 @@ Current safeguards: preserve live customizations; back up changed files before d
 | S5 | Open | See audit; no resolution claimed. |
 | S6 | Open | See audit; no resolution claimed. |
 | S7 | Open | See audit; no resolution claimed. |
-| S8 | Open | See audit; no resolution claimed. |
+| S8 | Resolved | Draft picker renders provider filenames via textContent/dataset, rejects legacy cached HTML, stores structured search results, checks IDs, and uses one handler. Five mocked DOM assertions pass; six actual PHP-rendered scripts compile. Live chooser opens once, Hangar search returns 200 assets and safe cached reopen works; Media Library opens. No import/assignment/save/publish clicked. |
 | S9 | Open | See audit; no resolution claimed. |
 | S10 | Open | See audit; no resolution claimed. |
 
