@@ -2,14 +2,14 @@
 /**
  * Plugin Name: Roxy Arcade
  * Description: Modular arcade with multiple games, per-game + combined leaderboards, guest play, login-required score saving, and monthly prize via WooCommerce Subscriptions.
- * Version: 0.4.4
+ * Version: 0.4.5
  * Author: Newport Roxy (AI Team)
  * Update URI: https://github.com/Tototex/roxy-arcade
  */
 
 if (!defined('ABSPATH')) exit;
 
-define('ROXY_ARCADE_VERSION', '0.4.4');
+define('ROXY_ARCADE_VERSION', '0.4.5');
 
 class Roxy_Arcade {
   const DB_VERSION = '1.0';
@@ -290,7 +290,9 @@ class Roxy_Arcade {
 
     if ($score > 9999999) $score = 9999999;
 
-    self::upsert_best_score($user_id, $game, $score);
+    if (!self::upsert_best_score($user_id, $game, $score)) {
+      return new WP_REST_Response(['ok' => false, 'message' => 'Your score could not be saved. Please try again later.'], 503);
+    }
 
     $combined = self::get_combined_top10();
     return new WP_REST_Response([
@@ -308,19 +310,21 @@ class Roxy_Arcade {
     global $wpdb;
     $table = self::table();
 
-    $existing = (int) $wpdb->get_var($wpdb->prepare(
-      "SELECT best_score FROM $table WHERE user_id = %d AND game_key = %s",
-      $user_id, $game
-    ));
+    // Zero never created a leaderboard entry in the original implementation.
+    if ($score <= 0) return true;
 
-    if ($score <= $existing) return;
-
-    $wpdb->query($wpdb->prepare(
+    // One statement serializes competing writes on the unique user/game key.
+    // Assign the timestamp before the score so equal/lower attempts keep the
+    // original achievement time used to break per-game leaderboard ties.
+    $result = $wpdb->query($wpdb->prepare(
       "INSERT INTO $table (user_id, game_key, best_score, updated_at)
        VALUES (%d, %s, %d, NOW())
-       ON DUPLICATE KEY UPDATE best_score = VALUES(best_score), updated_at = NOW()",
+       ON DUPLICATE KEY UPDATE
+         updated_at = IF(VALUES(best_score) > best_score, VALUES(updated_at), updated_at),
+         best_score = GREATEST(best_score, VALUES(best_score))",
       $user_id, $game, $score
     ));
+    return $result !== false;
   }
 
   private static function get_game_top10($game) {
