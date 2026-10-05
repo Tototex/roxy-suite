@@ -103,6 +103,10 @@
   background-color: #66cccc !important;
   border-color: #66cccc !important;
 }
+.roxy-eb-wrap .fc .roxy-eb-showing-fg {
+  background-color: #d7a928 !important;
+  border-color: #d7a928 !important;
+}
 
 /* Modal close + buttons: force visibility regardless of theme button styles */
 .roxy-eb-wrap .roxy-eb-modal__top .roxy-eb-btn--ghost {

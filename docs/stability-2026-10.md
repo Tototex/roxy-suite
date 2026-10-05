@@ -58,7 +58,7 @@ Current safeguards: preserve live customizations; back up changed files before d
 | B3 | Open | See audit; no resolution claimed. |
 | B4 | Open | See audit; no resolution claimed. |
 | B5 | Open | See audit; no resolution claimed. |
-| B6 | Open | See audit; no resolution claimed. |
+| B6 | Resolved | Suite and standalone serve canonical module assets; mirrored old URLs retained for cached pages with drift regression check. Intentional zero prices/lead/pizza boundary settings preserved. Live Book now, changed future date, pizza time boundaries, week/month verified; six mocked helper checks pass. Production prices unchanged, no booking submitted. |
 | R1 | Resolved for current data | New requests store contacts only in protected metadata; conversion strips legacy contact summaries; excerpt/REST filters protect legacy copies. Production scan found zero requests and zero generated contact excerpts across showings, so no historical edits/cache purge needed. Pure fixtures and actual WordPress excerpt/REST hooks pass; anonymous REST 200 and public date picker checked. |
 | R2 | Open | See audit; no resolution claimed. |
 | R3 | Open | See audit; no resolution claimed. |

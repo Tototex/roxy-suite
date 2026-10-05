@@ -26,7 +26,7 @@
   function pizzaAllowedForCurrentSelection(){
     var minutes = selectedDoorsOpenMinutes();
     if(minutes === null) return true;
-    return minutes >= Number(RoxyEB.pizzaStartMinutes || 690) && minutes <= Number(RoxyEB.pizzaEndMinutes || 1260);
+    return minutes >= Number(RoxyEB.pizzaStartMinutes ?? 690) && minutes <= Number(RoxyEB.pizzaEndMinutes ?? 1260);
   }
 
   function refreshPizzaAvailabilityUI(){
@@ -60,7 +60,7 @@
     if (lastStart < openMin) lastStart = openMin;
 
     var now = new Date();
-    var leadHours = Number(RoxyEB.leadTimeHours || 48);
+    var leadHours = Number(RoxyEB.leadTimeHours ?? 48);
     var earliestAllowed = new Date(now.getTime() + leadHours*3600*1000);
 
     var options = [];
@@ -121,8 +121,8 @@
     pizzaQuantity = Number(pizzaQuantity||0);
     var base = guestCount <= 25 ? Number(RoxyEB.prices.under) : Number(RoxyEB.prices.over);
     var extra = extraHours * Number(RoxyEB.prices.extra);
-    var pizza = pizzaRequested ? pizzaQuantity * Number(RoxyEB.pizzaPrice || 18) : 0;
-    var bulk = bulkRequested ? (Number(bulkPopcornQty||0) + Number(bulkSodaQty||0)) * Number(RoxyEB.bulkItemPrice || 3) : 0;
+    var pizza = pizzaRequested ? pizzaQuantity * Number(RoxyEB.pizzaPrice ?? 18) : 0;
+    var bulk = bulkRequested ? (Number(bulkPopcornQty||0) + Number(bulkSodaQty||0)) * Number(RoxyEB.bulkItemPrice ?? 3) : 0;
     return {base: base, extra: extra, pizza: pizza, bulk: bulk, total: base + extra + pizza + bulk};
   }
 
@@ -238,8 +238,8 @@
     $('#roxy-eb-pricing').html(
       '<div><strong>' + (paymentMethod === 'invoice' ? 'Estimated total to invoice:' : 'Estimated total:') + '</strong> ' + formatMoney(p.total) + '</div>' +
       '<div style="margin-top:6px; font-size:13px; color:#555;">Event: ' + formatMoney(p.base + p.extra) +
-      ' • Pizza: ' + formatMoney(p.pizza) + (pizzaRequested ? ' ($' + Number(RoxyEB.pizzaPrice || 18).toFixed(2) + ' each)' : '') +
-      ' • Bulk concessions: ' + formatMoney(p.bulk) + (bulkRequested ? ' ($' + Number(RoxyEB.bulkItemPrice || 3).toFixed(2) + ' each)' : '') +
+      ' • Pizza: ' + formatMoney(p.pizza) + (pizzaRequested ? ' ($' + Number(RoxyEB.pizzaPrice ?? 18).toFixed(2) + ' each)' : '') +
+      ' • Bulk concessions: ' + formatMoney(p.bulk) + (bulkRequested ? ' ($' + Number(RoxyEB.bulkItemPrice ?? 3).toFixed(2) + ' each)' : '') +
       '</div>'
     );
 
