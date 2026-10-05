@@ -1,6 +1,7 @@
 <?php
 // Isolated real Publisher methods. No WordPress bootstrap, provider calls or sleeps.
 namespace RoxySocial {
+    final class Campaigns {public static $verified=true;public static function verified_caption_schedule($row){return self::$verified;}}
     final class Meta {
         public static $facebook = true;
         public static $instagram = true;
@@ -62,11 +63,16 @@ namespace {
     function reset_fixture($platform='both',$status='approved'){
         \RoxySocial\Store::$row=['id'=>1,'status'=>$status,'platform'=>$platform,'post_text'=>'Fixture caption','media_type'=>'image','media_url'=>'https://fixture.test/poster.jpg','facebook_post_id'=>null,'instagram_media_id'=>null,'instagram_container_id'=>null,'updated_at'=>'2020-01-01 00:00:00'];
         \RoxySocial\Store::$fail_id=false;\RoxySocial\Store::$locked=false;\RoxySocial\Store::$deny_lock=false;\RoxySocial\Meta::$facebook=true;\RoxySocial\Meta::$instagram=true;
+        \RoxySocial\Campaigns::$verified=true;
         $GLOBALS['calls']=[];$GLOBALS['responses']=[];
         $GLOBALS['lose_lock']=false;$GLOBALS['schedule_ok']=true;$GLOBALS['schedule_state']=null;
     }
     function check($ok,$label){if(!$ok)throw new \RuntimeException($label);echo "PASS: $label\n";}
     require ($argv[1]??dirname(__DIR__)).'/includes/modules/social-publisher/includes/class-roxy-social-publisher.php';
+    reset_fixture();\RoxySocial\Campaigns::$verified=false;
+    check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='needs_review'&&!$GLOBALS['calls'],'stale caption schedule stops before any provider call');
+    reset_fixture('both','failed');\RoxySocial\Store::$row['facebook_post_id']='123';\RoxySocial\Campaigns::$verified=false;
+    check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['facebook_post_id']==='123'&&!$GLOBALS['calls'],'schedule change on partial retry retains existing public ID and requires review');
     $decode=new \ReflectionMethod(\RoxySocial\Publisher::class,'decode_response');$decode->setAccessible(true);
     foreach([response(['id'=>'123'],500),response([]),['status'=>200,'body'=>'not JSON'],response(['id'=>['123']]),response(['id'=>'']),new \RuntimeException('timeout')] as $r){
         $v=$decode->invoke(null,$r,true,false);check(!empty($v['error'])&&!empty($v['ambiguous']),'unknown or invalid publication never becomes success');

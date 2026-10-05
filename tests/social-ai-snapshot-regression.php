@@ -13,6 +13,7 @@ namespace RoxySocial {
     }
     final class Campaigns {
         public static function maybe_auto_approve($id){$GLOBALS['approvals']++;}
+        public static function verified_showtimes($draft){return [['id'=>1,'title'=>'Fixture movie','line'=>'Fri, Oct 9, 2026 at 7:30 PM']];}
     }
 }
 namespace {
@@ -26,6 +27,7 @@ namespace {
     function wp_timezone(){return new \DateTimeZone('America/Los_Angeles');}
     function wp_date($format,$stamp,$zone){return (new \DateTimeImmutable('@'.$stamp))->setTimezone($zone)->format($format);}
     function wp_json_encode($v){return json_encode($v);}
+    function home_url($path){return 'https://fixture.test'.$path;}
     function wp_next_scheduled(...$args){return false;}
     function wp_schedule_single_event(...$args){$GLOBALS['retries']++;return true;}
     function is_wp_error($r){return !empty($r['wp_error']);}

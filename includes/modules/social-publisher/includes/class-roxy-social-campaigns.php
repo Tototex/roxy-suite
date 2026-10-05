@@ -17,7 +17,9 @@ final class Campaigns {
     }
 
     public static function generate_for_showing(int $post_id): void {
-        $title = trim((string) get_the_title($post_id));
+        $source = get_post($post_id);
+        if (!$source || $source->post_type !== 'roxy_showing' || $source->post_status !== 'publish') return;
+        $title = trim((string) $source->post_title);
         $start = (string) get_post_meta($post_id, '_roxy_start', true);
         if ($title === '' || $start === '') return;
         $timestamp = self::local_timestamp($start);
@@ -53,7 +55,6 @@ final class Campaigns {
         $campaign_key = sanitize_title($title) . '-' . $friday->format('Ymd');
         $media_url = get_the_post_thumbnail_url($post_id, 'large') ?: '';
         $trailer_url = (string) get_post_meta($post_id, '_roxy_trailer_url', true);
-        $times = self::format_showtimes($showings);
         $templates = [
             ['mon', -4, 'Coming this weekend', true],
             ['wed', -2, 'This weekend at the Roxy', true],
@@ -64,16 +65,17 @@ final class Campaigns {
         foreach ($templates as [$key, $offset, $heading, $trailer_post]) {
             $scheduled = $friday->modify($offset . ' days')->setTime(10, 0);
             $post_key = $campaign_key . '-' . $key;
-            $day_times = match ($key) {
-                'sat' => implode("\n", array_slice(explode("\n", $times), 1)),
-                'sun' => implode("\n", array_slice(explode("\n", $times), 2)),
-                default => $times,
-            };
+            $remaining = array_values(array_filter($showings, static function ($showing) use ($scheduled): bool {
+                $stamp = self::local_timestamp((string) get_post_meta($showing->ID, '_roxy_start', true));
+                return $stamp >= $scheduled->setTime(0, 0)->getTimestamp();
+            }));
+            $day_times = self::format_showtimes($remaining);
+            if ($day_times === '') continue;
             $text = $heading . ":\n\n" . $title . "\n\nShowtimes:\n" . $day_times . "\n\nTickets: " . get_permalink($post_id);
             Store::upsert([
                 'campaign_key' => $campaign_key,
                 'post_key' => $post_key,
-                'showing_ids' => implode(',', wp_list_pluck($showings, 'ID')),
+                'showing_ids' => implode(',', wp_list_pluck($remaining, 'ID')),
                 'scheduled_for' => $scheduled->format('Y-m-d H:i:s'),
                 'post_text' => $text,
                 'media_type' => $trailer_post && $trailer_url ? 'video_link' : 'image',
@@ -162,6 +164,10 @@ final class Campaigns {
         if (!empty($draft['facebook_post_id']) || !empty($draft['instagram_media_id']) || !empty($draft['instagram_container_id']) || !empty($draft['last_error'])) return;
         if (empty($draft['media_url']) || empty($draft['hangar_asset_id'])) return;
         if (AI::enabled() && (string) ($draft['ai_status'] ?? 'pending') !== 'ready') return;
+        if (!self::verified_caption_schedule($draft)) {
+            Store::save_draft_snapshot($draft, ['status' => 'needs_review', 'last_error' => 'The caption schedule no longer matches the published showings. Review before approving.']);
+            return;
+        }
         Store::approve_snapshot($draft);
     }
 
@@ -180,8 +186,60 @@ final class Campaigns {
         return implode("\n", $lines);
     }
 
+    /** Canonical published records, never caption parsing or assumed weekday times. */
+    public static function verified_showtimes(array $draft): array {
+        $raw = trim((string) ($draft['showing_ids'] ?? ''));
+        if ($raw === '' || !preg_match('/^\d+(?:,\d+)*$/', $raw)) throw new \RuntimeException('Missing or invalid showing references.');
+        $ids = array_unique(array_map('intval', explode(',', $raw)));
+        if (count($ids) > 50) throw new \RuntimeException('Too many showing references.');
+        $scheduled = self::local_timestamp((string) ($draft['scheduled_for'] ?? ''));
+        if (!$scheduled) throw new \RuntimeException('Invalid Social schedule date.');
+        $cutoff = (new \DateTimeImmutable('@' . $scheduled))->setTimezone(wp_timezone())->setTime(0, 0)->getTimestamp();
+        $rows = [];
+        $title = null;
+        foreach ($ids as $id) {
+            $post = get_post($id);
+            if (!$post || $post->post_type !== 'roxy_showing' || $post->post_status !== 'publish') throw new \RuntimeException('A referenced showing is no longer published.');
+            $show_title = trim((string) $post->post_title);
+            if ($show_title === '' || ($title !== null && strcasecmp($title, $show_title) !== 0)) throw new \RuntimeException('The showing titles do not match.');
+            $title = $show_title;
+            $stamp = self::local_timestamp((string) get_post_meta($id, '_roxy_start', true));
+            if (!$stamp) throw new \RuntimeException('A referenced showing has an invalid date.');
+            if ($stamp < $cutoff) continue;
+            $rows[] = ['id' => $id, 'timestamp' => $stamp, 'title' => (string) $post->post_title,
+                'line' => wp_date('D, M j, Y \\a\\t g:i A', $stamp, wp_timezone())];
+        }
+        usort($rows, static fn(array $a, array $b): int => ($a['timestamp'] <=> $b['timestamp']) ?: ($a['id'] <=> $b['id']));
+        if (!$rows) throw new \RuntimeException('No remaining published showings for this draft.');
+        return $rows;
+    }
+
+    /** Reject stale/extra/assumed schedule lines without changing an approved caption. */
+    public static function verified_caption_schedule(array $draft): bool {
+        if (($draft['campaign_key'] ?? '') === 'manual' && empty($draft['showing_ids'])) return true;
+        try { $rows = self::verified_showtimes($draft); }
+        catch (\RuntimeException $e) { return false; }
+        $lines = [];
+        foreach (preg_split('/\R/', (string) ($draft['post_text'] ?? '')) as $line) {
+            if (!preg_match('/\b\d{1,2}:\d{2}\s*[AP]M\b|\b\d{1,2}\s*[AP]M\b/i', $line)) continue;
+            $lines[] = trim((string) preg_replace('/^\s*(?:Tonight|Today)\s*[—-]\s*/u', '', $line));
+        }
+        if (count($lines) !== count($rows)) return false;
+        foreach ($rows as $row) {
+            $without_year = wp_date('D, M j \\a\\t g:i A', $row['timestamp'], wp_timezone());
+            $match = array_search($row['line'], $lines, true);
+            if ($match === false) $match = array_search($without_year, $lines, true);
+            if ($match === false) return false;
+            unset($lines[$match]);
+        }
+        return !$lines;
+    }
+
     private static function local_timestamp(string $value): int {
-        $parsed = date_create($value, wp_timezone());
-        return $parsed ? $parsed->getTimestamp() : 0;
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?$/D', $value)) return 0;
+        $normalized = str_replace('T', ' ', $value);
+        $format = strlen($normalized) === 16 ? 'Y-m-d H:i' : 'Y-m-d H:i:s';
+        $parsed = \DateTimeImmutable::createFromFormat('!' . $format, $normalized, wp_timezone());
+        return $parsed && $parsed->format($format) === $normalized ? $parsed->getTimestamp() : 0;
     }
 }

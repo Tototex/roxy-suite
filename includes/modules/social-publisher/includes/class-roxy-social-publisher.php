@@ -104,6 +104,10 @@ final class Publisher {
         $caption = trim((string) ($row['post_text'] ?? ''));
         $platform = (string) ($row['platform'] ?? 'both');
         if (!in_array($platform, ['facebook', 'instagram', 'both'], true)) return false;
+        if (!Campaigns::verified_caption_schedule($row)) {
+            self::save_result($id, 'needs_review', 'The caption schedule no longer matches the published showings. Review before retrying; recorded platform IDs have been retained.');
+            return false;
+        }
         if (($platform !== 'instagram' && empty($row['facebook_post_id']) && (Meta::page_id() === '' || Meta::page_access_token() === ''))
             || ($platform !== 'facebook' && empty($row['instagram_media_id']) && (Meta::instagram_user_id() === '' || Meta::access_token() === ''))) {
             self::save_result($id, 'failed', 'Connect the selected platform before publishing.');

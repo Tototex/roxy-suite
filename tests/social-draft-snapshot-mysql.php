@@ -6,7 +6,7 @@ $source=file_get_contents($root.'/includes/modules/social-publisher/includes/cla
 $source=str_replace(['final class Store {','wp_get_attachment_url('],['final class DraftFixtureStore {','\\roxy_snapshot_attachment_url('],$source);
 eval(substr($source,5));
 $campaign=file_get_contents($root.'/includes/modules/social-publisher/includes/class-roxy-social-campaigns.php');
-$campaign=str_replace(['final class Campaigns {','Store::',"get_option('roxy_social_auto_approve', false)",'AI::enabled()'],['final class SnapshotFixtureCampaigns {','DraftFixtureStore::','\\roxy_snapshot_auto_approve()','\\roxy_snapshot_ai_enabled()'],$campaign);
+$campaign=str_replace(['final class Campaigns {','Store::',"get_option('roxy_social_auto_approve', false)",'AI::enabled()','self::verified_caption_schedule($draft)'],['final class SnapshotFixtureCampaigns {','DraftFixtureStore::','\\roxy_snapshot_auto_approve()','\\roxy_snapshot_ai_enabled()','true'],$campaign);
 eval(substr($campaign,5));
 function roxy_snapshot_attachment_url($id){return 'https://fixture.test/'.$id.'.jpg';}
 function roxy_snapshot_auto_approve(){return true;}
