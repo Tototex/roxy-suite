@@ -55,6 +55,11 @@ if($phase==='verify-restored'||$phase==='convert-test'||$phase==='verify-test'){
 if($phase==='convert-live'){
     if(($args[1]??'')!=='--approved-live-conversion')throw new RuntimeException('Explicit live conversion flag required');
     if(!is_file($directory.'/offsite-backup-verified.json'))throw new RuntimeException('Offsite backup verification receipt missing');
+    $receipts=json_decode(file_get_contents($directory.'/offsite-backup-verified.json'),true,512,JSON_THROW_ON_ERROR);
+    foreach(['full-database-maintenance.sql.gz','core-tables.sql.gz'] as $backup){
+        $receipt=$receipts[$backup]??[];
+        if(($receipt['verified']??false)!==true||!preg_match('/^[a-f0-9]{64}$/D',$receipt['sha256']??'')||!is_file($directory.'/'.$backup)||filesize($directory.'/'.$backup)<=0||!hash_equals($receipt['sha256'],hash_file('sha256',$directory.'/'.$backup)))throw new RuntimeException('Offsite backup receipt mismatch: '.$backup);
+    }
     foreach($targets as $table=>$key){if((roxy_engine_info($fixtures[$table])['ENGINE']??'')!=='InnoDB')throw new RuntimeException('Converted restore fixture missing');roxy_engine_compare($fixtures[$table],$key,$baseline[$table]);roxy_engine_compare($table,$key,$baseline[$table]);if((roxy_engine_info($table)['ENGINE']??'')!=='MyISAM')throw new RuntimeException('Original engine changed before conversion');}
     foreach($targets as $table=>$key){if(false===$wpdb->query("ALTER TABLE `$table` ENGINE=InnoDB"))throw new RuntimeException('Live conversion failed: '.$table);if((roxy_engine_info($table)['ENGINE']??'')!=='InnoDB')throw new RuntimeException('Live engine mismatch');roxy_engine_compare($table,$key,$baseline[$table]);echo 'LIVE_CONVERTED '.$table.PHP_EOL;}
     echo 'LIVE_CORE_CONVERSION_OK'.PHP_EOL;exit;
