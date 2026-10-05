@@ -376,15 +376,25 @@ final class Admin {
 
     private static function action_link(int $id, string $status, string $label, bool $remote_review = false, string $revision = ''): void {
         if ($revision === '') return;
+        if ($remote_review) {
+            echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="display:inline-block;margin:0 4px 4px 0"><input type="hidden" name="action" value="roxy_social_status"><input type="hidden" name="id" value="' . $id . '"><input type="hidden" name="status" value="' . esc_attr($status) . '"><input type="hidden" name="draft_revision" value="' . esc_attr($revision) . '"><input type="hidden" name="remote_review_confirmed" value="1">' . wp_nonce_field('roxy_social_status_' . $id, '_wpnonce', true, false) . '<button class="button" type="submit" onclick="return confirm(\'Have you checked the remote accounts and confirmed that retrying will not duplicate a post?\')">' . esc_html($label) . '</button></form>';
+            return;
+        }
         $url = wp_nonce_url(add_query_arg(['action' => 'roxy_social_status', 'id' => $id, 'status' => $status, 'draft_revision' => $revision], admin_url('admin-post.php')), 'roxy_social_status_' . $id);
         echo '<a class="button" style="margin:0 4px 4px 0" href="' . esc_url($url) . '"' . ($remote_review ? ' onclick="return confirm(\'Have you checked the remote accounts and confirmed that retrying will not duplicate a post?\')"' : '') . '>' . esc_html($label) . '</a>';
     }
 
     public static function handle_status(): void {
         if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
-        $id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
+        $is_post = (string) ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST';
+        $request = $is_post ? $_POST : $_GET;
+        $id = isset($request['id']) ? (int) $request['id'] : 0;
         check_admin_referer('roxy_social_status_' . $id);
-        $changed = Store::update_status($id, sanitize_key((string) ($_GET['status'] ?? '')), (string) ($_GET['draft_revision'] ?? ''));
+        $status = sanitize_key((string) ($request['status'] ?? ''));
+        $row = Store::find($id);
+        $review_required = $row && $row['status'] === 'needs_review' && $status === 'approved';
+        $review_confirmed = $is_post && (string) ($request['remote_review_confirmed'] ?? '') === '1';
+        $changed = (!$review_required || $review_confirmed) && Store::update_status($id, $status, (string) ($request['draft_revision'] ?? ''));
         wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&status_changed=' . ($changed ? '1' : '0')));
         exit;
     }
