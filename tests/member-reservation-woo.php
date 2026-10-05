@@ -32,6 +32,7 @@ try {
   $check(Fixture_Roxy_Sub_Check::get_member_payload($sub->get_id(),false)['status']==='valid','actual WCS fixture is active with three-person entitlement');
   $order=wc_create_order(['status'=>'pending','customer_id'=>$user,'customer_note'=>$label]);if(is_wp_error($order))throw new RuntimeException('Private order failed');$order->set_billing_email(get_userdata($user)->user_email);$order->add_product($product,3);$order->calculate_totals();$order->save();$order->update_status('processing');
   $check(\RoxyST\MemberFixtureTickets::sync_order_tickets($order->get_id()),'actual subscriber reservations issued');$ids=\RoxyST\MemberFixtureTickets::get_order_ticket_ids($order->get_id());$check(count($ids)===3,'three private subscriber tickets exist');
+  $check(!\RoxyST\MemberFixtureTickets::check_in_ticket($ids[0],9,'member'),'bare member-source admission cannot bypass the coupled visit path');
   $method=new ReflectionMethod(\RoxyST\MemberFixtureTickets::class,'member_admission_payload');
   $admit=static fn($qty)=>$method->invoke(null,$sub->get_id(),$show,$qty,'manual_admit');
   $count=static function()use(&$ids){foreach($ids as $id)wp_cache_delete($id,'post_meta');return count(array_filter($ids,static fn($id)=>(int)get_post_meta($id,'_roxy_checked_in',true)===1));};
@@ -44,6 +45,9 @@ try {
   add_filter('query',$fail);$errors=$wpdb->suppress_errors(true);
   try{$result=$admit(3);}finally{remove_filter('query',$fail);$wpdb->suppress_errors($errors);}
   $check(!$result['ok']&&$count()===0&&$logs()===0,'late ticket failure leaves no ticket or member visit');
+  $fail=static fn($sql)=>str_starts_with($sql,"INSERT INTO `{$wpdb->postmeta}`")&&str_contains($sql,'SELECT '.$ids[1].',')&&str_contains($sql,'_roxy_member_visit_id')?'INSERT INTO roxy_missing_member_link VALUES (1)':$sql;
+  add_filter('query',$fail);$errors=$wpdb->suppress_errors(true);try{$result=$admit(3);}finally{remove_filter('query',$fail);$wpdb->suppress_errors($errors);}
+  $check(!$result['ok']&&$count()===0&&$logs()===0,'late visit-link failure rolls back tickets and visit together');
   $fail=static fn($sql)=>str_contains($sql,'information_schema.TABLES')&&str_contains($sql,'roxy_member_scans')?"SELECT 'MyISAM'":$sql;
   add_filter('query',$fail);
   try{$result=$admit(3);}finally{remove_filter('query',$fail);}
@@ -52,6 +56,35 @@ try {
   $result=$admit(1);$check(!$result['ok']&&$count()===1&&$logs()===1,'repeated target-one scan cannot consume another reservation');
   $result=$admit(3);$sum=(int)$wpdb->get_var($wpdb->prepare("SELECT SUM(quantity) FROM `$table` WHERE subscription_id=%d",$sub->get_id()));
   $check($result['ok']&&$count()===3&&$sum===3&&$result['payload']['admit_quantity']===2,'raising target logs only the two newly admitted people');
+  $visit_id=(int)get_post_meta($ids[1],'_roxy_member_visit_id',true);
+  $check($visit_id>0&&$visit_id===(int)get_post_meta($ids[2],'_roxy_member_visit_id',true)&&(int)get_post_meta($ids[0],'_roxy_member_visit_id',true)!==$visit_id,'newly changed tickets link to their exact visit, not earlier arrivals');
+  delete_post_meta($ids[1],'_roxy_member_visit_id');
+  $card=new ReflectionMethod(\RoxyST\MemberFixtureTickets::class,'render_ticket_result_card');ob_start();$card->invoke(null,get_post($ids[1]));$html=ob_get_clean();
+  $check(str_contains($html,'Undo is blocked until a manager reconciles'),'actual staff card explains historical unlinked Undo restriction');
+  $check(!\RoxyST\MemberFixtureTickets::undo_check_in_ticket($ids[1])&&$count()===3,'historical unlinked member Undo refuses to guess a visit');update_post_meta($ids[1],'_roxy_member_visit_id',$visit_id);
+  update_post_meta($ids[1],'_roxy_member_visit_subscription_id',$sub->get_id()+1);
+  $check(!\RoxyST\MemberFixtureTickets::undo_check_in_ticket($ids[1])&&$count()===3,'mismatched subscription cannot undo another visit');update_post_meta($ids[1],'_roxy_member_visit_subscription_id',$sub->get_id());
+  $sum=static fn()=>(int)$wpdb->get_var($wpdb->prepare("SELECT SUM(quantity) FROM `$table` WHERE subscription_id=%d",$sub->get_id()));
+  $fail=static fn($sql)=>str_starts_with($sql,"UPDATE `$table` SET is_active=")?'UPDATE roxy_missing_member_undo SET quantity=0':$sql;
+  add_filter('query',$fail);$errors=$wpdb->suppress_errors(true);try{$undone=\RoxyST\MemberFixtureTickets::undo_check_in_ticket($ids[1]);}finally{remove_filter('query',$fail);$wpdb->suppress_errors($errors);}
+  $check(!$undone&&$count()===3&&$sum()===3,'visit-update failure leaves ticket and attendance unchanged');
+  $fail=static fn($sql)=>str_starts_with($sql,"DELETE FROM `{$wpdb->postmeta}`")&&str_contains($sql,'`post_id`='.$ids[1])&&str_contains($sql,'_roxy_checked_in_source')?'DELETE FROM roxy_missing_member_undo_meta':$sql;
+  add_filter('query',$fail);$errors=$wpdb->suppress_errors(true);try{$undone=\RoxyST\MemberFixtureTickets::undo_check_in_ticket($ids[1]);}finally{remove_filter('query',$fail);$wpdb->suppress_errors($errors);}
+  $check(!$undone&&$count()===3&&$sum()===3&&!get_post_meta($ids[1],'_roxy_member_visit_undo_history',true),'late ticket-Undo failure rolls back visit decrement and audit history');
+  $check(\RoxyST\MemberFixtureTickets::undo_check_in_ticket($ids[1])&&$count()===2&&$sum()===2,'linked Undo decrements exactly one reserved visit and one ticket');
+  $stats=new ReflectionMethod(\RoxySuite\Members_Dashboard::class,'scan_stats_map');$map=$stats->invoke(null,[$sub->get_id()]);
+  $check($map[$sub->get_id()]['month']===2&&$map[$sub->get_id()]['lifetime']===2,'actual dashboard attendance totals reflect the linked Undo');
+  $history=get_post_meta($ids[1],'_roxy_member_visit_undo_history',true);
+  $check(count($history)===1&&(int)$history[0]['visit_before']['id']===$visit_id&&(int)$history[0]['visit_before']['quantity']===2&&$history[0]['quantity_after']===1,'Undo retains before/after visit evidence and staff/time on ticket');
+  ob_start();$card->invoke(null,get_post($ids[1]));$html=ob_get_clean();$check(str_contains($html,'Member visit Undo recorded')&&str_contains($html,'2 → 1'),'actual staff card renders saved Undo audit summary');
+  $check(!\RoxyST\MemberFixtureTickets::undo_check_in_ticket($ids[1])&&$sum()===2&&count(get_post_meta($ids[1],'_roxy_member_visit_undo_history',true))===1,'repeat Undo cannot decrement again or duplicate history');
+  $result=$admit(3);$check($result['ok']&&$count()===3&&$sum()===3&&(int)get_post_meta($ids[1],'_roxy_member_visit_id',true)!==$visit_id,'readmission uses a new visit identity without losing earlier Undo history');
+  $wpdb->update($wpdb->posts,['post_status'=>'wc-expired'],['ID'=>$sub->get_id()]);clean_post_cache($sub->get_id());
+  $one_visit=(int)get_post_meta($ids[0],'_roxy_member_visit_id',true);
+  $check(\RoxyST\MemberFixtureTickets::undo_check_in_ticket($ids[0])&&$count()===2&&$sum()===2,'linked Undo works after membership expires without granting a fresh admission');
+  $zero=$wpdb->get_row($wpdb->prepare("SELECT quantity,is_active FROM `$table` WHERE id=%d",$one_visit),ARRAY_A);
+  $check((int)$zero['quantity']===0&&(int)$zero['is_active']===0,'last reserved Undo retains zero-quantity inactive visit instead of deleting history');
+  $wpdb->update($wpdb->posts,['post_status'=>'wc-active'],['ID'=>$sub->get_id()]);clean_post_cache($sub->get_id());
   foreach($ids as $id)\RoxyST\MemberFixtureTickets::undo_check_in_ticket($id);$wpdb->delete($table,['subscription_id'=>$sub->get_id()]);
   for($n=0;$n<2;$n++) {
     $pipes=[];$process=proc_open([PHP_BINARY,'/usr/local/bin/wp','--path='.ABSPATH,'eval-file',__DIR__.'/member-reservation-worker.php',$root,(string)$sub->get_id(),(string)$show],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);
@@ -65,6 +98,17 @@ try {
   $check(\RoxyST\MemberFixtureTickets::check_in_ticket($ids[0],9,'ticket'),'private QR admission saved before member arrival');
   $result=$admit(3);$sum=(int)$wpdb->get_var($wpdb->prepare("SELECT SUM(quantity) FROM `$table` WHERE subscription_id=%d",$sub->get_id()));
   $check($result['ok']&&$count()===3&&$sum===2&&get_post_meta($ids[0],'_roxy_checked_in_source',true)==='ticket','member admission preserves earlier QR record and logs only new people');
+  foreach($workers as $worker){fclose($worker['pipes'][1]);fclose($worker['pipes'][2]);proc_close($worker['process']);}$workers=[];
+  for($n=0;$n<2;$n++) {
+    $pipes=[];$process=proc_open([PHP_BINARY,'/usr/local/bin/wp','--path='.ABSPATH,'eval-file',__DIR__.'/member-reservation-worker.php',$root,(string)$sub->get_id(),(string)$show,(string)$ids[1]],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);
+    if(!is_resource($process))throw new RuntimeException('Private Undo worker failed');fclose($pipes[0]);stream_set_blocking($pipes[1],false);stream_set_blocking($pipes[2],false);$workers[]=['process'=>$process,'pipes'=>$pipes,'out'=>'','exit'=>null];
+  }
+  $deadline=microtime(true)+40;
+  do{$running=false;foreach($workers as &$worker){$worker['out'].=stream_get_contents($worker['pipes'][1]);stream_get_contents($worker['pipes'][2]);$status=proc_get_status($worker['process']);if($status['running'])$running=true;elseif($worker['exit']===null)$worker['exit']=$status['exitcode'];}unset($worker);if($running&&microtime(true)>$deadline)throw new RuntimeException('Private Undo workers timed out');if($running)usleep(100000);}while($running);
+  $wins=0;foreach($workers as $worker){if($worker['exit']!==0||!preg_match('/MEMBER_RESULT=([01])/',$worker['out'],$match))throw new RuntimeException('Private Undo worker result missing');$wins+=(int)$match[1];}
+  $sum=(int)$wpdb->get_var($wpdb->prepare("SELECT SUM(quantity) FROM `$table` WHERE subscription_id=%d",$sub->get_id()));
+  $check($wins===1&&$count()===2&&$sum===1&&(int)get_post_meta($ids[0],'_roxy_checked_in',true)===1,'two independent Undo requests remove one member arrival and preserve unrelated QR');
+  $check(\RoxyST\MemberFixtureTickets::undo_check_in_ticket($ids[0])&&$count()===1&&(int)$wpdb->get_var($wpdb->prepare("SELECT SUM(quantity) FROM `$table` WHERE subscription_id=%d",$sub->get_id()))===1,'QR Undo never decrements the unrelated member visit');
   echo 'MEMBER_RESERVATION_WOO_OK'.PHP_EOL;
 } finally {
   foreach($workers as $worker){if(proc_get_status($worker['process'])['running'])proc_terminate($worker['process']);fclose($worker['pipes'][1]);fclose($worker['pipes'][2]);proc_close($worker['process']);}

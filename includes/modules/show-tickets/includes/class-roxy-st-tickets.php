@@ -516,7 +516,8 @@ class Tickets {
   }
 
   public static function check_in_ticket(int $ticket_id, int $user_id = 0, string $source = 'ticket'): bool {
-    if (!in_array($source,['ticket','will_call','member'],true)) return false;
+    // Member source must use the coupled reservation/visit path, never a bare ticket write.
+    if (!in_array($source,['ticket','will_call'],true)) return false;
     return self::ticket_operation($ticket_id, static function () use ($ticket_id,$user_id,$source): bool {
       return self::apply_admission($ticket_id,$user_id,$source);
     });
@@ -541,6 +542,21 @@ class Tickets {
   private static function apply_undo(int $ticket_id, string $expected_source): bool {
       if (!self::$issuance || (int)self::read_ticket_meta($ticket_id,self::META_CHECKED_IN) !== 1) return false;
       if ($expected_source !== '' && self::read_ticket_meta($ticket_id,'_roxy_checked_in_source') !== $expected_source) return false;
+      if(self::read_ticket_meta($ticket_id,'_roxy_checked_in_source')==='member') {
+        $visit_id=(int)self::read_ticket_meta($ticket_id,'_roxy_member_visit_id');
+        $sub_id=(int)self::read_ticket_meta($ticket_id,'_roxy_member_visit_subscription_id');
+        // No guessing by name/time: historical unlinked arrivals require review.
+        if($visit_id<=0 || $sub_id<=0 || self::read_ticket_meta($ticket_id,self::META_TICKET_TYPE)!=='subscriber')return false;
+        $order_id=(int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID);
+        $user_id=(int)self::$issuance->post_meta_value($order_id,'_customer_user');
+        $audit=self::$issuance->undo_member_visit($visit_id,$sub_id,(int)self::read_ticket_meta($ticket_id,self::META_SHOWING_ID),$user_id);
+        $history=self::read_ticket_meta($ticket_id,'_roxy_member_visit_undo_history');
+        if($history!=='' && !is_array($history))throw new \RuntimeException('Member undo history requires review');
+        $history=is_array($history)?$history:[];$history[]=$audit;
+        self::write_ticket_meta($ticket_id,'_roxy_member_visit_undo_history',$history);
+        self::remove_ticket_meta($ticket_id,'_roxy_member_visit_id');
+        self::remove_ticket_meta($ticket_id,'_roxy_member_visit_subscription_id');
+      }
       foreach ([self::META_CHECKED_IN,self::META_CHECKED_IN_AT,self::META_CHECKED_IN_BY,'_roxy_checked_in_source'] as $key) self::remove_ticket_meta($ticket_id,$key);
       $order = wc_get_order((int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID));
       self::write_ticket_meta($ticket_id,self::META_STATE,(int)self::read_ticket_meta($ticket_id,self::META_REFUNDED) === 1 ? 'refunded' : ($order ? self::state_for_order_status((string)$order->get_status()) : 'cancelled'));
@@ -1188,6 +1204,12 @@ class Tickets {
 
     echo '<div style="border:1px solid #ddd;border-radius:14px;padding:16px;background:#fff">';
     echo '<div style="font-size:22px;font-weight:800;color:' . esc_attr(self::state_color($state, $checked_in)) . ';margin-bottom:8px">' . esc_html(self::state_label($state, $checked_in)) . '</div>';
+    if($checked_in && get_post_meta($ticket_id,'_roxy_checked_in_source',true)==='member' && !(int)get_post_meta($ticket_id,'_roxy_member_visit_id',true))echo '<p class="notice notice-warning">This historical member arrival has no exact visit link. Undo is blocked until a manager reconciles its visit record.</p>';
+    $undo_history=get_post_meta($ticket_id,'_roxy_member_visit_undo_history',true);
+    if(is_array($undo_history) && $undo_history) {
+      $last=end($undo_history);
+      if(is_array($last))echo '<p>Member visit Undo recorded '.esc_html((string)($last['undone_at']??'')).'; visit quantity '.esc_html((string)(int)($last['visit_before']['quantity']??0)).' → '.esc_html((string)(int)($last['quantity_after']??0)).'.</p>';
+    }
     echo '<div style="font-weight:700;margin-bottom:4px">' . esc_html($showing_title) . '</div>';
     echo '<div style="opacity:.8;margin-bottom:8px">' . esc_html($ticket_label) . '</div>';
     echo '<div style="font-size:14px;margin-bottom:4px"><strong>Order:</strong> #' . esc_html((string) $order_id) . '</div>';
@@ -1373,16 +1395,23 @@ class Tickets {
           if((int)self::read_ticket_meta($id,self::META_CHECKED_IN)===1) $checked++;
           else $available[]=$id;
         }
-        $changed=0;
+        $changed=0;$changed_ids=[];
         foreach($available as $id) {
           if($checked+$changed >= $target) break;
           if(!self::apply_admission($id,get_current_user_id(),'member')) throw new \RuntimeException('Reservation admission failed.');
           $changed++;
+          $changed_ids[]=$id;
         }
         $visit=null;
         if($changed>0) {
           $visit=\Roxy_Sub_Check::log_member_visit($sub_id,$showing_id,$changed,$source,static fn(array $row):bool=>$operation->member_visit($row));
           if(empty($visit['ok'])) throw new \RuntimeException('Membership visit was not saved. Refresh and retry.');
+          $visit_id=$operation->member_visit_id();
+          if($visit_id<=0)throw new \RuntimeException('Membership visit identity missing');
+          foreach($changed_ids as $id) {
+            self::write_ticket_meta($id,'_roxy_member_visit_id',$visit_id);
+            self::write_ticket_meta($id,'_roxy_member_visit_subscription_id',$sub_id);
+          }
         }
         return ['changed'=>$changed,'already'=>$checked,'target'=>$target,'visit'=>$visit];
       } finally {self::$issuance=null;}

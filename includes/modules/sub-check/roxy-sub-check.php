@@ -726,11 +726,11 @@ class Roxy_Sub_Check {
 
     echo '<table class="widefat striped">';
     echo '<thead><tr>';
-    echo '<th>Scanned At</th><th>Subscription</th><th>Active?</th><th>Status</th><th>User</th><th>IP</th><th>User Agent</th>';
+    echo '<th>Scanned At</th><th>Subscription</th><th>Active?</th><th>Status</th><th>Source</th><th>Quantity</th><th>Showing</th><th>User</th><th>IP</th><th>User Agent</th>';
     echo '</tr></thead><tbody>';
 
     if (!$rows) {
-      echo '<tr><td colspan="7">No scans found.</td></tr>';
+      echo '<tr><td colspan="10">No scans found.</td></tr>';
     } else {
       foreach ($rows as $r) {
         $active = !empty($r['is_active']) ? 'Yes' : 'No';
@@ -743,6 +743,9 @@ class Roxy_Sub_Check {
         echo '<td><a href="' . esc_url(home_url('/member-check/?sub=' . $sub)) . '" target="_blank">#' . esc_html($sub) . '</a></td>';
         echo '<td>' . esc_html($active) . '</td>';
         echo '<td>' . esc_html($r['status'] ?? '') . '</td>';
+        echo '<td>' . esc_html($r['source'] ?? '') . '</td>';
+        echo '<td>' . esc_html((string)(int)($r['quantity'] ?? 0)) . '</td>';
+        echo '<td>' . esc_html((string)(int)($r['showing_id'] ?? 0)) . '</td>';
         echo '<td>' . $user_display . '</td>';
         echo '<td>' . esc_html($r['ip'] ?? '') . '</td>';
         echo '<td style="max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' . esc_html($r['user_agent'] ?? '') . '</td>';

@@ -15,6 +15,7 @@ namespace RoxyST {
     }
     public function will_call_quantity(int $id,string $key):int{return (int)($GLOBALS['baseline']??0);}
     public function member_visit(array $row):bool{return true;}
+    public function member_visit_id():int{return 1;}
     public function member_walkup_quantity(int $show,int $sub=0):int{return (int)($GLOBALS['walkup']??0);}
     public function reserved_seats(int $show):int{return (int)($GLOBALS['reserved_seats']??0);}
     public function will_call_summary(int $id,string $key,int $qty):void {

@@ -10,6 +10,7 @@ final class Issuance {
   private array $posts = [];
   private array $items = [];
   private array $leased = [];
+  private int $visit_id = 0;
 
   public function __construct(int|array $order_ids, string|array $scope = '') {
     global $wpdb;
@@ -157,7 +158,27 @@ final class Issuance {
     foreach($columns as $column) $values[]=$row[$column]===null ? 'NULL' : $wpdb->prepare('%s',(string)$row[$column]);
     $sql="INSERT INTO `$table` (`".implode('`,`',$columns)."`) SELECT ".implode(',',$values).' FROM DUAL WHERE '.$this->predicate();
     if ($this->write($sql)!==1) throw new \RuntimeException('Membership visit was not saved');
+    $this->visit_id=(int)$wpdb->insert_id;
+    if($this->visit_id<=0)throw new \RuntimeException('Membership visit identity missing');
     return true;
+  }
+
+  public function member_visit_id(): int { return $this->visit_id; }
+
+  /** Undo one linked reserved arrival, retaining the before/after record on its ticket. */
+  public function undo_member_visit(int $visit_id,int $subscription_id,int $showing_id,int $user_id): array {
+    global $wpdb;
+    $this->assert_owner();$table=$wpdb->prefix.'roxy_member_scans';
+    if($visit_id<=0 || $subscription_id<=0 || $showing_id<=0 || $user_id<=0)throw new \RuntimeException('Member visit identity missing');
+    if($wpdb->get_var($wpdb->prepare('SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s',$table))!=='InnoDB')throw new \RuntimeException('Transactional membership log storage required');
+    $row=$wpdb->get_row($wpdb->prepare("SELECT * FROM `$table` WHERE id=%d FOR UPDATE",$visit_id),ARRAY_A);
+    if($wpdb->last_error || !$row || (int)$row['subscription_id']!==$subscription_id || (int)$row['showing_id']!==$showing_id || (int)$row['user_id']!==$user_id || (int)$row['is_active']!==1 || (int)$row['quantity']<1 || !in_array($row['source'],['manual_admit_reserved','nfc_admit_reserved'],true))throw new \RuntimeException('Member visit changed or requires historical review');
+    $this->assert_owner();$guard=$this->predicate();
+    if($this->write($wpdb->prepare("UPDATE `$table` SET is_active=IF(quantity=1,0,is_active),quantity=quantity-1 WHERE id=%d AND quantity=%d AND is_active=1 AND $guard",$visit_id,(int)$row['quantity']))!==1)throw new \RuntimeException('Member visit undo was not saved');
+    $after=$wpdb->get_row($wpdb->prepare("SELECT quantity,is_active FROM `$table` WHERE id=%d",$visit_id),ARRAY_A);
+    if($wpdb->last_error || !$after || (int)$after['quantity']!==(int)$row['quantity']-1 || (int)$after['is_active']!==((int)$row['quantity']===1?0:1))throw new \RuntimeException('Member visit undo verification failed');
+    $this->assert_owner();
+    return ['visit_before'=>$row,'quantity_after'=>(int)$after['quantity'],'undone_at'=>current_time('mysql'),'undone_by'=>get_current_user_id()];
   }
 
   private function write(string $sql): int {
