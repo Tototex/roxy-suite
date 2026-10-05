@@ -13,6 +13,13 @@ function roxy_fixture_tickets(string $root,string $class): void {
     $code=str_replace('class Tickets {','class '.$class.' {',$code);
     $code=preg_replace('/\bIssuance\b/','FixtureIssuance',$code);
     if(class_exists('Fixture_Roxy_Sub_Check')) $code=str_replace('Roxy_Sub_Check','Fixture_Roxy_Sub_Check',$code);
+    if(class_exists('RoxyST\\FixtureCapacity')) $code=preg_replace('/\bCapacity\b/','FixtureCapacity',$code);
+    eval($code);
+}
+function roxy_fixture_capacity(string $root): void {
+    $code=preg_replace('/^<\?php\s*/','',file_get_contents($root.'/includes/modules/show-tickets/includes/class-roxy-st-capacity.php'),1);
+    $code=str_replace('class Capacity {','class FixtureCapacity {',$code);
+    if(class_exists('Fixture_Roxy_Sub_Check')) $code=str_replace('Roxy_Sub_Check','Fixture_Roxy_Sub_Check',$code);
     eval($code);
 }
 function roxy_fixture_members(string $root): void {

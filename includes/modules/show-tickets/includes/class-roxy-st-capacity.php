@@ -131,7 +131,8 @@ class Capacity {
         return false;
       }
       $current_item_qty = (int) ($values['quantity'] ?? 0);
-      $allowed_for_this_line = $remaining_excluding_this + max(0, $current_item_qty);
+      $other_subscriber_qty=max(0,self::cart_qty_for_showing_type($sid,'subscriber')-$current_item_qty);
+      $allowed_for_this_line = max(0,$remaining_excluding_this-$other_subscriber_qty);
       if ($quantity > $allowed_for_this_line) {
         wc_add_notice('Subscriber tickets are limited to ' . (int) $allowed_for_this_line . ' remaining for this show on your account.', 'error');
         return false;
@@ -247,6 +248,8 @@ class Capacity {
     if ($entitlement <= 0) return 0;
 
     $used = self::purchased_subscriber_qty_for_showing_user($showing_id, (int) $user_id);
+    try { if(class_exists('\Roxy_Sub_Check')) $used+=\Roxy_Sub_Check::walkup_quantity_for_showing($showing_id,(int)$user_id); }
+    catch(\Throwable $e){return 0;} // Unknown arrivals cannot grant more entitlement.
     $remaining = max(0, $entitlement - $used);
 
     if ($include_cart) {
@@ -295,6 +298,8 @@ class Capacity {
   }
 
   private static function sold_qty_for_showing(int $showing_id): int {
-    return Sales::sold_qty_for_showing($showing_id);
+    try { $walkups=class_exists('\Roxy_Sub_Check') ? \Roxy_Sub_Check::walkup_quantity_for_showing($showing_id) : 0; }
+    catch(\Throwable $e){return PHP_INT_MAX;} // Fail closed without crashing public pages.
+    return Sales::sold_qty_for_showing($showing_id)+$walkups;
   }
 }

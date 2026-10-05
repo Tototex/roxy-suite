@@ -42,13 +42,13 @@ try {
   $check((string)$second->get_var($second->prepare('SELECT GET_LOCK(%s,0)',$key))==='1','second connection acquires competing order lock');
   try{try{$held->run(static fn()=>null);throw new RuntimeException('Contended operation ran');}catch(RuntimeException $e){$check($e->getMessage()==='Ticket issuance is busy','overlapping order operation is blocked');}}
   finally{$second->get_var($second->prepare('SELECT RELEASE_LOCK(%s)',$key));}
-  $group=new \RoxyST\FixtureIssuance([456,123],'private-group');
-  $reverse=new \RoxyST\FixtureIssuance([123,456],'private-group');
+  $group=new \RoxyST\FixtureIssuance([456,123],['private-group','private-showing']);
+  $reverse=new \RoxyST\FixtureIssuance([123,456],['private-showing','private-group']);
   $locks=new ReflectionProperty($group,'locks');$locks->setAccessible(true);$keys=$locks->getValue($group);
-  $check($keys===$locks->getValue($reverse)&&count($keys)===3,'group lock order is deterministic across reversed input');
+  $check($keys===$locks->getValue($reverse)&&count($keys)===4,'multi-scope group lock order is deterministic across reversed input');
   $blocked=end($keys);$second->get_var($second->prepare('SELECT GET_LOCK(%s,0)',$blocked));
   try {try {$group->run(static fn()=>null);throw new RuntimeException('Contended group ran');}catch(RuntimeException $e){$check($e->getMessage()==='Ticket issuance is busy','group contention refuses all mutations');}}
-  finally {$check((int)$wpdb->get_var($wpdb->prepare('SELECT IS_FREE_LOCK(%s)',$keys[0]))===1&&(int)$wpdb->get_var($wpdb->prepare('SELECT IS_FREE_LOCK(%s)',$keys[1]))===1,'partial acquisition failure releases earlier owned locks');$second->get_var($second->prepare('SELECT RELEASE_LOCK(%s)',$blocked));}
+  finally {$free=true;foreach(array_slice($keys,0,-1) as $owned)$free=$free&&(int)$wpdb->get_var($wpdb->prepare('SELECT IS_FREE_LOCK(%s)',$owned))===1;$check($free,'partial acquisition failure releases all earlier owned locks');$second->get_var($second->prepare('SELECT RELEASE_LOCK(%s)',$blocked));}
   $check($group->run(static fn()=>true)===true,'group succeeds after contention clears');
   (new \RoxyST\FixtureIssuance(123))->run(static function($operation)use($second,$wpdb,$check){
     $predicate=new ReflectionMethod($operation,'predicate');$predicate->setAccessible(true);

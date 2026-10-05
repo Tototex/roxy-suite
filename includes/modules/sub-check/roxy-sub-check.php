@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Roxy Subscription Check
  * Description: NFC-friendly membership verification page for WooCommerce Subscriptions. Per-subscription photo, scan log, and customer photo upload.
- * Version: 1.3.9
+ * Version: 1.3.10
  * Author: Newport Roxy (AI Team)
  * Update URI: https://github.com/Tototex/roxy-sub-check
  */
@@ -556,6 +556,18 @@ class Roxy_Sub_Check {
       ];
     }
     return $out;
+  }
+
+  public static function walkup_quantity_for_showing(int $showing_id, int $user_id = 0): int {
+    if($showing_id<=0)return 0;
+    if(!self::prepare_admission_log()) throw new RuntimeException('Membership arrival records are unavailable.');
+    global $wpdb;
+    $table=self::table_name();
+    $where=$wpdb->prepare('showing_id=%d',$showing_id);
+    if($user_id>0)$where.=$wpdb->prepare(' AND user_id=%d',$user_id);
+    $value=$wpdb->get_var("SELECT COALESCE(SUM(quantity),0) FROM `$table` WHERE $where AND is_active=1 AND source IN ('manual_admit_walkup','nfc_admit_walkup')");
+    if($wpdb->last_error || $value===null) throw new RuntimeException('Membership arrival records could not be read.');
+    return max(0,(int)$value);
   }
 
   public static function admitted_quantity_for_showing(int $sub_id, int $showing_id, string $source_like = ''): int {

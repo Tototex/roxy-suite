@@ -10,13 +10,14 @@ final class Issuance {
   private array $posts = [];
   private array $items = [];
 
-  public function __construct(int|array $order_ids, string $scope = '') {
+  public function __construct(int|array $order_ids, string|array $scope = '') {
     global $wpdb;
     $ids = array_unique(array_map('intval', (array)$order_ids));
     if (count($ids)>64) throw new \RuntimeException('Too many orders in this group. Use individual ticket check-in.');
-    if (($ids && min($ids)<=0) || (!$ids && $scope==='')) throw new \RuntimeException('Invalid admission lock scope');
+    $scopes=array_values(array_unique(array_filter((array)$scope,static fn($value)=>is_string($value)&&$value!=='')));
+    if(count($scopes)>4 || ($ids && min($ids)<=0) || (!$ids && !$scopes)) throw new \RuntimeException('Invalid admission lock scope');
     foreach ($ids as $id) $this->locks[] = 'roxy_ticket_' . substr(hash('sha256', $wpdb->prefix . ':' . $id), 0, 48);
-    if ($scope !== '') $this->locks[] = 'roxy_scope_' . substr(hash('sha256', $wpdb->prefix . ':' . $scope), 0, 48);
+    foreach($scopes as $value) $this->locks[] = 'roxy_scope_' . substr(hash('sha256', $wpdb->prefix . ':' . $value), 0, 48);
     sort($this->locks, SORT_STRING);
     $this->lock = $this->locks[0];
   }
@@ -100,6 +101,40 @@ final class Issuance {
     $this->write($wpdb->prepare("INSERT INTO `$table` (product_id,customer_key,checked_in,used_qty,updated_at) SELECT %d,%s,%d,%d,%s FROM DUAL WHERE $guard ON DUPLICATE KEY UPDATE checked_in=VALUES(checked_in),used_qty=VALUES(used_qty),updated_at=VALUES(updated_at)",$context_id,$customer_key,$quantity>0?1:0,$quantity,current_time('mysql')));
     if ($this->will_call_quantity($context_id,$customer_key)!==$quantity) throw new \RuntimeException('Attendance summary verification failed');
   }
+  public function member_walkup_quantity(int $showing_id, int $subscription_id = 0): int {
+    global $wpdb;
+    $this->assert_owner();
+    $table=$wpdb->prefix.'roxy_member_scans';
+    if ($wpdb->get_var($wpdb->prepare('SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s',$table)) !== 'InnoDB') throw new \RuntimeException('Transactional membership log storage required');
+    $where=$wpdb->prepare('showing_id=%d',$showing_id);
+    if($subscription_id>0) $where.=$wpdb->prepare(' AND subscription_id=%d',$subscription_id);
+    $value=$wpdb->get_var("SELECT COALESCE(SUM(quantity),0) FROM `$table` WHERE $where AND is_active=1 AND source IN ('manual_admit_walkup','nfc_admit_walkup')");
+    if($wpdb->last_error || $value===null) throw new \RuntimeException('Member arrivals could not be read');
+    $this->assert_owner();
+    return max(0,(int)$value);
+  }
+
+  /** Fresh, read-only reservation count; preserves current conservative refund policy. */
+  public function reserved_seats(int $showing_id): int {
+    global $wpdb;
+    $this->assert_owner();
+    if(class_exists('\Automattic\WooCommerce\Utilities\OrderUtil') && \Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled()) throw new \RuntimeException('Walk-up reservation authority requires the currently supported order storage.');
+    $ids=[];
+    foreach(['adult','discount','matinee','live1','live2','subscriber'] as $type) {
+      $id=(int)$this->post_meta_value($showing_id,'_roxy_pid_'.$type);
+      if($id>0)$ids[]=$id;
+    }
+    $legacy=$this->post_meta_value($showing_id,'_roxy_legacy_product_ids');
+    foreach(is_array($legacy)?$legacy:preg_split('/[\r\n,]+/',(string)$legacy) as $id) if((int)$id>0)$ids[]=(int)$id;
+    $mapping=$wpdb->prepare("EXISTS (SELECT 1 FROM `{$wpdb->postmeta}` p WHERE p.post_id=CAST(product.meta_value AS UNSIGNED) AND p.meta_key=%s AND p.meta_value=%s)",ROXY_ST_META_SHOWING_ID,(string)$showing_id);
+    if($ids)$mapping.=' OR CAST(product.meta_value AS UNSIGNED) IN ('.implode(',',array_unique($ids)).')';
+    $items=$wpdb->prefix.'woocommerce_order_items';$meta=$wpdb->prefix.'woocommerce_order_itemmeta';
+    $value=$wpdb->get_var("SELECT COALESCE(SUM(CAST(q.meta_value AS DECIMAL(20,4))),0) FROM `$items` i JOIN `{$wpdb->posts}` o ON o.ID=i.order_id JOIN `$meta` q ON q.order_item_id=i.order_item_id AND q.meta_key='_qty' WHERE i.order_item_type='line_item' AND o.post_type='shop_order' AND o.post_status IN ('wc-processing','wc-completed','wc-on-hold') AND EXISTS (SELECT 1 FROM `$meta` product WHERE product.order_item_id=i.order_item_id AND product.meta_key='_product_id' AND ($mapping))");
+    if($wpdb->last_error || $value===null) throw new \RuntimeException('Seat reservations could not be read');
+    $this->assert_owner();
+    return max(0,(int)ceil((float)$value));
+  }
+
   public function member_visit(array $row): bool {
     global $wpdb;
     $this->assert_owner();

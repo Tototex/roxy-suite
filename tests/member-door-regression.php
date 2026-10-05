@@ -61,4 +61,8 @@ $reset();$GLOBALS['reserved']=[];$GLOBALS['walkup']=2;$result=$admit->invoke(nul
 check($result['ok']&&$result['payload']['admit_quantity']===1,'walk-up request capped at remaining membership quantity');
 $GLOBALS['walkup']=0;Roxy_Sub_Check::$fail=true;$result=$admit->invoke(null,1,50,3,'manual_admit');
 check(!$result['ok']&&$result['payload']['admit_quantity']===0,'failed member log reports zero admission');
+Roxy_Sub_Check::$fail=false;$GLOBALS['walkup']=1;$before=count(Roxy_Sub_Check::$logs);$result=$admit->invoke(null,1,50,1,'manual_admit');
+check(!$result['ok']&&count(Roxy_Sub_Check::$logs)===$before,'repeated target-one walk-up creates no additional member visit');
+$GLOBALS['walkup']=0;$GLOBALS['meta'][50]['_roxy_capacity']=0;$result=$admit->invoke(null,1,50,1,'manual_admit');
+check(!$result['ok']&&count(Roxy_Sub_Check::$logs)===$before,'zero-capacity showing rejects walk-up without logging arrival');
 echo "NOTE: unit transaction double; real persistence and concurrency require MySQL/Woo fixtures.\n";

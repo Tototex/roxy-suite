@@ -2,7 +2,7 @@
 // Unit-test plumbing only. Real transaction/locking assertions live in MySQL/Woo fixtures.
 namespace RoxyST {
   class Issuance {
-    public function __construct(int|array $ids,string $scope='') {}
+    public function __construct(int|array $ids,string|array $scope='') {}
     public function run(callable $callback) {
       $before=$GLOBALS['meta']??[];
       $baseline=$GLOBALS['baseline']??0;
@@ -15,6 +15,8 @@ namespace RoxyST {
     }
     public function will_call_quantity(int $id,string $key):int{return (int)($GLOBALS['baseline']??0);}
     public function member_visit(array $row):bool{return true;}
+    public function member_walkup_quantity(int $show,int $sub=0):int{return (int)($GLOBALS['walkup']??0);}
+    public function reserved_seats(int $show):int{return (int)($GLOBALS['reserved_seats']??0);}
     public function will_call_summary(int $id,string $key,int $qty):void {
       if($GLOBALS['wpdb']->replace()===false)throw new \RuntimeException('Attendance summary write failed');
       $GLOBALS['baseline']=$qty;
