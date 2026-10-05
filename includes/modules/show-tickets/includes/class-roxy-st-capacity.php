@@ -300,6 +300,10 @@ class Capacity {
   private static function sold_qty_for_showing(int $showing_id): int {
     try { $walkups=class_exists('\Roxy_Sub_Check') ? \Roxy_Sub_Check::walkup_quantity_for_showing($showing_id) : 0; }
     catch(\Throwable $e){return PHP_INT_MAX;} // Fail closed without crashing public pages.
-    return Sales::sold_qty_for_showing($showing_id)+$walkups;
+    try {
+      $reserved=Reservations::quantity_for_showing($showing_id);
+      if($reserved>PHP_INT_MAX-$walkups)return PHP_INT_MAX;
+      return $reserved+$walkups;
+    } catch(\Throwable $e){return PHP_INT_MAX;}
   }
 }

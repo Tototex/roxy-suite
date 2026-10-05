@@ -15,7 +15,7 @@ class TestCart {
   function set_quantity($key,$qty){$this->rows[$key]['quantity']=$qty;}
 }
 class Roxy_Sub_Check{static function walkup_quantity_for_showing($show,$user=0){if(!empty($GLOBALS['log_fail']))throw new RuntimeException('Fixture read failure');return (int)($GLOBALS[$user>0?'user_walkups':'walkups']??0);}}
-eval('namespace RoxyST;class Sales{static function sold_qty_for_showing($id){return (int)($GLOBALS["sold"]??0);}}');
+eval('namespace RoxyST;class Reservations{static function quantity_for_showing($id){if(!empty($GLOBALS["reservation_fail"]))throw new \\RuntimeException("Fixture failure");return (int)($GLOBALS["sold"]??0);}}');
 $root=$argv[1]??dirname(__DIR__);require $root.'/includes/modules/show-tickets/includes/class-roxy-st-capacity.php';
 $cart=new TestCart();$GLOBALS['woo']=(object)['cart'=>$cart];$GLOBALS['meta']=[50=>['_roxy_capacity'=>5],10=>['_roxy_showing_id'=>50,'_roxy_ticket_type'=>'adult']];$GLOBALS['sold']=2;$GLOBALS['walkups']=2;$GLOBALS['user_walkups']=2;$GLOBALS['notices']=[];
 check(\RoxyST\Capacity::remaining_seats_for_showing(50)===1,'remaining seats subtract ticket reservations and walk-ups once');
@@ -41,3 +41,7 @@ $GLOBALS['log_fail']=false;unset($GLOBALS['meta'][50]['_roxy_capacity']);
 check(\RoxyST\Capacity::remaining_seats_for_showing(50)===null,'blank capacity keeps unlimited policy');
 $GLOBALS['meta'][50]['_roxy_capacity']=0;
 check(\RoxyST\Capacity::remaining_seats_for_showing(50)===0,'zero capacity remains distinct from unlimited');
+$GLOBALS['meta'][50]['_roxy_capacity']=20;$GLOBALS['reservation_fail']=true;
+check(\RoxyST\Capacity::remaining_seats_for_showing(50)===0,'unknown reservations fail closed without a public fatal');
+$GLOBALS['reservation_fail']=false;$GLOBALS['sold']=PHP_INT_MAX;
+check(\RoxyST\Capacity::remaining_seats_for_showing(50)===0,'reservation plus arrival overflow fails closed');

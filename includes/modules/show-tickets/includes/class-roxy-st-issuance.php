@@ -116,23 +116,10 @@ final class Issuance {
 
   /** Fresh, read-only reservation count; preserves current conservative refund policy. */
   public function reserved_seats(int $showing_id): int {
-    global $wpdb;
     $this->assert_owner();
-    if(class_exists('\Automattic\WooCommerce\Utilities\OrderUtil') && \Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled()) throw new \RuntimeException('Walk-up reservation authority requires the currently supported order storage.');
-    $ids=[];
-    foreach(['adult','discount','matinee','live1','live2','subscriber'] as $type) {
-      $id=(int)$this->post_meta_value($showing_id,'_roxy_pid_'.$type);
-      if($id>0)$ids[]=$id;
-    }
-    $legacy=$this->post_meta_value($showing_id,'_roxy_legacy_product_ids');
-    foreach(is_array($legacy)?$legacy:preg_split('/[\r\n,]+/',(string)$legacy) as $id) if((int)$id>0)$ids[]=(int)$id;
-    $mapping=$wpdb->prepare("EXISTS (SELECT 1 FROM `{$wpdb->postmeta}` p WHERE p.post_id=CAST(product.meta_value AS UNSIGNED) AND p.meta_key=%s AND p.meta_value=%s)",ROXY_ST_META_SHOWING_ID,(string)$showing_id);
-    if($ids)$mapping.=' OR CAST(product.meta_value AS UNSIGNED) IN ('.implode(',',array_unique($ids)).')';
-    $items=$wpdb->prefix.'woocommerce_order_items';$meta=$wpdb->prefix.'woocommerce_order_itemmeta';
-    $value=$wpdb->get_var("SELECT COALESCE(SUM(CAST(q.meta_value AS DECIMAL(20,4))),0) FROM `$items` i JOIN `{$wpdb->posts}` o ON o.ID=i.order_id JOIN `$meta` q ON q.order_item_id=i.order_item_id AND q.meta_key='_qty' WHERE i.order_item_type='line_item' AND o.post_type='shop_order' AND o.post_status IN ('wc-processing','wc-completed','wc-on-hold') AND EXISTS (SELECT 1 FROM `$meta` product WHERE product.order_item_id=i.order_item_id AND product.meta_key='_product_id' AND ($mapping))");
-    if($wpdb->last_error || $value===null) throw new \RuntimeException('Seat reservations could not be read');
+    $quantity=Reservations::quantity_for_showing($showing_id);
     $this->assert_owner();
-    return max(0,(int)ceil((float)$value));
+    return $quantity;
   }
 
   public function member_visit(array $row): bool {
