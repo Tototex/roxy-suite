@@ -276,7 +276,7 @@ class Workbook {
         ];
       }
 
-      $day_prefix = self::day_prefix_for_date($report_date, $week_start);
+      $day_prefix = self::day_prefix_for_date($report_date);
       if ($day_prefix === '') {
         continue;
       }
@@ -840,13 +840,14 @@ class Workbook {
     return $week_start;
   }
 
-  private static function day_prefix_for_date(string $date, string $week_start): string {
+  private static function day_prefix_for_date(string $date): string {
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $current = new \DateTimeImmutable($date . ' 00:00:00', $timezone);
-    $start = new \DateTimeImmutable($week_start . ' 00:00:00', $timezone);
-    $diff = (int) floor(($current->getTimestamp() - $start->getTimestamp()) / DAY_IN_SECONDS);
-    $map = ['fri', 'sat', 'sun', 'mon', 'tue', 'wed', 'thu'];
-    return $map[$diff] ?? '';
+    // Map calendar weekdays, not elapsed 24-hour periods (DST days are not 86400 seconds).
+    // A year-clipped first week can begin on Jan 1 midweek, so its synthetic week_of
+    // date must not shift that date into the Friday column.
+    $day = strtolower($current->format('D'));
+    return in_array($day, ['fri', 'sat', 'sun', 'mon', 'tue', 'wed', 'thu'], true) ? $day : '';
   }
 
   private static function week_number_for_start(string $week_start): int {

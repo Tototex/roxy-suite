@@ -335,19 +335,34 @@ class Store {
   }
 
   public static function maybe_backfill_history(): void {
-    if (get_option(self::HISTORY_BACKFILL_OPTION) !== ROXY_GROSSES_VER) {
-      self::backfill_history_from_saved_reports();
-      update_option(self::HISTORY_BACKFILL_OPTION, ROXY_GROSSES_VER);
-    }
-
-    if (get_option(self::ENTRY_MIGRATION_OPTION) !== ROXY_GROSSES_VER) {
-      try {
-        self::migrate_history_to_entries();
-        update_option(self::ENTRY_MIGRATION_OPTION, ROXY_GROSSES_VER);
-      } catch (\Throwable $e) {
-        // Bootstrap must remain available; a failed migration is retried, not stamped complete.
-        error_log('Roxy Grosses entry migration failed; retry pending.');
+    global $wpdb;
+    // These are one-time data migrations, not plugin-version synchronization.
+    // Existing legacy version markers already mean completed; do not replay them.
+    $pending = static fn(string $option): bool => (string)get_option($option, '') === '';
+    if (!$pending(self::HISTORY_BACKFILL_OPTION) && !$pending(self::ENTRY_MIGRATION_OPTION)) return;
+    $lock='roxy_grosses_migration_'.substr(hash('sha256', $wpdb->prefix),0,24);
+    if ((string)$wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)',$lock)) !== '1') return;
+    try {
+      if ($pending(self::HISTORY_BACKFILL_OPTION)) {
+        self::backfill_history_from_saved_reports();
+        if ((string)$wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()',$lock)) !== '1') throw new \RuntimeException('Migration ownership was lost.');
+        update_option(self::HISTORY_BACKFILL_OPTION, '1', false);
+        if ($pending(self::HISTORY_BACKFILL_OPTION)) throw new \RuntimeException('History migration completion could not be saved.');
       }
+      if ($pending(self::ENTRY_MIGRATION_OPTION)) {
+        self::migrate_history_to_entries();
+        if ((string)$wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()',$lock)) !== '1') throw new \RuntimeException('Migration ownership was lost.');
+        update_option(self::ENTRY_MIGRATION_OPTION, '1', false);
+        if ($pending(self::ENTRY_MIGRATION_OPTION)) throw new \RuntimeException('Entry migration completion could not be saved.');
+      }
+    } catch (\Throwable $e) {
+      // Keep the website available and leave incomplete work retryable.
+      error_log('Roxy Grosses data migration failed; retry pending.');
+      add_action('admin_notices', static function (): void {
+        if (current_user_can('manage_options')) echo '<div class="notice notice-error"><p>Grosses historical migration is incomplete and will retry. Existing corrections were not replaced. Check storage/database health before running reporting.</p></div>';
+      });
+    } finally {
+      $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)',$lock));
     }
   }
 
@@ -358,6 +373,7 @@ class Store {
       'SELECT id, mode, payload_json FROM ' . self::table_name() . ' ORDER BY id DESC',
       ARRAY_A
     );
+    if ($wpdb->last_error !== '') throw new \RuntimeException('Saved reports could not be read for migration.');
 
     $seen = [];
     foreach ((array) $saved_reports as $saved_report) {
@@ -385,7 +401,7 @@ class Store {
       }
 
       if ($fresh_rows) {
-        self::upsert_history_rows($fresh_rows, (string) ($saved_report['mode'] ?? ''), (int) ($saved_report['id'] ?? 0));
+        self::upsert_history_rows($fresh_rows, (string) ($saved_report['mode'] ?? ''), (int) ($saved_report['id'] ?? 0), true);
       }
     }
   }
@@ -419,7 +435,8 @@ class Store {
       ];
     }
 
-    self::upsert_entries($entries, 'update');
+    // History does not contain all current fields; never replace a current row.
+    self::upsert_entries($entries, 'skip');
   }
 
   public static function create_report(string $report_end_date, int $lookback_days, string $mode, string $status, array $summary, array $rows): int {
@@ -514,7 +531,7 @@ class Store {
     return is_array($rows) ? $rows : [];
   }
 
-  public static function upsert_history_rows(array $rows, string $source_mode = '', ?int $report_id = null): int {
+  public static function upsert_history_rows(array $rows, string $source_mode = '', ?int $report_id = null, bool $insert_only = false): int {
     global $wpdb;
     $count = 0;
     $now = current_time('mysql');
@@ -531,7 +548,13 @@ class Store {
         $showing_id = abs(crc32($report_date . '|' . strtolower($film_title) . '|' . strtolower($show_time)));
       }
 
-      $ok = $wpdb->replace(self::history_table_name(), [
+      if ($insert_only) {
+        $existing=$wpdb->get_var($wpdb->prepare('SELECT id FROM '.self::history_table_name().' WHERE report_date=%s AND showing_id=%d LIMIT 1',$report_date,$showing_id));
+        if ($wpdb->last_error !== '') throw new \RuntimeException('History lookup failed; migration stopped without replacing data.');
+        if ($existing) continue;
+      }
+      $write=$insert_only?'insert':'replace';
+      $ok = $wpdb->$write(self::history_table_name(), [
         'created_at' => $now,
         'updated_at' => $now,
         'report_date' => $report_date,
@@ -550,6 +573,8 @@ class Store {
 
       if ($ok !== false) {
         $count++;
+      } else {
+        throw new \RuntimeException('Grosses history write failed. Some earlier rows may have saved; retry after storage recovery.');
       }
     }
 
@@ -601,6 +626,7 @@ class Store {
        FROM ' . self::history_table_name() . ' ORDER BY report_date ASC, film_title ASC',
       ARRAY_A
     );
+    if ($wpdb->last_error !== '') throw new \RuntimeException('Grosses history read failed; migration remains incomplete.');
     return is_array($rows) ? $rows : [];
   }
 
