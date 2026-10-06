@@ -1,5 +1,6 @@
 <?php
 if (!defined('ABSPATH')) exit;
+require_once __DIR__ . '/refunds.php';
 
 function roxy_eb_booking_meta_key() { return '_roxy_eb_booking'; }
 function roxy_eb_booking_adjustment_meta_key() { return '_roxy_eb_booking_adjustment'; }
@@ -826,7 +827,7 @@ function roxy_eb_on_payment_complete($order_id) {
         $calc = roxy_eb_calc_times($doorsOpen, intval($b['extra_hours'] ?? 0));
 
         if (!roxy_eb_is_slot_available($calc['reserved_start'], $calc['reserved_end'])) {
-            roxy_eb_handle_conflict_refund($order, $b);
+            roxy_eb_handle_conflict_refund($order, $b, (int) $item->get_id());
             return;
         }
 
@@ -888,18 +889,19 @@ function roxy_eb_apply_booking_adjustment_from_order($order, array $adjustment) 
     return true;
 }
 
-function roxy_eb_handle_conflict_refund($order, $b) {
+function roxy_eb_handle_conflict_refund($order, $b, int $item_id = 0) {
     $order->add_order_note('Roxy booking conflict: slot became unavailable at payment completion.');
     try {
-        $amount = floatval($b['total_price'] ?? $order->get_total());
-        wc_create_refund([
-            'amount'   => $amount,
-            'reason'   => 'Booking time no longer available',
-            'order_id' => $order->get_id(),
-        ]);
-        $order->add_order_note('Refunded due to booking conflict.');
-    } catch (Exception $e) {
-        $order->add_order_note('Refund attempt failed: ' . $e->getMessage());
+        $result = roxy_eb_refund_booking_payment($order, 0, $item_id, 'Booking time no longer available');
+        if (is_wp_error($result)) {
+            $order->add_order_note('Booking conflict refund needs manager review: ' . $result->get_error_message());
+        } elseif ($result['refunded']) {
+            $order->add_order_note('Gateway refunded booking item balance of $' . number_format($result['amount'], 2) . ' due to booking conflict.');
+        } else {
+            $order->add_order_note('Booking conflict: no captured booking balance remained to refund.');
+        }
+    } catch (Throwable $e) {
+        $order->add_order_note('Booking conflict refund outcome needs manager review.');
     }
     roxy_eb_email_internal_booking_conflict($order);
 }
