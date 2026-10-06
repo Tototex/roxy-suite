@@ -1060,6 +1060,7 @@ class Settings {
     self::number_input('total_tickets', 'Total', (int) ($row['total_tickets'] ?? 0));
     self::text_input('gross_total', 'Ticket Gross', (string) ($row['gross_total'] ?? '0.00'), 'number', '0.01');
     self::text_input('concessions_total', 'Concessions', (string) ($row['concessions_total'] ?? '0.00'), 'number', '0.01');
+    self::row_protection_input($row);
     submit_button('Save Row', 'primary', 'submit', false);
     echo '</form></td></tr>';
   }
@@ -1079,6 +1080,7 @@ class Settings {
     self::number_input('total_tickets', 'Total', (int) ($row['total_tickets'] ?? 0));
     self::text_input('gross_total', 'Ticket Gross', (string) ($row['gross_total'] ?? '0.00'), 'number', '0.01');
     self::text_input('concessions_total', 'Concessions', (string) ($row['concessions_total'] ?? '0.00'), 'number', '0.01');
+    self::row_protection_input($row);
     submit_button('Save Row', 'primary', 'submit', false);
     echo '</form></td></tr>';
   }
@@ -1097,6 +1099,7 @@ class Settings {
     self::text_input('invoice_amount', 'Invoice', (string) ($row['invoice_amount'] ?? '0.00'), 'number', '0.01');
     self::text_input('concessions_total', 'Concessions', (string) ($row['concessions_total'] ?? '0.00'), 'number', '0.01');
     self::text_input('notes', 'Notes', (string) ($row['notes'] ?? ''));
+    self::row_protection_input($row);
     submit_button('Save Row', 'primary', 'submit', false);
     echo '</form></td></tr>';
   }
@@ -1117,8 +1120,15 @@ class Settings {
     self::number_input('total_attendance', 'Total', (int) ($row['total_attendance'] ?? 0));
     self::text_input('gross_total', 'Ticket Gross', (string) ($row['gross_total'] ?? '0.00'), 'number', '0.01');
     self::text_input('concessions_total', 'Concessions', (string) ($row['concessions_total'] ?? '0.00'), 'number', '0.01');
+    self::row_protection_input($row);
     submit_button('Save Row', 'primary', 'submit', false);
     echo '</form></td></tr>';
+  }
+
+  private static function row_protection_input(array $row): void {
+    echo '<div><input type="hidden" name="is_locked" value="0"><label><input type="checkbox" name="is_locked" value="1" checked> Protect my changes from automatic pulls</label><br><small>';
+    echo !empty($row['is_locked']) ? 'This row is currently protected. Uncheck and save to allow automatic updates.' : 'This row is not currently protected. Saving with this checked protects your corrections.';
+    echo '</small></div>';
   }
 
   private static function text_input(string $name, string $label, string $value, string $type = 'text', string $step = ''): void {

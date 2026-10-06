@@ -278,17 +278,17 @@ class Reporter {
 
     switch ($dataset) {
       case 'live':
-        $success = Store::update_live_entry($entry_id, $_POST);
+        $success = Store::update_live_entry($entry_id, $_POST, true);
         break;
       case 'rentals':
-        $success = Store::update_rental_entry($entry_id, $_POST);
+        $success = Store::update_rental_entry($entry_id, $_POST, true);
         break;
       case 'legacy':
-        $success = Store::update_legacy_weekly($entry_id, $_POST);
+        $success = Store::update_legacy_weekly($entry_id, $_POST, true);
         break;
       default:
         $dataset = 'movies';
-        $success = Store::update_entry($entry_id, $_POST);
+        $success = Store::update_entry($entry_id, $_POST, true);
         break;
     }
 
@@ -972,9 +972,6 @@ class Reporter {
         'message' => 'Saved report has no rows to email.',
       ];
     }
-
-    Store::upsert_history_rows($rows, 'saved-report', $report_id);
-    Store::upsert_entries(self::entries_from_report_rows($rows, 'saved_report', 'saved-report', $report_id), 'update');
 
     $send = self::send_email($rows, $summary, 'saved-report');
     if (!$send['success']) {

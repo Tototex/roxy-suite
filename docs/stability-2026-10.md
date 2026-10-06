@@ -68,7 +68,7 @@ Current safeguards: preserve live customizations; back up changed files before d
 | G2 | Open | See audit; no resolution claimed. |
 | G3 | Open | See audit; no resolution claimed. |
 | G4 | Open | See audit; no resolution claimed. |
-| G5 | Open | See audit; no resolution claimed. |
+| G5 | Resolved for managed row updates/resends | Checkpoint 37: all four datasets protect manager corrections by default with an explicit unlock checkbox. Pulls, automatic partial updates and movie metadata refresh use SQL lock predicates; independent raced corrections survive. Lookup/write failure stops upsert rather than inserting a replacement or reporting success. Saved-report resend uses its immutable snapshot without entries/history writes. 63 actual MySQL, 40 actual edit-form and 17 intercepted mail checks pass; reporting/export regressions pass. Live edit control is checked by default. Original financial row counts/digests unchanged. Arbitrary external SQL writers are not protected; broader versioned migrations/error propagation remain G6. |
 | G6 | Open | See audit; no resolution claimed. |
 | G7 | Open | See audit; no resolution claimed. |
 | G8 | Open | See audit; no resolution claimed. |
