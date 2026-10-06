@@ -145,10 +145,9 @@ class Reporter {
 
     switch ($dataset) {
       case 'live':
-        $row_count = Store::count_live_entries($filters);
-        $rows = Store::list_live_entries($filters, max(1, $row_count), 0);
+        $rows = Store::iterate_dataset('live', $filters);
         $header = ['Date', 'Show', 'Show Time', 'Total', 'Presale Tickets', 'Online Ticket', 'Door Ticket', 'Group/Subscriber', 'Gross', 'Concessions'];
-        $records = array_map(static function (array $row): array {
+        $records = self::map_export_rows(static function (array $row): array {
           return [
             (string) ($row['report_date'] ?? ''),
             (string) ($row['show_title'] ?? ''),
@@ -164,10 +163,9 @@ class Reporter {
         }, $rows);
         break;
       case 'rentals':
-        $row_count = Store::count_rental_entries($filters);
-        $rows = Store::list_rental_entries($filters, max(1, $row_count), 0);
+        $rows = Store::iterate_dataset('rentals', $filters);
         $header = ['Date', 'Rental', 'Type', 'Customer', 'Status', 'Show Time', 'Invoice', 'Concessions', 'Notes'];
-        $records = array_map(static function (array $row): array {
+        $records = self::map_export_rows(static function (array $row): array {
           return [
             (string) ($row['report_date'] ?? ''),
             (string) ($row['rental_title'] ?? ''),
@@ -182,10 +180,9 @@ class Reporter {
         }, $rows);
         break;
       case 'legacy':
-        $row_count = Store::count_legacy_weekly($filters);
-        $rows = Store::list_legacy_weekly($filters, max(1, $row_count), 0);
+        $rows = Store::iterate_dataset('legacy', $filters);
         $header = ['Week Of', 'Week End', 'Movie', 'Rating', 'Weeks', 'General', 'Discount', 'Free', 'Total', 'Ticket Gross', 'Concessions'];
-        $records = array_map(static function (array $row): array {
+        $records = self::map_export_rows(static function (array $row): array {
           return [
             (string) ($row['week_start_date'] ?? ''),
             (string) ($row['week_end_date'] ?? ''),
@@ -203,10 +200,9 @@ class Reporter {
         break;
       default:
         $dataset = 'movies';
-        $row_count = Store::count_entries($filters);
-        $rows = Store::list_entries($filters, max(1, $row_count), 0);
+        $rows = Store::iterate_dataset('movies', $filters);
         $header = ['Date', 'Movie', 'Studio', 'Genre', 'Show Time', 'Total', 'General', 'Discount', 'Group', 'Free', 'Gross', 'Concessions'];
-        $records = array_map(static function (array $row): array {
+        $records = self::map_export_rows(static function (array $row): array {
           return [
             (string) ($row['report_date'] ?? ''),
             (string) ($row['movie_title'] ?? ''),
@@ -225,20 +221,42 @@ class Reporter {
         break;
     }
 
+    // Finish a private, automatically removed spool before sending download headers.
+    // A failed later page must not look like a successful truncated CSV download.
+    $output = tmpfile();
+    if (!$output) {
+      wp_die('Could not create CSV export stream.');
+    }
+    try {
+      if (fputcsv($output, $header) === false) {
+        throw new \RuntimeException('Could not write CSV export.');
+      }
+      foreach ($records as $record) {
+        if (fputcsv($output, $record) === false) {
+          throw new \RuntimeException('Could not write CSV export.');
+        }
+      }
+      if (!rewind($output)) {
+        throw new \RuntimeException('Could not read CSV export.');
+      }
+    } catch (\Throwable $error) {
+      fclose($output);
+      wp_die('Could not complete CSV export. Please try again.');
+      return;
+    }
     $filename = 'roxy-grosses-' . $dataset . '-' . wp_date('Y-m-d-His') . '.csv';
     nocache_headers();
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename=' . $filename);
-    $output = fopen('php://output', 'w');
-    if (!$output) {
-      wp_die('Could not open CSV export stream.');
-    }
-    fputcsv($output, $header);
-    foreach ($records as $record) {
-      fputcsv($output, $record);
-    }
+    fpassthru($output);
     fclose($output);
     exit;
+  }
+
+  private static function map_export_rows(callable $mapper, iterable $rows): \Generator {
+    foreach ($rows as $row) {
+      yield $mapper($row);
+    }
   }
 
   public static function handle_update_row(): void {

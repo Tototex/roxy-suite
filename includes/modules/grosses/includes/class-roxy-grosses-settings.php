@@ -876,7 +876,12 @@ class Settings {
       $scope = 'last12';
     }
     $dashboard_year = isset($_GET['grosses_dashboard_year']) ? max(0, (int) $_GET['grosses_dashboard_year']) : (int) wp_date('Y');
-    $snapshot = Store::dashboard_snapshot($scope, $dashboard_year);
+    try {
+      $snapshot = Store::dashboard_snapshot($scope, $dashboard_year);
+    } catch (\Throwable $error) {
+      echo '<div class="notice notice-error"><p>Grosses dashboard data is unavailable. Please try again. No complete analytics could be calculated.</p></div>';
+      return;
+    }
     $year_options = Store::distinct_years();
     echo '<div style="margin:16px 0 24px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;">';
     echo '<h2 style="margin-top:0;">Grosses Dashboard</h2>';

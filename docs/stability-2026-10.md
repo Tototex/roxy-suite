@@ -72,7 +72,7 @@ Current safeguards: preserve live customizations; back up changed files before d
 | G6 | Open | See audit; no resolution claimed. |
 | G7 | Open | See audit; no resolution claimed. |
 | G8 | Open | See audit; no resolution claimed. |
-| G9 | Open | See audit; no resolution claimed. |
+| G9 | Resolved for confirmed row caps | Checkpoint 31 replaces capped CSV/genre reads with 500-row keyset iteration across all four datasets, stable ID ties and an initial ID ceiling. Exports spool privately before download, rejecting late read/write failures; dashboard analytics failure shows an unavailable notice without incomplete totals or breaking other admin content. 30 actual MySQL fixture checks, 15 actual export-handler checks, four production SELECT parity checks and four browser downloads reconcile. Movie export contains all 2,029 rows with unchanged $487,229.50 ticket gross / $370,252.61 concessions. Concurrent edits are not a transactional snapshot; other workbook temporary paths remain G10. |
 | G10 | Open | See audit; no resolution claimed. |
 | G11 | Open | See audit; no resolution claimed. |
 | S1 | In progress | Connection-owned locks serialize publisher/remover and administrative mutations; SQL guards reject wrong/released owners. Queue claims before scheduling; stale jobs require review, never automatic approval. Auto-approval excludes Needs Review/manual/error/publication evidence. Review approval now requires an explicit nonce-protected POST confirmation and displayed revision: 10 isolated route/render checks and 4 actual WordPress/SQL checks pass. Original rows unchanged. Remote reconciliation remains human-driven; resumable video work remains open under S10. |

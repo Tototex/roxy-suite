@@ -687,6 +687,78 @@ class Store {
     return $row ?: null;
   }
 
+  /** Complete, bounded reads for exports/analytics; normal screen pagination stays capped. */
+  public static function iterate_dataset(string $dataset, array $filters = []): \Generator {
+    global $wpdb;
+    switch ($dataset) {
+      case 'movies':
+        $table = self::entries_table_name();
+        [$where, $params] = self::entry_where_sql($filters);
+        $sort = ['report_date' => 'DESC', 'show_time' => 'DESC', 'movie_title' => 'ASC', 'id' => 'ASC'];
+        break;
+      case 'live':
+        $table = self::live_entries_table_name();
+        [$where, $params] = self::live_entry_where_sql($filters);
+        $sort = ['report_date' => 'DESC', 'show_time' => 'DESC', 'show_title' => 'ASC', 'id' => 'ASC'];
+        break;
+      case 'rentals':
+        $table = self::rental_entries_table_name();
+        [$where, $params] = self::rental_entry_where_sql($filters);
+        $sort = ['report_date' => 'DESC', 'show_time' => 'DESC', 'rental_title' => 'ASC', 'id' => 'ASC'];
+        break;
+      case 'legacy':
+        $table = self::legacy_weekly_table_name();
+        [$where, $params] = self::legacy_weekly_where_sql($filters);
+        $sort = ['week_start_date' => 'DESC', 'movie_title' => 'ASC', 'id' => 'ASC'];
+        break;
+      default:
+        throw new \InvalidArgumentException('Unknown grosses dataset.');
+    }
+    $ceiling = $wpdb->get_var(self::prepare_query('SELECT MAX(id) FROM ' . $table . ' ' . $where, $params));
+    if ($wpdb->last_error !== '') {
+      throw new \RuntimeException('Could not read grosses data.');
+    }
+    if ($ceiling === null) {
+      return;
+    }
+    $order = [];
+    foreach ($sort as $column => $direction) {
+      // COALESCE gives legacy NULL strings a stable cursor, with SQL collation preserved.
+      $order[] = ($column === 'id' ? 'id' : "COALESCE($column, '')") . ' ' . $direction;
+    }
+    $cursor = null;
+    do {
+      $page_params = array_merge($params, [(int) $ceiling]);
+      $seek = '';
+      if ($cursor !== null) {
+        $branches = [];
+        $equals = [];
+        $equal_values = [];
+        foreach ($sort as $column => $direction) {
+          $expr = $column === 'id' ? 'id' : "COALESCE($column, '')";
+          $placeholder = $column === 'id' ? '%d' : '%s';
+          $value = $cursor[$column] ?? '';
+          $branches[] = '(' . implode(' AND ', array_merge($equals, [$expr . ($direction === 'DESC' ? ' < ' : ' > ') . $placeholder])) . ')';
+          $page_params = array_merge($page_params, $equal_values, [$value]);
+          $equals[] = $expr . ' = ' . $placeholder;
+          $equal_values[] = $value;
+        }
+        $seek = ' AND (' . implode(' OR ', $branches) . ')';
+      }
+      $sql = 'SELECT * FROM ' . $table . ' ' . $where . ' AND id <= %d' . $seek . ' ORDER BY ' . implode(', ', $order) . ' LIMIT 500';
+      $rows = $wpdb->get_results(self::prepare_query($sql, $page_params), ARRAY_A);
+      if ($wpdb->last_error !== '' || !is_array($rows)) {
+        throw new \RuntimeException('Could not read complete grosses data.');
+      }
+      foreach ($rows as $row) {
+        yield $row;
+      }
+      if ($rows) {
+        $cursor = $rows[count($rows) - 1];
+      }
+    } while (count($rows) === 500);
+  }
+
   public static function list_entries(array $filters = [], int $limit = 100, int $offset = 0): array {
     global $wpdb;
     [$where, $params] = self::entry_where_sql($filters);
@@ -1799,10 +1871,7 @@ class Store {
   }
 
   private static function top_movie_genre_average(array $filters, string $metric): ?array {
-    $rows = self::list_entries($filters, 5000, 0);
-    if (!$rows) {
-      return null;
-    }
+    $rows = self::iterate_dataset('movies', $filters);
 
     $metric_key = $metric === 'concessions' ? 'concessions_total' : 'gross_total';
     $genres = [];
@@ -1853,10 +1922,7 @@ class Store {
   }
 
   private static function top_movie_genre_groups(array $filters, int $limit = 5, string $metric = 'gross'): array {
-    $rows = self::list_entries($filters, 5000, 0);
-    if (!$rows) {
-      return [];
-    }
+    $rows = self::iterate_dataset('movies', $filters);
 
     $primary_key = $metric === 'concessions' ? 'concessions_total' : 'gross_total';
     $secondary_key = $metric === 'concessions' ? 'gross_total' : 'concessions_total';
