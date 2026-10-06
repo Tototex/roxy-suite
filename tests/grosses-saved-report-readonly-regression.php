@@ -9,6 +9,8 @@ namespace RoxyGrosses {
     public static function set_status(array $status): void { $GLOBALS['fixture_status'] = $status; }
   }
   final class Store {
+    public static function with_refund_review_lock(callable $operation) { return $operation(); }
+    public static function assert_refund_review_lock(): void {}
     public static array $snapshot = [];
     public static array $entries = [];
     public static array $history = [];

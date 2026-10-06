@@ -4,6 +4,9 @@ namespace RoxyGrosses;
 if (!defined('ABSPATH')) exit;
 
 class Reporter {
+  private static array $refund_review_dates = [];
+  private const REFUND_SCAN_DATE = 'roxy_grosses_refund_scan_date';
+  private const REFUND_PENDING_FROM = 'roxy_grosses_refund_pending_from';
   public static function init(): void {
     add_action('admin_post_roxy_grosses_send_manual', [__CLASS__, 'handle_manual_send']);
     add_action('admin_post_roxy_grosses_pull_database', [__CLASS__, 'handle_pull_database']);
@@ -318,16 +321,27 @@ class Reporter {
   }
 
   public static function send_report(string $report_date, string $mode = 'scheduled'): array {
+    try { return Store::with_refund_review_lock(static fn() => self::send_report_locked($report_date, $mode)); }
+    catch (\Throwable $error) { return ['success' => false, 'message' => $error->getMessage()]; }
+  }
+
+  private static function send_report_locked(string $report_date, string $mode): array {
     try {
       $reports = self::build_reports($report_date);
+      if ($mode === 'scheduled') {
+        foreach ($reports as $row) {
+          if (isset(self::$refund_review_dates[$row['report_date'] ?? ''])) throw new \RuntimeException('A later Square refund changed an already-emailed sale day. Review a fresh draft; it was not automatically resent.');
+        }
+      }
       $summary = self::summarize_reports($reports);
-      if ((int) ($summary['total_tickets'] ?? 0) <= 0) {
+      if ((int) ($summary['total_tickets'] ?? 0) <= 0 && !self::contains_refund_correction($reports)) {
         throw new \RuntimeException('No matching Square ticket sales were found for that report date or its configured lookback window.');
       }
 
       Store::upsert_history_rows($reports, $mode, null);
       Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, null), 'update');
 
+      Store::assert_refund_review_lock();
       $send = self::send_email($reports, $summary, $mode);
       if (!$send['success']) {
         throw new \RuntimeException($send['message']);
@@ -477,9 +491,63 @@ class Reporter {
     }
   }
 
-  public static function sync_automatic_tables(string $report_date, string $mode = 'scheduled-sync'): array {
+  public static function sync_automatic_tables(string $report_date, string $mode = 'scheduled-sync', ?\DateTimeImmutable $now = null): array {
+    global $wpdb;
+    $lock = 'roxy_grosses_refund_sync_' . substr(hash('sha256', Store::entries_table_name()), 0, 24);
+    $claimed = false;
     try {
-      $movie_rows = self::build_reports($report_date, true);
+      $claimed = (int) $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $lock)) === 1;
+      if (!$claimed) throw new \RuntimeException('A Grosses refund refresh is already running or its lock is unavailable.');
+      $timezone = new \DateTimeZone(Settings::get_report_timezone());
+      $cutoff = ($now ?? new \DateTimeImmutable('now', $timezone))->setTimezone($timezone);
+      $related = self::related_showings_by_date($report_date);
+      $dates = array_keys($related);
+      sort($dates);
+      $earliest = (string) ($dates[0] ?? $report_date);
+      $cursor = (string) get_option(self::REFUND_SCAN_DATE, '');
+      if ($cursor !== '') {
+        $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $cursor, $cutoff->getTimezone());
+        if (!$parsed || $parsed->format('Y-m-d') !== $cursor || $parsed > $cutoff) throw new \RuntimeException('The Square refund scan checkpoint is invalid; review it before continuing.');
+        $scan_from = $parsed->modify('-1 day')->format('Y-m-d');
+      } else $scan_from = $cutoff->modify('-30 days')->format('Y-m-d');
+      $earliest = min($earliest, $scan_from);
+      $pending_from = (string) get_option(self::REFUND_PENDING_FROM, '');
+      if ($pending_from !== '') {
+        $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $pending_from, $cutoff->getTimezone());
+        if (!$parsed || $parsed->format('Y-m-d') !== $pending_from || $parsed > $cutoff) throw new \RuntimeException('The pending Square refund checkpoint needs review.');
+        $earliest = min($earliest, $pending_from);
+      }
+      $deadline = microtime(true) + 120;
+      // Expand to original source days so earlier partial refunds are included.
+      for ($attempt = 0; ; $attempt++) {
+        $snapshot = RefundSnapshot::load($earliest, $cutoff, $deadline);
+        $source_dates = $snapshot->original_sale_dates();
+        $source_earliest = $source_dates[0] ?? $earliest;
+        if ($source_earliest >= $earliest) break;
+        if ($attempt >= 19) throw new \RuntimeException('Square refund source discovery exceeded its safety limit.');
+        $earliest = $source_earliest;
+      }
+      $refund_updated = 0; $refund_protected = 0;
+      foreach ($snapshot->original_sale_dates() as $date) {
+        if (isset($related[$date])) continue;
+        $sources = $snapshot->source_orders_for_date($date);
+        $ticket_lines = [];
+        foreach ($sources as $sale) foreach (($sale['line_items'] ?? []) as $line) if (self::classify_ticket_variation($line) !== '') $ticket_lines[$sale['id']][$line['uid'] ?? ''] = true;
+        if (!$ticket_lines) continue; // Cash/concession refunds have a separate path.
+        $reconciled = $snapshot->reconcile_sale_day($date, $sources);
+        if ($reconciled['issues']) throw new \RuntimeException('A past original sale day has a Square return requiring manual review. No corrected report was automatically sent.');
+        $ticket_returned = false;
+        foreach ($reconciled['adjustments'] as $adjustment) if (isset($ticket_lines[$adjustment['source_order_id']][$adjustment['source_line_item_uid']])) $ticket_returned = true;
+        if (!$ticket_returned) continue;
+        $showings = self::showings_for_date($date);
+        if (!$showings) throw new \RuntimeException('A refunded past sale has no original showing to refresh. Review it manually.');
+        $corrections = self::build_reports_for_date_showings($date, $showings, $snapshot, true);
+        if ((int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', $lock)) !== 1) throw new \RuntimeException('Grosses refund refresh lost its database lock.');
+        $result = Store::update_refunded_movie_quantities($corrections);
+        $refund_updated += $result['updated'];
+        $refund_protected += $result['protected'];
+      }
+      $movie_rows = self::build_reports($report_date, true, $snapshot);
       $live_rows = self::build_live_reports($report_date, true);
 
       $movie_result = ['created' => 0, 'updated' => 0, 'skipped' => 0];
@@ -493,6 +561,14 @@ class Reporter {
         $live_result = Store::upsert_live_entries($live_rows, 'update');
       }
       self::rebalance_concessions_for_date($report_date);
+      if ((int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', $lock)) !== 1) throw new \RuntimeException('Grosses refund refresh lost its database lock.');
+      $scan_date = $cutoff->format('Y-m-d');
+      $pending_dates = $snapshot->pending_source_dates();
+      $pending_date = (string) ($pending_dates[0] ?? '');
+      update_option(self::REFUND_PENDING_FROM, $pending_date, false);
+      if ((string) get_option(self::REFUND_PENDING_FROM, '') !== $pending_date) throw new \RuntimeException('Could not record pending Square refunds for retry.');
+      update_option(self::REFUND_SCAN_DATE, $scan_date, false);
+      if ((string) get_option(self::REFUND_SCAN_DATE, '') !== $scan_date) throw new \RuntimeException('Could not record the Square refund scan checkpoint. Retry the refresh.');
 
       $movie_paid_rows = 0;
       foreach ($movie_rows as $row) {
@@ -520,6 +596,9 @@ class Reporter {
         'live_rows' => count($live_rows),
         'live_created' => (int) ($live_result['created'] ?? 0),
         'live_updated' => (int) ($live_result['updated'] ?? 0),
+        'refund_movie_rows_updated' => $refund_updated,
+        'refund_movie_rows_protected' => $refund_protected,
+        'pending_refund_source_days' => count($pending_dates),
       ]);
       self::log_sync_anomalies($report_date, $mode, $movie_rows, $live_rows);
 
@@ -531,6 +610,8 @@ class Reporter {
         'live_rows' => count($live_rows),
         'movie_result' => $movie_result,
         'live_result' => $live_result,
+        'refund_movie_rows_updated' => $refund_updated,
+        'refund_movie_rows_protected' => $refund_protected,
       ];
     } catch (\Throwable $e) {
       Store::insert_log('sync_tables', $mode, null, $report_date, false, $e->getMessage());
@@ -544,6 +625,8 @@ class Reporter {
         'movie_result' => ['created' => 0, 'updated' => 0, 'skipped' => 0],
         'live_result' => ['created' => 0, 'updated' => 0, 'skipped' => 0],
       ];
+    } finally {
+      if ($claimed) $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock));
     }
   }
 
@@ -909,7 +992,7 @@ class Reporter {
     try {
       $reports = self::build_reports($report_date);
       $summary = self::summarize_reports($reports);
-      if ((int) ($summary['total_tickets'] ?? 0) <= 0) {
+      if ((int) ($summary['total_tickets'] ?? 0) <= 0 && !self::contains_refund_correction($reports)) {
         throw new \RuntimeException('No matching Square ticket sales were found for that report date or its configured lookback window.');
       }
 
@@ -952,6 +1035,11 @@ class Reporter {
   }
 
   public static function send_saved_report(int $report_id): array {
+    try { return Store::with_refund_review_lock(static fn() => self::send_saved_report_locked($report_id)); }
+    catch (\Throwable $error) { return ['success' => false, 'message' => $error->getMessage()]; }
+  }
+
+  private static function send_saved_report_locked(int $report_id): array {
     $saved = Store::get_report($report_id);
     if (!$saved) {
       Store::insert_log('send_saved_report', 'saved-report', $report_id, null, false, 'Saved report not found.');
@@ -962,6 +1050,7 @@ class Reporter {
       ];
     }
 
+    if (!empty($saved['refund_review'])) return ['success' => false, 'message' => 'This emailed snapshot needs refund review. Pull and review a fresh draft instead of resending outdated figures.'];
     $summary = is_array($saved['summary'] ?? null) ? $saved['summary'] : [];
     $rows = is_array($saved['rows'] ?? null) ? $saved['rows'] : [];
     if (!$rows) {
@@ -973,6 +1062,7 @@ class Reporter {
       ];
     }
 
+    Store::assert_refund_review_lock();
     $send = self::send_email($rows, $summary, 'saved-report');
     if (!$send['success']) {
       Store::insert_log('send_saved_report', 'saved-report', $report_id, (string) ($saved['report_end_date'] ?? ''), false, $send['message']);
@@ -1002,12 +1092,17 @@ class Reporter {
     ];
   }
 
-  public static function build_reports(string $report_date, bool $include_empty = false): array {
+  public static function build_reports(string $report_date, bool $include_empty = false, ?RefundSnapshot $refund_snapshot = null): array {
     $reports = [];
     $showings_by_date = self::related_showings_by_date($report_date);
+    if ($showings_by_date && $refund_snapshot === null) {
+      $dates = array_keys($showings_by_date);
+      sort($dates);
+      $refund_snapshot = RefundSnapshot::load((string) $dates[0]);
+    }
 
     foreach ($showings_by_date as $date => $showings) {
-      foreach (self::build_reports_for_date_showings((string) $date, (array) $showings) as $report) {
+      foreach (self::build_reports_for_date_showings((string) $date, (array) $showings, $refund_snapshot) as $report) {
         $reports[] = $report;
       }
     }
@@ -1023,7 +1118,7 @@ class Reporter {
     }
 
     return array_values(array_filter($reports, static function (array $report): bool {
-      return (int) ($report['total_tickets'] ?? 0) > 0;
+      return (int) ($report['total_tickets'] ?? 0) > 0 || !empty($report['refund_adjusted']);
     }));
   }
 
@@ -1118,8 +1213,13 @@ class Reporter {
     }));
   }
 
-  private static function build_reports_for_date_showings(string $report_date, array $showings): array {
+  private static function build_reports_for_date_showings(string $report_date, array $showings, ?RefundSnapshot $refund_snapshot = null, bool $require_nominal_baseline = false): array {
     $orders = Square::fetch_orders_for_date($report_date);
+    $reconciliation = $refund_snapshot ? $refund_snapshot->reconcile_sale_day($report_date, $orders) : ['orders' => $orders, 'adjustments' => [], 'issues' => []];
+    if ($reconciliation['issues']) throw new \RuntimeException('Square returns for this original sale day need manual review (custom amount, unverified refund, or invalid item reference). No report was calculated or sent.');
+    $orders = $reconciliation['orders'];
+    $returned_lines = [];
+    foreach ($reconciliation['adjustments'] as $adjustment) $returned_lines[$adjustment['source_order_id']][$adjustment['source_line_item_uid']] = true;
     $prices = self::ticket_prices();
     $reports = [];
 
@@ -1145,6 +1245,28 @@ class Reporter {
       ];
     }
 
+    $showing_prices = [];
+    foreach ($orders as $order) {
+      $closed = self::order_closed_at($order);
+      foreach (($order['line_items'] ?? []) as $line) {
+        if (!isset($returned_lines[$order['id'] ?? ''][$line['uid'] ?? '']) || self::classify_ticket_variation($line) === '') continue;
+        $candidates = [];
+        foreach ($showings as $showing) if ($closed && ($showing['start_at'] ?? null) instanceof \DateTimeImmutable && abs($closed->getTimestamp() - $showing['start_at']->getTimestamp()) <= 90 * 60) $candidates[] = (int) $showing['id'];
+        if (count($candidates) !== 1 || !isset($reports[$candidates[0]])) throw new \RuntimeException('A refunded Square ticket cannot be uniquely linked to its original showing. Review it manually; no report was sent.');
+        $id = $candidates[0];
+        $reports[$id]['refund_adjusted'] = true;
+        if (!isset($showing_prices[$id])) {
+          $remaining_tickets = false;
+          foreach ($orders as $remaining_order) {
+            $remaining_closed = self::order_closed_at($remaining_order);
+            if (!$remaining_closed || self::matching_showing_id_for_order_time($remaining_closed, $showings) !== $id) continue;
+            foreach (($remaining_order['line_items'] ?? []) as $remaining_line) if (self::classify_ticket_variation($remaining_line) !== '' && (float) ($remaining_line['quantity'] ?? 0) > 0) $remaining_tickets = true;
+          }
+          $showing_prices[$id] = $remaining_tickets ? Store::nominal_ticket_prices_for_showing($report_date, $id, $prices, $require_nominal_baseline) : $prices;
+        }
+      }
+    }
+
     foreach ($orders as $order) {
       $order_closed_at = self::order_closed_at($order);
       if (!$order_closed_at) {
@@ -1167,7 +1289,7 @@ class Reporter {
           continue;
         }
 
-        $gross = round($qty * (float) ($prices[$category] ?? 0), 2);
+        $gross = round($qty * (float) (($showing_prices[$showing_id] ?? $prices)[$category] ?? 0), 2);
         $reports[$showing_id][$category . '_qty'] += $qty;
         $reports[$showing_id][$category . '_gross'] += $gross;
         $reports[$showing_id]['total_tickets'] += $qty;
@@ -1188,7 +1310,17 @@ class Reporter {
     }
     unset($report);
 
+    if (self::contains_refund_correction(array_values($reports))) {
+      $flagged = Store::flag_emailed_refund_changes($report_date, array_values($reports));
+      if ($flagged) self::$refund_review_dates[$report_date] = true;
+    }
+
     return array_values($reports);
+  }
+
+  private static function contains_refund_correction(array $reports): bool {
+    foreach ($reports as $report) if (!empty($report['refund_adjusted'])) return true;
+    return false;
   }
 
   private static function related_showings_by_date(string $report_date): array {

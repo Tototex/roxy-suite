@@ -6,6 +6,8 @@ if (!defined('ABSPATH')) exit;
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-settings.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-metadata.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-square.php';
+require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-returns.php';
+require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-refund-snapshot.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-store.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-reporter.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-scheduler.php';

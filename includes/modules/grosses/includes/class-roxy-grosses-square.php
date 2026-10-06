@@ -9,6 +9,57 @@ class Square {
 
   public static function fetch_orders_for_date(string $report_date): array {
     [$start_at, $end_at] = self::date_window($report_date, Settings::get_report_timezone());
+    return self::search_orders_window($start_at, $end_at, 'closed_at');
+  }
+
+  /** Return discovery is separate from sale-day searches, including late updates. */
+  public static function fetch_orders_updated_between(string $start_at, string $end_at, ?float $deadline = null, bool $returns_only = false): array {
+    $pattern = '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/';
+    if (!preg_match($pattern, $start_at) || !preg_match($pattern, $end_at)) {
+      throw new \RuntimeException('Use explicit timezone timestamps for Square return discovery.');
+    }
+    $start = new \DateTimeImmutable($start_at);
+    $errors = \DateTimeImmutable::getLastErrors();
+    if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('Invalid Square return-discovery start timestamp.');
+    $end = new \DateTimeImmutable($end_at);
+    $errors = \DateTimeImmutable::getLastErrors();
+    if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('Invalid Square return-discovery end timestamp.');
+    if ($start >= $end) throw new \RuntimeException('Square return discovery requires an increasing time window.');
+    return self::search_orders_window($start->format('c'), $end->format('c'), 'updated_at', $deadline, $returns_only);
+  }
+
+  public static function retrieve_orders(array $order_ids, ?float $deadline = null): array {
+    $ids = [];
+    foreach ($order_ids as $id) {
+      if (!is_string($id) || $id === '' || strlen($id) > 192) throw new \RuntimeException('Invalid source order reference in Square returns.');
+      $ids[$id] = true;
+    }
+    if (count($ids) > 1000) throw new \RuntimeException('Square source-order lookup exceeded its safety limit.');
+    $orders = [];
+    $deadline = $deadline ?? microtime(true) + 120;
+    foreach (array_chunk(array_keys($ids), 100) as $batch) {
+      if (microtime(true) >= $deadline) throw new \RuntimeException('Square source-order lookup timed out.');
+      $response = self::request('POST', '/v2/orders/batch-retrieve', ['order_ids' => $batch], $deadline);
+      if (!isset($response['orders']) || !is_array($response['orders']) || !array_is_list($response['orders'])) throw new \RuntimeException('Square did not return source orders.');
+      foreach ($response['orders'] as $order) {
+        $id = is_array($order) ? ($order['id'] ?? null) : null;
+        if (!is_string($id) || !in_array($id, $batch, true) || isset($orders[$id])) throw new \RuntimeException('Square returned unexpected or duplicate source orders.');
+        $orders[$id] = $order;
+      }
+      foreach ($batch as $id) if (!isset($orders[$id])) throw new \RuntimeException('A referenced Square source order is unavailable; no correction was calculated.');
+    }
+    return array_values($orders);
+  }
+
+  public static function retrieve_payment_refund(string $refund_id, ?float $deadline = null): array {
+    if ($refund_id === '' || strlen($refund_id) > 255) throw new \RuntimeException('Invalid Square payment-refund reference.');
+    $response = self::request('GET', '/v2/refunds/' . rawurlencode($refund_id), null, $deadline);
+    $refund = $response['refund'] ?? null;
+    if (!is_array($refund) || ($refund['id'] ?? null) !== $refund_id || !in_array($refund['status'] ?? '', ['PENDING', 'COMPLETED', 'REJECTED', 'FAILED'], true)) throw new \RuntimeException('Square returned an invalid payment-refund status.');
+    return $refund;
+  }
+
+  private static function search_orders_window(string $start_at, string $end_at, string $date_field, ?float $deadline = null, bool $returns_only = false): array {
     $location_ids = Settings::line_list((string) (Settings::get_all()['square_location_ids'] ?? ''));
     if (!$location_ids) {
       throw new \RuntimeException('Add at least one Square location ID before sending grosses reports.');
@@ -20,7 +71,7 @@ class Square {
     $seen_cursors = [];
     $seen_orders = [];
     $pages = 0;
-    $deadline = microtime(true) + 120;
+    $deadline = $deadline ?? microtime(true) + 120;
 
     do {
       if (++$pages > 100 || microtime(true) >= $deadline) throw new \RuntimeException('Square order retrieval exceeded its safety limit. No partial report was returned.');
@@ -30,7 +81,7 @@ class Square {
         'query' => [
           'filter' => [
             'date_time_filter' => [
-              'closed_at' => [
+              $date_field => [
                 'start_at' => $start_at,
                 'end_at' => $end_at,
               ],
@@ -40,7 +91,7 @@ class Square {
             ],
           ],
           'sort' => [
-            'sort_field' => 'CLOSED_AT',
+            'sort_field' => strtoupper($date_field),
             'sort_order' => 'ASC',
           ],
         ],
@@ -61,7 +112,7 @@ class Square {
       foreach ((array) ($data['orders'] ?? []) as $order) {
         if (!is_array($order) || !isset($order['id']) || !is_string($order['id']) || $order['id'] === '' || isset($seen_orders[$order['id']])) throw new \RuntimeException('Square returned invalid or repeated orders. No partial report was returned.');
         $seen_orders[$order['id']] = true;
-        $orders[] = $order;
+        if (!$returns_only || !empty($order['returns'])) $orders[] = $order;
       }
 
       if (array_key_exists('cursor', $data) && (!is_string($data['cursor']) || $data['cursor'] === '' || strlen($data['cursor']) > 10000)) throw new \RuntimeException('Square returned an invalid pagination cursor. No partial report was returned.');
@@ -167,6 +218,7 @@ class Square {
   }
 
   private static function request(string $method, string $path, array $body = null, ?float $deadline = null): array {
+    if ($deadline !== null && microtime(true) >= $deadline) throw new \RuntimeException('Square retrieval timed out. No partial result was returned.');
     $settings = Settings::get_all();
     $token = Settings::square_access_token();
 

@@ -17,6 +17,9 @@ class Store {
   public const HISTORY_BACKFILL_OPTION = 'roxy_grosses_history_backfilled';
   public const ENTRY_MIGRATION_OPTION = 'roxy_grosses_entries_migrated';
   public const ROW_LOCK_SCHEMA_OPTION = 'roxy_grosses_row_lock_schema';
+  public const REFUND_REVIEW_TABLE = 'roxy_grosses_refund_reviews';
+  private static ?bool $refund_review_schema_exists = null;
+  private static int $refund_review_lock_depth = 0;
 
   public static function table_name(): string {
     global $wpdb;
@@ -477,6 +480,7 @@ class Store {
     $payload = json_decode((string) $row['payload_json'], true);
     $row['summary'] = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
     $row['rows'] = is_array($payload['rows'] ?? null) ? $payload['rows'] : [];
+    $row['refund_review'] = self::refund_reviews([$report_id])[$report_id] ?? [];
     return $row;
   }
 
@@ -491,7 +495,11 @@ class Store {
        FROM ' . self::table_name() . ' ORDER BY report_end_date DESC, id DESC LIMIT %d',
       max(1, min(200, $limit))
     ), ARRAY_A);
-    return is_array($rows) ? $rows : [];
+    if (!is_array($rows)) return [];
+    $reviews = self::refund_reviews(array_column($rows, 'id'));
+    foreach ($rows as &$row) $row['refund_review'] = $reviews[(int) $row['id']] ?? [];
+    unset($row);
+    return $rows;
   }
 
   public static function list_saved_reports(int $limit = 50): array {
@@ -511,6 +519,194 @@ class Store {
       'context_json' => wp_json_encode($context),
     ]);
     return $ok ? (int) $wpdb->insert_id : 0;
+  }
+
+  /** Immutable emailed snapshots are flagged separately, never rewritten/resent. */
+  public static function flag_emailed_refund_changes(string $date, array $new_rows): array {
+    return self::with_refund_review_lock(static fn() => self::flag_emailed_refund_changes_locked($date, $new_rows, self::refund_review_lock_name()));
+  }
+
+  private static function refund_review_lock_name(): string {
+    return 'roxy_grosses_refund_review_' . substr(hash('sha256', self::table_name()), 0, 24);
+  }
+
+  /** Serialize review evidence and the managed movie email decision/dispatch. */
+  public static function with_refund_review_lock(callable $operation) {
+    global $wpdb;
+    $lock = self::refund_review_lock_name();
+    $outermost = self::$refund_review_lock_depth === 0;
+    if ($outermost && (int) $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $lock)) !== 1) throw new \RuntimeException('Refund review or report email is already running, or its lock is unavailable. Retry after it completes.');
+    self::$refund_review_lock_depth++;
+    try {
+      self::assert_refund_review_lock();
+      return $operation();
+    } finally {
+      self::$refund_review_lock_depth--;
+      if ($outermost) $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock));
+    }
+  }
+
+  public static function assert_refund_review_lock(): void {
+    global $wpdb;
+    if (self::$refund_review_lock_depth < 1 || (int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', self::refund_review_lock_name())) !== 1) throw new \RuntimeException('Reporting lost its refund-review lock. No further email dispatch is permitted.');
+  }
+
+  private static function flag_emailed_refund_changes_locked(string $date, array $new_rows, string $lock): array {
+    global $wpdb;
+    $after = self::studio_refund_projection($date, $new_rows);
+    $flagged = [];
+    $cursor = 0;
+    do {
+      $reports = $wpdb->get_results($wpdb->prepare('SELECT id, payload_json FROM ' . self::table_name() . " WHERE status = 'emailed' AND report_end_date >= %s AND id > %d ORDER BY id ASC LIMIT 50", $date, $cursor), ARRAY_A);
+      if ($wpdb->last_error || !is_array($reports)) throw new \RuntimeException('Could not check emailed reports for refund corrections.');
+      foreach ($reports as $report) {
+        $cursor = (int) $report['id'];
+        $payload = json_decode($report['payload_json'], true);
+        if (!is_array($payload) || !is_array($payload['rows'] ?? null) || !array_is_list($payload['rows'])) throw new \RuntimeException('A saved report snapshot is unreadable; refund review requires attention.');
+        $before = self::studio_refund_projection($date, $payload['rows']);
+        if (!$before || $before === $after) continue;
+        self::ensure_refund_review_schema();
+        $table = $wpdb->prefix . self::REFUND_REVIEW_TABLE;
+        $existing = $wpdb->get_var($wpdb->prepare("SELECT changes_json FROM $table WHERE report_id = %d", $cursor));
+        if ($wpdb->last_error) throw new \RuntimeException('Could not read refund review evidence.');
+        $changes = $existing === null ? [] : json_decode($existing, true);
+        if (!is_array($changes)) throw new \RuntimeException('Existing refund review evidence is unreadable.');
+        $changes[$date] = ['before' => $before, 'after' => $after];
+        ksort($changes);
+        $json = wp_json_encode($changes);
+        if (!is_string($json)) throw new \RuntimeException('Could not encode refund review evidence.');
+        if ($json !== $existing) {
+          if ((int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', $lock)) !== 1) throw new \RuntimeException('Refund review lost its database lock. Retry before sending.');
+          $now = current_time('mysql');
+          $result = $wpdb->query($wpdb->prepare("INSERT INTO $table (report_id, created_at, updated_at, changes_json) VALUES (%d, %s, %s, %s) ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at), changes_json = VALUES(changes_json)", $cursor, $now, $now, $json));
+          if ($result === false) throw new \RuntimeException('Could not save refund review flag. No automatic corrected report was sent.');
+        }
+        $flagged[] = $cursor;
+      }
+    } while (count($reports) === 50);
+    return $flagged;
+  }
+
+  public static function refund_reviews(array $report_ids): array {
+    global $wpdb;
+    $ids = array_values(array_unique(array_filter(array_map('intval', $report_ids), static fn($id) => $id > 0)));
+    if (!$ids || !self::refund_review_schema_present()) return [];
+    $rows = $wpdb->get_results('SELECT report_id, changes_json FROM ' . $wpdb->prefix . self::REFUND_REVIEW_TABLE . ' WHERE report_id IN (' . implode(',', $ids) . ')', ARRAY_A);
+    if ($wpdb->last_error || !is_array($rows)) throw new \RuntimeException('Could not read refund review flags.');
+    $reviews = [];
+    foreach ($rows as $row) {
+      $changes = json_decode($row['changes_json'], true);
+      if (!is_array($changes)) throw new \RuntimeException('Unreadable refund review flag.');
+      $reviews[(int) $row['report_id']] = $changes;
+    }
+    return $reviews;
+  }
+
+  private static function studio_refund_projection(string $date, array $rows): array {
+    $projection = [];
+    foreach ($rows as $row) {
+      if (!is_array($row)) throw new \RuntimeException('A saved studio report row is unreadable.');
+      if (($row['report_date'] ?? '') !== $date) continue;
+      $projection[] = [(int) ($row['showing_id'] ?? 0), (string) ($row['show_time'] ?? ''), (string) ($row['film_title'] ?? ''), (int) ($row['general_qty'] ?? 0), (int) ($row['discount_qty'] ?? 0), (int) ($row['group_qty'] ?? 0), (int) ($row['live_qty'] ?? 0), (int) ($row['total_tickets'] ?? 0), number_format((float) ($row['gross_total'] ?? 0), 2, '.', '')];
+    }
+    sort($projection);
+    return $projection;
+  }
+
+  /** Refund refresh changes ticket columns only: never allocations/metadata/locks. */
+  public static function nominal_ticket_prices_for_showing(string $date, int $showing_id, array $fallback, bool $require_baseline = false): array {
+    global $wpdb;
+    $cursor = PHP_INT_MAX;
+    do {
+      $reports = $wpdb->get_results($wpdb->prepare('SELECT id, payload_json FROM ' . self::table_name() . " WHERE status = 'emailed' AND report_end_date >= %s AND id < %d ORDER BY id DESC LIMIT 50", $date, $cursor), ARRAY_A);
+      if ($wpdb->last_error || !is_array($reports)) throw new \RuntimeException('Could not read original studio prices for a refund.');
+      foreach ($reports as $saved) {
+        $cursor = (int) $saved['id'];
+        $payload = json_decode($saved['payload_json'], true);
+        if (!is_array($payload['rows'] ?? null) || !array_is_list($payload['rows'])) throw new \RuntimeException('Original studio price evidence is unreadable.');
+        $matching = [];
+        foreach ($payload['rows'] as $row) {
+          if (!is_array($row)) throw new \RuntimeException('Original studio price row is unreadable.');
+          if (($row['report_date'] ?? '') !== $date || (int) ($row['showing_id'] ?? 0) !== $showing_id) continue;
+          $matching[] = $row;
+        }
+        if (count($matching) > 1) throw new \RuntimeException('Original studio price evidence has duplicate showing rows. Review it manually.');
+        if ($matching) {
+          $row = $matching[0];
+          $quantity = 0;
+          foreach (['general','discount','group','live'] as $category) {
+            $qty = $row[$category . '_qty'] ?? 0;
+            if (!is_numeric($qty) || !is_finite((float) $qty) || (float) $qty < 0 || (float) $qty !== (float) (int) $qty) throw new \RuntimeException('Invalid original studio ticket quantities.');
+            $quantity += (int) $qty;
+          }
+          if ($quantity > 0) return self::prices_from_nominal_baseline($row, $fallback);
+        }
+      }
+    } while (count($reports) === 50);
+    if (!$require_baseline) return $fallback;
+    $rows = $wpdb->get_results($wpdb->prepare('SELECT general_qty, discount_qty, group_qty, live_qty, gross_total FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND showing_id = %d LIMIT 2', $date, $showing_id), ARRAY_A);
+    if ($wpdb->last_error || !is_array($rows) || count($rows) !== 1) throw new \RuntimeException('No unique original nominal-price evidence exists for this past refund. Review the sale day manually.');
+    return self::prices_from_nominal_baseline($rows[0], $fallback);
+  }
+
+  private static function prices_from_nominal_baseline(array $row, array $fallback): array {
+    $nonzero = [];
+    foreach (['general','discount','group','live'] as $category) {
+      $qty = $row[$category . '_qty'] ?? 0;
+      if (!is_numeric($qty) || (float) $qty < 0 || (float) $qty !== (float) (int) $qty) throw new \RuntimeException('Invalid original studio ticket quantities.');
+      if ((int) $qty > 0) $nonzero[$category] = (int) $qty;
+    }
+    if (!$nonzero) throw new \RuntimeException('Original nominal ticket prices cannot be inferred from an empty historical row. Review it manually.');
+    $prices = $fallback;
+    foreach ($nonzero as $category => $qty) {
+      $gross = $row[$category . '_gross'] ?? (count($nonzero) === 1 ? ($row['gross_total'] ?? null) : null);
+      if (!is_numeric($gross) || !is_finite((float) $gross) || (float) $gross < 0) throw new \RuntimeException('Original nominal category prices are unavailable; no historical repricing was applied.');
+      $scaled = (float) $gross * 100;
+      if (!is_finite($scaled) || $scaled >= PHP_INT_MAX || abs($scaled - round($scaled)) > 0.000001) throw new \RuntimeException('Original nominal price evidence has invalid fractional cents. Review it manually.');
+      $cents = (int) round($scaled);
+      if ($cents % $qty !== 0) throw new \RuntimeException('Original nominal price evidence is ambiguous; review the refund manually.');
+      $prices[$category] = (float) (($cents / $qty) / 100);
+    }
+    return $prices;
+  }
+
+  public static function update_refunded_movie_quantities(array $reports): array {
+    global $wpdb;
+    $updated = 0; $protected = 0;
+    foreach ($reports as $report) {
+      if (empty($report['refund_adjusted'])) continue;
+      $candidates = $wpdb->get_results($wpdb->prepare('SELECT id, is_locked FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND ((showing_id = %d AND showing_id > 0) OR (normalized_title = %s AND show_time = %s)) LIMIT 2', (string) $report['report_date'], (int) ($report['showing_id'] ?? 0), self::normalize_title((string) $report['film_title']), (string) ($report['show_time'] ?? '')), ARRAY_A);
+      if ($wpdb->last_error || !is_array($candidates)) throw new \RuntimeException('Could not find the original refunded movie row.');
+      if (count($candidates) !== 1) throw new \RuntimeException('A refunded original showing has no unique stored movie row. Review it before refreshing historical figures.');
+      $existing = $candidates[0];
+      if (!empty($existing['is_locked'])) { $protected++; continue; }
+      $payload = ['updated_at' => current_time('mysql')];
+      foreach (['general_qty', 'discount_qty', 'group_qty', 'live_qty', 'total_tickets'] as $field) $payload[$field] = max(0, (int) ($report[$field] ?? 0));
+      $payload['gross_total'] = round((float) ($report['gross_total'] ?? 0), 2);
+      if (!self::update_protected_row(self::entries_table_name(), $payload, (int) $existing['id'])) {
+        if ($wpdb->last_error) throw new \RuntimeException('Could not refresh refunded movie ticket totals. Retry after storage recovery.');
+        $protected++;
+      } else $updated++;
+    }
+    return ['updated' => $updated, 'protected' => $protected];
+  }
+
+  private static function refund_review_schema_present(): bool {
+    global $wpdb;
+    if (self::$refund_review_schema_exists !== null) return self::$refund_review_schema_exists;
+    $table = $wpdb->prefix . self::REFUND_REVIEW_TABLE;
+    $found = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table)));
+    if ($wpdb->last_error) throw new \RuntimeException('Could not verify refund review storage.');
+    return self::$refund_review_schema_exists = ($found === $table);
+  }
+
+  private static function ensure_refund_review_schema(): void {
+    global $wpdb;
+    if (self::refund_review_schema_present()) return;
+    $table = $wpdb->prefix . self::REFUND_REVIEW_TABLE;
+    if ($wpdb->query("CREATE TABLE IF NOT EXISTS $table (report_id BIGINT UNSIGNED NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, changes_json LONGTEXT NOT NULL, PRIMARY KEY (report_id)) ENGINE=InnoDB " . $wpdb->get_charset_collate()) === false) throw new \RuntimeException('Could not create refund review storage.');
+    self::$refund_review_schema_exists = null;
+    if (!self::refund_review_schema_present()) throw new \RuntimeException('Refund review storage is unavailable.');
   }
 
   public static function count_logs(array $filters = []): int {
@@ -2256,7 +2452,8 @@ class Store {
   }
 
   public static function backup_table_names(): array {
-    return [
+    global $wpdb;
+    $tables = [
       self::entries_table_name(),
       self::live_entries_table_name(),
       self::rental_entries_table_name(),
@@ -2267,6 +2464,8 @@ class Store {
       self::import_batch_table_name(),
       self::import_file_table_name(),
     ];
+    if (self::refund_review_schema_present()) $tables[] = $wpdb->prefix . self::REFUND_REVIEW_TABLE;
+    return $tables;
   }
 
   public static function unresolved_movie_metadata_count(): int {

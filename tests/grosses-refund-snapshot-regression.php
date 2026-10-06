@@ -1,0 +1,182 @@
+<?php
+namespace RoxyGrosses {
+
+/** Isolated API/settings fakes; no WordPress functions, persistence, or mail. */
+final class Settings {
+  public static string $timezone = 'America/Los_Angeles';
+  public static function get_report_timezone(): string { return self::$timezone; }
+}
+final class Square {
+  public static array $orders = [];
+  public static array $refunds = [];
+  public static array $sources = [];
+  public static array $calls = [];
+  public static function reset(): void { self::$orders = self::$refunds = self::$sources = self::$calls = []; }
+  public static function fetch_orders_updated_between(string $start, string $end, ?float $deadline = null, bool $returns_only = false): array {
+    self::$calls['window'] = [$start, $end];
+    self::$calls['returns_only'] = $returns_only;
+    self::$calls['fetch'] = (self::$calls['fetch'] ?? 0) + 1;
+    return self::$orders;
+  }
+  public static function retrieve_payment_refund(string $id, ?float $deadline = null): array {
+    self::$calls['refund_ids'][] = $id;
+    if (!isset(self::$refunds[$id])) throw new \RuntimeException('Missing fake payment refund');
+    return self::$refunds[$id];
+  }
+  public static function retrieve_orders(array $ids, ?float $deadline = null): array {
+    self::$calls['source_batches'][] = $ids;
+    if (isset(self::$calls['missing_source'])) throw new \RuntimeException('A referenced Square source order is unavailable; no correction was calculated.');
+    $result = [];
+    foreach ($ids as $id) if (isset(self::$sources[$id])) $result[] = self::$sources[$id];
+    return $result;
+  }
+}
+
+}
+namespace {
+  if (!defined('ABSPATH')) define('ABSPATH', __DIR__ . DIRECTORY_SEPARATOR);
+  $root = isset($argv[1]) ? rtrim($argv[1], "\\/") : dirname(__DIR__);
+  $returns_path = $argv[2] ?? ($root . '/includes/modules/grosses/includes/class-roxy-grosses-returns.php');
+  $snapshot_path = $argv[3] ?? ($root . '/includes/modules/grosses/includes/class-roxy-grosses-refund-snapshot.php');
+  foreach ([$returns_path, $snapshot_path] as $path) {
+    if (!is_file($path)) { fwrite(STDERR, "Missing candidate file: {$path}\n"); exit(2); }
+    require_once $path;
+  }
+
+  $checks = 0;
+  $failures = [];
+  $assert = static function ($condition, string $message) use (&$checks, &$failures): void {
+    $checks++;
+    if (!$condition) $failures[] = $message;
+  };
+  $expect_throw = static function (callable $fn, string $message) use ($assert): void {
+    try { $fn(); $assert(false, $message); }
+    catch (\Throwable $error) { $assert(true, $message); }
+  };
+  $sale = static function (string $id, string $closed_at = '2026-08-12T19:00:00Z'): array {
+    return ['id' => $id, 'closed_at' => $closed_at, 'state' => 'COMPLETED', 'line_items' => [
+      ['uid' => 'line-' . $id, 'item_type' => 'ITEM', 'quantity' => '3', 'name' => 'Ticket'],
+    ]];
+  };
+  $ret = static function (string $order_id, string $source_id, string $item_uid, string $refund_id, string $payment_id, string $quantity = '1'): array {
+    return [
+      'id' => $order_id, 'state' => 'COMPLETED',
+      'refunds' => [['id' => $refund_id, 'tender_id' => $payment_id]],
+      'returns' => [['source_order_id' => $source_id, 'return_line_items' => [[
+        'uid' => 'return-' . $item_uid, 'source_line_item_uid' => 'line-' . $source_id,
+        'quantity' => $quantity, 'item_type' => 'ITEM',
+      ]]]],
+    ];
+  };
+  $snapshot_class = '\\RoxyGrosses\\RefundSnapshot';
+  $reset = static function (): void { \RoxyGrosses\Square::reset(); \RoxyGrosses\Settings::$timezone = 'America/Los_Angeles'; };
+  $setup_source = static function (string $id, string $closed_at = '2026-08-12T19:00:00Z'): void {
+    \RoxyGrosses\Square::$sources[$id] = ['id' => $id, 'state' => 'COMPLETED', 'closed_at' => $closed_at];
+  };
+
+  // Window begins at original earliest local sale date, not report-window recency.
+  $reset(); $setup_source('sale-A');
+  \RoxyGrosses\Square::$orders = [$ret('return-A', 'sale-A', 'A', 'refund-A', 'payment-A')];
+  \RoxyGrosses\Square::$refunds['payment-A_refund-A'] = ['id' => 'payment-A_refund-A', 'payment_id' => 'payment-A', 'status' => 'COMPLETED'];
+  $snapshot = $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z'));
+  $assert(\RoxyGrosses\Square::$calls['window'][0] === '2026-08-01T00:00:00-07:00', 'discovery must start at earliest original date in site timezone');
+  $assert(\RoxyGrosses\Square::$calls['window'][1] === '2026-08-20T12:00:00+00:00', 'discovery must end at supplied now');
+  $assert(\RoxyGrosses\Square::$calls['returns_only'] === true, 'discovery must request returns only');
+  $assert(\RoxyGrosses\Square::$calls['source_batches'] === [['sale-A']], 'source sales must be retrieved in a batch');
+  $assert($snapshot->original_sale_dates() === ['2026-08-12'], 'original sale date should be converted to configured site timezone');
+  $result = $snapshot->reconcile_sale_day('2026-08-12', [$sale('sale-A')]);
+  $assert($result['orders'][0]['line_items'][0]['quantity'] === '2' && $result['issues'] === [], 'completed confirmed payment refund should reduce only its matching sale');
+
+  $reset(); $setup_source('sale-oct', '2026-10-03T22:00:00Z');
+  \RoxyGrosses\Square::$orders = [$ret('return-oct', 'sale-oct', 'oct', 'refund-oct', 'payment-oct')];
+  \RoxyGrosses\Square::$refunds['payment-oct_refund-oct'] = ['id' => 'payment-oct_refund-oct', 'payment_id' => 'payment-oct', 'status' => 'COMPLETED'];
+  $snapshot = $snapshot_class::load('2026-10-01', new \DateTimeImmutable('2026-10-10T12:00:00Z'));
+  $assert($snapshot->original_sale_dates() === ['2026-10-03'], 'RFC3339 UTC close time must map to original Pacific sale date');
+  $result = $snapshot->reconcile_sale_day('2026-10-03', [$sale('sale-oct', '2026-10-03T22:00:00Z')]);
+  $assert($result['orders'][0]['line_items'][0]['quantity'] === '2', 'sale-day reconciliation should accept a correctly windowed RFC3339 sale');
+  $expect_throw(static fn() => $snapshot->reconcile_sale_day('2026-10-04', [$sale('sale-oct', '2026-10-03T22:00:00Z')]), 'sale supplied outside requested original-date window must fail closed');
+  $invalid_timestamp_sale = $sale('sale-oct', '2026-10-03T22:00:00Z');
+  $invalid_timestamp_sale['closed_at'] = '2026-10-03 22:00:00Z';
+  $expect_throw(static fn() => $snapshot->reconcile_sale_day('2026-10-03', [$invalid_timestamp_sale]), 'non-RFC3339 sale timestamp must fail closed');
+
+  // Payment statuses are deduped by tender+refund identity; only COMPLETED is trusted.
+  $reset(); $setup_source('sale-A'); $setup_source('sale-B'); $setup_source('sale-C'); $setup_source('sale-D');
+  \RoxyGrosses\Square::$orders = [
+    $ret('return-completed', 'sale-A', 'a', 'same-refund', 'same-payment'),
+    $ret('return-pending', 'sale-B', 'b', 'pending-refund', 'payment-B'),
+    $ret('return-failed', 'sale-C', 'c', 'failed-refund', 'payment-C'),
+    array_replace($ret('return-unverified', 'sale-D', 'd', 'unused-refund', 'payment-D'), ['refunds' => []]),
+  ];
+  \RoxyGrosses\Square::$refunds = [
+    'same-payment_same-refund' => ['id' => 'same-payment_same-refund', 'payment_id' => 'same-payment', 'status' => 'COMPLETED'],
+    'payment-B_pending-refund' => ['id' => 'payment-B_pending-refund', 'payment_id' => 'payment-B', 'status' => 'PENDING'],
+    'payment-C_failed-refund' => ['id' => 'payment-C_failed-refund', 'payment_id' => 'payment-C', 'status' => 'FAILED'],
+  ];
+  $snapshot = $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z'));
+  $assert(count(\RoxyGrosses\Square::$calls['refund_ids']) === 3, 'each distinct payment refund should be checked, while unverified has none');
+  $assert(count(array_filter(\RoxyGrosses\Square::$calls['refund_ids'], static fn($id) => $id === 'same-payment_same-refund')) === 1, 'duplicate payment refund lookup must be deduplicated');
+  $complete_day_sales = array_map($sale, ['sale-A', 'sale-B', 'sale-C', 'sale-D']);
+  $result = $snapshot->reconcile_sale_day('2026-08-12', $complete_day_sales);
+  foreach (['sale-B', 'sale-C', 'sale-D'] as $offset => $id) {
+    $sale_row = $sale($id);
+    $assert($result['orders'][$offset + 1] === $sale_row, "{$id} pending/failed/unverified return must not reduce quantities");
+    $assert(count(array_filter($result['issues'], static fn($issue) => $issue['source_order_id'] === $id && $issue['reason'] === 'refund_unverified')) === ($id === 'sale-D' ? 1 : 0), "{$id} only unverifiable returns require a blocking issue; proven pending/failed states remain unchanged");
+  }
+  $assert(count($result['pending']) === 1 && $snapshot->pending_source_dates() === ['2026-08-12'], 'pending refunds retain original source date for durable retry without suppressing already-collected sales');
+
+  // Dated filtering must keep returns for this day, not poison it with another day's return.
+  $reset(); $setup_source('sale-A', '2026-08-12T19:00:00Z'); $setup_source('sale-B', '2026-08-13T19:00:00Z');
+  \RoxyGrosses\Square::$orders = [
+    $ret('return-today', 'sale-A', 'a', 'refund-today', 'payment-today'),
+    $ret('return-tomorrow', 'sale-B', 'b', 'refund-tomorrow', 'payment-tomorrow'),
+  ];
+  \RoxyGrosses\Square::$refunds = [
+    'payment-today_refund-today' => ['id' => 'payment-today_refund-today', 'payment_id' => 'payment-today', 'status' => 'COMPLETED'],
+    'payment-tomorrow_refund-tomorrow' => ['id' => 'payment-tomorrow_refund-tomorrow', 'payment_id' => 'payment-tomorrow', 'status' => 'FAILED'],
+  ];
+  $snapshot = $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z'));
+  $result = $snapshot->reconcile_sale_day('2026-08-12', [$sale('sale-A')]);
+  $assert($result['orders'][0]['line_items'][0]['quantity'] === '2' && $result['issues'] === [], 'another sale date failure must not block this date reconciliation');
+
+  // One payment refund cannot be counted against two separate return orders.
+  $reset(); $setup_source('sale-A');
+  \RoxyGrosses\Square::$orders = [$ret('return-owner-A', 'sale-A', 'a', 'refund-owner', 'payment-owner'), $ret('return-owner-B', 'sale-A', 'b', 'refund-owner', 'payment-owner')];
+  \RoxyGrosses\Square::$refunds['payment-owner_refund-owner'] = ['id' => 'payment-owner_refund-owner', 'payment_id' => 'payment-owner', 'status' => 'COMPLETED'];
+  $expect_throw(static fn() => $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z')), 'reusing one payment refund across return orders must fail closed');
+
+  $reset(); $setup_source('sale-A');
+  \RoxyGrosses\Square::$orders = [$ret('return-owner-A', 'sale-A', 'a', 'refund-owner', 'payment-owner')];
+  \RoxyGrosses\Square::$refunds['payment-owner_refund-owner'] = ['id' => 'payment-owner_refund-owner', 'payment_id' => 'wrong-payment', 'status' => 'COMPLETED'];
+  $expect_throw(static fn() => $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z')), 'mismatched payment refund owner must fail closed');
+  \RoxyGrosses\Square::$refunds['payment-owner_refund-owner'] = ['id' => 'payment-owner_refund-owner', 'status' => 'COMPLETED'];
+  $expect_throw(static fn() => $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z')), 'missing payment refund owner must fail closed');
+  \RoxyGrosses\Square::$refunds['payment-owner_refund-owner'] = ['id' => 'payment-owner_refund-owner', 'payment_id' => 'payment-owner', 'order_id' => 'wrong-return', 'status' => 'COMPLETED'];
+  $expect_throw(static fn() => $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z')), 'mismatched payment refund return order must fail closed');
+
+  // A source that cannot be found, or whose original timestamp is invalid, fails the load closed.
+  $reset(); \RoxyGrosses\Square::$orders = [$ret('return-missing', 'missing-source', 'x', 'refund-x', 'payment-x')];
+  \RoxyGrosses\Square::$refunds['payment-x_refund-x'] = ['id' => 'payment-x_refund-x', 'payment_id' => 'payment-x', 'status' => 'COMPLETED'];
+  \RoxyGrosses\Square::$calls['missing_source'] = true;
+  $expect_throw(static fn() => $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z')), 'missing source lookup must fail closed');
+  $reset(); $setup_source('sale-bad-date', 'not-a-date');
+  \RoxyGrosses\Square::$orders = [$ret('return-bad-date', 'sale-bad-date', 'x', 'refund-x', 'payment-x')];
+  \RoxyGrosses\Square::$refunds['payment-x_refund-x'] = ['id' => 'payment-x_refund-x', 'payment_id' => 'payment-x', 'status' => 'COMPLETED'];
+  $expect_throw(static fn() => $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z')), 'invalid original close date must fail closed');
+  $expect_throw(static fn() => $snapshot_class::load('2026-02-30', new \DateTimeImmutable('2026-08-20T12:00:00Z')), 'invalid earliest sale date must fail closed');
+
+  // A verified return whose source is not in the supplied dated sales remains a surfaced issue.
+  $reset(); $setup_source('sale-outside', '2026-08-12T19:00:00Z');
+  \RoxyGrosses\Square::$orders = [$ret('return-outside', 'sale-outside', 'o', 'refund-o', 'payment-o')];
+  \RoxyGrosses\Square::$refunds['payment-o_refund-o'] = ['id' => 'payment-o_refund-o', 'payment_id' => 'payment-o', 'status' => 'COMPLETED'];
+  $snapshot = $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z'));
+  $result = $snapshot->reconcile_sale_day('2026-08-12', [$sale('different-sale')]);
+  $assert($result['orders'] === [$sale('different-sale')] && count($result['issues']) === 1, 'unknown source on relevant date must be surfaced without altering unrelated sale');
+  $assert($result['issues'][0]['reason'] === 'unknown_source_order', 'unknown source should retain its exact issue reason');
+
+  if ($failures) {
+    foreach ($failures as $failure) fwrite(STDERR, "FAIL: {$failure}\n");
+    fwrite(STDERR, sprintf("%d checks, %d failures\n", $checks, count($failures)));
+    exit(1);
+  }
+  printf("%d checks passed\n", $checks);
+}

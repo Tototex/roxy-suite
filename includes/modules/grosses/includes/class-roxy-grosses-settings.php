@@ -824,6 +824,13 @@ class Settings {
   }
 
   private static function render_reports_tab(string $default_date,?array $selected_report,array $saved_reports): void {
+    if ($selected_report && !empty($selected_report['refund_review'])) {
+      echo '<div class="notice notice-warning inline"><p><strong>Refund correction needs review.</strong> A later Square refund changed the original sale-day figures for ' . esc_html(implode(', ', array_keys($selected_report['refund_review']))) . '. This emailed snapshot has not been changed or automatically resent. Pull a fresh draft for that sale day, review it, and deliberately email the corrected report if needed.</p></div>';
+    }
+    foreach ($saved_reports as &$review_row) {
+      if (!empty($review_row['refund_review'])) $review_row['status'] .= ' — Refund review required';
+    }
+    unset($review_row);
     echo '<h2>Pull Report Data</h2><p>Generate a saved draft report, review it, and email it when it looks right.</p><form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
     wp_nonce_field('roxy_grosses_pull_report'); echo '<input type="hidden" name="action" value="roxy_grosses_pull_report"><table class="form-table"><tbody><tr><th scope="row"><label for="roxy-grosses-report-date">Report end date</label></th><td><input id="roxy-grosses-report-date" type="date" name="report_date" value="'.esc_attr($default_date).'"></td></tr></tbody></table>'; submit_button('Pull And Save Draft','primary'); echo '</form>';
     if($selected_report){ $summary=is_array($selected_report['summary']??null)?$selected_report['summary']:[]; echo '<hr><h2>Review Saved Report #'.esc_html((string) $selected_report['id']).'</h2><p>Created: '.esc_html((string) $selected_report['created_at']).' | Status: '.esc_html((string) $selected_report['status']).'</p><table class="widefat striped" style="max-width:980px"><thead><tr><th>Report Date</th><th>Show Time</th><th>Theater</th><th>Film Title</th><th>General</th><th>Discount</th><th>Group</th><th>Total Tickets</th><th>Gross</th></tr></thead><tbody>';
