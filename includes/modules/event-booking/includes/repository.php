@@ -1,5 +1,6 @@
 <?php
 if (!defined('ABSPATH')) exit;
+require_once __DIR__ . '/reservations.php';
 
 function roxy_eb_now_mysql() {
     return current_time('mysql');
@@ -69,19 +70,36 @@ function roxy_eb_repo_insert_booking($data) {
     ];
     $row = array_merge($defaults, $data);
 
-    $ok = $wpdb->insert($table, $row);
-    if (!$ok) return new WP_Error('db_insert_failed', $wpdb->last_error);
-
-    return intval($wpdb->insert_id);
+    return roxy_eb_reservation_run(static function ($guard) use ($wpdb, $table, $row) {
+        if (!empty($row['woo_order_id'])) {
+            $existing = $guard->row($wpdb->prepare("SELECT id FROM `$table` WHERE woo_order_id=%d LIMIT 1", (int) $row['woo_order_id']));
+            if ($existing) return new WP_Error('booking_order_exists', 'This order already has a booking.', (int) $existing['id']);
+        }
+        $valid = roxy_eb_reservation_validate_window($row);
+        if (is_wp_error($valid)) return $valid;
+        return $guard->insert($table, $row);
+    });
 }
 
 function roxy_eb_repo_update_booking($id, $data) {
     global $wpdb;
     $table = roxy_eb_table_bookings();
+    $expected_revision = array_key_exists('_roxy_expected_revision', $data) ? (string) $data['_roxy_expected_revision'] : null;
+    unset($data['_roxy_expected_revision']);
     $data['updated_at'] = roxy_eb_now_mysql();
-    $ok = $wpdb->update($table, $data, ['id' => intval($id)]);
-    if ($ok === false) return new WP_Error('db_update_failed', $wpdb->last_error);
-    return true;
+    return roxy_eb_reservation_run(static function ($guard) use ($wpdb, $table, $id, $data, $expected_revision) {
+        $before = $guard->row($wpdb->prepare("SELECT * FROM `$table` WHERE id=%d FOR UPDATE", (int) $id));
+        if (!$before) return new WP_Error('booking_missing', 'Booking no longer exists.');
+        if ($expected_revision !== null && !hash_equals(roxy_eb_booking_revision($before), $expected_revision)) return new WP_Error('booking_stale', 'This booking changed since the form was opened. Please reload and review it.');
+        $after = array_merge($before, $data);
+        // Metadata-only Sling/pizza updates do not change occupancy.
+        if (array_intersect(['status', 'reserved_start_at', 'reserved_end_at'], array_keys($data))) {
+            $valid = roxy_eb_reservation_validate_window($after, (int) $id);
+            if (is_wp_error($valid)) return $valid;
+        }
+        $guard->update($table, (int) $id, $data);
+        return true;
+    });
 }
 
 function roxy_eb_repo_get_booking($id) {
@@ -128,6 +146,7 @@ function roxy_eb_repo_list_bookings_in_range($start_mysql, $end_mysql) {
          ORDER BY reserved_start_at ASC",
         $end_mysql, $start_mysql
     ), ARRAY_A);
+    if ($wpdb->last_error) return new WP_Error('reservation_read', 'Booking availability is temporarily unavailable.');
     return $rows ?: [];
 }
 
@@ -169,26 +188,31 @@ function roxy_eb_repo_insert_block($data) {
         'created_by' => get_current_user_id() ?: null,
     ];
     $row = array_merge($defaults, $data);
-    $ok = $wpdb->insert($table, $row);
-    if (!$ok) return new WP_Error('db_insert_failed', $wpdb->last_error);
-    return intval($wpdb->insert_id);
+    return roxy_eb_reservation_run(static function ($guard) use ($table, $row) {
+        $valid = roxy_eb_reservation_validate_block($row);
+        if (is_wp_error($valid)) return $valid;
+        return $guard->insert($table, $row);
+    });
 }
 
 function roxy_eb_repo_update_block($id, $data) {
     global $wpdb;
     $table = roxy_eb_table_blocks();
     $data['updated_at'] = roxy_eb_now_mysql();
-    $ok = $wpdb->update($table, $data, ['id' => intval($id)]);
-    if ($ok === false) return new WP_Error('db_update_failed', $wpdb->last_error);
-    return true;
+    return roxy_eb_reservation_run(static function ($guard) use ($wpdb, $table, $id, $data) {
+        $before = $guard->row($wpdb->prepare("SELECT * FROM `$table` WHERE id=%d FOR UPDATE", (int) $id));
+        if (!$before) return new WP_Error('block_missing', 'Blocked event no longer exists.');
+        $valid = roxy_eb_reservation_validate_block(array_merge($before, $data));
+        if (is_wp_error($valid)) return $valid;
+        $guard->update($table, (int) $id, $data);
+        return true;
+    });
 }
 
 function roxy_eb_repo_delete_block($id) {
     global $wpdb;
     $table = roxy_eb_table_blocks();
-    $ok = $wpdb->delete($table, ['id' => intval($id)]);
-    if ($ok === false) return new WP_Error('db_delete_failed', $wpdb->last_error);
-    return true;
+    return roxy_eb_reservation_run(static function ($guard) use ($table, $id) { $guard->delete($table, (int) $id); return true; });
 }
 
 function roxy_eb_repo_list_blocks_in_range($start_mysql, $end_mysql) {
@@ -200,6 +224,7 @@ function roxy_eb_repo_list_blocks_in_range($start_mysql, $end_mysql) {
          ORDER BY start_at ASC",
         $end_mysql, $start_mysql
     ), ARRAY_A);
+    if ($wpdb->last_error) return new WP_Error('reservation_read', 'Blocked-event availability is temporarily unavailable.');
     return $rows ?: [];
 }
 

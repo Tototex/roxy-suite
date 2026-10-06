@@ -1,6 +1,7 @@
 <?php
 if (!defined('ABSPATH')) exit;
 require_once __DIR__ . '/refunds.php';
+require_once __DIR__ . '/reservations.php';
 
 function roxy_eb_booking_meta_key() { return '_roxy_eb_booking'; }
 function roxy_eb_booking_adjustment_meta_key() { return '_roxy_eb_booking_adjustment'; }
@@ -151,6 +152,7 @@ function roxy_eb_build_order_change_from_request($booking, array $input) {
     );
 
     return [
+        'expected_revision' => roxy_eb_booking_revision($booking),
         'duration_hours' => $duration_hours,
         'extra_hours' => $extra_hours,
         'show_start_at' => $calc['show_start']->format('Y-m-d H:i:s'),
@@ -178,7 +180,29 @@ function roxy_eb_build_pizza_change_from_request($booking, array $input) {
     return roxy_eb_build_order_change_from_request($booking, $input);
 }
 
+function roxy_eb_booking_revision(array $booking): string {
+    $fields = ['status','wp_user_id','customer_email','payment_method','invoice_status','guest_count','base_price','extra_hours','extra_price','doors_open_at','show_start_at','doors_close_at','reserved_start_at','reserved_end_at','notes_admin','pizza_requested','pizza_quantity','pizza_order_details','pizza_total','bulk_concessions_requested','bulk_popcorn_qty','bulk_soda_qty','bulk_concessions_total','special_charge_label','special_charge_total','total_price','woo_order_id','woo_adjustment_order_ids'];
+    $snapshot = [];
+    foreach ($fields as $field) $snapshot[$field] = ($booking[$field] ?? null) === null ? null : (string) $booking[$field];
+    return hash('sha256', wp_json_encode($snapshot));
+}
+
 function roxy_eb_apply_booking_order_change($booking_id, array $change, string $reason = 'order_change') {
+    $updated = roxy_eb_reservation_run(static function ($guard) use ($booking_id, $change, $reason) {
+        global $wpdb;
+        $table = roxy_eb_table_bookings();
+        $booking = $guard->row($wpdb->prepare("SELECT * FROM `$table` WHERE id=%d FOR UPDATE", (int) $booking_id));
+        if (!$booking || !in_array($booking['status'], ['confirmed', 'pending_invoice'], true)) return new WP_Error('booking_status', 'This booking is not available for changes.');
+        if (strpos($reason, 'customer') === 0 && !roxy_eb_can_customer_edit_order($booking)) return new WP_Error('booking_cutoff', 'This booking is now within the edit cutoff. Please contact us.');
+        if (isset($change['expected_revision']) && !hash_equals(roxy_eb_booking_revision($booking), (string) $change['expected_revision'])) return new WP_Error('booking_stale', 'This booking changed since your form was opened. Please reload and review it.');
+        return roxy_eb_apply_booking_order_change_locked($booking_id, $change);
+    });
+    if (is_wp_error($updated)) return $updated;
+    roxy_eb_after_booking_order_change($updated, $reason);
+    return $updated;
+}
+
+function roxy_eb_apply_booking_order_change_locked($booking_id, array $change) {
     $booking_id = intval($booking_id);
     $booking = roxy_eb_repo_get_booking($booking_id);
     if (!$booking) return new WP_Error('booking_missing', 'Booking not found.');
@@ -224,6 +248,11 @@ function roxy_eb_apply_booking_order_change($booking_id, array $change, string $
     $updated = roxy_eb_repo_get_booking($booking_id);
     if (!$updated) return new WP_Error('booking_missing', 'Booking not found after update.');
 
+    return $updated;
+}
+
+function roxy_eb_after_booking_order_change(array $updated, string $reason): void {
+    $booking_id = (int) $updated['id'];
     if (!empty($updated['pizza_requested'])) {
         if (!empty($updated['pizza_checked_at'])) roxy_eb_clear_pizza_reminders($booking_id);
         else roxy_eb_schedule_pizza_reminder($booking_id);
@@ -238,7 +267,6 @@ function roxy_eb_apply_booking_order_change($booking_id, array $change, string $
         }
     }
 
-    return $updated;
 }
 
 function roxy_eb_apply_booking_pizza_change($booking_id, array $change, string $reason = 'pizza_change') {
@@ -268,6 +296,8 @@ function roxy_eb_start_booking_adjustment_checkout($booking, array $change) {
 
     $adjustment = [
         'booking_id' => $booking_id,
+        'revision_version' => 1,
+        'booking_revision' => (string) ($change['expected_revision'] ?? roxy_eb_booking_revision($booking)),
         'delta_total' => $delta,
         'new_duration_hours' => intval($change['duration_hours'] ?? (2 + intval($booking['extra_hours'] ?? 0))),
         'new_extra_hours' => intval($change['extra_hours'] ?? 0),
@@ -795,7 +825,6 @@ function roxy_eb_on_payment_complete($order_id) {
     $pid = intval($settings['booking_product_id'] ?? 0);
     if ($pid <= 0) return;
 
-    $processed_adjustment = false;
     foreach ($order->get_items() as $item) {
         if (intval($item->get_product_id()) !== $pid) continue;
         $raw_adjustment = $item->get_meta('_roxy_eb_booking_adjustment', true);
@@ -805,14 +834,14 @@ function roxy_eb_on_payment_complete($order_id) {
                 $result = roxy_eb_apply_booking_adjustment_from_order($order, $adjustment);
                 if (is_wp_error($result)) {
                     $order->add_order_note('Roxy booking adjustment failed: ' . $result->get_error_message());
+                    roxy_eb_email_internal_booking_failed($order, 'Paid booking adjustment was not applied: ' . $result->get_error_message() . ' Please review the payment and any required attributable refund.');
                 }
-                $processed_adjustment = true;
             }
         }
     }
 
     $existing = roxy_eb_repo_get_booking_by_order($order_id);
-    if ($existing && !$processed_adjustment) return;
+    if ($existing) return;
 
     foreach ($order->get_items() as $item) {
         if (intval($item->get_product_id()) !== $pid) continue;
@@ -826,13 +855,24 @@ function roxy_eb_on_payment_complete($order_id) {
         $doorsOpen = new DateTimeImmutable($b['doors_open_at'], $tz);
         $calc = roxy_eb_calc_times($doorsOpen, intval($b['extra_hours'] ?? 0));
 
-        if (!roxy_eb_is_slot_available($calc['reserved_start'], $calc['reserved_end'])) {
+        try { $available = roxy_eb_is_slot_available($calc['reserved_start'], $calc['reserved_end'], 0, true); }
+        catch (Throwable $error) {
+            $order->add_order_note('Roxy booking availability could not be verified after payment. Manager review required; no automatic conflict refund attempted.');
+            roxy_eb_email_internal_booking_failed($order, 'Booking availability storage is unavailable; please review the paid order.');
+            return;
+        }
+        if (!$available) {
             roxy_eb_handle_conflict_refund($order, $b, (int) $item->get_id());
             return;
         }
 
         $booking_id = roxy_eb_create_booking_from_payload($b, $order, 'confirmed');
         if (is_wp_error($booking_id)) {
+            if ($booking_id->get_error_code() === 'booking_order_exists') return;
+            if ($booking_id->get_error_code() === 'reservation_conflict') {
+                roxy_eb_handle_conflict_refund($order, $b, (int) $item->get_id());
+                return;
+            }
             $order->add_order_note('Roxy booking creation failed: ' . $booking_id->get_error_message());
             roxy_eb_email_internal_booking_failed($order, $booking_id->get_error_message());
             return;
@@ -845,6 +885,38 @@ function roxy_eb_on_payment_complete($order_id) {
 }
 
 function roxy_eb_apply_booking_adjustment_from_order($order, array $adjustment) {
+    if (!$order || !$order->is_paid()) return new WP_Error('adjustment_unpaid', 'Booking changes require a paid order.');
+    $result = roxy_eb_reservation_run(static function ($guard) use ($order, $adjustment) {
+        global $wpdb;
+        $id = (int) ($adjustment['booking_id'] ?? 0);
+        $matches = 0;
+        foreach ($order->get_items() as $item) {
+            $data = json_decode((string) $item->get_meta('_roxy_eb_booking_adjustment', true), true);
+            if (is_array($data) && (int) ($data['booking_id'] ?? 0) === $id) $matches++;
+        }
+        if ($matches > 1) return new WP_Error('adjustment_ambiguous', 'Multiple paid adjustments for the same booking require manager review.');
+        $table = roxy_eb_table_bookings();
+        $booking = $guard->row($wpdb->prepare("SELECT * FROM `$table` WHERE id=%d FOR UPDATE", $id));
+        if (!$booking) return new WP_Error('booking_missing', 'Booking not found for adjustment.');
+        if (in_array((int) $order->get_id(), roxy_eb_booking_adjustment_order_ids($booking), true)) return true;
+        if (!in_array($booking['status'], ['confirmed', 'pending_invoice'], true)) return new WP_Error('booking_status', 'Paid adjustment cannot change this booking status. Manager review is required.');
+        if (!roxy_eb_can_customer_edit_order($booking)) return new WP_Error('adjustment_cutoff', 'Paid adjustment reached the edit cutoff before completion. Manager review is required.');
+        $owner = (int) ($booking['wp_user_id'] ?? 0) > 0 && (int) $booking['wp_user_id'] === (int) $order->get_user_id();
+        $email = strtolower(trim((string) ($booking['customer_email'] ?? '')));
+        $owner = $owner || ($email !== '' && $email === strtolower(trim((string) $order->get_billing_email())));
+        if (!$owner) return new WP_Error('adjustment_owner', 'Paid adjustment customer does not match the booking. Manager review is required.');
+        if ((int) ($adjustment['revision_version'] ?? 0) !== 1 || !hash_equals(roxy_eb_booking_revision($booking), (string) ($adjustment['booking_revision'] ?? ''))) return new WP_Error('adjustment_stale', 'Paid adjustment is stale or lacks a verified revision. Manager review is required.');
+        return roxy_eb_apply_booking_adjustment_locked($order, $adjustment);
+    });
+    if (is_wp_error($result) || $result === true) return $result;
+    roxy_eb_after_booking_order_change($result['after'], 'customer_order_checkout');
+    $order->add_order_note('Roxy booking update applied to booking #' . (int) $result['after']['id'] . ' for $' . number_format((float) $result['delta'], 2) . '.');
+    roxy_eb_email_internal_booking_order_changed($result['before'], $result['after'], 'customer_card_checkout');
+    roxy_eb_email_customer_booking_updated($result['before'], $result['after']);
+    return true;
+}
+
+function roxy_eb_apply_booking_adjustment_locked($order, array $adjustment) {
     $booking_id = intval($adjustment['booking_id'] ?? 0);
     if ($booking_id <= 0) {
         return new WP_Error('booking_missing', 'Booking adjustment is missing its booking ID.');
@@ -871,22 +943,25 @@ function roxy_eb_apply_booking_adjustment_from_order($order, array $adjustment) 
         'bulk_popcorn_qty' => intval($adjustment['new_bulk_popcorn_qty'] ?? 0),
         'bulk_soda_qty' => intval($adjustment['new_bulk_soda_qty'] ?? 0),
         'bulk_concessions_total' => intval($adjustment['new_bulk_concessions_total'] ?? 0),
+        'special_charge_label' => sanitize_text_field((string) ($adjustment['new_special_charge_label'] ?? ($booking_before['special_charge_label'] ?? ''))),
+        'special_charge_total' => intval($adjustment['new_special_charge_total'] ?? ($booking_before['special_charge_total'] ?? 0)),
         'extra_price' => intval($adjustment['new_extra_price'] ?? intval($booking_before['extra_price'] ?? 0)),
         'total_price' => intval($adjustment['new_total_price'] ?? intval($booking_before['total_price'] ?? 0)),
         'delta_total' => intval($adjustment['delta_total'] ?? 0),
     ];
 
-    $booking_after = roxy_eb_apply_booking_order_change($booking_id, $change, 'customer_order_checkout');
+    $booking_after = roxy_eb_apply_booking_order_change_locked($booking_id, $change);
     if (is_wp_error($booking_after)) {
         return $booking_after;
     }
 
-    roxy_eb_booking_append_adjustment_order_id($booking_id, $order->get_id());
-    $order->add_order_note('Roxy booking update applied to booking #' . $booking_id . ' for $' . number_format((float) $change['delta_total'], 2) . '.');
-    roxy_eb_email_internal_booking_order_changed($booking_before, $booking_after, 'customer_card_checkout');
-    roxy_eb_email_customer_booking_updated($booking_before, $booking_after);
-
-    return true;
+    $ids = roxy_eb_booking_adjustment_order_ids($booking_after);
+    $ids[] = (int) $order->get_id();
+    $saved = roxy_eb_repo_update_booking($booking_id, ['woo_adjustment_order_ids' => wp_json_encode(array_values(array_unique($ids)))]);
+    if (is_wp_error($saved)) return $saved;
+    $final = roxy_eb_repo_get_booking($booking_id);
+    if (!$final) return new WP_Error('adjustment_storage', 'Booking adjustment completion could not be verified.');
+    return ['before' => $booking_before, 'after' => $final, 'delta' => $change['delta_total']];
 }
 
 function roxy_eb_handle_conflict_refund($order, $b, int $item_id = 0) {

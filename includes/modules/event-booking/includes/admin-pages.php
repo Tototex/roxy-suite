@@ -203,6 +203,7 @@ function roxy_eb_admin_blocks_page() {
     $start = (new DateTimeImmutable('now', $tz))->modify('-7 days');
     $end   = (new DateTimeImmutable('now', $tz))->modify('+90 days');
     $rows = roxy_eb_repo_list_blocks_in_range(roxy_eb_datetime_to_mysql($start), roxy_eb_datetime_to_mysql($end));
+    if (is_wp_error($rows)) { echo '<div class="notice notice-error"><p>' . esc_html($rows->get_error_message()) . '</p></div>'; $rows = []; }
     ?>
     <div class="wrap">
         <h1>Calendar Blocks</h1>
@@ -482,6 +483,7 @@ function roxy_eb_admin_bookings_page() {
                             $total_price = $base_price + $extra_price + $pizza_total + $bulk_concessions_total + $special_charge_total;
 
                             $update = [
+                                '_roxy_expected_revision' => sanitize_text_field(wp_unslash($_POST['booking_revision'] ?? '')),
                                 'guest_count' => $guest_count,
                                 'tier' => roxy_eb_tier_from_guest_count($guest_count),
                                 'staff_shifts_required' => roxy_eb_shifts_from_guest_count($guest_count),
@@ -552,6 +554,7 @@ function roxy_eb_admin_bookings_page() {
     $start = $now->modify('-30 days');
     $end   = $now->modify('+365 days');
     $rows = roxy_eb_repo_list_bookings_in_range(roxy_eb_datetime_to_mysql($start), roxy_eb_datetime_to_mysql($end));
+    if (is_wp_error($rows)) { echo '<div class="notice notice-error"><p>' . esc_html($rows->get_error_message()) . '</p></div>'; $rows = []; }
     $display_rows = [];
     foreach ($rows as $r) {
         $booking = roxy_eb_repo_get_booking($r['id']);
@@ -631,6 +634,7 @@ if (isset($_GET['roxy_eb_action']) && $_GET['roxy_eb_action'] === 'edit' && isse
         <h2 style="margin-top:0;">Edit Booking #<?php echo esc_html($edit_id); ?></h2>
         <form method="post" action="<?php echo esc_url(add_query_arg(['page'=>'roxy-event-booking','roxy_eb_action'=>'update','booking_id'=>$edit_id], admin_url('admin.php'))); ?>">
             <?php wp_nonce_field('roxy_eb_admin_edit_' . $edit_id); ?>
+            <input type="hidden" name="booking_revision" value="<?php echo esc_attr(roxy_eb_booking_revision($b)); ?>">
             <table class="form-table">
                 <tr><th scope="row"><label for="doors_open_date">Date</label></th><td><input type="date" id="doors_open_date" name="doors_open_date" value="<?php echo esc_attr($dateVal); ?>" required></td></tr>
                 <tr><th scope="row"><label for="doors_open_time">Doors open time</label></th><td><input type="time" id="doors_open_time" name="doors_open_time" value="<?php echo esc_attr($timeVal); ?>" required></td></tr>

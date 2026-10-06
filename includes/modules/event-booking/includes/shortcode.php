@@ -294,6 +294,7 @@ function roxy_eb_ajax_calendar_blocks() {
 
     nocache_headers();
     $items = roxy_eb_get_calendar_blocks($rangeStart, $rangeEnd);
+    if (is_wp_error($items)) wp_send_json_error(['message' => $items->get_error_message()], 503);
     wp_send_json_success(['items' => $items]);
 }
 
