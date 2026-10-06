@@ -6,6 +6,8 @@ if (!defined('ABSPATH')) exit;
 class Products {
   public static function init(): void {
     add_action('save_post_' . CPT::POST_TYPE, [__CLASS__, 'on_showing_saved'], 20, 2);
+    add_action('transition_post_status', [__CLASS__, 'on_status_changed'], 20, 3);
+    add_action('before_delete_post', [__CLASS__, 'on_showing_deleted'], 20, 2);
     add_action('pre_get_posts', [__CLASS__, 'hide_ticket_products_from_admin_list']);
     add_action('views_edit-product', [__CLASS__, 'add_ticket_product_views']);
   }
@@ -16,12 +18,33 @@ class Products {
     if (!class_exists('WooCommerce')) return;
 
     if (!self::showing_is_ready_for_products($post_id)) {
+      self::deactivate_showing_products($post_id);
       return;
     }
 
     self::ensure_products_for_showing($post_id);
     self::trash_products_for_expired_showing($post_id);
     self::trash_autodraft_ticket_products();
+  }
+
+  public static function on_status_changed(string $new, string $old, $post): void {
+    if ($post->post_type === CPT::POST_TYPE && $new !== 'publish') self::deactivate_showing_products((int)$post->ID);
+  }
+
+  public static function on_showing_deleted(int $id, $post = null): void {
+    if (get_post_type($id) === CPT::POST_TYPE) self::deactivate_showing_products($id);
+  }
+
+  private static function deactivate_showing_products(int $id): void {
+    // Draft instead of trash: retain product identities for historical order detail.
+    foreach (['adult','discount','matinee','live1','live2','subscriber'] as $type) {
+      foreach (self::find_products_for_showing_type($id, $type) as $pid) {
+        if (get_post_status($pid) === 'publish') {
+          $result = wp_update_post(['ID'=>$pid, 'post_status'=>'draft'], true);
+          if (is_wp_error($result)) Log::warn('ticket product deactivation failed', ['product_id'=>$pid, 'showing_id'=>$id]);
+        }
+      }
+    }
   }
 
   public static function run_admin_cleanup(): void {
@@ -226,7 +249,7 @@ class Products {
     if (get_post_type($showing_id) !== CPT::POST_TYPE) return false;
 
     $status = (string) get_post_status($showing_id);
-    if (in_array($status, ['auto-draft', 'draft', 'trash'], true)) return false;
+    if ($status !== 'publish') return false;
 
     $title = trim((string) get_the_title($showing_id));
     if ($title === '' || stripos($title, 'Auto Draft') === 0) return false;

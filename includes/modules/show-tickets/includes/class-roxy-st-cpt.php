@@ -400,7 +400,8 @@ class CPT {
         update_post_meta($post_id, '_roxy_pricing_profile', $first['profile']);
 
         if ((string) get_post_meta($post_id, '_roxy_schedule_generated', true) !== '1') {
-          self::create_additional_showings_from_schedule($post_id, $post, $schedule_rows, $shared_meta);
+          $created = self::create_additional_showings_from_schedule($post_id, $post, $schedule_rows, $shared_meta);
+          if (is_wp_error($created)) return;
           update_post_meta($post_id, '_roxy_schedule_generated', '1');
         }
         return;
@@ -652,49 +653,69 @@ class CPT {
     return $rows;
   }
 
-  private static function create_additional_showings_from_schedule(int $source_post_id, $post, array $schedule_rows, array $shared_meta): void {
+  private static function create_additional_showings_from_schedule(int $source_post_id, $post, array $schedule_rows, array $shared_meta) {
     if (empty($schedule_rows)) {
-      return;
+      return true;
     }
 
     $taxonomy_terms = wp_get_object_terms($source_post_id, 'roxy_show_type', ['fields' => 'ids']);
     $thumbnail_id = get_post_thumbnail_id($source_post_id);
+    $child_status = self::generated_post_status($post);
+
+    $created_ids = [];
     self::$is_generating_schedule = true;
+    try {
+      foreach ($schedule_rows as $row) {
+        $new_post_id = wp_insert_post([
+          'post_type' => self::POST_TYPE,
+          'post_status' => $child_status,
+          'post_title' => (string) $post->post_title,
+          'post_content' => (string) $post->post_content,
+          'post_excerpt' => (string) $post->post_excerpt,
+          'post_author' => (int) $post->post_author,
+        ], true);
 
-    foreach ($schedule_rows as $row) {
-      $new_post_id = wp_insert_post([
-        'post_type' => self::POST_TYPE,
-        'post_status' => 'publish',
-        'post_title' => (string) $post->post_title,
-        'post_content' => (string) $post->post_content,
-        'post_excerpt' => (string) $post->post_excerpt,
-        'post_author' => (int) $post->post_author,
-      ], true);
+        if (is_wp_error($new_post_id) || !$new_post_id) {
+          foreach ($created_ids as $created_id) wp_delete_post($created_id, true);
+          return is_wp_error($new_post_id)
+            ? $new_post_id
+            : new \WP_Error('schedule_child_insert_failed', 'A scheduled showing could not be created.');
+        }
 
-      if (is_wp_error($new_post_id) || !$new_post_id) {
-        continue;
-      }
+        $new_post_id = (int) $new_post_id;
+        $created_ids[] = $new_post_id;
+        foreach ($shared_meta as $meta_key => $meta_value) {
+          update_post_meta($new_post_id, $meta_key, $meta_value);
+        }
+        update_post_meta($new_post_id, '_roxy_start', $row['start']);
+        update_post_meta($new_post_id, '_roxy_pricing_profile', $row['profile']);
+        update_post_meta($new_post_id, '_roxy_schedule_generated', '1');
+        update_post_meta($new_post_id, '_roxy_generated_from_builder', '1');
 
-      foreach ($shared_meta as $meta_key => $meta_value) {
-        update_post_meta($new_post_id, $meta_key, $meta_value);
+        if (!empty($taxonomy_terms) && !is_wp_error($taxonomy_terms)) {
+          wp_set_object_terms($new_post_id, $taxonomy_terms, 'roxy_show_type', false);
+        }
+        if ($thumbnail_id) set_post_thumbnail($new_post_id, $thumbnail_id);
       }
-      update_post_meta($new_post_id, '_roxy_start', $row['start']);
-      update_post_meta($new_post_id, '_roxy_pricing_profile', $row['profile']);
-      update_post_meta($new_post_id, '_roxy_schedule_generated', '1');
-      update_post_meta($new_post_id, '_roxy_generated_from_builder', '1');
-
-      if (!empty($taxonomy_terms) && !is_wp_error($taxonomy_terms)) {
-        wp_set_object_terms($new_post_id, $taxonomy_terms, 'roxy_show_type', false);
-      }
-      if ($thumbnail_id) {
-        set_post_thumbnail($new_post_id, $thumbnail_id);
-      }
-      if (class_exists(__NAMESPACE__ . '\\Products')) {
-        Products::ensure_products_for_showing((int) $new_post_id);
-      }
+    } finally {
+      self::$is_generating_schedule = false;
     }
 
-    self::$is_generating_schedule = false;
+    if (class_exists(__NAMESPACE__ . '\\Products')) {
+      foreach ($created_ids as $created_id) Products::ensure_products_for_showing($created_id);
+    }
+    return true;
+  }
+
+  private static function generated_post_status($post): string {
+    $source_status = (string) ($post->post_status ?? 'draft');
+    if (in_array($source_status, ['draft','pending','private'], true)) return $source_status;
+    if ($source_status === 'publish') {
+      $post_type = get_post_type_object(self::POST_TYPE);
+      if (is_object($post_type) && isset($post_type->cap->publish_posts) && current_user_can((string)$post_type->cap->publish_posts)) return 'publish';
+    }
+    // A future child has no WordPress publication date; never schedule it implicitly.
+    return 'draft';
   }
 
 
@@ -764,7 +785,7 @@ class CPT {
 
     $new_post_id = wp_insert_post([
       'post_type' => self::POST_TYPE,
-      'post_status' => $source->post_status === 'publish' ? 'publish' : 'draft',
+      'post_status' => self::generated_post_status($source),
       'post_title' => (string) $source->post_title,
       'post_content' => (string) $source->post_content,
       'post_excerpt' => (string) $source->post_excerpt,

@@ -640,8 +640,8 @@ class Frontend {
     }
 
     $showing_id = isset($_POST['showing_id']) ? (int) $_POST['showing_id'] : 0;
-    if (!$showing_id || get_post_type($showing_id) !== CPT::POST_TYPE) {
-      wp_die('Invalid showing.');
+    if (!Eligibility::showing_is_public($showing_id)) {
+      wp_die('This showing is not available for online ticket sales.');
     }
 
     if (!WC()->cart) {
@@ -654,7 +654,8 @@ class Frontend {
       'cart_count' => WC()->cart ? WC()->cart->get_cart_contents_count() : 0,
     ]);
 
-    Products::ensure_products_for_showing($showing_id);
+    // Public requests never create, restore or publish products. Admin saves
+    // establish canonical products; cart totals apply current scheduled prices.
 
     $profile = get_post_meta($showing_id, '_roxy_pricing_profile', true) ?: 'movie_evening';
 

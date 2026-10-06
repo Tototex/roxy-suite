@@ -21,6 +21,7 @@ require_once ROXY_ST_PATH . 'includes/lib/psyon/qrcode.php';
 require_once ROXY_ST_PATH . 'includes/class-roxy-st-issuance.php';
 require_once ROXY_ST_PATH . 'includes/class-roxy-st-tickets.php';
 require_once ROXY_ST_PATH . 'includes/class-roxy-st-products.php';
+require_once ROXY_ST_PATH . 'includes/class-roxy-st-eligibility.php';
 require_once ROXY_ST_PATH . 'includes/class-roxy-st-cart-pricing.php';
 require_once ROXY_ST_PATH . 'includes/class-roxy-st-capacity.php';
 require_once ROXY_ST_PATH . 'includes/class-roxy-st-holds.php';
@@ -34,6 +35,7 @@ add_action('plugins_loaded', function () {
   \RoxyST\Tickets::init();
   \RoxyST\CPT::init();
   \RoxyST\Products::init();
+  \RoxyST\Eligibility::init();
   \RoxyST\CartPricing::init();
   \RoxyST\Capacity::init();
   \RoxyST\Holds::init();
