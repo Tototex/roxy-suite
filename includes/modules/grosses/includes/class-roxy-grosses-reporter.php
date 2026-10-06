@@ -1815,58 +1815,60 @@ class Reporter {
 
   private static function send_email(array $reports, array $summary, string $mode = 'scheduled'): array {
     $attachment = self::write_csv($reports);
-    $is_test_send = $mode === 'manual-test';
-    $to = $is_test_send ? self::test_email_list() : Settings::email_list();
-    if (!$to) {
-      @unlink($attachment);
-      return [
-        'success' => false,
-        'message' => $is_test_send
-          ? 'No admin alert email is configured for test sends.'
-          : 'No recipient emails are configured.',
-      ];
-    }
-
-    $subject = self::expand_tokens((string) Settings::get('email_subject', ''), $summary);
-    if ($is_test_send) {
-      $subject = '[TEST] ' . $subject;
-    }
-    $body = self::expand_tokens((string) Settings::get('email_body', ''), $summary);
-    if ($is_test_send) {
-      $body = "This is a test grosses email sent only to the configured admin alert address.\n\n" . $body;
-    }
-    $body .= "\n\nReport rows\n";
-      foreach ($reports as $report) {
-        $paid_tickets = max(0, (int) ($report['general_qty'] ?? 0))
-          + max(0, (int) ($report['discount_qty'] ?? 0))
-          + max(0, (int) ($report['group_qty'] ?? 0));
-        $body .= sprintf(
-          "%s %s | %s | General %d | Discount %d | Group %d | Total %d | Gross $%s\n",
-          $report['report_date'],
-          $report['show_time'],
-          $report['film_title'],
-          (int) $report['general_qty'],
-          (int) $report['discount_qty'],
-          (int) $report['group_qty'],
-          $paid_tickets,
-          number_format((float) $report['gross_total'], 2)
-        );
+    try {
+      $is_test_send = $mode === 'manual-test';
+      $to = $is_test_send ? self::test_email_list() : Settings::email_list();
+      if (!$to) {
+        return [
+          'success' => false,
+          'message' => $is_test_send
+            ? 'No admin alert email is configured for test sends.'
+            : 'No recipient emails are configured.',
+        ];
       }
 
-    $sent = wp_mail($to, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
-    @unlink($attachment);
+      $subject = self::expand_tokens((string) Settings::get('email_subject', ''), $summary);
+      if ($is_test_send) {
+        $subject = '[TEST] ' . $subject;
+      }
+      $body = self::expand_tokens((string) Settings::get('email_body', ''), $summary);
+      if ($is_test_send) {
+        $body = "This is a test grosses email sent only to the configured admin alert address.\n\n" . $body;
+      }
+      $body .= "\n\nReport rows\n";
+        foreach ($reports as $report) {
+          $paid_tickets = max(0, (int) ($report['general_qty'] ?? 0))
+            + max(0, (int) ($report['discount_qty'] ?? 0))
+            + max(0, (int) ($report['group_qty'] ?? 0));
+          $body .= sprintf(
+            "%s %s | %s | General %d | Discount %d | Group %d | Total %d | Gross $%s\n",
+            $report['report_date'],
+            $report['show_time'],
+            $report['film_title'],
+            (int) $report['general_qty'],
+            (int) $report['discount_qty'],
+            (int) $report['group_qty'],
+            $paid_tickets,
+            number_format((float) $report['gross_total'], 2)
+          );
+        }
 
-    if (!$sent) {
+      $sent = wp_mail($to, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
+
+      if (!$sent) {
+        return [
+          'success' => false,
+          'message' => 'WordPress could not send the grosses email.',
+        ];
+      }
+
       return [
-        'success' => false,
-        'message' => 'WordPress could not send the grosses email.',
+        'success' => true,
+        'message' => 'Report sent to ' . implode(', ', $to) . '.',
       ];
+    } finally {
+      self::remove_csv_attachment($attachment);
     }
-
-    return [
-      'success' => true,
-      'message' => 'Report sent to ' . implode(', ', $to) . '.',
-    ];
   }
 
   private static function test_email_list(): array {
@@ -1880,60 +1882,63 @@ class Reporter {
 
   private static function send_live_grosses_email(array $row, array $recipients, bool $include_concessions, string $mode = 'manual-live-email'): array {
     $attachment = self::write_live_csv($row, $include_concessions);
-    $show_title = (string) ($row['show_title'] ?? 'Live Show');
-    $report_date = (string) ($row['report_date'] ?? '');
-    $show_time = (string) ($row['show_time'] ?? '');
-    $ticket_gross = round((float) ($row['gross_total'] ?? 0), 2);
-    $concessions = round((float) ($row['concessions_total'] ?? 0), 2);
-    $is_test_send = $mode === 'manual-live-test';
+    try {
+      $show_title = (string) ($row['show_title'] ?? 'Live Show');
+      $report_date = (string) ($row['report_date'] ?? '');
+      $show_time = (string) ($row['show_time'] ?? '');
+      $ticket_gross = round((float) ($row['gross_total'] ?? 0), 2);
+      $concessions = round((float) ($row['concessions_total'] ?? 0), 2);
+      $is_test_send = $mode === 'manual-live-test';
 
-    $subject = sprintf('Roxy live grosses for %s on %s', $show_title, $report_date);
-    if ($is_test_send) {
-      $subject = '[TEST] ' . $subject;
-    }
-    $body = Settings::get('theater_name', 'Newport Roxy Theater') . "\n";
-    if ($is_test_send) {
-      $body .= "This is a test live grosses email sent only to the configured admin alert address.\n\n";
-    }
-    $body .= "Live show grosses\n\n";
-    $body .= sprintf("Show: %s\n", $show_title);
-    $body .= sprintf("Date: %s\n", $report_date);
-    $body .= sprintf("Show time: %s\n\n", $show_time);
-    $body .= sprintf("Presale tickets: %s\n", number_format_i18n((int) ($row['presale_qty'] ?? 0)));
-    $body .= sprintf("Online tickets: %s\n", number_format_i18n((int) ($row['online_qty'] ?? 0)));
-    $body .= sprintf("Door tickets: %s\n", number_format_i18n((int) ($row['door_qty'] ?? 0)));
-    $body .= sprintf("Group/subscriber: %s\n", number_format_i18n((int) ($row['group_sub_qty'] ?? 0)));
-    $body .= sprintf("Total attendance: %s\n", number_format_i18n((int) ($row['total_tickets'] ?? 0)));
-    $body .= sprintf("Ticket gross: $%s\n", number_format($ticket_gross, 2));
-    if ($include_concessions) {
-      $body .= sprintf("Concessions gross: $%s\n", number_format($concessions, 2));
-      $body .= sprintf("Combined gross: $%s\n", number_format($ticket_gross + $concessions, 2));
-    }
-    $body .= "\nGenerated automatically by the Roxy Grosses plugin.";
+      $subject = sprintf('Roxy live grosses for %s on %s', $show_title, $report_date);
+      if ($is_test_send) {
+        $subject = '[TEST] ' . $subject;
+      }
+      $body = Settings::get('theater_name', 'Newport Roxy Theater') . "\n";
+      if ($is_test_send) {
+        $body .= "This is a test live grosses email sent only to the configured admin alert address.\n\n";
+      }
+      $body .= "Live show grosses\n\n";
+      $body .= sprintf("Show: %s\n", $show_title);
+      $body .= sprintf("Date: %s\n", $report_date);
+      $body .= sprintf("Show time: %s\n\n", $show_time);
+      $body .= sprintf("Presale tickets: %s\n", number_format_i18n((int) ($row['presale_qty'] ?? 0)));
+      $body .= sprintf("Online tickets: %s\n", number_format_i18n((int) ($row['online_qty'] ?? 0)));
+      $body .= sprintf("Door tickets: %s\n", number_format_i18n((int) ($row['door_qty'] ?? 0)));
+      $body .= sprintf("Group/subscriber: %s\n", number_format_i18n((int) ($row['group_sub_qty'] ?? 0)));
+      $body .= sprintf("Total attendance: %s\n", number_format_i18n((int) ($row['total_tickets'] ?? 0)));
+      $body .= sprintf("Ticket gross: $%s\n", number_format($ticket_gross, 2));
+      if ($include_concessions) {
+        $body .= sprintf("Concessions gross: $%s\n", number_format($concessions, 2));
+        $body .= sprintf("Combined gross: $%s\n", number_format($ticket_gross + $concessions, 2));
+      }
+      $body .= "\nGenerated automatically by the Roxy Grosses plugin.";
 
-    $sent = wp_mail($recipients, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
-    @unlink($attachment);
+      $sent = wp_mail($recipients, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
 
-    if (!$sent) {
-      Store::insert_log('send_live_grosses', $mode, null, $report_date, false, 'WordPress could not send the live grosses email.', [
+      if (!$sent) {
+        Store::insert_log('send_live_grosses', $mode, null, $report_date, false, 'WordPress could not send the live grosses email.', [
+          'live_entry_id' => (int) ($row['id'] ?? 0),
+          'include_concessions' => $include_concessions,
+        ]);
+        return [
+          'success' => false,
+          'message' => 'WordPress could not send the live grosses email.',
+        ];
+      }
+
+      Store::insert_log('send_live_grosses', $mode, null, $report_date, true, 'Live grosses email sent to ' . implode(', ', $recipients) . '.', [
         'live_entry_id' => (int) ($row['id'] ?? 0),
         'include_concessions' => $include_concessions,
       ]);
+
       return [
-        'success' => false,
-        'message' => 'WordPress could not send the live grosses email.',
+        'success' => true,
+        'message' => 'Live grosses email sent to ' . implode(', ', $recipients) . '.',
       ];
+    } finally {
+      self::remove_csv_attachment($attachment);
     }
-
-    Store::insert_log('send_live_grosses', $mode, null, $report_date, true, 'Live grosses email sent to ' . implode(', ', $recipients) . '.', [
-      'live_entry_id' => (int) ($row['id'] ?? 0),
-      'include_concessions' => $include_concessions,
-    ]);
-
-    return [
-      'success' => true,
-      'message' => 'Live grosses email sent to ' . implode(', ', $recipients) . '.',
-    ];
   }
 
   private static function expand_tokens(string $template, array $summary): string {
@@ -1946,106 +1951,149 @@ class Reporter {
     }
 
   private static function write_csv(array $reports): string {
-    $upload_dir = wp_upload_dir();
-    $dir = trailingslashit($upload_dir['basedir']) . 'roxy-grosses';
-    wp_mkdir_p($dir);
-
     $latest_date = $reports ? (string) $reports[count($reports) - 1]['report_date'] : wp_date('Y-m-d');
-    $path = trailingslashit($dir) . 'grosses-' . $latest_date . '.csv';
-    $handle = fopen($path, 'w');
-    if (!$handle) {
-      throw new \RuntimeException('Unable to create the grosses CSV attachment.');
-    }
+    return self::write_private_csv('grosses-' . $latest_date . '.csv', static function ($handle) use ($reports): void {
 
-    $total_general = 0;
-    $total_discount = 0;
-    $total_group = 0;
-    $total_paid = 0;
-    $total_gross = 0.0;
+      $total_general = 0;
+      $total_discount = 0;
+      $total_group = 0;
+      $total_paid = 0;
+      $total_gross = 0.0;
 
-    fputcsv($handle, ['Report Date', 'Show Time', 'Theater', 'Film Title', 'General', 'Discount', 'Group', 'Total Tickets', 'Gross']);
-    foreach ($reports as $report) {
-      $general_qty = max(0, (int) ($report['general_qty'] ?? 0));
-      $discount_qty = max(0, (int) ($report['discount_qty'] ?? 0));
-      $group_qty = max(0, (int) ($report['group_qty'] ?? 0));
-      $paid_tickets = $general_qty + $discount_qty + $group_qty;
-      $gross_total = round((float) ($report['gross_total'] ?? 0), 2);
+      self::put_attachment_row($handle, ['Report Date', 'Show Time', 'Theater', 'Film Title', 'General', 'Discount', 'Group', 'Total Tickets', 'Gross']);
+      foreach ($reports as $report) {
+        $general_qty = max(0, (int) ($report['general_qty'] ?? 0));
+        $discount_qty = max(0, (int) ($report['discount_qty'] ?? 0));
+        $group_qty = max(0, (int) ($report['group_qty'] ?? 0));
+        $paid_tickets = $general_qty + $discount_qty + $group_qty;
+        $gross_total = round((float) ($report['gross_total'] ?? 0), 2);
 
-      $total_general += $general_qty;
-      $total_discount += $discount_qty;
-      $total_group += $group_qty;
-      $total_paid += $paid_tickets;
-      $total_gross += $gross_total;
+        $total_general += $general_qty;
+        $total_discount += $discount_qty;
+        $total_group += $group_qty;
+        $total_paid += $paid_tickets;
+        $total_gross += $gross_total;
 
-      fputcsv($handle, [
-        $report['report_date'],
-        $report['show_time'],
-        $report['theater_name'],
-        $report['film_title'],
-        $general_qty,
-        $discount_qty,
-        $group_qty,
-        $paid_tickets,
-        '$' . number_format($gross_total, 2, '.', ''),
+        self::put_attachment_row($handle, [
+          $report['report_date'],
+          $report['show_time'],
+          $report['theater_name'],
+          $report['film_title'],
+          $general_qty,
+          $discount_qty,
+          $group_qty,
+          $paid_tickets,
+          '$' . number_format($gross_total, 2, '.', ''),
+        ]);
+      }
+
+      self::put_attachment_row($handle, [
+        'Total',
+        '',
+        '',
+        '',
+        $total_general,
+        $total_discount,
+        $total_group,
+        $total_paid,
+        '$' . number_format($total_gross, 2, '.', ''),
       ]);
-    }
 
-    fputcsv($handle, [
-      'Total',
-      '',
-      '',
-      '',
-      $total_general,
-      $total_discount,
-      $total_group,
-      $total_paid,
-      '$' . number_format($total_gross, 2, '.', ''),
-    ]);
-
-      fclose($handle);
-      return $path;
-    }
+    });
+  }
 
   private static function write_live_csv(array $row, bool $include_concessions): string {
-    $upload_dir = wp_upload_dir();
-    $dir = trailingslashit($upload_dir['basedir']) . 'roxy-grosses';
-    wp_mkdir_p($dir);
-
     $report_date = (string) ($row['report_date'] ?? wp_date('Y-m-d'));
     $safe_title = sanitize_title((string) ($row['show_title'] ?? 'live-show'));
-    $path = trailingslashit($dir) . 'live-grosses-' . $report_date . '-' . ($safe_title !== '' ? $safe_title : 'live-show') . '.csv';
-    $handle = fopen($path, 'w');
-    if (!$handle) {
-      throw new \RuntimeException('Unable to create the live grosses CSV attachment.');
+    $filename = 'live-grosses-' . $report_date . '-' . ($safe_title !== '' ? $safe_title : 'live-show') . '.csv';
+    return self::write_private_csv($filename, static function ($handle) use ($row, $include_concessions, $report_date): void {
+
+      $header = ['Report Date', 'Show Time', 'Show', 'Presale Tickets', 'Online Tickets', 'Door Tickets', 'Group/Subscriber', 'Total Attendance', 'Ticket Gross'];
+      $record = [
+        $report_date,
+        (string) ($row['show_time'] ?? ''),
+        (string) ($row['show_title'] ?? ''),
+        (int) ($row['presale_qty'] ?? 0),
+        (int) ($row['online_qty'] ?? 0),
+        (int) ($row['door_qty'] ?? 0),
+        (int) ($row['group_sub_qty'] ?? 0),
+        (int) ($row['total_tickets'] ?? 0),
+        '$' . number_format((float) ($row['gross_total'] ?? 0), 2, '.', ''),
+      ];
+
+      if ($include_concessions) {
+        $ticket_gross = round((float) ($row['gross_total'] ?? 0), 2);
+        $concessions = round((float) ($row['concessions_total'] ?? 0), 2);
+        $header[] = 'Concessions Gross';
+        $header[] = 'Combined Gross';
+        $record[] = '$' . number_format($concessions, 2, '.', '');
+        $record[] = '$' . number_format($ticket_gross + $concessions, 2, '.', '');
+      }
+
+      self::put_attachment_row($handle, $header);
+      self::put_attachment_row($handle, $record);
+    });
+  }
+
+  /** Only files created by this request may be removed by the attachment cleanup. */
+  private static array $csv_attachments = [];
+
+  private static function write_private_csv(string $filename, callable $writer): string {
+    $temp = realpath(sys_get_temp_dir());
+    if ($temp === false || !is_dir($temp) || !is_writable($temp)) {
+      throw new \RuntimeException('Private report temporary storage is unavailable.');
     }
-
-    $header = ['Report Date', 'Show Time', 'Show', 'Presale Tickets', 'Online Tickets', 'Door Tickets', 'Group/Subscriber', 'Total Attendance', 'Ticket Gross'];
-    $record = [
-      $report_date,
-      (string) ($row['show_time'] ?? ''),
-      (string) ($row['show_title'] ?? ''),
-      (int) ($row['presale_qty'] ?? 0),
-      (int) ($row['online_qty'] ?? 0),
-      (int) ($row['door_qty'] ?? 0),
-      (int) ($row['group_sub_qty'] ?? 0),
-      (int) ($row['total_tickets'] ?? 0),
-      '$' . number_format((float) ($row['gross_total'] ?? 0), 2, '.', ''),
-    ];
-
-    if ($include_concessions) {
-      $ticket_gross = round((float) ($row['gross_total'] ?? 0), 2);
-      $concessions = round((float) ($row['concessions_total'] ?? 0), 2);
-      $header[] = 'Concessions Gross';
-      $header[] = 'Combined Gross';
-      $record[] = '$' . number_format($concessions, 2, '.', '');
-      $record[] = '$' . number_format($ticket_gross + $concessions, 2, '.', '');
+    foreach ([ABSPATH, defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : ABSPATH] as $web_root) {
+      $root = realpath($web_root);
+      if ($root !== false && ($temp === $root || str_starts_with($temp . DIRECTORY_SEPARATOR, rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR))) {
+        throw new \RuntimeException('Report temporary storage must be outside the website.');
+      }
     }
+    $dir = $temp . DIRECTORY_SEPARATOR . 'roxy-grosses-' . bin2hex(random_bytes(16));
+    if (!mkdir($dir, 0700)) {
+      throw new \RuntimeException('Unable to create private report storage.');
+    }
+    $stem = (string) preg_replace('/\.csv$/i', '', $filename);
+    $filename = substr((string) preg_replace('/[^a-zA-Z0-9._-]/', '-', $stem), 0, 176) . '.csv';
+    $path = $dir . DIRECTORY_SEPARATOR . $filename;
+    self::$csv_attachments[$path] = $dir;
+    register_shutdown_function(static function () use ($path): void { self::remove_csv_attachment($path); });
+    $handle = null;
+    try {
+      if (!chmod($dir, 0700)) throw new \RuntimeException('Unable to protect report storage.');
+      $handle = fopen($path, 'x+b');
+      if ($handle === false || !chmod($path, 0600)) throw new \RuntimeException('Unable to create private CSV attachment.');
+      $writer($handle);
+      if (!fflush($handle)) throw new \RuntimeException('Unable to finish writing CSV attachment.');
+      $closed = fclose($handle);
+      $handle = null;
+      if (!$closed) throw new \RuntimeException('Unable to close CSV attachment.');
+      return $path;
+    } catch (\Throwable $error) {
+      if (is_resource($handle)) fclose($handle);
+      self::remove_csv_attachment($path);
+      throw $error;
+    }
+  }
 
-    fputcsv($handle, $header);
-    fputcsv($handle, $record);
-    fclose($handle);
+  private static function put_attachment_row($handle, array $row): void {
+    if (fputcsv($handle, $row) === false) {
+      throw new \RuntimeException('Unable to write CSV attachment.');
+    }
+  }
 
-    return $path;
+  private static function remove_csv_attachment(string $path): void {
+    if (!isset(self::$csv_attachments[$path])) return;
+    $dir = self::$csv_attachments[$path];
+    if (is_file($path) && !@unlink($path)) {
+      error_log('Roxy Grosses: private CSV cleanup failed.');
+      return; // Keep ownership so shutdown can retry; never delete another run's file.
+    }
+    if (is_dir($dir) && !@rmdir($dir)) {
+      error_log('Roxy Grosses: private CSV directory cleanup failed.');
+      return;
+    }
+    unset(self::$csv_attachments[$path]);
   }
 
   public static function reconciliation_rows(string $date_from, string $date_to): array {
