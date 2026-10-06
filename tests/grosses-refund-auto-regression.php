@@ -8,6 +8,7 @@ namespace RoxyGrosses {
   }
 
   final class Square {
+    public static function with_sale_snapshot(callable $operation) { return $operation(); }
     public static array $updated_orders = [];
     public static array $payment_refunds = [];
     public static array $source_orders = [];

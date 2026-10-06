@@ -49,7 +49,7 @@ eval('namespace ' . $namespace . ';
     public static function get($key, $default = "") { return $default; }
     public static function get_report_timezone(): string { return "UTC"; }
   }
-  final class Square { public static function fetch_orders_for_date(string $date): array { throw new \\RuntimeException("Unexpected provider call in lock fixture."); } }
+  final class Square { public static function with_sale_snapshot(callable $operation) { return $operation(); } public static function fetch_orders_for_date(string $date): array { throw new \\RuntimeException("Unexpected provider call in lock fixture."); } }
   final class RefundSnapshot {}
 ');
 eval($load_candidate($store_path));

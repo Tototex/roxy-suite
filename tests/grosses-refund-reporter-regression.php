@@ -7,6 +7,7 @@ final class Settings {
   public static function get(string $key, $default = '') { return self::$values[$key] ?? $default; }
 }
 final class Square {
+  public static function with_sale_snapshot(callable $operation) { return $operation(); }
   public static array $orders = [];
   public static int $fetch_count = 0;
   public static function fetch_orders_for_date(string $date): array { self::$fetch_count++; return self::$orders; }

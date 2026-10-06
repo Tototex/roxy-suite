@@ -6,14 +6,38 @@ if (!defined('ABSPATH')) exit;
 class Square {
   private const API_VERSION = '2026-01-22';
   private const IN_STORE_PURCHASE_CATEGORY = 'In Store Purchase';
+  private static int $sale_snapshot_depth = 0;
+  private static array $sale_snapshot = [];
+
+  /** One immutable sale-day read per managed operation; never a persistent cache. */
+  public static function with_sale_snapshot(callable $operation) {
+    $outer = self::$sale_snapshot_depth === 0;
+    if ($outer) self::$sale_snapshot = [];
+    ++self::$sale_snapshot_depth;
+    try { return $operation(); }
+    finally {
+      --self::$sale_snapshot_depth;
+      if ($outer) self::$sale_snapshot = [];
+    }
+  }
 
   public static function fetch_orders_for_date(string $report_date): array {
     [$start_at, $end_at] = self::date_window($report_date, Settings::get_report_timezone());
-    return self::search_orders_window($start_at, $end_at, 'closed_at');
+    $settings = Settings::get_all();
+    $key = hash('sha256', serialize([$start_at, $end_at, $settings['square_environment'] ?? 'production', $settings['square_location_ids'] ?? '']));
+    if (self::$sale_snapshot_depth > 0 && array_key_exists($key, self::$sale_snapshot)) return self::$sale_snapshot[$key];
+    $orders = self::search_orders_window($start_at, $end_at, 'closed_at');
+    if (self::$sale_snapshot_depth > 0) self::$sale_snapshot[$key] = $orders;
+    return $orders;
   }
 
   /** Return discovery is separate from sale-day searches, including late updates. */
   public static function fetch_orders_updated_between(string $start_at, string $end_at, ?float $deadline = null, bool $returns_only = false): array {
+    [$start, $end] = self::ordered_timestamps($start_at, $end_at);
+    return self::search_orders_window($start->format('c'), $end->format('c'), 'updated_at', $deadline, $returns_only);
+  }
+
+  private static function ordered_timestamps(string $start_at, string $end_at): array {
     $pattern = '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/';
     if (!preg_match($pattern, $start_at) || !preg_match($pattern, $end_at)) {
       throw new \RuntimeException('Use explicit timezone timestamps for Square return discovery.');
@@ -25,7 +49,43 @@ class Square {
     $errors = \DateTimeImmutable::getLastErrors();
     if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('Invalid Square return-discovery end timestamp.');
     if ($start >= $end) throw new \RuntimeException('Square return discovery requires an increasing time window.');
-    return self::search_orders_window($start->format('c'), $end->format('c'), 'updated_at', $deadline, $returns_only);
+    return [$start, $end];
+  }
+
+  /** Read-only refund feed; includes pending changes without the one-year default creation cutoff. */
+  public static function list_payment_refunds_updated_between(string $start_at, string $end_at, ?float $deadline = null): array {
+    [$start, $end] = self::ordered_timestamps($start_at, $end_at);
+    $locations = array_values(array_unique(Settings::line_list((string) (Settings::get_all()['square_location_ids'] ?? ''))));
+    if (!$locations || count($locations) > 10) throw new \RuntimeException('Configure one to ten Square locations for refund discovery.');
+    $refunds = []; $pages = 0; $deadline = $deadline ?? microtime(true) + 120;
+    foreach ($locations as $location) {
+      $cursor = null; $seen_cursors = [];
+      do {
+        if (++$pages > 100 || microtime(true) >= $deadline) throw new \RuntimeException('Square refund retrieval exceeded its safety limit. No partial refund list was returned.');
+        $query = ['begin_time' => '2000-01-01T00:00:00Z', 'end_time' => $end->format('c'),
+          'updated_at_begin_time' => $start->format('c'), 'updated_at_end_time' => $end->format('c'),
+          'sort_field' => 'UPDATED_AT', 'sort_order' => 'ASC', 'limit' => 100, 'location_id' => $location];
+        if ($cursor !== null) $query['cursor'] = $cursor;
+        $response = self::request('GET', '/v2/refunds?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986), null, $deadline);
+        if (array_key_exists('refunds', $response) && (!is_array($response['refunds']) || !array_is_list($response['refunds']))) throw new \RuntimeException('Square returned an invalid refund list.');
+        foreach ($response['refunds'] ?? [] as $refund) {
+          $id = is_array($refund) ? ($refund['id'] ?? null) : null;
+          if (!is_string($id) || $id === '' || strlen($id) > 255 || isset($refunds[$id]) || ($refund['location_id'] ?? null) !== $location || !in_array($refund['status'] ?? '', ['PENDING','COMPLETED','REJECTED','FAILED'], true)) throw new \RuntimeException('Square returned an invalid, misplaced or duplicate refund.');
+          $updated = $refund['updated_at'] ?? null;
+          if (!is_string($updated)) throw new \RuntimeException('Square refund has no update timestamp.');
+          [$timestamp] = self::ordered_timestamps($updated, $end->modify('+1 second')->format('c'));
+          if ($timestamp < $start || $timestamp > $end) throw new \RuntimeException('Square refund falls outside the requested update window.');
+          $refunds[$id] = $refund;
+        }
+        if (array_key_exists('cursor', $response) && (!is_string($response['cursor']) || $response['cursor'] === '' || strlen($response['cursor']) > 10000)) throw new \RuntimeException('Square returned an invalid refund pagination cursor.');
+        $cursor = $response['cursor'] ?? null;
+        if ($cursor !== null) {
+          if (isset($seen_cursors[$cursor])) throw new \RuntimeException('Square repeated a refund pagination cursor.');
+          $seen_cursors[$cursor] = true;
+        }
+      } while ($cursor !== null);
+    }
+    return array_values($refunds);
   }
 
   public static function retrieve_orders(array $order_ids, ?float $deadline = null): array {
@@ -267,7 +327,7 @@ class Square {
     }
 
     if (json_last_error() !== JSON_ERROR_NONE || !is_object($object) || !is_array($data)) throw new \RuntimeException('Square returned an unreadable response. No report was returned.');
-    foreach (['orders', 'order_entries', 'objects', 'related_objects', 'locations', 'errors'] as $list) {
+    foreach (['orders', 'order_entries', 'objects', 'related_objects', 'locations', 'refunds', 'errors'] as $list) {
       if (property_exists($object, $list) && !is_array($object->$list)) throw new \RuntimeException('Square returned an invalid response list. No report was returned.');
     }
     if (!empty($data['errors'])) throw new \RuntimeException('Square reported an API error. No report was returned.');

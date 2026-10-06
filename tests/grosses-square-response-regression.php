@@ -57,4 +57,29 @@ namespace {
   reset_fixture([response(['refund'=>['id'=>'refund-a','status'=>'COMPLETED']])]);
   check(\RoxyGrosses\Square::retrieve_payment_refund('refund-a')['status']==='COMPLETED','payment-refund status is read from provider');
   foreach([['id'=>'other','status'=>'COMPLETED'],['id'=>'refund-a','status'=>'APPROVED']] as $refund){reset_fixture([response(['refund'=>$refund])]);try{\RoxyGrosses\Square::retrieve_payment_refund('refund-a');throw new \LogicException('Expected invalid status');}catch(\RuntimeException $e){check(true,'wrong identity or legacy order status cannot masquerade as confirmed payment refund');}}
+  $refund = ['id'=>'feed-a','location_id'=>'fixture-location','status'=>'COMPLETED','updated_at'=>'2026-10-03T12:00:00Z'];
+  reset_fixture([response(['refunds'=>[$refund],'cursor'=>'next']),response(['refunds'=>[array_replace($refund,['id'=>'feed-b'])]])]);
+  check(count(\RoxyGrosses\Square::list_payment_refunds_updated_between('2026-10-01T00:00:00Z','2026-10-06T00:00:00Z'))===2,'refund-specific feed retrieves every unique page');
+  parse_str(parse_url($GLOBALS['calls'][0][0],PHP_URL_QUERY),$first_query);
+  parse_str(parse_url($GLOBALS['calls'][1][0],PHP_URL_QUERY),$next_query);
+  check($first_query['sort_field']==='UPDATED_AT' && $first_query['updated_at_begin_time']==='2026-10-01T00:00:00+00:00' && $first_query['begin_time']==='2000-01-01T00:00:00Z','refund feed uses update dates without the implicit one-year creation cutoff');
+  check($next_query['cursor']==='next' && array_diff_assoc($first_query,$next_query)===[],'refund pagination retains location and exact original filters');
+  $failure_sets = [
+    [response(['refunds'=>null])], [response(['refunds'=>(object)[]])], [response(['refunds'=>['wrong-key'=>$refund]])],
+    [response(['refunds'=>[array_replace($refund,['location_id'=>'other'])]])],
+    [response(['refunds'=>[array_replace($refund,['status'=>'UNKNOWN'])]])],
+    [response(['refunds'=>[array_replace($refund,['updated_at'=>'2026-10-07T12:00:00Z'])]])],
+    [response(['refunds'=>[array_replace($refund,['updated_at'=>'2026-09-01T12:00:00Z'])]])],
+    [response(['refunds'=>[array_replace($refund,['updated_at'=>'2026-02-30T12:00:00Z'])]])],
+    [response(['refunds'=>[$refund,$refund]])], [response(['refunds'=>[$refund],'cursor'=>'next']),response(['refunds'=>[$refund]])],
+    [response(['cursor'=>'repeat']),response(['cursor'=>'repeat'])], [response(['cursor'=>null])], [response(['cursor'=>''])],
+    [response(['refunds'=>[]],503)], new FixtureNetworkError('network failure'),
+  ];
+  foreach($failure_sets as $responses){if($responses instanceof FixtureNetworkError)$responses=[$responses];reset_fixture($responses);try{\RoxyGrosses\Square::list_payment_refunds_updated_between('2026-10-01T00:00:00Z','2026-10-06T00:00:00Z');throw new \LogicException('Expected invalid feed failure');}catch(\RuntimeException $e){check(true,'malformed/misplaced/duplicate/incomplete refund feed cannot become partial accounting');}}
+  reset_fixture([['status'=>200,'body'=>'{}']]);check(\RoxyGrosses\Square::list_payment_refunds_updated_between('2026-10-01T00:00:00Z','2026-10-06T00:00:00Z')===[],'legitimate empty refund feed is preserved');
+  reset_fixture([response(['refunds'=>[$refund]]),response(['refunds'=>[array_replace($refund,['id'=>'feed-other','location_id'=>'second-location'])]])]);
+  \RoxyGrosses\Settings::$locations="fixture-location\nsecond-location\nfixture-location";
+  check(count(\RoxyGrosses\Square::list_payment_refunds_updated_between('2026-10-01T00:00:00Z','2026-10-06T00:00:00Z'))===2 && count($GLOBALS['calls'])===2,'configured locations are deduped and read independently');
+  reset_fixture([]);try{\RoxyGrosses\Square::list_payment_refunds_updated_between('2026-10-06T00:00:00Z','2026-10-01T00:00:00Z');throw new \LogicException('Expected invalid window');}catch(\RuntimeException $e){check(!$GLOBALS['calls'],'invalid refund-feed date window fails before network');}
+  reset_fixture([]);try{\RoxyGrosses\Square::list_payment_refunds_updated_between('2026-10-01T00:00:00Z','2026-10-06T00:00:00Z',microtime(true)-1);throw new \LogicException('Expected deadline failure');}catch(\RuntimeException $e){check(!$GLOBALS['calls'],'expired shared refund-feed deadline fails before network');}
 }

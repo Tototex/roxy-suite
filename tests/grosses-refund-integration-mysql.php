@@ -50,6 +50,7 @@ eval('namespace ' . $namespace . ';
     public static function get(string $key, $default = "") { return ["theater_name"=>"Fixture Theater", "lookback_days"=>0, "general_price"=>15, "discount_price"=>9, "group_price"=>6][$key] ?? $default; }
   }
   final class Square {
+    public static function with_sale_snapshot(callable $operation) { return $operation(); }
     public static function fetch_orders_for_date(string $date): array { return []; }
     public static function concession_reporting_categories(array $ids): array { return []; }
   }

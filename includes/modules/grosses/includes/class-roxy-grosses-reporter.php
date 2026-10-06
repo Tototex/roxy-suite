@@ -321,7 +321,7 @@ class Reporter {
   }
 
   public static function send_report(string $report_date, string $mode = 'scheduled'): array {
-    try { return Store::with_refund_review_lock(static fn() => self::send_report_locked($report_date, $mode)); }
+    try { return Square::with_sale_snapshot(static fn() => Store::with_refund_review_lock(static fn() => self::send_report_locked($report_date, $mode))); }
     catch (\Throwable $error) { return ['success' => false, 'message' => $error->getMessage()]; }
   }
 
@@ -339,7 +339,8 @@ class Reporter {
       }
 
       Store::upsert_history_rows($reports, $mode, null);
-      Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, null), 'update');
+      // Email snapshots are not financial-table refreshes. In particular, do
+      // not replace cross-category concession allocations with movie-only ones.
 
       Store::assert_refund_review_lock();
       $send = self::send_email($reports, $summary, $mode);
@@ -350,7 +351,6 @@ class Reporter {
       $report_id = Store::create_report($report_date, max(0, (int) Settings::get('lookback_days', '0')), $mode, 'emailed', $summary, $reports);
       if ($report_id > 0) {
         Store::upsert_history_rows($reports, $mode, $report_id);
-        Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, $report_id), 'update');
       }
 
       $message = $send['message'];
@@ -492,6 +492,10 @@ class Reporter {
   }
 
   public static function sync_automatic_tables(string $report_date, string $mode = 'scheduled-sync', ?\DateTimeImmutable $now = null): array {
+    return Square::with_sale_snapshot(static fn() => self::sync_automatic_tables_snapshot($report_date, $mode, $now));
+  }
+
+  private static function sync_automatic_tables_snapshot(string $report_date, string $mode, ?\DateTimeImmutable $now): array {
     global $wpdb;
     $lock = 'roxy_grosses_refund_sync_' . substr(hash('sha256', Store::entries_table_name()), 0, 24);
     $claimed = false;
@@ -1002,7 +1006,7 @@ class Reporter {
       }
 
       Store::upsert_history_rows($reports, $mode, $report_id);
-      Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, $report_id), 'update');
+      // Saving a studio draft must not refresh current financial allocations.
 
       Settings::set_status([
         'sent_at' => '',
@@ -2104,7 +2108,7 @@ class Reporter {
         self::put_attachment_row($handle, [
           $report['report_date'],
           $report['show_time'],
-          $report['theater_name'],
+          $report['theater_name'] ?? (string) Settings::get('theater_name', 'Newport Roxy Theater'),
           $report['film_title'],
           $general_qty,
           $discount_qty,

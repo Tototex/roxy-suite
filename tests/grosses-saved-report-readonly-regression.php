@@ -69,6 +69,7 @@ namespace {
   $result = \RoxyGrosses\Reporter::send_saved_report(41);
   saved_report_assert(!empty($result['success']), 'saved report sends successfully');
   saved_report_assert(str_contains($GLOBALS['fixture_mail'][0]['body'], 'Saved snapshot title') && str_contains($GLOBALS['fixture_mail'][0]['attachment'], 'Saved snapshot title'), 'email body and CSV use saved snapshot, not regenerated data');
+  saved_report_assert(str_contains($GLOBALS['fixture_mail'][0]['attachment'], 'Newport Roxy Theater'), 'legacy snapshot missing theater name exports the configured fallback without a warning');
   saved_report_assert(\RoxyGrosses\Store::$entries === $original_entries && \RoxyGrosses\Store::$history === $original_history && \RoxyGrosses\Store::$upsert_calls === 0, 'successful resend performs zero entry/history mutations');
   saved_report_assert(\RoxyGrosses\Store::$emailed === [41] && count(\RoxyGrosses\Store::$logs) === 1 && ($GLOBALS['fixture_status']['mode'] ?? '') === 'saved-report', 'successful resend keeps emailed marker, log, and status');
 

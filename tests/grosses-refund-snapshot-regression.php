@@ -11,7 +11,9 @@ final class Square {
   public static array $refunds = [];
   public static array $sources = [];
   public static array $calls = [];
-  public static function reset(): void { self::$orders = self::$refunds = self::$sources = self::$calls = []; }
+  public static array $feed = [];
+  public static function reset(): void { self::$orders = self::$refunds = self::$sources = self::$calls = self::$feed = []; }
+  public static function list_payment_refunds_updated_between(string $start, string $end, ?float $deadline = null): array { self::$calls['feed'] = [$start, $end]; return self::$feed; }
   public static function fetch_orders_updated_between(string $start, string $end, ?float $deadline = null, bool $returns_only = false): array {
     self::$calls['window'] = [$start, $end];
     self::$calls['returns_only'] = $returns_only;
@@ -172,6 +174,36 @@ namespace {
   $result = $snapshot->reconcile_sale_day('2026-08-12', [$sale('different-sale')]);
   $assert($result['orders'] === [$sale('different-sale')] && count($result['issues']) === 1, 'unknown source on relevant date must be surfaced without altering unrelated sale');
   $assert($result['issues'][0]['reason'] === 'unknown_source_order', 'unknown source should retain its exact issue reason');
+
+  // Historical refund feed reuses authoritative payment objects and batches returns.
+  $reset(); $setup_source('sale-A');
+  $return_order = $ret('return-A', 'sale-A', 'a', 'refund-A', 'payment-A');
+  \RoxyGrosses\Square::$sources['return-A'] = $return_order;
+  \RoxyGrosses\Square::$feed = [['id'=>'payment-A_refund-A','payment_id'=>'payment-A','order_id'=>'return-A','status'=>'COMPLETED']];
+  $snapshot = $snapshot_class::load_from_refund_feed('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z'));
+  $result = $snapshot->reconcile_sale_day('2026-08-12', [$sale('sale-A')]);
+  $assert($result['orders'][0]['line_items'][0]['quantity'] === '2' && !$result['issues'], 'refund-specific historical feed produces the same itemized correction');
+  $assert(\RoxyGrosses\Square::$calls['source_batches'] === [['return-A'],['sale-A']], 'historical feed batches return and source orders independently');
+  $assert(empty(\RoxyGrosses\Square::$calls['refund_ids']) && empty(\RoxyGrosses\Square::$calls['fetch']), 'historical feed avoids per-refund GETs and scanning every ordinary sale');
+  \RoxyGrosses\Square::$feed[] = \RoxyGrosses\Square::$feed[0];
+  $expect_throw(static fn() => $snapshot_class::load_from_refund_feed('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z')), 'duplicate historical payment identity fails closed');
+  array_pop(\RoxyGrosses\Square::$feed);
+  \RoxyGrosses\Square::$sources['return-A']['refunds'] = 'malformed';
+  $expect_throw(static fn() => $snapshot_class::load_from_refund_feed('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z')), 'malformed historical refund-reference list fails closed');
+  \RoxyGrosses\Square::$sources['return-A']['refunds'] = ['wrong-key'=>$return_order['refunds'][0]];
+  $expect_throw(static fn() => $snapshot_class::load_from_refund_feed('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z')), 'associative historical refund-reference list fails closed');
+  \RoxyGrosses\Square::$sources['return-A']['refunds'] = ['malformed'];
+  $expect_throw(static fn() => $snapshot_class::load_from_refund_feed('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z')), 'malformed historical refund-reference identity fails closed');
+  \RoxyGrosses\Square::$sources['return-A'] = $return_order;
+  \RoxyGrosses\Square::$feed[0]['id'] = 'wrong-identity';
+  $expect_throw(static fn() => $snapshot_class::load_from_refund_feed('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z')), 'unmatched historical payment refund identity fails closed');
+  \RoxyGrosses\Square::$feed[0]['id'] = 'payment-A_refund-A';
+  unset(\RoxyGrosses\Square::$feed[0]['order_id']);
+  $expect_throw(static fn() => $snapshot_class::load_from_refund_feed('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z')), 'missing historical return-order reference is surfaced for review');
+  \RoxyGrosses\Square::$feed[0]['status'] = 'FAILED';
+  $snapshot = $snapshot_class::load_from_refund_feed('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z'));
+  $assert($snapshot->original_sale_dates() === [], 'proven failed historical refunds need no source correction');
+  $expect_throw(static fn() => $snapshot_class::load_from_refund_feed('2026-02-30', new \DateTimeImmutable('2026-08-20T12:00:00Z')), 'invalid historical feed calendar date fails before discovery');
 
   if ($failures) {
     foreach ($failures as $failure) fwrite(STDERR, "FAIL: {$failure}\n");
