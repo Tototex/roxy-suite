@@ -64,7 +64,7 @@ Current safeguards: preserve live customizations; back up changed files before d
 | R3 | Open | See audit; no resolution claimed. |
 | R4 | Open | See audit; no resolution claimed. |
 | R5 | In progress | Server-side backing deadline added, shared with rendering; exact/minute-only boundary, future, expired and invalid deadline fixtures pass. Monetary-unit guessing/versioned migration remains open. No backer charged for verification. |
-| G1 | Open | See audit; no resolution claimed. |
+| G1 | Resolved for US line tax/discount arithmetic | Checkpoint 39 shares one cents-based concession calculation across allocation and daily reconciliation: total_money less tax, or US gross_sales_money less discounts plus allocated charges when total is absent. Zero totals are authoritative; aggregate values not quantity-multiplied. Missing/ambiguous/noninteger/negative/foreign-currency money fails closed. 25 synthetic and 28 actual receipt-line comparisons pass; saved-report regressions retained, original financial records unchanged. This does not resolve returns/refunds (G2) or fresh shared snapshots/allocation conservation (G4/G11). |
 | G2 | Open | See audit; no resolution claimed. |
 | G3 | Open | See audit; no resolution claimed. |
 | G4 | Open | See audit; no resolution claimed. |

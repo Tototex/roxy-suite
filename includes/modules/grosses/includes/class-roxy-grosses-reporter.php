@@ -1390,40 +1390,38 @@ class Reporter {
   }
 
   private static function square_line_item_total(array $line_item, int $qty): float {
-    foreach (['total_money', 'gross_sales_money', 'total_base_price_money'] as $money_key) {
-      $amount = isset($line_item[$money_key]['amount']) ? (int) $line_item[$money_key]['amount'] : null;
-      if ($amount !== null) {
-        $value = $money_key === 'total_base_price_money' ? ($amount / 100) * max(1, $qty) : ($amount / 100);
-        return round((float) $value, 2);
-      }
-    }
-
-    return 0.0;
+    // Square aggregate money fields already include all units in the line.
+    return round(self::square_line_item_total_cents($line_item) / 100, 2);
   }
 
   private static function square_line_item_total_cents(array $line_item): int {
-    foreach (['total_money', 'gross_sales_money', 'total_base_price_money'] as $money_key) {
-      if (isset($line_item[$money_key]['amount'])) {
-        $amount = max(0, (int) $line_item[$money_key]['amount']);
-        if ($money_key === 'total_base_price_money') {
-          $qty = isset($line_item['quantity']) ? max(1, (int) round((float) $line_item['quantity'])) : 1;
-          return $amount * $qty;
-        }
-        return $amount;
-      }
-    }
+    $total = self::square_money_cents($line_item, 'total_money');
+    if ($total !== null) return $total;
+    return self::square_line_item_concession_cents($line_item) + (self::square_money_cents($line_item, 'total_tax_money') ?? 0);
+  }
 
-    return 0;
+  private static function square_money_cents(array $line_item, string $key): ?int {
+    if (!array_key_exists($key, $line_item)) return null;
+    $money=$line_item[$key];
+    if (!is_array($money) || !isset($money['amount']) || !is_int($money['amount']) || $money['amount'] < 0 || (isset($money['currency']) && $money['currency'] !== 'USD')) {
+      throw new \RuntimeException('Square returned invalid or unsupported line-item money. No financial report was calculated.');
+    }
+    return $money['amount'];
   }
 
   private static function square_line_item_concession_cents(array $line_item): int {
-    $gross_cents = max(0, (int) ($line_item['gross_sales_money']['amount'] ?? 0));
-    $tax_cents = max(0, (int) ($line_item['total_tax_money']['amount'] ?? 0));
-    if ($gross_cents > 0) {
-      return max(0, $gross_cents - $tax_cents);
+    // Actual collected line revenue excluding sales tax; allocated charges retained.
+    // US gross_sales_money already excludes tax, but has not deducted discounts.
+    $total=self::square_money_cents($line_item, 'total_money');
+    if ($total !== null) return max(0, $total - (self::square_money_cents($line_item, 'total_tax_money') ?? 0));
+    $gross=self::square_money_cents($line_item, 'gross_sales_money');
+    if ($gross !== null) return max(0, $gross - (self::square_money_cents($line_item, 'total_discount_money') ?? 0) + (self::square_money_cents($line_item, 'total_service_charge_money') ?? 0));
+    // Legacy aggregate fallback is safe only when no inclusive/exclusive tax ambiguity exists.
+    $aggregate=self::square_money_cents($line_item, 'total_base_price_money');
+    if ($aggregate !== null && (self::square_money_cents($line_item, 'total_tax_money') ?? 0) === 0) {
+      return max(0, $aggregate - (self::square_money_cents($line_item, 'total_discount_money') ?? 0) + (self::square_money_cents($line_item, 'total_service_charge_money') ?? 0));
     }
-
-    return self::square_line_item_total_cents($line_item);
+    throw new \RuntimeException('Square line-item totals are missing or ambiguous. No financial report was calculated.');
   }
 
   private static function is_concession_line_item(array $line_item, array $showings = [], array $category_map = []): bool {
@@ -2379,9 +2377,7 @@ class Reporter {
         if ($catalog_object_id === '' || !Square::is_in_store_purchase_item($catalog_object_id, $category_map)) {
           continue;
         }
-        $gross_sales = (int) ($line_item['gross_sales_money']['amount'] ?? 0);
-        $total_tax = (int) ($line_item['total_tax_money']['amount'] ?? 0);
-        $total_cents += max(0, $gross_sales - $total_tax);
+        $total_cents += self::square_line_item_concession_cents($line_item);
       }
     }
 
