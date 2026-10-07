@@ -292,7 +292,7 @@ class Conversion {
                     'status' => 'failed',
                     'started_at' => (string) $started_at,
                     'completed_at' => (string) current_time('mysql', true),
-                    'error' => sanitize_text_field($error->getMessage()),
+                    'error' => self::daily_review_error_text($error),
                 ]);
             }
             throw $error;
@@ -378,6 +378,17 @@ class Conversion {
             return false;
         }
         return true;
+    }
+
+    private static function daily_review_error_text(\Throwable $error): string {
+        $message = (string) $error->getMessage();
+        if (function_exists('sanitize_text_field')) {
+            return sanitize_text_field($message);
+        }
+        if (function_exists('wp_strip_all_tags')) {
+            return (string) wp_strip_all_tags($message);
+        }
+        return (string) preg_replace('/[\x00-\x1F\x7F]+/', ' ', $message);
     }
 
     public static function mark_failed(int $request_id): void {
