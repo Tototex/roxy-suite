@@ -10,10 +10,11 @@ namespace RoxyGrosses {
 namespace RoxyInventory {
     class Store {
         public static $saved=[]; public static $commits=0; public static $deactivated=[];
+        public static $stock=['v1'=>19];
         public static function with_lock($r,$f) { return $f(); }
         public static function transaction($f) { $r=$f(); self::$commits++; return $r; }
-        public static function stock_snapshot() { return ['v1'=>19]; }
-        public static function upsert_product($p) { self::$saved[]=$p; }
+        public static function stock_snapshot() { return self::$stock; }
+        public static function upsert_product($p) { self::$saved[]=$p; self::$stock[$p['square_variation_id']]=$p['on_hand']; }
         public static function deactivate_missing($ids) { self::$deactivated=$ids; return 0; }
         public static function mark_stock_increases($s) { return 0; }
         public static function log(...$a) { return true; }
@@ -42,12 +43,13 @@ function resetfixture($cat=null,$counts=null) {
     $GLOBALS['requests']=[]; $GLOBALS['loop']=false;
     $GLOBALS['responses']=['catalog'=>[$cat??encoded(catalog())],'counts'=>[$counts??encoded(['counts'=>[countrow()]])]];
     \RoxyInventory\Store::$saved=[]; \RoxyInventory\Store::$commits=0;
+    \RoxyInventory\Store::$stock=['v1'=>19];
 }
 $root=$argv[1]??dirname(__DIR__);
 require $root.'/includes/modules/inventory/includes/class-roxy-inventory-square.php';
 $checks=0;
 function check($ok,$label) { global $checks; if(!$ok)throw new RuntimeException($label);++$checks;echo 'PASS: '.$label."\n"; }
-function rejects($label) { $failed=false;try{\RoxyInventory\Square::pull();}catch(Throwable $e){$failed=true;}check($failed && !\RoxyInventory\Store::$saved && \RoxyInventory\Store::$commits===0,$label.' preserves saved inventory'); }
+function rejects($label) { $failed=false;try{\RoxyInventory\Square::pull();}catch(Throwable $e){$failed=true;}check($failed && !\RoxyInventory\Store::$saved && \RoxyInventory\Store::$commits===0 && \RoxyInventory\Store::$stock===['v1'=>19],$label.' preserves saved inventory'); }
 resetfixture(); $items=\RoxyInventory\Square::pull();
 check($items['v1']['on_hand']===3.0 && \RoxyInventory\Store::$commits===1,'valid response commits once');
 $body=json_decode($GLOBALS['requests'][1][1]['body'],true);
@@ -66,6 +68,18 @@ $cat=catalog();$cat['objects'][0]['item_data']['variations'][0]['item_variation_
 $cat=catalog();$cat['objects'][0]['item_data']['variations']=(object)[];resetfixture(encoded($cat));rejects('object variation collection');
 resetfixture(null,encoded(['counts'=>[countrow('3')],'cursor'=>'page2']));$GLOBALS['responses']['counts'][]=encoded(['counts'=>[countrow('4','L2')]]);
 check(\RoxyInventory\Square::pull()['v1']['on_hand']===7.0,'different locations sum across pages');
+resetfixture(null,encoded(['cursor'=>'counts-page-2']));$GLOBALS['responses']['counts'][]=encoded(['counts'=>[countrow('4')]]);
+check(\RoxyInventory\Square::pull()['v1']['on_hand']===4.0,'cursor-only count page followed by a complete page uses returned count instead of zero');
+resetfixture(null,encoded(['cursor'=>'empty-counts-page-2']));$GLOBALS['responses']['counts'][]=encoded(['counts'=>[]]);
+check(\RoxyInventory\Square::pull()['v1']['on_hand']===0,'cursor-only count page followed by an explicit empty terminal collection is a valid empty result');
+resetfixture(encoded(['cursor'=>'catalog-page-2']));$GLOBALS['responses']['catalog'][]=encoded(catalog());
+check(\RoxyInventory\Square::pull()['v1']['on_hand']===3.0,'cursor-only catalog page followed by a complete page retains returned item');
+resetfixture(encoded(['cursor'=>'empty-catalog-page-2']));$GLOBALS['responses']['catalog'][]=encoded(['objects'=>[]]);
+check(\RoxyInventory\Square::pull()===[] && \RoxyInventory\Store::$commits===1,'cursor-only catalog page followed by an explicit empty terminal collection is valid');
+resetfixture(null,encoded(['cursor'=>'counts-page-2']));$GLOBALS['responses']['counts'][]=encoded((object)[],500);
+rejects('count pagination request failure after cursor-only page');
+resetfixture(encoded(['cursor'=>'catalog-page-2']));$GLOBALS['responses']['catalog'][]=encoded((object)[],500);
+rejects('catalog pagination request failure after cursor-only page');
 resetfixture(null,encoded(['counts'=>[countrow('-2.5')]]));check(\RoxyInventory\Square::pull()['v1']['on_hand']===-2.5,'legitimate negative decimal Square stock retained');
 foreach ([(object)[],['counts'=>[]]] as $empty) { resetfixture(null,encoded($empty));check(\RoxyInventory\Square::pull()['v1']['on_hand']===0,'absent/empty counts legitimately mean no stock'); }
 resetfixture(encoded((object)[]));check(\RoxyInventory\Square::pull()===[] && count($GLOBALS['requests'])===1,'legitimate empty catalog completes without count requests');

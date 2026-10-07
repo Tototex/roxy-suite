@@ -130,7 +130,7 @@ class Frontend {
         $goal = CPT::funding_goal_cents($post_id);
         $target_at = (string) get_post_meta($post_id, CPT::META_TARGET_AT, true);
         $deadline_at = (string) get_post_meta($post_id, CPT::META_DEADLINE_AT, true);
-        $summary = $totals === null
+        $summary = $totals === null || is_wp_error($goal)
             ? 'Funding temporarily unavailable.'
             : ($totals['has_sponsor']
                 ? 'Sponsored'
@@ -156,6 +156,7 @@ class Frontend {
         echo '<p><strong>Progress:</strong> ' . esc_html($summary) . '</p>';
         if ($detailed) {
             if ($totals === null) echo '<p>Backing is temporarily unavailable while funding totals are verified.</p>';
+            elseif (is_wp_error($goal)) echo '<p>Backing is unavailable pending currency review. Please contact the theater.</p>';
             else echo self::render_backing_form($post_id, $status, $totals);
         } else {
             echo '<p><a class="roxy-rs-button roxy-rs-button-primary" href="' . esc_url(get_permalink($post_id)) . '">View request</a></p>';
@@ -179,7 +180,14 @@ class Frontend {
         if ($profile === '') {
             $profile = 'movie_evening';
         }
-        $prices = self::ticket_prices($post_id);
+        $price_types = $profile === 'movie_matinee' ? ['matinee'] : ['general', 'discount'];
+        $prices = [];
+        foreach ($price_types as $price_type) {
+            $price_result = self::ticket_prices($post_id, [$price_type]);
+            if (!is_wp_error($price_result)) {
+                $prices += $price_result;
+            }
+        }
         $sponsor_amount = CPT::sponsor_commitment_cents($post_id, (int) $totals['charge_total']);
         $sponsor_tickets = CPT::sponsor_ticket_qty($post_id);
         $deadline_at = (string) get_post_meta($post_id, CPT::META_DEADLINE_AT, true);
@@ -188,6 +196,10 @@ class Frontend {
         $message = isset($_GET['message']) ? sanitize_text_field((string) wp_unslash($_GET['message'])) : '';
 
         ob_start();
+        if (is_wp_error($goal) || is_wp_error($sponsor_amount)) {
+            echo '<p class="roxy-rs-notice roxy-rs-notice-error">Saved currency values need review before this request can accept backing.</p>';
+            return (string) ob_get_clean();
+        }
         if ($trailer_url !== '') {
             echo '<p><a href="' . esc_url($trailer_url) . '" target="_blank" rel="noopener">Watch trailer</a></p>';
         }
@@ -224,13 +236,26 @@ class Frontend {
         echo '<input type="hidden" name="action" value="roxy_rs_commit_backing">';
         echo '<input type="hidden" name="request_id" value="' . esc_attr((string) $post_id) . '">';
 
+        $paid_options = 0;
         if ($profile === 'movie_matinee') {
-            echo '<label>Matinee tickets (' . wp_kses_post(wc_price($prices['matinee'] / 100)) . ')<input type="number" min="0" step="1" name="general_qty" value="0"></label>';
-        } else {
+            if (isset($prices['matinee'])) {
+                echo '<label>Matinee tickets (' . wp_kses_post(wc_price($prices['matinee'] / 100)) . ')<input type="number" min="0" step="1" name="general_qty" value="0"></label>';
+                $paid_options++;
+            }
+        } elseif (isset($prices['general']) || isset($prices['discount'])) {
             echo '<div class="roxy-rs-two">';
-            echo '<label>General tickets (' . wp_kses_post(wc_price($prices['general'] / 100)) . ')<input type="number" min="0" step="1" name="general_qty" value="0"></label>';
-            echo '<label>Discount tickets (' . wp_kses_post(wc_price($prices['discount'] / 100)) . ')<input type="number" min="0" step="1" name="discount_qty" value="0"></label>';
+            if (isset($prices['general'])) {
+                echo '<label>General tickets (' . wp_kses_post(wc_price($prices['general'] / 100)) . ')<input type="number" min="0" step="1" name="general_qty" value="0"></label>';
+                $paid_options++;
+            }
+            if (isset($prices['discount'])) {
+                echo '<label>Discount tickets (' . wp_kses_post(wc_price($prices['discount'] / 100)) . ')<input type="number" min="0" step="1" name="discount_qty" value="0"></label>';
+                $paid_options++;
+            }
             echo '</div>';
+        }
+        if ($paid_options === 0) {
+            echo '<p class="roxy-rs-notice roxy-rs-notice-error">Paid ticket options are unavailable pending price review. Subscriber reservations can still be submitted.</p>';
         }
 
         echo '<label>Subscriber reservations (do not count toward the funding goal)<input type="number" min="0" step="1" name="subscriber_qty" value="0"></label>';
@@ -306,6 +331,7 @@ class Frontend {
         update_post_meta($post_id, CPT::META_MIN_SUPPORT, 0);
         update_post_meta($post_id, CPT::META_FUNDING_GOAL, $default_goal);
         update_post_meta($post_id, CPT::META_SPONSOR_AMOUNT, $default_sponsor);
+        update_post_meta($post_id, CPT::META_FUNDING_UNIT_VERSION, CPT::FUNDING_UNIT_CENTS_V1);
         update_post_meta($post_id, CPT::META_SPONSOR_TICKETS, Settings::sponsor_ticket_qty());
         update_post_meta($post_id, CPT::META_TRAILER_URL, '');
         update_post_meta($post_id, CPT::META_REQUESTER_NAME, $requester_name);
@@ -328,6 +354,11 @@ class Frontend {
         $request = get_post($request_id);
         if (!$request || $request->post_type !== CPT::POST_TYPE) {
             self::redirect_request_notice($request_id, 'error', 'Requested showing not found.');
+        }
+        $saved_goal = CPT::funding_goal_cents($request_id);
+        $saved_sponsor = CPT::sponsor_amount_cents($request_id);
+        if (is_wp_error($saved_goal) || is_wp_error($saved_sponsor)) {
+            self::redirect_request_notice($request_id, 'error', 'Saved currency values need review. No backing was accepted.');
         }
 
         $status = CPT::get_status($request_id);
@@ -383,13 +414,23 @@ class Frontend {
             self::redirect_request_notice($request_id, 'success', 'We already saved that backing request. Please refresh the page to see the latest progress.');
         }
 
-        $prices = self::ticket_prices($request_id);
+        $price_types = [];
+        if ($profile === 'movie_matinee') {
+            if ($general_qty > 0) $price_types[] = 'matinee';
+        } else {
+            if ($general_qty > 0) $price_types[] = 'general';
+            if ($discount_qty > 0) $price_types[] = 'discount';
+        }
+        $prices = self::ticket_prices($request_id, $price_types);
+        if (is_wp_error($prices)) {
+            self::redirect_request_notice($request_id, 'error', 'Ticket prices need review before backing can be accepted. No backing was saved.');
+        }
         $charge_total = 0;
         if ($profile === 'movie_matinee') {
-            $charge_total = self::add_ticket_charge($charge_total, $general_qty, $prices['matinee']);
+            if ($general_qty > 0) $charge_total = self::add_ticket_charge($charge_total, $general_qty, $prices['matinee']);
         } else {
-            $charge_total = self::add_ticket_charge($charge_total, $general_qty, $prices['general']);
-            if ($charge_total !== null) $charge_total = self::add_ticket_charge($charge_total, $discount_qty, $prices['discount']);
+            if ($general_qty > 0) $charge_total = self::add_ticket_charge($charge_total, $general_qty, $prices['general']);
+            if ($charge_total !== null && $discount_qty > 0) $charge_total = self::add_ticket_charge($charge_total, $discount_qty, $prices['discount']);
         }
         if ($charge_total === null) self::redirect_request_notice($request_id, 'error', 'The ticket total exceeds the supported payment range. Please reduce the quantity and try again.');
 
@@ -411,6 +452,9 @@ class Frontend {
             }
             $backing_type = 'sponsor';
             $sponsor_amount = CPT::sponsor_commitment_cents($request_id, (int) $totals['charge_total'], $charge_total);
+            if (is_wp_error($sponsor_amount)) {
+                self::redirect_request_notice($request_id, 'error', 'Saved sponsor currency values need review. No backing was saved.');
+            }
             if ($sponsor_amount <= 0 || $sponsor_amount > 2147483647) {
                 self::redirect_request_notice($request_id, 'error', 'This request no longer needs a sponsor. You can still back tickets or reserve subscriber seats.');
             }
@@ -468,7 +512,32 @@ class Frontend {
         ]);
     }
 
-    public static function ticket_prices(int $request_id): array {
+    public static function ticket_prices(int $request_id, ?array $required_types = null) {
+        if ($required_types !== null) {
+            $price_fields = [
+                'general' => [CPT::META_GENERAL_PRICE, 'general_price', 12],
+                'discount' => [CPT::META_DISCOUNT_PRICE, 'discount_price', 8],
+                'matinee' => [CPT::META_MATINEE_PRICE, 'matinee_price', 8],
+            ];
+            $prices = [];
+            foreach (array_values(array_unique($required_types)) as $type) {
+                if (!array_key_exists($type, $price_fields)) {
+                    return new \WP_Error('invalid_ticket_type', 'The requested ticket price type is invalid.');
+                }
+                [$meta_key, $setting_key, $default] = $price_fields[$type];
+                $value = (string) get_post_meta($request_id, $meta_key, true);
+                if ($value === '' && class_exists('\\RoxyST\\Settings')) {
+                    $value = (string) \RoxyST\Settings::get_price($setting_key, $default);
+                }
+                $cents = CPT::parse_currency_input($value);
+                if (is_wp_error($cents)) {
+                    return new \WP_Error('invalid_ticket_price', 'A required saved ticket price is invalid or unavailable.');
+                }
+                $prices[$type] = $cents;
+            }
+            return $prices;
+        }
+
         $general = (string) get_post_meta($request_id, CPT::META_GENERAL_PRICE, true);
         $discount = (string) get_post_meta($request_id, CPT::META_DISCOUNT_PRICE, true);
         $matinee = (string) get_post_meta($request_id, CPT::META_MATINEE_PRICE, true);
@@ -483,11 +552,21 @@ class Frontend {
             $matinee = (string) \RoxyST\Settings::get_price('matinee_price', 8);
         }
 
-        return [
-            'general' => (int) round((float) $general * 100),
-            'discount' => (int) round((float) $discount * 100),
-            'matinee' => (int) round((float) $matinee * 100),
-        ];
+        $values = ['general' => $general, 'discount' => $discount, 'matinee' => $matinee];
+        $types = $required_types ?? array_keys($values);
+        $prices = [];
+        foreach (array_values(array_unique($types)) as $type) {
+            if (!array_key_exists($type, $values)) {
+                return new \WP_Error('invalid_ticket_type', 'The requested ticket price type is invalid.');
+            }
+            $value = $values[$type];
+            $cents = CPT::parse_currency_input($value);
+            if (is_wp_error($cents)) {
+                return new \WP_Error('invalid_ticket_price', 'A required saved ticket price is invalid or unavailable.');
+            }
+            $prices[$type] = $cents;
+        }
+        return $prices;
     }
 
     private static function posted_quantity(string $key): ?int {

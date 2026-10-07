@@ -121,6 +121,10 @@ class Conversion {
 
         $totals = roxy_rs_repo_backing_totals($request_id);
         $goal = CPT::funding_goal_cents($request_id);
+        $sponsor_amount = CPT::sponsor_amount_cents($request_id);
+        if (is_wp_error($goal) || is_wp_error($sponsor_amount)) {
+            throw new \RuntimeException('Requested-showing funding currency needs review; readiness was not evaluated.');
+        }
         $ready = !empty($totals['has_sponsor']) || (int) $totals['charge_total'] >= $goal;
         if (!$ready) {
             return;
@@ -164,6 +168,11 @@ class Conversion {
         $target_at = (string) get_post_meta($request_id, CPT::META_TARGET_AT, true);
         if ($target_at === '') {
             return new \WP_Error('missing_target', 'Set the target showtime before approval.');
+        }
+        $funding_goal = CPT::funding_goal_cents($request_id);
+        $sponsor_amount = CPT::sponsor_amount_cents($request_id);
+        if (is_wp_error($funding_goal) || is_wp_error($sponsor_amount)) {
+            return new \WP_Error('currency_review_required', 'Saved funding amounts or their unit marker need review. No conversion was attempted.');
         }
 
         // Close pledging under the same lease held by repository INSERTs.
@@ -344,6 +353,10 @@ class Conversion {
             if ($deadline_dt <= $now && $status !== 'threshold_met') {
                 $totals = roxy_rs_repo_backing_totals($request_id);
                 $goal = CPT::funding_goal_cents($request_id);
+                $sponsor_amount = CPT::sponsor_amount_cents($request_id);
+                if (is_wp_error($goal) || is_wp_error($sponsor_amount)) {
+                    throw new \RuntimeException('Requested-showing funding currency needs review; daily closure was not evaluated.');
+                }
                 if (empty($totals['has_sponsor']) && (int) $totals['charge_total'] < $goal) {
                     self::mark_failed($request_id);
                 }

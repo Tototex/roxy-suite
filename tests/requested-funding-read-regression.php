@@ -16,6 +16,10 @@ namespace RoxyRS {
 }
 
 namespace {
+    final class WP_Error {
+        public function __construct(private string $code = '', private string $message = '') {}
+        public function get_error_message(): string { return $this->message; }
+    }
     set_error_handler(static function(int $severity,string $message,string $file,int $line): void {
         throw new ErrorException($message,0,$severity,$file,$line);
     });
@@ -206,6 +210,33 @@ namespace {
     $check(($review['version'] ?? 0) === 1 && ($review['status'] ?? '') === 'completed'
         && ($review['run_id'] ?? '') !== '' && ($review['started_at'] ?? '') !== '' && ($review['completed_at'] ?? '') !== '',
         'successful daily review records its reported completion result');
+
+    $GLOBALS['funding_fixture']['posts'] = [(object) ['ID'=>41]];
+    $GLOBALS['funding_fixture']['meta'][41]['_roxy_rs_funding_goal'] = 'malformed';
+    $GLOBALS['funding_fixture']['meta'][41]['_roxy_rs_sponsor_amount'] = '5000';
+    $GLOBALS['funding_fixture']['updates'] = [];
+    $threw = false;
+    try { \RoxyRS\Conversion::run_daily_review(); } catch (RuntimeException $error) { $threw = strpos($error->getMessage(), 'currency needs review') !== false; }
+    $review = $GLOBALS['funding_fixture']['options']['roxy_rs_daily_review_last_result'] ?? [];
+    $check($threw && ($review['status'] ?? '') === 'failed'
+        && ($GLOBALS['funding_fixture']['meta'][41]['_roxy_rs_status'] ?? '') === 'active'
+        && $GLOBALS['funding_fixture']['updates'] === [],
+        'malformed saved currency records a failed review without closing or completing the request');
+    $wpdb->query_fails = false;
+    $rendered_bad_amount = \RoxyRS\Frontend::render_request_card(41, true);
+    $check(strpos($rendered_bad_amount, 'currency review') !== false && strpos($rendered_bad_amount, '<form') === false,
+        'public rendering handles malformed saved currency without a fatal or backing form');
+    $wpdb->insert_calls = 0;
+    $_POST = ['request_id'=>41, 'general_qty'=>'1', 'discount_qty'=>'0', 'subscriber_qty'=>'0'];
+    $redirected = false;
+    try { \RoxyRS\Frontend::handle_commit_backing(); } catch (FundingFixtureRedirect $redirect) { $redirected = true; }
+    $check($redirected && $wpdb->insert_calls === 0
+        && strpos($GLOBALS['funding_fixture']['redirect']['message'] ?? '', 'currency values need review') !== false,
+        'malformed saved currency blocks backing with a controlled notice before insert');
+    $_POST = [];
+    $GLOBALS['funding_fixture']['meta'][41]['_roxy_rs_funding_goal'] = 5000;
+    $GLOBALS['funding_fixture']['meta'][41]['_roxy_rs_sponsor_amount'] = 5000;
+    $GLOBALS['funding_fixture']['posts'] = [];
 
     foreach (['telemetry_throws', 'telemetry_false'] as $fault) {
         $GLOBALS['funding_fixture'][$fault] = true;

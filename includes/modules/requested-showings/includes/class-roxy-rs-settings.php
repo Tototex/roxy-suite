@@ -68,6 +68,8 @@ class Settings {
         $notice = isset($_GET['roxy_rs_settings_notice']) ? sanitize_key((string) wp_unslash($_GET['roxy_rs_settings_notice'])) : '';
         if ($notice === 'saved') {
             echo '<div class="notice notice-success is-dismissible"><p>Requested Showings settings saved.</p></div>';
+        } elseif ($notice === 'invalid_currency') {
+            echo '<div class="notice notice-error"><p>Settings were not saved. Enter currency amounts using digits and no more than two decimal places; the sponsor amount must be at least the funding goal.</p></div>';
         }
 
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
@@ -115,11 +117,20 @@ class Settings {
         }
         check_admin_referer('roxy_rs_save_settings');
 
-        $funding_goal = CPT::parse_currency_input($_POST['funding_goal'] ?? '', self::funding_goal_cents());
-        $sponsor_amount = CPT::parse_currency_input($_POST['sponsor_amount'] ?? '', self::sponsor_amount_cents());
+        $funding_goal = CPT::parse_currency_input(wp_unslash($_POST['funding_goal'] ?? ''), self::funding_goal_cents());
+        $sponsor_amount = CPT::parse_currency_input(wp_unslash($_POST['sponsor_amount'] ?? ''), self::sponsor_amount_cents());
+        if (is_wp_error($funding_goal) || is_wp_error($sponsor_amount)
+            || $funding_goal < 100 || $sponsor_amount < 100 || $sponsor_amount < $funding_goal) {
+            wp_safe_redirect(add_query_arg([
+                'page' => 'roxy-requested-showings',
+                'tab' => 'settings',
+                'roxy_rs_settings_notice' => 'invalid_currency',
+            ], admin_url('admin.php')));
+            return;
+        }
         $settings = [
-            'funding_goal_cents' => max(100, $funding_goal),
-            'sponsor_amount_cents' => max(max(100, $funding_goal), $sponsor_amount),
+            'funding_goal_cents' => $funding_goal,
+            'sponsor_amount_cents' => $sponsor_amount,
             'sponsor_ticket_qty' => max(0, (int) wp_unslash($_POST['sponsor_tickets'] ?? self::sponsor_ticket_qty())),
             'min_lead_days' => max(1, (int) wp_unslash($_POST['min_lead_days'] ?? self::min_lead_days())),
             'deadline_days_before_target' => max(1, (int) wp_unslash($_POST['deadline_days_before_target'] ?? self::deadline_days_before_target())),

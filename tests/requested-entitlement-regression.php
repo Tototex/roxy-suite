@@ -234,6 +234,8 @@ namespace {
             \RoxyRS\CPT::META_GENERAL_PRICE => '12',
             \RoxyRS\CPT::META_DISCOUNT_PRICE => '8',
             \RoxyRS\CPT::META_FUNDING_GOAL => '999999',
+            \RoxyRS\CPT::META_SPONSOR_AMOUNT => '999999',
+            \RoxyRS\CPT::META_FUNDING_UNIT_VERSION => \RoxyRS\CPT::FUNDING_UNIT_CENTS_V1,
             \RoxyRS\CPT::META_PRICING_PROFILE => 'movie_evening',
         ], 801 => ['_roxy_pid_adult'=>901, '_roxy_pid_discount'=>902, '_roxy_pid_subscriber'=>903],
             901 => [ROXY_ST_META_SHOWING_ID=>801], 902 => [ROXY_ST_META_SHOWING_ID=>801], 903 => [ROXY_ST_META_SHOWING_ID=>801]];
@@ -294,8 +296,11 @@ namespace {
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'pledge cannot exceed remaining entitlement for request');
     check_fixture($wpdb->release_count === 1 && !$wpdb->is_locked(), 'excess denial releases verified lease');
     reset_fixture([new FixtureSubscription('active', 2)]);
+    $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_DISCOUNT_PRICE] = '';
     $_POST['subscriber_qty'] = '1'; invoke_backing();
-    check_fixture(count($wpdb->rows) === 1 && $wpdb->outstanding === 1, 'first subscriber pledge is stored');
+    check_fixture(count($wpdb->rows) === 1 && $wpdb->outstanding === 1
+        && (int) $wpdb->rows[1]['charge_total'] === 0 && $wpdb->rows[1]['backing_type'] === 'subscriber'
+        && $GLOBALS['fixture_payment_calls'] === 0, 'zero-charge subscriber pledge succeeds with an unused evening price absent');
     check_fixture($wpdb->release_count === 1 && !$wpdb->is_locked() && strpos($wpdb->guarded_insert_sql, 'IS_USED_LOCK(') !== false, 'successful guarded insert releases lease');
     invoke_backing();
     check_fixture(count($wpdb->rows) === 1, 'exact retry is idempotent through backing replay key');
@@ -323,6 +328,10 @@ namespace {
     reset_fixture([]); $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_SPONSOR_TICKETS] = '1.5';
     $_POST = ['request_id'=>'501','general_qty'=>'0','discount_qty'=>'0','subscriber_qty'=>'0','sponsor_request'=>'1','payment_token_id'=>'5'];
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'malformed configured sponsor ticket quantity is rejected');
+    reset_fixture([]);
+    $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_GENERAL_PRICE] = 'malformed';
+    $_POST = ['request_id'=>'501','general_qty'=>'1','discount_qty'=>'0','subscriber_qty'=>'0','payment_token_id'=>'5'];
+    check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'malformed price blocks a paid ticket type actually selected');
     reset_fixture([]); $_POST = ['request_id'=>'501','general_qty'=>'1','discount_qty'=>'0','subscriber_qty'=>'0','payment_token_id'=>'5'];
     invoke_backing();
     check_fixture(count($wpdb->rows) === 1 && (int) $wpdb->rows[1]['general_qty'] === 1 && (int) $wpdb->rows[1]['charge_total'] === 1200, 'paid-only backing path remains unchanged without subscriber membership');
