@@ -14,7 +14,8 @@ function wp_unslash($value) { return $value; }
 function get_site_transient($key) { return $GLOBALS['transients'][$key] ?? false; }
 function set_site_transient($key, $value, $ttl) { $GLOBALS['transients'][$key] = $value; $GLOBALS['ttls'][$key] = $ttl; }
 function delete_site_transient($key) { unset($GLOBALS['transients'][$key]); }
-function wp_remote_get($url, $args) { $GLOBALS['calls']++; return $GLOBALS['response']; }
+function wp_remote_get($url, $args) { $GLOBALS['calls']++; return strpos($url, '.manifest.json') !== false ? $GLOBALS['manifest_response'] : $GLOBALS['response']; }
+function wp_parse_url($url) { return parse_url($url); }
 function is_wp_error($value) { return $value === 'error'; }
 function wp_remote_retrieve_response_code($response) { return $response['code']; }
 function wp_remote_retrieve_body($response) { return $response['body']; }
@@ -103,8 +104,16 @@ foreach (['error', ['code'=>503,'body'=>'{}'], ['code'=>200,'body'=>'not json'],
     check($latest->invoke(null) === null && $latest->invoke(null) === null && $GLOBALS['calls'] === 1, 'C5: failed release check backed off');
 }
 $GLOBALS['transients'] = []; $GLOBALS['calls'] = 0;
-$GLOBALS['response'] = ['code'=>200,'body'=>json_encode(['tag_name'=>'v1.0.17','assets'=>[['name'=>'test-1.0.17.zip','browser_download_url'=>'https://example.test/test.zip']]])];
+$GLOBALS['response'] = ['code'=>200,'body'=>json_encode(['tag_name'=>'v1.0.17','assets'=>[
+    ['name'=>'test-1.0.17.zip','browser_download_url'=>'https://github.com/test/test/releases/download/v1.0.17/test-1.0.17.zip'],
+    ['name'=>'test-1.0.17.manifest.json','browser_download_url'=>'https://github.com/test/test/releases/download/v1.0.17/test-1.0.17.manifest.json'],
+]])];
+$GLOBALS['manifest_response'] = ['code'=>200,'body'=>json_encode([
+    'format_version'=>1,'version'=>'1.0.17','source_sha'=>str_repeat('a',40),
+    'archive'=>['file'=>'test-1.0.17.zip','sha256'=>str_repeat('b',64)],
+    'files'=>[['path'=>'roxy-suite/roxy-suite.php','sha256'=>str_repeat('c',64)]],
+])];
 check($latest->invoke(null)['version'] === '1.0.17', 'C5: successful release lookup still works');
-check($latest->invoke(null)['version'] === '1.0.17' && $GLOBALS['calls'] === 1, 'C5: successful lookup remains cached');
+check($latest->invoke(null)['version'] === '1.0.17' && $GLOBALS['calls'] === 2, 'C5: verified release and manifest lookup remain cached');
 check(strpos(file_get_contents($root . '/roxy-suite.php'), 'Requires PHP: 8.0') !== false, 'C3: minimum PHP declared');
 }
