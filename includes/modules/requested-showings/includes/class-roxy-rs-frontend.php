@@ -122,13 +122,19 @@ class Frontend {
 
     public static function render_request_card(int $post_id, bool $detailed = false): string {
         $status = CPT::get_status($post_id);
-        $totals = roxy_rs_repo_backing_totals($post_id);
+        try {
+            $totals = roxy_rs_repo_backing_totals($post_id);
+        } catch (\Throwable $error) {
+            $totals = null;
+        }
         $goal = CPT::funding_goal_cents($post_id);
         $target_at = (string) get_post_meta($post_id, CPT::META_TARGET_AT, true);
         $deadline_at = (string) get_post_meta($post_id, CPT::META_DEADLINE_AT, true);
-        $summary = $totals['has_sponsor']
-            ? 'Sponsored'
-            : wp_strip_all_tags(wc_price(((int) $totals['charge_total']) / 100)) . ' / ' . wp_strip_all_tags(wc_price($goal / 100)) . ' pledged';
+        $summary = $totals === null
+            ? 'Funding temporarily unavailable.'
+            : ($totals['has_sponsor']
+                ? 'Sponsored'
+                : wp_strip_all_tags(wc_price(((int) $totals['charge_total']) / 100)) . ' / ' . wp_strip_all_tags(wc_price($goal / 100)) . ' pledged');
 
         ob_start();
         echo '<article class="roxy-rs-card">';
@@ -149,7 +155,8 @@ class Frontend {
         echo '<p><strong>Status:</strong> ' . esc_html(CPT::statuses()[$status] ?? 'Pending Review') . '</p>';
         echo '<p><strong>Progress:</strong> ' . esc_html($summary) . '</p>';
         if ($detailed) {
-            echo self::render_backing_form($post_id, $status, $totals);
+            if ($totals === null) echo '<p>Backing is temporarily unavailable while funding totals are verified.</p>';
+            else echo self::render_backing_form($post_id, $status, $totals);
         } else {
             echo '<p><a class="roxy-rs-button roxy-rs-button-primary" href="' . esc_url(get_permalink($post_id)) . '">View request</a></p>';
         }
@@ -159,8 +166,6 @@ class Frontend {
     }
 
     private static function render_single_request(int $post_id): string {
-        $status = CPT::get_status($post_id);
-        $totals = roxy_rs_repo_backing_totals($post_id);
         ob_start();
         echo '<div class="roxy-rs-single-wrap">';
         echo self::render_request_card($post_id, true);
@@ -352,7 +357,11 @@ class Frontend {
         }
 
         $support_qty = $general_qty + $discount_qty;
-        $totals = roxy_rs_repo_backing_totals($request_id);
+        try {
+            $totals = roxy_rs_repo_backing_totals($request_id);
+        } catch (\Throwable $error) {
+            self::redirect_request_notice($request_id, 'error', 'Funding totals are temporarily unavailable. Your backing was not saved; please try again later.');
+        }
         if ($support_qty <= 0 && $subscriber_qty <= 0 && !$sponsor_request) {
             self::redirect_request_notice($request_id, 'error', 'Choose at least one ticket, subscriber reservation, or sponsorship.');
         }
@@ -435,8 +444,15 @@ class Frontend {
 
         set_transient($lock_key, (int) $backing_id, 5 * MINUTE_IN_SECONDS);
 
-        Conversion::maybe_mark_request_ready($request_id);
-        self::redirect_request_notice($request_id, 'success', 'Your backing was saved. We will only charge the saved payment method after the showing is confirmed and scheduled.');
+        $review_pending = false;
+        try {
+            Conversion::maybe_mark_request_ready($request_id);
+        } catch (\Throwable $error) {
+            $review_pending = true;
+        }
+        self::redirect_request_notice($request_id, 'success', $review_pending
+            ? 'Your backing was saved, but funding could not be rechecked. It is pending theater review; do not submit it again.'
+            : 'Your backing was saved. We will only charge the saved payment method after the showing is confirmed and scheduled.');
     }
 
     public static function ajax_available_showtimes(): void {

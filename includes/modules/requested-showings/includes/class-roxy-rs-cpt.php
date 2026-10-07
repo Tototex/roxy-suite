@@ -215,7 +215,11 @@ class CPT {
             $matinee_price = class_exists('\\RoxyST\\Settings') ? (string) \RoxyST\Settings::get_price('matinee_price', 8) : '8';
         }
 
-        $totals = roxy_rs_repo_backing_totals((int) $post->ID);
+        try {
+            $totals = roxy_rs_repo_backing_totals((int) $post->ID);
+        } catch (\Throwable $error) {
+            $totals = null;
+        }
 
         echo '<style>.roxy-rs-grid{display:grid;grid-template-columns:200px 1fr;gap:10px;align-items:center;max-width:920px}.roxy-rs-grid input[type=text],.roxy-rs-grid input[type=url],.roxy-rs-grid input[type=number],.roxy-rs-grid input[type=datetime-local],.roxy-rs-grid select{width:100%}.roxy-rs-help{grid-column:1/-1;color:#666;font-size:12px}.roxy-rs-actions-panel{grid-column:1/-1;padding:14px 16px;border:1px solid #dcdcde;border-radius:8px;background:#f6f7f7;margin-top:8px}.roxy-rs-action-buttons{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 8px}</style>';
         echo '<div class="roxy-rs-grid">';
@@ -263,13 +267,17 @@ class CPT {
         echo '<input id="roxy-rs-trailer-url" type="url" name="roxy_rs_trailer_url" placeholder="https://www.youtube.com/watch?v=..." value="' . esc_attr($trailer_url) . '">';
         echo '<div class="roxy-rs-help">Featured image, title, trailer URL, pricing structure, and target showtime all carry forward when you approve and convert this into a real showing.</div>';
 
-        echo '<div class="roxy-rs-help"><strong>Progress:</strong> ' . wp_kses_post(wc_price(((int) $totals['charge_total']) / 100)) . ' pledged of '
-            . wp_kses_post(wc_price($funding_goal / 100)) . ', '
-            . esc_html(number_format_i18n((int) $totals['support_qty'])) . ' paid backer tickets, '
-            . esc_html(number_format_i18n((int) $totals['subscriber_qty'])) . ' subscriber reservations, '
-            . 'Sponsor: ' . esc_html(!empty($totals['has_sponsor']) ? 'Yes' : 'No')
-            . ($approved_showing_id > 0 ? ' | Approved showing #' . esc_html((string) $approved_showing_id) : '')
-            . '</div>';
+        if ($totals === null) {
+            echo '<div class="roxy-rs-help"><strong>Progress:</strong> Funding temporarily unavailable; backing totals could not be verified.</div>';
+        } else {
+            echo '<div class="roxy-rs-help"><strong>Progress:</strong> ' . wp_kses_post(wc_price(((int) $totals['charge_total']) / 100)) . ' pledged of '
+                . wp_kses_post(wc_price($funding_goal / 100)) . ', '
+                . esc_html(number_format_i18n((int) $totals['support_qty'])) . ' paid backer tickets, '
+                . esc_html(number_format_i18n((int) $totals['subscriber_qty'])) . ' subscriber reservations, '
+                . 'Sponsor: ' . esc_html(!empty($totals['has_sponsor']) ? 'Yes' : 'No')
+                . ($approved_showing_id > 0 ? ' | Approved showing #' . esc_html((string) $approved_showing_id) : '')
+                . '</div>';
+        }
 
         if ($approved_showing_id > 0) {
             echo '<div class="roxy-rs-help"><a href="' . esc_url(get_edit_post_link($approved_showing_id, '')) . '">Edit approved showing</a> | <a href="' . esc_url(get_permalink($approved_showing_id)) . '" target="_blank" rel="noopener">View public showing</a></div>';
@@ -308,7 +316,12 @@ class CPT {
                 echo esc_html((string) get_post_meta($post_id, self::META_DEADLINE_AT, true));
                 break;
             case 'progress':
-                $totals = roxy_rs_repo_backing_totals($post_id);
+                try {
+                    $totals = roxy_rs_repo_backing_totals($post_id);
+                } catch (\Throwable $error) {
+                    echo esc_html('Funding temporarily unavailable.');
+                    break;
+                }
                 $goal = self::funding_goal_cents($post_id);
                 echo wp_kses_post(wc_price(((int) $totals['charge_total']) / 100) . ' / ' . wc_price($goal / 100));
                 if (!empty($totals['has_sponsor'])) {

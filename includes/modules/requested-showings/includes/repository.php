@@ -279,6 +279,7 @@ function roxy_rs_repo_list_backings_for_user(int $user_id): array {
 function roxy_rs_repo_backing_totals(int $request_id): array {
     global $wpdb;
     $table = roxy_rs_table_backings();
+    $wpdb->last_error = '';
     $row = $wpdb->get_row(
         $wpdb->prepare(
             "SELECT
@@ -294,13 +295,29 @@ function roxy_rs_repo_backing_totals(int $request_id): array {
         ),
         ARRAY_A
     );
+    if ($wpdb->last_error !== '') throw new RuntimeException('Requested-showing backing totals could not be read.');
+    if (!is_array($row)) throw new RuntimeException('Requested-showing backing totals returned an incomplete result.');
 
-    return [
-        'support_qty' => (int) ($row['support_qty'] ?? 0),
-        'subscriber_qty' => (int) ($row['subscriber_qty'] ?? 0),
-        'charge_total' => (int) ($row['charge_total'] ?? 0),
-        'sponsor_amount' => (int) ($row['sponsor_amount'] ?? 0),
-        'sponsor_ticket_qty' => (int) ($row['sponsor_ticket_qty'] ?? 0),
-        'has_sponsor' => !empty($row['has_sponsor']),
-    ];
+    $totals = [];
+    foreach (['support_qty', 'subscriber_qty', 'charge_total', 'sponsor_amount', 'sponsor_ticket_qty'] as $key) {
+        if (!array_key_exists($key, $row)) throw new RuntimeException('Requested-showing backing totals returned an incomplete result.');
+        $value = roxy_rs_repo_canonical_quantity($row[$key]);
+        if ($value === null) throw new RuntimeException('Requested-showing backing totals returned an invalid or overflowing value.');
+        $totals[$key] = $value;
+    }
+    if (!array_key_exists('has_sponsor', $row)) throw new RuntimeException('Requested-showing backing totals returned an incomplete result.');
+    $has_sponsor = $row['has_sponsor'];
+    if ($has_sponsor === null) $totals['has_sponsor'] = false;
+    elseif ($has_sponsor === 0 || $has_sponsor === '0') $totals['has_sponsor'] = false;
+    elseif ($has_sponsor === 1 || $has_sponsor === '1') $totals['has_sponsor'] = true;
+    else throw new RuntimeException('Requested-showing backing totals returned an invalid sponsor flag.');
+    $has_any_totals = false;
+    foreach (['support_qty', 'subscriber_qty', 'charge_total', 'sponsor_amount', 'sponsor_ticket_qty'] as $key) {
+        if ($totals[$key] !== 0) { $has_any_totals = true; break; }
+    }
+    if (($has_sponsor === null && $has_any_totals)
+        || (($totals['sponsor_amount'] > 0) !== $totals['has_sponsor'])) {
+        throw new RuntimeException('Requested-showing backing totals returned inconsistent sponsorship values.');
+    }
+    return $totals;
 }

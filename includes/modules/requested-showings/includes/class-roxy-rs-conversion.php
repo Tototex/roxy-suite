@@ -249,6 +249,8 @@ class Conversion {
     }
 
     public static function run_daily_review(): void {
+        global $wpdb;
+        $wpdb->last_error = '';
         $posts = get_posts([
             'post_type' => CPT::POST_TYPE,
             'post_status' => ['publish', 'draft'],
@@ -259,6 +261,9 @@ class Conversion {
                 'compare' => 'IN',
             ]],
         ]);
+        if ($wpdb->last_error !== '' || !is_array($posts)) {
+            throw new \RuntimeException('Requested-showing daily review could not verify its request list.');
+        }
 
         foreach ($posts as $post) {
             $request_id = (int) $post->ID;
