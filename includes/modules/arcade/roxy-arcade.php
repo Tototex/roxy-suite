@@ -127,7 +127,9 @@ class Roxy_Arcade {
       'nonce'   => wp_create_nonce('wp_rest'),
       'isLoggedIn' => is_user_logged_in(),
       'loginUrl' => wp_login_url(get_permalink()),
-      'awardRuleText' => 'Monthly winner is the #1 combined score on the 1st at 9:00am.',
+      'awardRuleText' => (int) get_option(self::OPTION_REWARDS_ENABLED, 0) === 1
+        ? 'Monthly leaders are candidates for manager review, not guaranteed prize winners.'
+        : 'Prize awards are currently disabled.',
     ]);
   }
 
@@ -187,8 +189,11 @@ class Roxy_Arcade {
           <h3>👑 Current Leader</h3>
           <div id="roxyChampion" class="roxy-board">Loading…</div>
           <div class="roxy-small">
-            Prize: 1 billing period free of <strong>Friends of The Roxy</strong> (SKU: <?php echo esc_html(self::SKU_PRIZE); ?>)
-            for the monthly winner.
+            <?php if ((int) get_option(self::OPTION_REWARDS_ENABLED, 0) === 1): ?>
+              Potential prize: 1 billing period free of <strong>Friends of The Roxy</strong> (SKU: <?php echo esc_html(self::SKU_PRIZE); ?>), subject to manager verification and approval. A leaderboard score does not guarantee a prize.
+            <?php else: ?>
+              Prize awards are currently disabled. Enjoy the games and leaderboards.
+            <?php endif; ?>
           </div>
         </div>
       </div>

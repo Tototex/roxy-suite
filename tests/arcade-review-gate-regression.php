@@ -11,6 +11,11 @@ function update_option($key,$value,...$args) { $GLOBALS['options'][$key]=$value;
 function get_user_by(...$args) { return (object)['ID'=>9,'display_name'=>'Fixture Player','user_login'=>'fixture']; }
 function get_user_meta(...$args) { return ''; }
 function sanitize_email($value) { return $value; }
+function is_user_logged_in() { return false; }
+function esc_url($value) { return $value; }
+function esc_html($value) { return $value; }
+function wp_login_url($value) { return $value; }
+function get_permalink() { return 'https://example.test/arcade/'; }
 function wp_mail(...$args) { $GLOBALS['mail'][]=$args; return true; }
 function wcs_create_subscription(...$args) { throw new RuntimeException('Monthly worker must never create a subscription.'); }
 final class ReviewGateDatabase {
@@ -40,4 +45,7 @@ $check(!$GLOBALS['mail'],'already awarded month queues no new review');
 unset($GLOBALS['options']['roxy_arcade_last_awarded_month']); $GLOBALS['leaders']=[];
 Roxy_Arcade::award_monthly_winner_snapshot();
 $check(!$GLOBALS['mail'],'empty leaderboard queues no review');
+$check(str_contains(Roxy_Arcade::render_shortcode(),'does not guarantee a prize'),'enabled public prize description requires review');
+$GLOBALS['options']['roxy_arcade_rewards_enabled']=0;
+$check(str_contains(Roxy_Arcade::render_shortcode(),'Prize awards are currently disabled'),'disabled public prize description makes no prize promise');
 echo "$checks Arcade review-gate checks passed.\n";
