@@ -326,7 +326,66 @@ class Conversion {
         $profile = (string) get_post_meta($showing_id, '_roxy_pricing_profile', true);
         $profile = $profile ?: 'movie_evening';
 
+        if (!function_exists('roxy_rs_repo_canonical_quantity')) return new \WP_Error('invalid_backing_quantity', 'Backing ticket quantities could not be verified.');
+        $quantities = [];
+        foreach (['general_qty', 'discount_qty', 'subscriber_qty', 'sponsor_ticket_qty'] as $quantity_key) {
+            $quantity = roxy_rs_repo_canonical_quantity($backing[$quantity_key] ?? 0);
+            if ($quantity === null) return new \WP_Error('invalid_backing_quantity', 'Backing ticket quantities could not be verified.');
+            $quantities[$quantity_key] = $quantity;
+        }
+        $general_qty = $quantities['general_qty'];
+        $discount_qty = $quantities['discount_qty'];
+        $subscriber_qty = $quantities['subscriber_qty'];
+        $sponsor_tickets = $quantities['sponsor_ticket_qty'];
+        if ($profile === 'movie_matinee' && $discount_qty > 0) return new \WP_Error('invalid_backing_quantity', 'Matinee backing contains an unsupported ticket quantity.');
+        $expected_ticket_qty = 0;
+        $expected_lines = $profile === 'movie_matinee'
+            ? [$general_qty, $subscriber_qty, $sponsor_tickets]
+            : [$general_qty, $discount_qty, $subscriber_qty, $sponsor_tickets];
+        foreach ($expected_lines as $line_qty) {
+            if ($line_qty > PHP_INT_MAX - $expected_ticket_qty) return new \WP_Error('invalid_backing_quantity', 'Backing ticket quantities exceed the safe limit.');
+            $expected_ticket_qty += $line_qty;
+        }
+        $subscriber_product = null;
+        if ($subscriber_qty > 0) {
+            if ($user_id <= 0 || empty($products['subscriber'])) return new \WP_Error('subscriber_product_unavailable', 'Subscriber eligibility or ticket mapping could not be verified.');
+            $subscriber_product = wc_get_product($products['subscriber']);
+            if (!$subscriber_product) return new \WP_Error('subscriber_product_unavailable', 'Subscriber eligibility or ticket mapping could not be verified.');
+            if (!class_exists('\\RoxyST\\Capacity') || !method_exists('\\RoxyST\\Capacity', 'subscription_entitlement_count')) {
+                return new \WP_Error('subscriber_entitlement_unavailable', 'Subscriber eligibility could not be verified.');
+            }
+        }
+
         $order = $existing_order_id > 0 ? wc_get_order($existing_order_id) : false;
+        if ($existing_order_id > 0 && !$order) return new \WP_Error('existing_order_missing', 'The backing order could not be verified. Review it before retrying.');
+        if ($order) {
+            if (!method_exists($order, 'get_id') || (int) $order->get_id() !== $existing_order_id
+                || !method_exists($order, 'get_customer_id') || (int) $order->get_customer_id() !== $user_id
+                || !method_exists($order, 'get_meta')
+                || (int) $order->get_meta('_roxy_rs_request_id', true) !== $request_id
+                || (int) $order->get_meta('_roxy_rs_backing_id', true) !== $backing_id) {
+                return new \WP_Error('existing_order_identity_mismatch', 'The backing order identity does not match this request. Review it before retrying.');
+            }
+            if (method_exists($order, 'is_paid') && $order->is_paid()) {
+                return new \WP_Error('existing_order_already_paid', 'The backing order is already paid. Do not charge it again; reconcile the backing record.');
+            }
+        }
+
+        if ($subscriber_qty > 0) {
+            if (!class_exists('\\RoxyST\\Capacity') || !class_exists('\\RoxyST\\Reservations')) {
+                return new \WP_Error('subscriber_entitlement_unavailable', 'Subscriber entitlement and use could not be verified.');
+            }
+            try {
+                $entitlement = \RoxyST\Capacity::subscription_entitlement_count($user_id);
+                $used = \RoxyST\Reservations::quantity_for_showing($showing_id, $existing_order_id, $user_id);
+                $walkups = class_exists('\\Roxy_Sub_Check') ? (int) \Roxy_Sub_Check::walkup_quantity_for_showing($showing_id, $user_id) : 0;
+                if ($entitlement <= 0) return new \WP_Error('subscriber_entitlement_missing', 'The backing owner no longer has an eligible subscriber membership.');
+                if ($subscriber_qty > $entitlement - $used - $walkups) return new \WP_Error('subscriber_entitlement_exceeded', 'The backing owner no longer has enough subscriber entitlement for this showing.');
+            } catch (\Throwable $error) {
+                return new \WP_Error('subscriber_entitlement_unavailable', 'Subscriber entitlement and use could not be verified.');
+            }
+        }
+
         if (!$order) {
             $order = wc_create_order(['customer_id' => $user_id]);
             if (is_wp_error($order)) {
@@ -336,13 +395,11 @@ class Conversion {
             self::apply_customer_details($order, $user_id);
 
             if ($profile === 'movie_matinee') {
-                $qty = (int) ($backing['general_qty'] ?? 0);
+                $qty = $general_qty;
                 if ($qty > 0 && !empty($products['matinee'])) {
                     $order->add_product(wc_get_product($products['matinee']), $qty);
                 }
             } else {
-                $general_qty = (int) ($backing['general_qty'] ?? 0);
-                $discount_qty = (int) ($backing['discount_qty'] ?? 0);
                 if ($general_qty > 0 && !empty($products['adult'])) {
                     $order->add_product(wc_get_product($products['adult']), $general_qty);
                 }
@@ -351,12 +408,10 @@ class Conversion {
                 }
             }
 
-            $subscriber_qty = (int) ($backing['subscriber_qty'] ?? 0);
             if ($subscriber_qty > 0 && !empty($products['subscriber'])) {
-                $order->add_product(wc_get_product($products['subscriber']), $subscriber_qty);
+                $order->add_product($subscriber_product, $subscriber_qty);
             }
 
-            $sponsor_tickets = (int) ($backing['sponsor_ticket_qty'] ?? 0);
             if ($sponsor_tickets > 0) {
                 $sponsor_product_id = $profile === 'movie_matinee' ? ($products['matinee'] ?? 0) : ($products['adult'] ?? 0);
                 if ($sponsor_product_id > 0) {
@@ -384,6 +439,63 @@ class Conversion {
             $order->add_meta_data('_roxy_rs_backing_id', $backing_id, true);
             $order->calculate_totals();
             $order->save();
+            if ((int) $order->get_id() <= 0 || (int) $order->get_customer_id() !== $user_id
+                || (int) $order->get_meta('_roxy_rs_request_id', true) !== $request_id
+                || (int) $order->get_meta('_roxy_rs_backing_id', true) !== $backing_id) {
+                return new \WP_Error('new_order_identity_mismatch', 'The saved order identity could not be verified. Review it before retrying.');
+            }
+            $linked = roxy_rs_repo_update_backing($backing_id, [
+                'woo_order_id' => (int) $order->get_id(),
+                'approved_showing_id' => $showing_id,
+            ]);
+            if (is_wp_error($linked)) return $linked;
+            $saved_backing = roxy_rs_repo_get_backing($backing_id);
+            if (!$saved_backing || (int) ($saved_backing['woo_order_id'] ?? 0) !== (int) $order->get_id()
+                || (int) ($saved_backing['request_id'] ?? 0) !== $request_id
+                || (int) ($saved_backing['user_id'] ?? 0) !== $user_id) {
+                return new \WP_Error('backing_order_link_failed', 'The backing order could not be durably linked. Review it before retrying.');
+            }
+        }
+
+        $ticket_items = method_exists($order, 'get_items') ? $order->get_items('line_item') : [];
+        if (!is_array($ticket_items) || ($expected_ticket_qty > 0 && !$ticket_items) || ($expected_ticket_qty === 0 && $ticket_items)) {
+            return new \WP_Error('ticket_order_unverified', 'The saved ticket lines do not match the backing. No payment was attempted.');
+        }
+        $persisted_ticket_qty = 0;
+        foreach ($ticket_items as $item) {
+            if (!is_object($item) || !method_exists($item, 'get_product_id') || !method_exists($item, 'get_quantity')
+                || (int) get_post_meta((int) $item->get_product_id(), \ROXY_ST_META_SHOWING_ID, true) !== $showing_id) {
+                return new \WP_Error('ticket_order_showing_mismatch', 'The backing order contains tickets for a different showing. No payment was attempted.');
+            }
+            $line_qty = $item->get_quantity();
+            if (!is_numeric($line_qty) || (float) $line_qty <= 0 || (float) $line_qty !== (float) (int) $line_qty || (int) $line_qty > PHP_INT_MAX - $persisted_ticket_qty) {
+                return new \WP_Error('ticket_order_unverified', 'The saved ticket quantities could not be verified. No payment was attempted.');
+            }
+            $persisted_ticket_qty += (int) $line_qty;
+        }
+        if ($persisted_ticket_qty !== $expected_ticket_qty) return new \WP_Error('ticket_order_unverified', 'The saved ticket lines do not match the backing. No payment was attempted.');
+        if ($subscriber_qty > 0 && (!$ticket_items || !is_array($ticket_items))) {
+            return new \WP_Error('subscriber_order_unverified', 'Subscriber tickets could not be verified on the saved order. No payment was attempted.');
+        }
+        if ($subscriber_qty > 0) {
+            $persisted_subscriber_qty = 0;
+            foreach ($ticket_items as $item) {
+                if ((int) $item->get_product_id() === (int) $products['subscriber']) {
+                    $line_qty = $item->get_quantity();
+                    $persisted_subscriber_qty += (int) $line_qty;
+                }
+            }
+            if ($persisted_subscriber_qty !== $subscriber_qty) return new \WP_Error('subscriber_order_unverified', 'Subscriber tickets could not be verified on the saved order. No payment was attempted.');
+        }
+        if (is_array($ticket_items) && $ticket_items) {
+            if (!class_exists('\\RoxyST\\Holds') || !method_exists('\\RoxyST\\Holds', 'claim')) {
+                return new \WP_Error('seat_claim_unavailable', 'Ticket capacity could not be safely reserved. No payment was attempted.');
+            }
+            try {
+                if (!\RoxyST\Holds::claim($order)) return new \WP_Error('seat_claim_failed', 'Ticket capacity could not be safely reserved. No payment was attempted.');
+            } catch (\Throwable $error) {
+                return new \WP_Error('seat_claim_failed', 'Ticket capacity could not be safely reserved. No payment was attempted.');
+            }
         }
 
         $charge_total = (int) ($backing['charge_total'] ?? 0);

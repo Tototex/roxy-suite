@@ -335,9 +335,14 @@ class Frontend {
             self::redirect_request_notice($request_id, 'error', 'The backing window has closed.');
         }
 
-        $general_qty = max(0, (int) wp_unslash($_POST['general_qty'] ?? 0));
-        $discount_qty = max(0, (int) wp_unslash($_POST['discount_qty'] ?? 0));
-        $subscriber_qty = max(0, (int) wp_unslash($_POST['subscriber_qty'] ?? 0));
+        $general_qty = self::posted_quantity('general_qty');
+        $discount_qty = self::posted_quantity('discount_qty');
+        $subscriber_qty = self::posted_quantity('subscriber_qty');
+        if ($general_qty === null || $discount_qty === null || $subscriber_qty === null
+            || $general_qty > 4294967295 || $discount_qty > 4294967295 || $subscriber_qty > 4294967295
+            || $general_qty > 4294967295 - $discount_qty) {
+            self::redirect_request_notice($request_id, 'error', 'Ticket quantities must be whole nonnegative numbers. Please review and resubmit.');
+        }
         $sponsor_request = !empty($_POST['sponsor_request']);
         $token_id = max(0, (int) wp_unslash($_POST['payment_token_id'] ?? 0));
 
@@ -372,11 +377,12 @@ class Frontend {
         $prices = self::ticket_prices($request_id);
         $charge_total = 0;
         if ($profile === 'movie_matinee') {
-            $charge_total += $general_qty * $prices['matinee'];
+            $charge_total = self::add_ticket_charge($charge_total, $general_qty, $prices['matinee']);
         } else {
-            $charge_total += $general_qty * $prices['general'];
-            $charge_total += $discount_qty * $prices['discount'];
+            $charge_total = self::add_ticket_charge($charge_total, $general_qty, $prices['general']);
+            if ($charge_total !== null) $charge_total = self::add_ticket_charge($charge_total, $discount_qty, $prices['discount']);
         }
+        if ($charge_total === null) self::redirect_request_notice($request_id, 'error', 'The ticket total exceeds the supported payment range. Please reduce the quantity and try again.');
 
         $backing_type = 'backer';
         $sponsor_amount = 0;
@@ -385,10 +391,22 @@ class Frontend {
             if (!empty($totals['has_sponsor'])) {
                 self::redirect_request_notice($request_id, 'error', 'This request already has a sponsor. You can still back tickets or reserve subscriber seats.');
             }
+            $raw_sponsor_tickets = get_post_meta($request_id, CPT::META_SPONSOR_TICKETS, true);
+            if ($raw_sponsor_tickets !== '' && roxy_rs_repo_canonical_quantity($raw_sponsor_tickets) === null) {
+                self::redirect_request_notice($request_id, 'error', 'The sponsor ticket quantity is invalid. Please contact the theater before sponsoring.');
+            }
+            $request_settings = get_option(\RoxyRS\Settings::OPTION_KEY, []);
+            $default_sponsor_tickets = is_array($request_settings) ? ($request_settings['sponsor_ticket_qty'] ?? 2) : 2;
+            if (roxy_rs_repo_canonical_quantity($default_sponsor_tickets) === null) {
+                self::redirect_request_notice($request_id, 'error', 'The sponsor ticket quantity is invalid. Please contact the theater before sponsoring.');
+            }
             $backing_type = 'sponsor';
             $sponsor_amount = CPT::sponsor_commitment_cents($request_id, (int) $totals['charge_total'], $charge_total);
-            if ($sponsor_amount <= 0) {
+            if ($sponsor_amount <= 0 || $sponsor_amount > 2147483647) {
                 self::redirect_request_notice($request_id, 'error', 'This request no longer needs a sponsor. You can still back tickets or reserve subscriber seats.');
+            }
+            if ($charge_total > 2147483647 - $sponsor_amount) {
+                self::redirect_request_notice($request_id, 'error', 'The total exceeds the supported payment range. Please contact the theater.');
             }
             $sponsor_ticket_qty = CPT::sponsor_ticket_qty($request_id);
             $charge_total += $sponsor_amount;
@@ -454,6 +472,19 @@ class Frontend {
             'discount' => (int) round((float) $discount * 100),
             'matinee' => (int) round((float) $matinee * 100),
         ];
+    }
+
+    private static function posted_quantity(string $key): ?int {
+        if (!array_key_exists($key, $_POST)) return 0;
+        return function_exists('roxy_rs_repo_canonical_quantity')
+            ? roxy_rs_repo_canonical_quantity(wp_unslash($_POST[$key]))
+            : null;
+    }
+
+    private static function add_ticket_charge(int $total, int $quantity, int $unit_cents): ?int {
+        if ($total < 0 || $total > 2147483647 || $quantity < 0 || $unit_cents < 0 || $unit_cents > 2147483647) return null;
+        if ($unit_cents > 0 && $quantity > intdiv(2147483647 - $total, $unit_cents)) return null;
+        return $total + ($quantity * $unit_cents);
     }
 
     private static function redirect_notice(string $notice, string $message): void {
