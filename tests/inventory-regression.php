@@ -39,10 +39,10 @@ namespace {
         if (isset($body['cursor'])) {
             check($body['cursor'] === 'page2', 'Next page requested');
             if (!empty($GLOBALS['fail_page2'])) return ['code' => 500, 'data' => []];
-            return ['code' => 200, 'data' => ['counts' => [['catalog_object_id' => 'variation', 'state' => 'IN_STOCK', 'quantity' => '4']]]];
+            return ['code' => 200, 'data' => ['counts' => [['catalog_object_id' => 'variation', 'location_id'=>'L2', 'state' => 'IN_STOCK', 'quantity' => '4']]]];
         }
         return ['code' => 200, 'data' => ['cursor' => 'page2', 'counts' => [
-            ['catalog_object_id' => 'variation', 'state' => 'IN_STOCK', 'quantity' => '3'],
+            ['catalog_object_id' => 'variation', 'location_id'=>'L1', 'state' => 'IN_STOCK', 'quantity' => '3'],
             ['catalog_object_id' => 'variation', 'state' => 'WASTE', 'quantity' => '99'],
         ]]];
     }
