@@ -503,7 +503,10 @@ class Conversion {
             $token_id = (int) ($backing['payment_token_id'] ?? 0);
             $charge = self::charge_order_with_saved_token($order, $user_id, $token_id);
             if (is_wp_error($charge)) {
-                $order->update_status('failed', 'Requested showing approval charge failed: ' . $charge->get_error_message());
+                // An uncertain provider response is not proof that no money
+                // moved. Preserve the order for reconciliation, not recharging.
+                $order->update_meta_data('_roxy_seat_review', 1);
+                $order->update_status('on-hold', 'Requested showing payment requires manager review: ' . $charge->get_error_message());
                 return $charge;
             }
             roxy_rs_repo_update_backing($backing_id, [
@@ -573,42 +576,67 @@ class Conversion {
             return new \WP_Error('stripe_customer_missing', 'Saved Stripe customer details are missing.');
         }
 
-        $amount = (int) round(((float) $order->get_total()) * 100);
-        if ($amount <= 0) {
-            return ['intent_id' => 'no-charge'];
+        $total = (float) $order->get_total();
+        if (!is_finite($total) || $total <= 0 || $total > 21474836.47) {
+            return new \WP_Error('payment_review_required', 'The saved order amount requires review. No payment was attempted.');
         }
-
-        try {
-            $intent = \WC_Stripe_API::request([
+        $amount = (int) round($total * 100);
+        $request = [
                 'amount' => $amount,
-                'currency' => strtolower(get_woocommerce_currency()),
+                'currency' => strtolower((string) $order->get_currency()),
                 'customer' => $stripe_customer_id,
                 'payment_method' => $payment_method,
                 'confirm' => 'true',
                 'off_session' => 'true',
                 'description' => sprintf('Requested showing approval order #%d', $order->get_id()),
                 'metadata[order_id]' => (string) $order->get_id(),
-            ], 'payment_intents');
-        } catch (\Throwable $e) {
-            return new \WP_Error('stripe_charge_failed', $e->getMessage());
+        ];
+        if (!class_exists(PaymentAttempts::class)) return new \WP_Error('payment_review_required', 'Payment safety checks are unavailable. No payment was attempted.');
+        try {
+            $claim = PaymentAttempts::claim($order, [
+                'request_id' => (int) $order->get_meta('_roxy_rs_request_id', true),
+                'backing_id' => (int) $order->get_meta('_roxy_rs_backing_id', true),
+                'customer_id' => $user_id,
+                'amount' => $amount,
+                'currency' => $request['currency'],
+            ]);
+            $request_hash = hash('sha256', wp_json_encode($request));
+            $idempotency = static function ($default, $body) use ($claim, $request_hash) {
+                return is_array($body) && hash_equals($request_hash, hash('sha256', wp_json_encode($body))) ? $claim['key'] : $default;
+            };
+            add_filter('wc_stripe_idempotency_key', $idempotency, PHP_INT_MAX, 2);
+            try {
+                if (!PaymentAttempts::verify($order, $claim)) throw new \RuntimeException('Payment attempt could not be verified.');
+                $intent = \WC_Stripe_API::request($request, 'payment_intents');
+            } finally {
+                remove_filter('wc_stripe_idempotency_key', $idempotency, PHP_INT_MAX);
+            }
+            if (is_wp_error($intent) || !is_object($intent) || !empty($intent->error)
+                || !is_string($intent->id ?? null) || !preg_match('/^pi_[A-Za-z0-9]+$/D', $intent->id)
+                || !is_string($intent->status ?? null) || strlen($intent->status) > 64
+                || !is_int($intent->amount ?? null) || $intent->amount !== $amount
+                || !is_string($intent->currency ?? null) || strtolower($intent->currency) !== $request['currency']
+                || ($intent->customer ?? null) !== $stripe_customer_id
+                || (string) ($intent->metadata->order_id ?? '') !== (string) $order->get_id()) {
+                return new \WP_Error('payment_review_required', 'The payment result could not be confirmed. Review the saved order and provider records before retrying.');
+            }
+            if (!PaymentAttempts::record_result($order, $claim, $intent->id, $intent->status)) {
+                return new \WP_Error('payment_review_required', 'The payment result could not be safely recorded. Review the saved order and provider records; do not recharge it.');
+            }
+            if ($intent->status !== 'succeeded' || !is_int($intent->amount_received ?? null) || $intent->amount_received !== $amount) {
+                $order->add_order_note('Requested showing payment review: provider intent ' . $intent->id . ' returned ' . $intent->status . '. No automatic retry will be attempted.');
+                return new \WP_Error('payment_review_required', 'Payment is not confirmed as captured. Review the saved order and provider records; do not recharge it.');
+            }
+            $order->set_payment_method('stripe');
+            $order->set_payment_method_title('Credit / Debit Card');
+            $order->set_transaction_id($intent->id);
+            $order->save();
+            $order->payment_complete($intent->id);
+            $order->add_order_note('Requested showing backing charged off-session from saved payment method.');
+            return ['intent_id' => $intent->id];
+        } catch (\Throwable $error) {
+            return new \WP_Error('payment_review_required', 'Payment requires reconciliation. Review the saved order and provider records before any further payment attempt.');
         }
-
-        if (empty($intent) || !empty($intent->error)) {
-            return new \WP_Error('stripe_charge_failed', !empty($intent->error->message) ? (string) $intent->error->message : 'Stripe charge failed.');
-        }
-
-        if (!isset($intent->status) || !in_array((string) $intent->status, ['succeeded', 'processing', 'requires_capture'], true)) {
-            return new \WP_Error('stripe_charge_failed', 'Stripe did not return a successful payment status.');
-        }
-
-        $order->set_payment_method('stripe');
-        $order->set_payment_method_title('Credit / Debit Card');
-        $order->set_transaction_id((string) ($intent->id ?? ''));
-        $order->save();
-        $order->payment_complete((string) ($intent->id ?? ''));
-        $order->add_order_note('Requested showing backing charged off-session from saved payment method.');
-
-        return ['intent_id' => (string) ($intent->id ?? '')];
     }
 
     private static function email_admin(string $subject, string $message): void {

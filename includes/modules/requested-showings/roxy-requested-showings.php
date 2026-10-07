@@ -21,6 +21,7 @@ require_once ROXY_RS_PATH . 'includes/repository.php';
 require_once ROXY_RS_PATH . 'includes/class-roxy-rs-settings.php';
 require_once ROXY_RS_PATH . 'includes/class-roxy-rs-cpt.php';
 require_once ROXY_RS_PATH . 'includes/class-roxy-rs-frontend.php';
+require_once ROXY_RS_PATH . 'includes/class-roxy-rs-payment-attempts.php';
 require_once ROXY_RS_PATH . 'includes/class-roxy-rs-conversion.php';
 
 $dbv = get_option('roxy_rs_db_version');
