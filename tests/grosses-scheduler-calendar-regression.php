@@ -60,6 +60,7 @@ namespace {
   }
   function get_option(string $key, $default = false) { return $GLOBALS['fixture_options'][$key] ?? $default; }
   function update_option(string $key, $value): bool { $GLOBALS['fixture_options'][$key] = $value; return true; }
+  function current_time(string $type, bool $gmt = false): string { return '2026-10-07 08:00:00'; }
 
   $root = $argv[1] ?? dirname(__DIR__);
   $candidate = $argv[2] ?? $root . '/includes/modules/grosses/includes/class-roxy-grosses-scheduler.php';
@@ -207,6 +208,19 @@ namespace {
   scheduler_calendar_assert(
     count(scheduler_events($report_hook)) === 1 && $last_log[4] === false && isset($last_log[6]['failures']),
     'failed stale-event removal is logged as failure without scheduling a replacement or fatal error'
+  );
+
+  $GLOBALS['fixture_options'] = [];
+  \RoxyGrosses\Settings::$values = array_merge($settings, ['schedule_enabled' => '0', 'advertiser_schedule_enabled' => '0']);
+  \RoxyGrosses\Scheduler::run_scheduled_send();
+  scheduler_calendar_assert(
+    ($GLOBALS['fixture_options']['roxy_grosses_last_scheduled_sync_result']['status'] ?? '') === 'skipped',
+    'disabled daily scheduler records a skipped outcome without running a report'
+  );
+  \RoxyGrosses\Scheduler::run_monthly_advertiser_send();
+  scheduler_calendar_assert(
+    ($GLOBALS['fixture_options']['roxy_grosses_last_advertiser_send_result']['status'] ?? '') === 'skipped',
+    'disabled advertiser scheduler records a skipped outcome without sending email'
   );
 
   $disabled = array_merge($edited, ['schedule_enabled' => '0', 'advertiser_schedule_enabled' => '0']);

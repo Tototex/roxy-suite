@@ -761,7 +761,29 @@ class Health {
             self::item('Next advertiser cron', $next_advertiser_local ?: 'Not scheduled', $next_advertiser_local ? self::PASS : ($advertiser_enabled ? self::FAIL : self::PASS), $next_advertiser_local ? '' : ($advertiser_enabled ? 'The advertiser cron hook is missing.' : '')),
             self::item('Last automatic run', $stale_detail, $stale_status, $stale_note),
             self::item('Latest log event', $latest_log_detail, $latest_log_status, $latest_log_note),
+            self::scheduled_run_item('Daily scheduler outcome', 'roxy_grosses_last_scheduled_sync_result', $sched_enabled),
+            self::scheduled_run_item('Advertiser scheduler outcome', 'roxy_grosses_last_advertiser_send_result', $advertiser_enabled),
         ];
+    }
+
+    private static function scheduled_run_item(string $label, string $option, bool $enabled): array {
+        if (!$enabled) return self::item($label, 'Not needed (disabled)', self::PASS);
+        $result = get_option($option, null);
+        if (!is_array($result) || (int) ($result['version'] ?? 0) !== 1) {
+            return self::item($label, 'No verified run recorded', self::WARN, 'The scheduler has not written a durable run outcome.');
+        }
+        $status = (string) ($result['status'] ?? '');
+        $when = (string) ($result['completed_at'] ?? $result['started_at'] ?? '');
+        if ($status === 'completed' || $status === 'skipped') {
+            return self::item($label, ucfirst($status) . ($when ? ' ' . $when : ''), self::PASS, (string) ($result['message'] ?? ''));
+        }
+        if ($status === 'running') {
+            return self::item($label, 'Run in progress', self::WARN, 'The last run may still be active or may have been interrupted.');
+        }
+        if ($status === 'failed') {
+            return self::item($label, 'Last run failed', self::FAIL, (string) ($result['message'] ?? 'The scheduler reported a failure.'));
+        }
+        return self::item($label, 'Outcome unavailable', self::WARN, 'The saved scheduler result is incomplete or unrecognized.');
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────────

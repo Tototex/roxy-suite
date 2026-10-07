@@ -8,6 +8,8 @@ class Scheduler {
   private const ADVERTISER_HOOK = 'roxy_grosses_monthly_advertiser_send';
   private const LAST_AUTO_DATE_KEY = 'roxy_grosses_last_auto_date';
   private const LAST_ADVERTISER_MONTH_KEY = 'roxy_grosses_last_advertiser_month';
+  private const LAST_SYNC_RESULT_KEY = 'roxy_grosses_last_scheduled_sync_result';
+  private const LAST_ADVERTISER_RESULT_KEY = 'roxy_grosses_last_advertiser_send_result';
 
   public static function init(): void {
     add_action(self::REPORT_HOOK, [__CLASS__, 'run_scheduled_send']);
@@ -96,9 +98,20 @@ class Scheduler {
   }
 
   public static function run_scheduled_send(): void {
+    $run_id = function_exists('wp_generate_uuid4') ? wp_generate_uuid4() : bin2hex(random_bytes(16));
+    $started_at = current_time('mysql', true);
+    self::record_run_result(self::LAST_SYNC_RESULT_KEY, [
+      'version' => 1, 'run_id' => (string) $run_id, 'status' => 'running',
+      'started_at' => (string) $started_at, 'completed_at' => '', 'message' => '',
+    ]);
     try {
       $settings = Settings::get_all();
       if (($settings['schedule_enabled'] ?? '0') !== '1') {
+        self::record_run_result(self::LAST_SYNC_RESULT_KEY, [
+          'version' => 1, 'run_id' => (string) $run_id, 'status' => 'skipped',
+          'started_at' => (string) $started_at, 'completed_at' => (string) current_time('mysql', true),
+          'message' => 'Automatic scheduling is disabled.',
+        ]);
         Store::insert_log('scheduled_sync', 'scheduled-sync', null, null, false, 'Scheduled grosses send fired while automatic scheduling was disabled.');
         return;
       }
@@ -108,11 +121,29 @@ class Scheduler {
       $report_date = $now->format('Y-m-d');
 
       if (get_option(self::LAST_AUTO_DATE_KEY) === $report_date) {
+        self::record_run_result(self::LAST_SYNC_RESULT_KEY, [
+          'version' => 1, 'run_id' => (string) $run_id, 'status' => 'skipped',
+          'started_at' => (string) $started_at, 'completed_at' => (string) current_time('mysql', true),
+          'message' => 'This report date already completed.',
+        ]);
         Store::insert_log('scheduled_sync', 'scheduled-sync', null, $report_date, true, 'Scheduled grosses sync skipped because this report date already completed.');
         return;
       }
 
-      self::run_for_date($report_date, 'scheduled-sync', true);
+      $result = self::run_for_date($report_date, 'scheduled-sync', true);
+      self::record_run_result(self::LAST_SYNC_RESULT_KEY, [
+        'version' => 1, 'run_id' => (string) $run_id,
+        'status' => !empty($result['success']) ? 'completed' : 'failed',
+        'started_at' => (string) $started_at, 'completed_at' => (string) current_time('mysql', true),
+        'message' => (string) ($result['message'] ?? ''),
+      ]);
+    } catch (\Throwable $error) {
+      self::record_run_result(self::LAST_SYNC_RESULT_KEY, [
+        'version' => 1, 'run_id' => (string) $run_id, 'status' => 'failed',
+        'started_at' => (string) $started_at, 'completed_at' => (string) current_time('mysql', true),
+        'message' => self::error_text($error),
+      ]);
+      throw $error;
     } finally {
       self::ensure_schedule();
     }
@@ -125,9 +156,20 @@ class Scheduler {
   }
 
   public static function run_monthly_advertiser_send(): void {
+    $run_id = function_exists('wp_generate_uuid4') ? wp_generate_uuid4() : bin2hex(random_bytes(16));
+    $started_at = current_time('mysql', true);
+    self::record_run_result(self::LAST_ADVERTISER_RESULT_KEY, [
+      'version' => 1, 'run_id' => (string) $run_id, 'status' => 'running',
+      'started_at' => (string) $started_at, 'completed_at' => '', 'message' => '',
+    ]);
     try {
       $settings = Settings::get_all();
       if (($settings['advertiser_schedule_enabled'] ?? '0') !== '1') {
+        self::record_run_result(self::LAST_ADVERTISER_RESULT_KEY, [
+          'version' => 1, 'run_id' => (string) $run_id, 'status' => 'skipped',
+          'started_at' => (string) $started_at, 'completed_at' => (string) current_time('mysql', true),
+          'message' => 'Advertiser scheduling is disabled.',
+        ]);
         return;
       }
 
@@ -136,6 +178,11 @@ class Scheduler {
       $configured_day = max(1, min(31, (int) ($settings['advertiser_schedule_day'] ?? 1)));
       $scheduled_day = min($configured_day, (int) $now->format('t'));
       if ((int) $now->format('j') !== $scheduled_day) {
+        self::record_run_result(self::LAST_ADVERTISER_RESULT_KEY, [
+          'version' => 1, 'run_id' => (string) $run_id, 'status' => 'skipped',
+          'started_at' => (string) $started_at, 'completed_at' => (string) current_time('mysql', true),
+          'message' => 'The advertiser schedule is not due today.',
+        ]);
         return;
       }
 
@@ -143,20 +190,42 @@ class Scheduler {
       $month_key = $target->format('Y-m');
 
       if (get_option(self::LAST_ADVERTISER_MONTH_KEY) === $month_key) {
+        self::record_run_result(self::LAST_ADVERTISER_RESULT_KEY, [
+          'version' => 1, 'run_id' => (string) $run_id, 'status' => 'skipped',
+          'started_at' => (string) $started_at, 'completed_at' => (string) current_time('mysql', true),
+          'message' => 'This advertiser month already completed.',
+        ]);
         return;
       }
 
       $result = Workbook::send_advertiser_summary((int) $target->format('Y'), (int) $target->format('m'), 'scheduled-advertiser');
       if (!empty($result['success'])) {
+        self::record_run_result(self::LAST_ADVERTISER_RESULT_KEY, [
+          'version' => 1, 'run_id' => (string) $run_id, 'status' => 'completed',
+          'started_at' => (string) $started_at, 'completed_at' => (string) current_time('mysql', true),
+          'message' => (string) ($result['message'] ?? ''),
+        ]);
         update_option(self::LAST_ADVERTISER_MONTH_KEY, $month_key);
         Store::insert_log('advertiser_send', 'scheduled-advertiser', null, $target->format('Y-m-01'), true, 'Scheduled advertiser summary sent successfully.', [
           'month' => $month_key,
         ]);
       } else {
+        self::record_run_result(self::LAST_ADVERTISER_RESULT_KEY, [
+          'version' => 1, 'run_id' => (string) $run_id, 'status' => 'failed',
+          'started_at' => (string) $started_at, 'completed_at' => (string) current_time('mysql', true),
+          'message' => (string) ($result['message'] ?? 'Scheduled advertiser summary failed.'),
+        ]);
         Store::insert_log('advertiser_send', 'scheduled-advertiser', null, $target->format('Y-m-01'), false, (string) ($result['message'] ?? 'Scheduled advertiser summary failed.'), [
           'month' => $month_key,
         ]);
       }
+    } catch (\Throwable $error) {
+      self::record_run_result(self::LAST_ADVERTISER_RESULT_KEY, [
+        'version' => 1, 'run_id' => (string) $run_id, 'status' => 'failed',
+        'started_at' => (string) $started_at, 'completed_at' => (string) current_time('mysql', true),
+        'message' => self::error_text($error),
+      ]);
+      throw $error;
     } finally {
       self::ensure_schedule();
     }
@@ -246,6 +315,20 @@ class Scheduler {
     } catch (\Throwable $error) {
       // Scheduler repair/logging must not break WordPress bootstrap.
     }
+  }
+
+  private static function record_run_result(string $key, array $result): void {
+    try {
+      if (function_exists('update_option')) update_option($key, $result, false);
+    } catch (\Throwable $error) {
+      // Telemetry must never change the report or email outcome.
+    }
+  }
+
+  private static function error_text(\Throwable $error): string {
+    $message = (string) $error->getMessage();
+    if (function_exists('sanitize_text_field')) return sanitize_text_field($message);
+    return (string) preg_replace('/[\x00-\x1F\x7F]+/', ' ', $message);
   }
 
   private static function next_run_timestamp(string $time, string $timezone, ?\DateTimeImmutable $now = null): int {
