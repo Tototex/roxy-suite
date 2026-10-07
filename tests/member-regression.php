@@ -21,7 +21,7 @@ function get_the_author_meta(...$args){return 'Fixture staff';}
 class TestSubscription {
     private $id;function __construct($id){$this->id=$id;}
     function get_user(){return (object)['ID'=>8,'user_email'=>'fixture@example.test','display_name'=>'Fixture Member'];}
-    function get_status(){return $this->id===2?'cancelled':'active';}
+    function get_status(){return $this->id===2?'cancelled':($this->id===3?'expired':'active');}
     function get_items(){return [new class {function get_quantity(){return 3;}}];}
     function get_date($key){return '';}
 }
@@ -30,7 +30,7 @@ class TestDatabase {
     function esc_like($value){return str_replace('_','\\_',$value);}
     function prepare($sql,...$args){return $sql;}
     function get_var($sql){$this->queries[]=$sql;if(str_contains($sql,'SHOW TABLES'))return 'test_roxy_member_scans';if(str_contains($sql,'COUNT'))return 1;return '2026-09-28 19:30:00';}
-    function get_results($sql,$format){$this->queries[]=$sql;if(str_contains($sql,'GROUP BY subscription_id, user_id'))return [['subscription_id'=>2,'user_id'=>8,'scanned_at'=>'2026-09-28 19:30:00','quantity'=>3]];if(str_contains($sql,'GROUP BY subscription_id'))return [['subscription_id'=>1,'visits_month'=>3,'visits_lifetime'=>6,'last_visit'=>'2026-09-28 19:30:00']];return [['id'=>1,'scanned_at'=>'2026-09-28 19:30:00','subscription_id'=>1,'is_active'=>1,'status'=>'active','user_id'=>8,'ip'=>'','user_agent'=>'']];}
+    function get_results($sql,$format){$this->queries[]=$sql;if(str_contains($sql,'GROUP BY subscription_id, user_id'))return [['subscription_id'=>(int)($GLOBALS['history_subscription_id']??2),'user_id'=>8,'scanned_at'=>'2026-09-28 19:30:00','quantity'=>3]];if(str_contains($sql,'GROUP BY subscription_id'))return [['subscription_id'=>1,'visits_month'=>3,'visits_lifetime'=>6,'last_visit'=>'2026-09-28 19:30:00']];return [['id'=>1,'scanned_at'=>'2026-09-28 19:30:00','subscription_id'=>1,'is_active'=>1,'status'=>'active','user_id'=>8,'ip'=>'','user_agent'=>'']];}
     function insert($table,$data,$formats){if($this->fail)return false;$this->inserts[]=$data;return 1;}
 }
 $GLOBALS['wpdb']=new TestDatabase;
@@ -51,8 +51,15 @@ $result=Roxy_Sub_Check::log_member_visit(1,50,99,'manual_admit_reserved',static 
 check(!$result['ok']&&!$written,'transactional visit refuses entitlement clamp after tickets were changed');
 $result=Roxy_Sub_Check::log_member_visit(1,50,2,'manual_admit_reserved',static function($row)use(&$written){$written[]=$row;return true;});
 check($result['ok']&&count($written)===1&&$written[0]['quantity']===2&&$written[0]['source']==='manual_admit_reserved','transaction writer receives canonical validated visit fields');
-$rows=Roxy_Sub_Check::showing_admit_rows(50);
-check(count($rows)===1&&$rows[0]['qty']===3,'historical admission remains after membership cancellation');
+$insert_count=count($GLOBALS['wpdb']->inserts);
+foreach([2=>'canceled',3=>'expired'] as $sub_id=>$label) {
+    $result=Roxy_Sub_Check::log_member_visit($sub_id,50,1,'manual_admit_walkup');
+    check(!$result['ok']&&count($GLOBALS['wpdb']->inserts)===$insert_count,'new admission is denied for '.$label.' membership without a scan write');
+    $GLOBALS['history_subscription_id']=$sub_id;
+    $rows=Roxy_Sub_Check::showing_admit_rows(50);
+    check(count($rows)===1&&$rows[0]['qty']===3&&$rows[0]['subscription_id']===$sub_id,'persisted historical admission quantity remains visible after '.$label.' membership');
+    check(!Roxy_Sub_Check::check_subscription($sub_id)['active'],'historical '.$label.' subscription is inactive for new admission');
+}
 $show_table_calls=count(array_filter($GLOBALS['wpdb']->queries,fn($s)=>str_contains($s,'SHOW TABLES')));
 check($show_table_calls===1,'operational calls check schema once per request, no repeated dbDelta');
 $stats=new ReflectionMethod(\RoxySuite\Members_Dashboard::class,'scan_stats_map');$stats->setAccessible(true);
