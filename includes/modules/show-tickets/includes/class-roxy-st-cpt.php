@@ -20,6 +20,7 @@ class CPT {
     add_filter('post_row_actions', [__CLASS__, 'row_actions'], 10, 2);
     add_action('admin_action_roxy_duplicate_weekend', [__CLASS__, 'handle_duplicate_weekend']);
     add_action('admin_notices', [__CLASS__, 'admin_notices']);
+    add_action('admin_notices', [__CLASS__, 'duration_input_notice']);
     add_action('admin_notices', [__CLASS__, 'render_admin_tabs']);
   }
 
@@ -87,6 +88,7 @@ class CPT {
     $use_schedule_builder = $is_new_showing;
 
     $start = get_post_meta($post->ID, '_roxy_start', true);
+    $duration_minutes = get_post_meta($post->ID, '_roxy_duration_minutes', true);
     $capacity_raw = get_post_meta($post->ID, '_roxy_capacity', true);
     $capacity = ($capacity_raw === '' || $capacity_raw === null) ? Settings::get_default_capacity() : (int) $capacity_raw;
     $profile = get_post_meta($post->ID, '_roxy_pricing_profile', true) ?: 'movie_evening';
@@ -120,6 +122,9 @@ class CPT {
 
     echo '<label for="roxy_start"><strong>Start (local time)</strong></label>';
     echo '<input id="roxy_start" name="roxy_start" type="datetime-local" value="' . esc_attr($start) . '"' . ($use_schedule_builder ? ' disabled' : '') . '>';
+
+    echo '<label for="roxy_duration_minutes"><strong>Duration (minutes)</strong></label>';
+    echo '<div><input id="roxy_duration_minutes" name="roxy_duration_minutes" type="number" min="1" max="10080" step="1" value="' . esc_attr((string) $duration_minutes) . '"><p class="description">No authoritative movie runtime or showing-end feed is available in this site code. Enter a verified duration to keep sales open through the end; without one, the existing start-time cutoff applies.</p></div>';
 
     if ($is_new_showing) {
       echo '<label for="roxy_use_schedule_builder"><strong>Schedule Builder</strong></label>';
@@ -387,6 +392,28 @@ class CPT {
       '_roxy_trailer_url' => esc_url_raw($_POST['roxy_trailer_url'] ?? ''),
     ];
 
+    $saved_duration = (string) get_post_meta($post_id, '_roxy_duration_minutes', true);
+    if (preg_match('/^[1-9][0-9]{0,4}$/D', $saved_duration) && (int) $saved_duration <= 10080) {
+      $shared_meta['_roxy_duration_minutes'] = (string) (int) $saved_duration;
+    }
+
+    if (array_key_exists('roxy_duration_minutes', $_POST)) {
+      $duration_input = wp_unslash($_POST['roxy_duration_minutes']);
+      $duration_is_scalar = is_scalar($duration_input);
+      $duration_raw = $duration_is_scalar ? trim(sanitize_text_field((string) $duration_input)) : '';
+      if ($duration_is_scalar && $duration_raw === '') {
+        // Blank is optional for legacy records; preserve an existing valid value,
+        // but do not nag on ordinary edits when no duration has been entered.
+        if (preg_match('/^[1-9][0-9]{0,4}$/D', $saved_duration) && (int) $saved_duration <= 10080) {
+          set_transient('roxy_st_invalid_duration_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+        }
+      } elseif (preg_match('/^[1-9][0-9]{0,4}$/D', $duration_raw) && (int) $duration_raw <= 10080) {
+        $shared_meta['_roxy_duration_minutes'] = (string) (int) $duration_raw;
+      } else {
+        set_transient('roxy_st_invalid_duration_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+      }
+    }
+
     foreach ($shared_meta as $meta_key => $meta_value) {
       update_post_meta($post_id, $meta_key, $meta_value);
     }
@@ -527,6 +554,13 @@ class CPT {
 
     [$class, $message] = $messages[$status];
     echo '<div class="' . esc_attr($class) . '"><p>' . esc_html($message) . '</p></div>';
+  }
+
+  public static function duration_input_notice(): void {
+    $user_id = get_current_user_id();
+    if ($user_id <= 0 || !get_transient('roxy_st_invalid_duration_' . $user_id)) return;
+    delete_transient('roxy_st_invalid_duration_' . $user_id);
+    echo '<div class="notice notice-error"><p>Duration must be a whole number from 1 to 10,080 minutes. The submitted value was rejected; any previously saved duration was preserved.</p></div>';
   }
 
   public static function admin_columns(array $columns): array {

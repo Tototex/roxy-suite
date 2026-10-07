@@ -1,6 +1,9 @@
 <?php
 /** WP-CLI fixture: actual metadata + Woo/Store API gate, no public fixture or order. */
-require_once $args[0];
+$source = file_get_contents($args[0]);
+if (!is_string($source)) throw new RuntimeException('Candidate eligibility source unavailable.');
+$source = str_replace('class Eligibility {', 'class PublicationFixtureEligibility {', $source);
+eval('?>' . $source);
 global $wpdb;
 $ids=[]; $checks=0; $saved=[WC()->cart, WC()->session, WC()->customer];
 $check=static function($ok,$label)use(&$checks){if(!$ok)throw new RuntimeException($label); echo "PASS: $label\n"; $checks++;};
@@ -10,24 +13,25 @@ try {
     $ids[]=(int)$wpdb->insert_id;
   }
   [$sid,$pid,$duplicate]=$ids;
-  foreach([$sid=>['_roxy_pricing_profile'=>'movie_evening','_roxy_pid_adult'=>$pid],$pid=>[ROXY_ST_META_SHOWING_ID=>$sid,ROXY_ST_META_TICKET_TYPE=>'adult'],$duplicate=>[ROXY_ST_META_SHOWING_ID=>$sid,ROXY_ST_META_TICKET_TYPE=>'adult']] as $id=>$meta){foreach($meta as $key=>$value)if(!add_post_meta($id,$key,$value))throw new RuntimeException('fixture metadata failed');}
+  foreach([$sid=>['_roxy_pricing_profile'=>'movie_evening','_roxy_pid_adult'=>$pid,'_roxy_start'=>current_datetime()->modify('+1 day')->format('Y-m-d\TH:i')],$pid=>[ROXY_ST_META_SHOWING_ID=>$sid,ROXY_ST_META_TICKET_TYPE=>'adult'],$duplicate=>[ROXY_ST_META_SHOWING_ID=>$sid,ROXY_ST_META_TICKET_TYPE=>'adult']] as $id=>$meta){foreach($meta as $key=>$value)if(!add_post_meta($id,$key,$value))throw new RuntimeException('fixture metadata failed');}
   // Physical posts stay draft. Publication state is simulated request-locally only.
   $visible=true;
   $status=static function($value,$post)use($ids,&$visible){return in_array((int)$post->ID,$ids,true)&&$visible?'publish':$value;};
   add_filter('get_post_status',$status,10,2);
   $product=new WC_Product_Simple(); $product->set_id($pid); $product->set_status('publish'); $product->set_price(12); $product->set_virtual(true); $product->set_tax_status('none');
   $check($product->is_purchasable(),'normal fixture baseline purchasable before gate');
-  RoxyST\Eligibility::init();
-  $check(RoxyST\Eligibility::product_error($pid)===null && $product->is_purchasable(),'actual WP metadata canonical public ticket passes');
-  $check(is_wp_error(RoxyST\Eligibility::product_error($duplicate)),'actual metadata duplicate rejected');
+  remove_filter('woocommerce_is_purchasable', [RoxyST\Eligibility::class, 'purchasable'], 99);
+  RoxyST\PublicationFixtureEligibility::init();
+  $check(RoxyST\PublicationFixtureEligibility::product_error($pid)===null && $product->is_purchasable(),'actual WP metadata future ticket without duration remains purchasable');
+  $check(is_wp_error(RoxyST\PublicationFixtureEligibility::product_error($duplicate)),'actual metadata duplicate rejected');
   WC()->session=new WC_Session_Handler(); WC()->customer=new WC_Customer(0,false); WC()->cart=new WC_Cart();
   WC()->cart->cart_contents=['fixture'=>['product_id'=>$pid,'quantity'=>1,'variation_id'=>0,'variation'=>[],'data'=>$product,'data_hash'=>wc_get_cart_item_data_hash($product)]];
   $visible=false; wc_clear_notices();
   $check(!$product->is_purchasable(),'Woo purchasability rejects showing withdrawn after cart selection');
   // Isolate unrelated validators in this CLI subprocess. Production hooks remain intact.
-  remove_all_filters('woocommerce_add_to_cart_validation'); add_filter('woocommerce_add_to_cart_validation',[RoxyST\Eligibility::class,'validate_add'],5,6);
+  remove_all_filters('woocommerce_add_to_cart_validation'); add_filter('woocommerce_add_to_cart_validation',[RoxyST\PublicationFixtureEligibility::class,'validate_add'],5,6);
   $check(!apply_filters('woocommerce_add_to_cart_validation',true,$pid,1,0,[],[]),'direct cart validation rejects withdrawn showing');
-  remove_all_actions('woocommerce_check_cart_items'); add_action('woocommerce_check_cart_items',[RoxyST\Eligibility::class,'validate_cart'],9990);
+  remove_all_actions('woocommerce_check_cart_items'); add_action('woocommerce_check_cart_items',[RoxyST\PublicationFixtureEligibility::class,'validate_cart'],9990);
   wc_clear_notices(); do_action('woocommerce_check_cart_items');
   $check(wc_notice_count('error')===1,'classic stale cart returns one eligibility error');
   wc_clear_notices();
@@ -36,6 +40,18 @@ try {
   $check($blocked,'installed Store API rejects withdrawn showing before checkout');
   $visible=true; wc_clear_notices(); $controller->validate_cart();
   $check(wc_notice_count('error')===0,'restored canonical public ticket passes installed Store API');
+  update_post_meta($sid, '_roxy_start', current_datetime()->modify('-30 minutes')->format('Y-m-d\TH:i'));
+  update_post_meta($sid, '_roxy_duration_minutes', '60');
+  $check($product->is_purchasable(), 'actual Woo purchasability remains open during a running showing');
+  wc_clear_notices(); $controller->validate_cart();
+  $check(wc_notice_count('error')===0, 'installed Store API allows a running showing before its end');
+  update_post_meta($sid, '_roxy_start', current_datetime()->modify('-90 minutes')->format('Y-m-d\TH:i'));
+  $check(!$product->is_purchasable(), 'actual Woo purchasability closes after the showing end');
+  wc_clear_notices(); do_action('woocommerce_check_cart_items');
+  $check(wc_notice_count('error')===1, 'classic cart rejects an ended showing');
+  wc_clear_notices(); $blocked=false;
+  try{$controller->validate_cart();}catch(Automattic\WooCommerce\StoreApi\Exceptions\InvalidCartException $e){$blocked=true;}
+  $check($blocked, 'installed Store API rejects an ended showing');
   $check((int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->posts} WHERE ID IN (%d,%d,%d) AND post_status='draft'",$sid,$pid,$duplicate))===3,'all physical fixtures remained private draft');
   if(isset($args[1])) {
     $source=file_get_contents($args[1]);

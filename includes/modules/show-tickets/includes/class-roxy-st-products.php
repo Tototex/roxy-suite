@@ -379,29 +379,36 @@ class Products {
   }
 
   private static function trash_expired_showing_products(): void {
-    $now = current_time('mysql');
-    $showings = get_posts([
-      'post_type' => CPT::POST_TYPE,
-      'post_status' => ['publish', 'future', 'draft', 'pending', 'private'],
-      'posts_per_page' => 100,
-      'fields' => 'ids',
-      'meta_key' => '_roxy_start',
-      'meta_value' => $now,
-      'meta_compare' => '<',
-      'orderby' => 'meta_value',
-      'order' => 'ASC',
-      'no_found_rows' => true,
-    ]);
-
-    foreach ($showings as $showing_id) {
-      self::trash_products_for_expired_showing((int) $showing_id);
-    }
+    $now = current_datetime()->format('Y-m-d\TH:i');
+    $page = 1;
+    $page_size = 100;
+    do {
+      $showings = get_posts([
+        'post_type' => CPT::POST_TYPE,
+        'post_status' => ['publish', 'future', 'draft', 'pending', 'private'],
+        'posts_per_page' => $page_size,
+        'paged' => $page,
+        'fields' => 'ids',
+        'meta_key' => '_roxy_start',
+        'meta_value' => $now,
+        'meta_compare' => '<',
+        'orderby' => ['meta_value' => 'ASC', 'ID' => 'ASC'],
+        'no_found_rows' => true,
+      ]);
+      foreach ($showings as $showing_id) {
+        self::trash_products_for_expired_showing((int) $showing_id);
+      }
+      $has_full_page = count($showings) === $page_size;
+      $page++;
+    } while ($has_full_page);
   }
 
   private static function trash_products_for_expired_showing(int $showing_id): void {
-    $start = (string) get_post_meta($showing_id, '_roxy_start', true);
-    if ($start === '' || strtotime($start) === false) return;
-    if (strtotime($start) >= current_time('timestamp')) return;
+    $start = Eligibility::showing_start_timestamp($showing_id);
+    $cutoff = Eligibility::showing_sales_cutoff_timestamp($showing_id);
+    if ($start === null || $cutoff === null) return;
+    $now = current_datetime()->getTimestamp();
+    if ($start > $now || $cutoff > $now) return;
 
     foreach (self::get_showing_product_ids($showing_id) as $product_id) {
       if ($product_id > 0 && get_post_type($product_id) === 'product' && get_post_status($product_id) !== 'trash') {

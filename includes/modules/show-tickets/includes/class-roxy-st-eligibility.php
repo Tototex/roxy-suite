@@ -15,6 +15,63 @@ class Eligibility {
     return $id > 0 && get_post_type($id) === CPT::POST_TYPE && get_post_status($id) === 'publish';
   }
 
+  /** Return the canonical local showing start as a Unix timestamp, or null for invalid data. */
+  public static function showing_start_timestamp(int $id): ?int {
+    if ($id <= 0 || get_post_type($id) !== CPT::POST_TYPE) return null;
+
+    $start_raw = (string) get_post_meta($id, '_roxy_start', true);
+    if (trim($start_raw) === '') return null;
+
+    $timezone = function_exists('wp_timezone') ? wp_timezone() : new \DateTimeZone(date_default_timezone_get());
+    $start = null;
+    $formats = [
+      ['!Y-m-d\\TH:i', 'Y-m-d\\TH:i'],
+      ['!Y-m-d\\TH:i:s', 'Y-m-d\\TH:i:s'],
+      ['!Y-m-d H:i', 'Y-m-d H:i'],
+      ['!Y-m-d H:i:s', 'Y-m-d H:i:s'],
+    ];
+    foreach ($formats as [$format, $expected]) {
+      $candidate = \DateTimeImmutable::createFromFormat($format, $start_raw, $timezone);
+      $errors = \DateTimeImmutable::getLastErrors();
+      if ($candidate && ($errors === false || ($errors['warning_count'] === 0 && $errors['error_count'] === 0))) {
+        if ($candidate->format($expected) === $start_raw) {
+          $start = $candidate;
+          break;
+        }
+      }
+    }
+    if (!$start) return null;
+
+    return $start->getTimestamp();
+  }
+
+  /** Return the canonical local showing end, or null when no valid duration is saved. */
+  public static function showing_end_timestamp(int $id): ?int {
+    $duration_raw = (string) get_post_meta($id, '_roxy_duration_minutes', true);
+    if (!preg_match('/^[1-9][0-9]{0,4}$/D', $duration_raw)) return null;
+    $duration = (int) $duration_raw;
+    if ($duration > 10080) return null;
+    $start = self::showing_start_timestamp($id);
+    if ($start === null) return null;
+
+    return $start + ($duration * 60);
+  }
+
+  /** Missing duration retains the former start-time cutoff; malformed duration closes sales. */
+  public static function showing_sales_cutoff_timestamp(int $id): ?int {
+    $duration_raw = (string) get_post_meta($id, '_roxy_duration_minutes', true);
+    if ($duration_raw === '') return self::showing_start_timestamp($id);
+    return self::showing_end_timestamp($id);
+  }
+
+  public static function showing_sales_open(int $id, ?int $now = null): bool {
+    if (!self::showing_is_public($id)) return false;
+    $cutoff = self::showing_sales_cutoff_timestamp($id);
+    if ($cutoff === null) return false;
+    if ($now === null) $now = current_datetime()->getTimestamp();
+    return $now < $cutoff;
+  }
+
   /** Null denotes a non-ticket product; WP_Error denotes an invalid ticket. */
   public static function product_error(int $id) {
     if ($id <= 0 || !get_post_type($id)) {
@@ -25,6 +82,9 @@ class Eligibility {
     if (!$sid && $type === '') return null;
     if (!self::showing_is_public($sid) || get_post_type($id) !== 'product' || get_post_status($id) !== 'publish') {
       return new \WP_Error('roxy_ticket_unavailable', __('This showing is no longer available for online ticket sales. Remove its tickets from your cart.', 'roxy-show-tickets'));
+    }
+    if (!self::showing_sales_open($sid)) {
+      return new \WP_Error('roxy_ticket_sales_ended', __('Online ticket sales have ended for this showing.', 'roxy-show-tickets'));
     }
     $profile = (string)get_post_meta($sid, '_roxy_pricing_profile', true);
     if ($profile === '') $profile = 'movie_evening';
