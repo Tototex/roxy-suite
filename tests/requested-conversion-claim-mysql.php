@@ -6,6 +6,11 @@ $path = $args[0] ?? '';
 if (!is_file($path)) throw new RuntimeException('Candidate creation helper required.');
 eval('?>' . str_replace('final class ConversionClaims {', 'final class SqlConversionClaims57 {', file_get_contents($path)));
 $helper = '\\RoxyRS\\SqlConversionClaims57';
+$pledge_path = $args[1] ?? '';
+if ($pledge_path !== '') {
+    if (!is_file($pledge_path)) throw new RuntimeException('Candidate pledge helper required');
+    eval('?>' . str_replace('final class PledgeAttempts {', 'final class SqlPledgeAttempts58 {', file_get_contents($pledge_path)));
+}
 $label = 'PRIVATE CONVERSION CLAIM ' . bin2hex(random_bytes(8));
 $id = 0; $checks = 0;
 $assert = static function ($ok, $text) use (&$checks) { if (!$ok) throw new RuntimeException($text); $checks++; echo 'PASS: ' . $text . PHP_EOL; };
@@ -41,6 +46,18 @@ try {
     $assert($throws(static fn()=>$helper::begin_creation($id, 'order', 77)), 'another creation for the same backing is denied');
     $helper::begin_creation($id, 'order', 78);
     $assert((int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE post_id=%d AND meta_key LIKE '_roxy_rs_creation_order_%%'", $id)) === 2, 'different backings retain independent creation records');
+    if ($pledge_path !== '') {
+        $pledge = '\\RoxyRS\\SqlPledgeAttempts58';
+        $hash = $pledge::fingerprint(['request_id'=>$id,'user_id'=>77,'general_qty'=>1]);
+        $assert($pledge::replay($id,77,$hash) === 0, 'no durable pledge receipt before attempt');
+        $pledge::begin($id,77,$hash);
+        $assert($throws(static fn()=>$pledge::replay($id,77,$hash)), 'actual committed uncertainty gate blocks replay');
+        $assert($throws(static fn()=>$pledge::begin($id,77,str_repeat('b',64))), 'actual uncertainty gate blocks changed retry');
+        // Virtual backing identity: exercises receipt transaction, not an actual INSERT.
+        $pledge::finish($id,77,$hash,55);
+        $assert($pledge::replay($id,77,$hash) === 55, 'actual receipt commit replays its virtual backing identity');
+        $assert((int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE post_id=%d AND meta_key='_roxy_rs_pledge_uncertain_77'",$id)) === 0, 'actual receipt commit clears its own uncertainty gate');
+    }
     $assert($before === $baseline(), 'original requests, showings and orders remain unchanged');
     echo "Passed $checks actual SQL creation checks; no real approval or provider call.\n";
 } finally {

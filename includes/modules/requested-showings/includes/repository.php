@@ -72,7 +72,7 @@ function roxy_rs_repo_insert_backing(array $data) {
         $lease->assert_owner();
         return $result;
     } catch (\Throwable $error) {
-        return new WP_Error('backing_request_busy', 'This request is being updated or could not be verified. Please refresh before retrying.');
+        return new WP_Error('backing_request_busy', 'This request is busy or a prior pledge save needs review. If saving was uncertain, contact the theater before submitting another pledge.');
     } finally {
         if ($lease !== null) $lease->release_lease();
     }
@@ -119,6 +119,14 @@ function roxy_rs_repo_insert_backing_owned(array $data, string $request_guard) {
         $row[$money_key] = $amount;
     }
     $subscriber_qty = $row['subscriber_qty'];
+    if (!class_exists('\\RoxyRS\\PledgeAttempts')) throw new \RuntimeException('Durable pledge safety storage is unavailable.');
+    $fingerprint = \RoxyRS\PledgeAttempts::fingerprint($row);
+    $replay = \RoxyRS\PledgeAttempts::replay((int) $row['request_id'], (int) $row['user_id'], $fingerprint);
+    if ($replay > 0) {
+        if (!roxy_rs_repo_saved_pledge_matches($replay, $row, $fingerprint)) throw new \RuntimeException('Saved pledge receipt needs reconciliation.');
+        return $replay;
+    }
+    $attempt_started = false;
 
     $claim = null;
     $entitlement = 0;
@@ -176,9 +184,11 @@ function roxy_rs_repo_insert_backing_owned(array $data, string $request_guard) {
                 . ' WHERE CONNECTION_ID() = %s AND IS_USED_LOCK(%s) = CONNECTION_ID() AND ' . $request_guard;
             if (!roxy_rs_repo_subscriber_lock_owned($claim)) return new WP_Error('subscriber_pledge_lock_lost', 'Subscriber reservations could not be safely locked. Please retry.');
             $wpdb->last_error = '';
+            \RoxyRS\PledgeAttempts::begin($request_id, $user_id, $fingerprint);
+            $attempt_started = true;
             $inserted = $wpdb->query($wpdb->prepare($insert_sql, $parameters));
-            if ($wpdb->last_error !== '' || $inserted !== 1) return new WP_Error('subscriber_pledge_insert_failed', $wpdb->last_error ?: 'The subscriber reservation lock changed before saving. Please retry.');
-            return (int) $wpdb->insert_id > 0 ? (int) $wpdb->insert_id : new WP_Error('db_insert_failed', 'Could not verify the saved backing.');
+            if ($wpdb->last_error !== '' || $inserted !== 1) return new WP_Error('pledge_save_review', 'The pledge save could not be confirmed. Contact the theater before submitting another pledge.');
+            return roxy_rs_repo_finish_pledge((int) $wpdb->insert_id, $row, $fingerprint);
         }
 
         $columns = []; $expressions = []; $parameters = [];
@@ -190,19 +200,33 @@ function roxy_rs_repo_insert_backing_owned(array $data, string $request_guard) {
         }
         $sql = 'INSERT INTO ' . $table . ' (' . implode(',', $columns) . ') SELECT ' . implode(',', $expressions) . ' WHERE ' . $request_guard;
         $wpdb->last_error = '';
+        \RoxyRS\PledgeAttempts::begin($request_id, $user_id, $fingerprint);
+        $attempt_started = true;
         $ok = $wpdb->query($wpdb->prepare($sql, $parameters));
-        if ($wpdb->last_error !== '' || $ok !== 1) return new WP_Error('db_insert_failed', 'Backing could not be saved under the verified request lease.');
-        return (int) $wpdb->insert_id > 0 ? (int) $wpdb->insert_id : new WP_Error('db_insert_failed', 'Could not verify the saved backing.');
+        if ($wpdb->last_error !== '' || $ok !== 1) return new WP_Error('pledge_save_review', 'The pledge save could not be confirmed. Contact the theater before submitting another pledge.');
+        return roxy_rs_repo_finish_pledge((int) $wpdb->insert_id, $row, $fingerprint);
     } catch (\Throwable $error) {
         return new WP_Error(
-            $claim !== null ? 'subscriber_pledge_read_failed' : 'db_insert_failed',
-            $claim !== null ? 'Subscriber reservations could not be verified. Please retry.' : 'Could not save backing.'
+            $attempt_started ? 'pledge_save_review' : ($claim !== null ? 'subscriber_pledge_read_failed' : 'db_insert_failed'),
+            $attempt_started ? 'The pledge save could not be confirmed. Contact the theater before submitting another pledge.' : ($claim !== null ? 'Subscriber reservations could not be verified. Please retry.' : 'Could not save backing.')
         );
     } finally {
         if ($claim !== null && roxy_rs_repo_subscriber_lock_owned($claim)) {
             $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $claim['name']));
         }
     }
+}
+
+function roxy_rs_repo_saved_pledge_matches(int $id, array $expected, string $hash): bool {
+    $saved = $id > 0 ? roxy_rs_repo_get_backing($id) : null;
+    return $saved !== null && !array_diff_key($expected, $saved)
+        && hash_equals($hash, \RoxyRS\PledgeAttempts::fingerprint(array_intersect_key($saved, $expected)));
+}
+
+function roxy_rs_repo_finish_pledge(int $id, array $row, string $hash): int {
+    if (!roxy_rs_repo_saved_pledge_matches($id, $row, $hash)) throw new \RuntimeException('Saved backing readback did not match the attempted pledge.');
+    \RoxyRS\PledgeAttempts::finish((int) $row['request_id'], (int) $row['user_id'], $hash, $id);
+    return $id;
 }
 
 function roxy_rs_repo_update_backing(int $id, array $data) {

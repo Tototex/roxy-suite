@@ -28,6 +28,13 @@ namespace RoxyST {
 }
 
 namespace RoxyRS {
+    final class PledgeAttempts {
+        public static array $pending = []; public static array $receipts = [];
+        public static function fingerprint(array $row): string { unset($row['created_at'],$row['updated_at'],$row['id']); ksort($row); foreach ($row as &$v) if ($v !== null) $v=(string)$v; unset($v); return hash('sha256',json_encode($row)); }
+        public static function replay($request,$user,$hash): int { if (isset(self::$pending[$request.':'.$user])) throw new \RuntimeException('Fixture uncertain pledge'); return self::$receipts[$request.':'.$user.':'.$hash] ?? 0; }
+        public static function begin($request,$user,$hash): void { if (isset(self::$pending[$request.':'.$user])) throw new \RuntimeException('Fixture uncertain pledge'); self::$pending[$request.':'.$user]=$hash; }
+        public static function finish($request,$user,$hash,$id): void { self::$receipts[$request.':'.$user.':'.$hash]=$id; unset(self::$pending[$request.':'.$user]); }
+    }
     final class ConversionClaims {
         public static array $started = [];
         public static function lease($scope): \RoxyST\Issuance {
@@ -101,6 +108,7 @@ namespace {
         public $connection_error = false; public $owner_mismatch = false; public $release_count = 0; public $guarded_insert_sql = '';
         public bool $list_error = false;
         public bool $final_update_error = false;
+        public bool $lose_insert_response = false;
         private $locked = false; private $connection = 51;
         public function prepare($sql, ...$args) {
             if (count($args) === 1 && is_array($args[0])) $args = $args[0];
@@ -139,11 +147,12 @@ namespace {
             $values = str_getcsv($m[2], ',', "'", '\\');
             if (count($columns) !== count($values)) { $this->last_error = 'fixture guarded insert parse error'; return false; }
             $row = array_combine($columns, $values);
-            foreach ($row as $key => $value) if ($value === 'NULL') $row[$key] = null;
+            foreach ($row as $key => $value) if (trim((string) $value) === 'NULL') $row[$key] = null;
             $this->insert_id++;
             $row['id'] = $this->insert_id;
             $this->rows[$this->insert_id] = $row;
             $this->outstanding += (int) $row['subscriber_qty'];
+            if ($this->lose_insert_response) { $this->last_error = 'Fixture acknowledgement lost after row persisted'; return false; }
             return 1;
         }
         public function insert($table, $data) { $this->insert_id++; $data['id']=$this->insert_id; $this->rows[$this->insert_id] = $data; $this->outstanding += (int) $data['subscriber_qty']; return 1; }
@@ -216,6 +225,7 @@ namespace {
         \RoxyST\Reservations::$used = 0; \RoxyST\Holds::$allow = true; \RoxyST\Holds::$calls = 0;
         \RoxyST\Issuance::$busy = false; \RoxyST\Issuance::$lost = false; \RoxyST\Issuance::$released = 0;
         \RoxyRS\ConversionClaims::$started = [];
+        \RoxyRS\PledgeAttempts::$pending = []; \RoxyRS\PledgeAttempts::$receipts = [];
         $GLOBALS['fixture_subscriptions'] = $subscriptions;
         $GLOBALS['fixture_mails'] = [];
         $GLOBALS['fixture_subscription_error'] = $entitlement_error;
@@ -291,7 +301,7 @@ namespace {
     check_fixture(count($wpdb->rows) === 1, 'exact retry is idempotent through backing replay key');
     $_POST['subscriber_qty'] = '2';
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 1, 'second distinct pledge respects aggregate outstanding quantity');
-    check_fixture($wpdb->release_count === 2 && !$wpdb->is_locked(), 'distinct excess retry releases verified lease');
+    check_fixture($wpdb->release_count === 2 && !$wpdb->is_locked(), 'distinct excess retry releases verified lease (actual=' . $wpdb->release_count . ',pending=' . count(\RoxyRS\PledgeAttempts::$pending) . ',receipts=' . count(\RoxyRS\PledgeAttempts::$receipts) . ')');
     reset_fixture([new FixtureSubscription('active', 2)]); $wpdb->read_error = true;
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'aggregate-read error fails closed');
     check_fixture($wpdb->release_count === 1 && !$wpdb->is_locked(), 'aggregate read error releases verified lease');
@@ -372,5 +382,17 @@ namespace {
     check_fixture(is_wp_error(\RoxyRS\Conversion::approve_request(501)) && !$GLOBALS['fixture_mails'], 'failed backing list never becomes successful empty approval');
     reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing(); $wpdb->final_update_error = true;
     check_fixture(is_wp_error($convert->invoke(null, 501, 801, ['id'=>1])) && $GLOBALS['fixture_order']->completed === 1, 'final backing write failure after no-charge completion requires reconciliation');
+    reset_fixture([]); $_POST = ['request_id'=>'501','general_qty'=>'1','discount_qty'=>'0','subscriber_qty'=>'0','payment_token_id'=>'5']; $wpdb->lose_insert_response = true;
+    check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 1, 'commit then lost acknowledgement returns review rather than success');
+    $wpdb->lose_insert_response = false;
+    check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 1, 'uncertain save blocks identical retry without another row');
+    $_POST['general_qty'] = '2';
+    check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 1, 'uncertain save also blocks a changed retry for the same user request');
+    reset_fixture([]); $_POST = ['request_id'=>'501','general_qty'=>'1','discount_qty'=>'0','subscriber_qty'=>'0','payment_token_id'=>'5']; invoke_backing(); $GLOBALS['fixture_transients'] = [];
+    invoke_backing();
+    check_fixture(count($wpdb->rows) === 1, 'durable receipt handles retry when transient replay cache is absent');
+    $GLOBALS['fixture_transients'] = [];
+    foreach (\RoxyRS\PledgeAttempts::$receipts as &$receipt_id) $receipt_id = 999; unset($receipt_id);
+    check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 1, 'receipt referencing missing backing cannot create another pledge');
     echo "OK: {$checks} requested entitlement/conversion checks\n";
 }

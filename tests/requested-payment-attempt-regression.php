@@ -37,6 +37,7 @@ namespace RoxyST {
             $this->assert_owner();
             if ($GLOBALS['payment_fixture']['fail_write']) throw new \RuntimeException('fixture write failed');
             if ($GLOBALS['payment_fixture']['lose_connection_on_write']) $GLOBALS['payment_fixture']['connection'] = 99;
+            elseif ($remove) unset($GLOBALS['payment_fixture']['meta'][$id][$key]);
             else $GLOBALS['payment_fixture']['meta'][$id][$key] = [(string) $value];
         }
     }
@@ -87,6 +88,7 @@ namespace {
     $root = $argv[1] ?? dirname(__DIR__);
     require $root . '/includes/modules/requested-showings/includes/class-roxy-rs-payment-attempts.php';
     require $root . '/includes/modules/requested-showings/includes/class-roxy-rs-conversion-claims.php';
+    require $root . '/includes/modules/requested-showings/includes/class-roxy-rs-pledge-attempts.php';
 
     function payment_reset(string $status = 'wc-pending', bool $paid = false): WC_Order {
         $GLOBALS['payment_fixture'] = [
@@ -205,5 +207,30 @@ namespace {
     payment_reset();
     payment_check(payment_throws(static fn()=>\RoxyRS\ConversionClaims::begin_creation(123, 'showing')), 'creation on wrong request post type denied');
     payment_check(payment_throws(static fn()=>\RoxyRS\ConversionClaims::begin_creation(123, 'order', 0)), 'creation with missing backing identity denied');
-    echo 'OK: ' . $GLOBALS['payment_checks'] . " requested payment/creation checks\n";
+    payment_reset(); $GLOBALS['payment_fixture']['post_type'] = 'roxy_req_showing';
+    $hash = \RoxyRS\PledgeAttempts::fingerprint(['request_id'=>123,'user_id'=>30,'general_qty'=>1,'created_at'=>'ignored']);
+    payment_check($hash === \RoxyRS\PledgeAttempts::fingerprint(['general_qty'=>'1','user_id'=>'30','request_id'=>'123','updated_at'=>'ignored']), 'pledge fingerprint normalizes SQL scalars and ignores changing timestamps');
+    payment_check(\RoxyRS\PledgeAttempts::replay(123,30,$hash) === 0, 'new pledge has no replay receipt');
+    \RoxyRS\PledgeAttempts::begin(123,30,$hash);
+    payment_check(payment_throws(static fn()=>\RoxyRS\PledgeAttempts::replay(123,30,$hash)), 'uncertain pledge blocks identical retry');
+    payment_check(payment_throws(static fn()=>\RoxyRS\PledgeAttempts::begin(123,30,str_repeat('b',64))), 'uncertain pledge blocks changed payload for same user request');
+    payment_check(\RoxyRS\PledgeAttempts::replay(123,31,$hash) === 0, 'another user is not blocked by unrelated uncertainty');
+    \RoxyRS\PledgeAttempts::finish(123,30,$hash,55);
+    payment_check(\RoxyRS\PledgeAttempts::replay(123,30,$hash) === 55, 'confirmed receipt replays saved identity');
+    payment_check(!isset($GLOBALS['payment_fixture']['meta'][123]['_roxy_rs_pledge_uncertain_30']), 'confirmed receipt clears only its uncertainty gate');
+    $receipt_key = '_roxy_rs_pledge_receipt_30_' . $hash;
+    $GLOBALS['payment_fixture']['meta'][123][$receipt_key] = [wp_json_encode(['version'=>1,'id'=>55,'at'=>time()-300])];
+    payment_check(\RoxyRS\PledgeAttempts::replay(123,30,$hash) === 0, 'durable receipt follows existing five-minute expiry boundary');
+    $GLOBALS['payment_fixture']['meta'][123][$receipt_key] = [wp_json_encode(['version'=>1,'id'=>55,'at'=>time()+300])];
+    payment_check(payment_throws(static fn()=>\RoxyRS\PledgeAttempts::replay(123,30,$hash)), 'future-dated receipt requires review instead of a new insert');
+    $GLOBALS['payment_fixture']['meta'][123][$receipt_key] = ['corrupt'];
+    payment_check(payment_throws(static fn()=>\RoxyRS\PledgeAttempts::replay(123,30,$hash)), 'corrupt receipt fails closed');
+    payment_reset(); $GLOBALS['payment_fixture']['post_type'] = 'roxy_req_showing';
+    \RoxyRS\PledgeAttempts::begin(123,30,$hash); $GLOBALS['payment_fixture']['fail_commit'] = true;
+    payment_check(payment_throws(static fn()=>\RoxyRS\PledgeAttempts::finish(123,30,$hash,55)), 'receipt commit failure stays uncertain');
+    payment_check(isset($GLOBALS['payment_fixture']['meta'][123]['_roxy_rs_pledge_uncertain_30']), 'failed receipt commit preserves retry gate');
+    payment_reset(); $GLOBALS['payment_fixture']['post_type'] = 'roxy_req_showing';
+    \RoxyRS\PledgeAttempts::begin(123,30,$hash);
+    payment_check(payment_throws(static fn()=>\RoxyRS\PledgeAttempts::finish(123,30,str_repeat('b',64),55)), 'changed receipt fingerprint cannot clear uncertainty');
+    echo 'OK: ' . $GLOBALS['payment_checks'] . " requested payment/creation/pledge checks\n";
 }

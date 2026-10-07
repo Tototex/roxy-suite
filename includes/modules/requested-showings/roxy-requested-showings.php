@@ -23,6 +23,7 @@ require_once ROXY_RS_PATH . 'includes/class-roxy-rs-cpt.php';
 require_once ROXY_RS_PATH . 'includes/class-roxy-rs-frontend.php';
 require_once ROXY_RS_PATH . 'includes/class-roxy-rs-payment-attempts.php';
 require_once ROXY_RS_PATH . 'includes/class-roxy-rs-conversion-claims.php';
+require_once ROXY_RS_PATH . 'includes/class-roxy-rs-pledge-attempts.php';
 require_once ROXY_RS_PATH . 'includes/class-roxy-rs-conversion.php';
 
 $dbv = get_option('roxy_rs_db_version');

@@ -8,12 +8,19 @@ final class Fixture55Capacity {
     public static int $entitlement = 2;
     public static function subscription_entitlement_count(int $user): int { return self::$entitlement; }
 }
+final class Fixture58PledgeReceipts {
+    public static function fingerprint(array $row): string { unset($row['created_at'],$row['updated_at'],$row['id']); ksort($row); foreach ($row as &$v) if ($v !== null) $v=(string)$v; unset($v); return hash('sha256',json_encode($row)); }
+    public static function replay($request,$user,$hash): int { return 0; }
+    public static function begin($request,$user,$hash): void {}
+    public static function finish($request,$user,$hash,$id): void {}
+}
 $table = $wpdb->prefix . 'fixture_rs_ent55_' . bin2hex(random_bytes(5));
 $production = roxy_rs_table_backings();
 $before = hash('sha256', serialize($wpdb->get_results('SELECT * FROM ' . $production . ' ORDER BY id', ARRAY_A)));
 $namespace = 'RequestedSql55_' . bin2hex(random_bytes(4));
 $GLOBALS['rs55_table'] = $table;
 $source = file_get_contents($path);
+$source = str_replace(['\\\\RoxyRS\\\\PledgeAttempts', '\\RoxyRS\\PledgeAttempts'], ['\\\\Fixture58PledgeReceipts', '\\Fixture58PledgeReceipts'], $source);
 $creation_path = $args[1] ?? '';
 if (!is_file($creation_path)) throw new RuntimeException('Candidate creation helper required.');
 eval('?>' . str_replace('final class ConversionClaims {', 'final class SqlRepositoryClaims57 {', file_get_contents($creation_path)));
