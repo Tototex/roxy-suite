@@ -21,6 +21,13 @@ class Store {
   private static ?bool $refund_review_schema_exists = null;
   private static int $refund_review_lock_depth = 0;
 
+  /** PHP 8.0-compatible equivalent of array_is_list(). */
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
+
   public static function table_name(): string {
     global $wpdb;
     return $wpdb->prefix . self::TABLE;
@@ -562,7 +569,7 @@ class Store {
       foreach ($reports as $report) {
         $cursor = (int) $report['id'];
         $payload = json_decode($report['payload_json'], true);
-        if (!is_array($payload) || !is_array($payload['rows'] ?? null) || !array_is_list($payload['rows'])) throw new \RuntimeException('A saved report snapshot is unreadable; refund review requires attention.');
+        if (!is_array($payload) || !is_array($payload['rows'] ?? null) || !self::is_list($payload['rows'])) throw new \RuntimeException('A saved report snapshot is unreadable; refund review requires attention.');
         $before = self::studio_refund_projection($date, $payload['rows']);
         if (!$before || $before === $after) continue;
         self::ensure_refund_review_schema();
@@ -623,7 +630,7 @@ class Store {
       foreach ($reports as $saved) {
         $cursor = (int) $saved['id'];
         $payload = json_decode($saved['payload_json'], true);
-        if (!is_array($payload['rows'] ?? null) || !array_is_list($payload['rows'])) throw new \RuntimeException('Original studio price evidence is unreadable.');
+        if (!is_array($payload['rows'] ?? null) || !self::is_list($payload['rows'])) throw new \RuntimeException('Original studio price evidence is unreadable.');
         $matching = [];
         foreach ($payload['rows'] as $row) {
           if (!is_array($row)) throw new \RuntimeException('Original studio price row is unreadable.');

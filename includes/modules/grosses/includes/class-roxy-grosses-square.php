@@ -9,6 +9,13 @@ class Square {
   private static int $sale_snapshot_depth = 0;
   private static array $sale_snapshot = [];
 
+  /** PHP 8.0-compatible equivalent of array_is_list(). */
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
+
   /** One immutable sale-day read per managed operation; never a persistent cache. */
   public static function with_sale_snapshot(callable $operation) {
     $outer = self::$sale_snapshot_depth === 0;
@@ -67,7 +74,7 @@ class Square {
           'sort_field' => 'UPDATED_AT', 'sort_order' => 'ASC', 'limit' => 100, 'location_id' => $location];
         if ($cursor !== null) $query['cursor'] = $cursor;
         $response = self::request('GET', '/v2/refunds?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986), null, $deadline);
-        if (array_key_exists('refunds', $response) && (!is_array($response['refunds']) || !array_is_list($response['refunds']))) throw new \RuntimeException('Square returned an invalid refund list.');
+        if (array_key_exists('refunds', $response) && (!is_array($response['refunds']) || !self::is_list($response['refunds']))) throw new \RuntimeException('Square returned an invalid refund list.');
         foreach ($response['refunds'] ?? [] as $refund) {
           $id = is_array($refund) ? ($refund['id'] ?? null) : null;
           if (!is_string($id) || $id === '' || strlen($id) > 255 || isset($refunds[$id]) || ($refund['location_id'] ?? null) !== $location || !in_array($refund['status'] ?? '', ['PENDING','COMPLETED','REJECTED','FAILED'], true)) throw new \RuntimeException('Square returned an invalid, misplaced or duplicate refund.');
@@ -100,7 +107,7 @@ class Square {
     foreach (array_chunk(array_keys($ids), 100) as $batch) {
       if (microtime(true) >= $deadline) throw new \RuntimeException('Square source-order lookup timed out.');
       $response = self::request('POST', '/v2/orders/batch-retrieve', ['order_ids' => $batch], $deadline);
-      if (!isset($response['orders']) || !is_array($response['orders']) || !array_is_list($response['orders'])) throw new \RuntimeException('Square did not return source orders.');
+      if (!isset($response['orders']) || !is_array($response['orders']) || !self::is_list($response['orders'])) throw new \RuntimeException('Square did not return source orders.');
       foreach ($response['orders'] as $order) {
         $id = is_array($order) ? ($order['id'] ?? null) : null;
         if (!is_string($id) || !in_array($id, $batch, true) || isset($orders[$id])) throw new \RuntimeException('Square returned unexpected or duplicate source orders.');
@@ -167,7 +174,7 @@ class Square {
 
       $data = self::request('POST', '/v2/orders/search', $body, $deadline);
       if (isset($data['order_entries'])) throw new \RuntimeException('Square returned order summaries instead of complete orders. No report was returned.');
-      if (array_key_exists('orders', $data) && (!is_array($data['orders']) || !array_is_list($data['orders']))) throw new \RuntimeException('Square returned an invalid order list. No report was returned.');
+      if (array_key_exists('orders', $data) && (!is_array($data['orders']) || !self::is_list($data['orders']))) throw new \RuntimeException('Square returned an invalid order list. No report was returned.');
 
       foreach ((array) ($data['orders'] ?? []) as $order) {
         if (!is_array($order) || !isset($order['id']) || !is_string($order['id']) || $order['id'] === '' || isset($seen_orders[$order['id']])) throw new \RuntimeException('Square returned invalid or repeated orders. No partial report was returned.');

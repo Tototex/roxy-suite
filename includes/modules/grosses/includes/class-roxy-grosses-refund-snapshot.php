@@ -8,6 +8,13 @@ final class RefundSnapshot {
   private array $return_orders;
   private array $sources;
 
+  /** PHP 8.0-compatible equivalent of array_is_list(). */
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
+
   private function __construct(array $return_orders, array $sources) {
     $this->return_orders = $return_orders;
     $this->sources = $sources;
@@ -46,7 +53,7 @@ final class RefundSnapshot {
     $orders = Square::retrieve_orders(array_keys($references), $deadline);
     foreach ($orders as $order) {
       if (($order['state'] ?? '') !== 'COMPLETED' || empty($order['returns'])) throw new \RuntimeException('A payment refund has no completed itemized return order. Review it manually.');
-      if (!is_array($order['refunds'] ?? null) || !array_is_list($order['refunds'])) throw new \RuntimeException('Historical return order has an invalid refund-reference list.');
+      if (!is_array($order['refunds'] ?? null) || !self::is_list($order['refunds'])) throw new \RuntimeException('Historical return order has an invalid refund-reference list.');
       foreach ($cached as $refund) {
         if ($refund['order_id'] !== $order['id']) continue;
         $matched = false;
@@ -69,12 +76,12 @@ final class RefundSnapshot {
     foreach ($orders as $order) {
       if (empty($order['returns'])) continue;
       if (count($returns) >= 100 || microtime(true) >= $deadline) throw new \RuntimeException('Square refund reconciliation exceeded its safety limit.');
-      if (!is_array($order['returns']) || !array_is_list($order['returns'])) throw new \RuntimeException('Square returned an invalid return list. No report was calculated.');
+      if (!is_array($order['returns']) || !self::is_list($order['returns'])) throw new \RuntimeException('Square returned an invalid return list. No report was calculated.');
       $verified = true;
       $payment_states = [];
       $references = $order['refunds'] ?? [];
       // Exchanges without a completed payment refund need their separate policy.
-      if (!is_array($references) || !array_is_list($references) || !$references) $verified = false;
+      if (!is_array($references) || !self::is_list($references) || !$references) $verified = false;
       else foreach ($references as $reference) {
         if (!is_array($reference) || !is_string($reference['tender_id'] ?? null) || !is_string($reference['id'] ?? null) || $reference['tender_id'] === '' || $reference['id'] === '') throw new \RuntimeException('Square refund has no verifiable payment reference.');
         $id = $reference['tender_id'] . '_' . $reference['id'];
