@@ -21,7 +21,7 @@
         form.querySelector('[name="media_url"]').value = url;
         form.querySelector('[name="media_type"]').value = type;
         form.querySelector('[name="media_changed"]').value = changed ? '1' : '0';
-        button.textContent = 'Media selected - click Save';
+        button.textContent = 'Media selected';
         modal.remove();
     }
 
@@ -51,6 +51,7 @@
                     action: 'roxy_social_hangar_assign',
                     nonce: window.roxySocialPicker.assignNonce,
                     post_id: form.querySelector('[name="id"]').value,
+                    draft_revision: form.querySelector('[name="draft_revision"]').value,
                     asset_id: use.dataset.id,
                     filename: use.dataset.name
                 });
@@ -58,6 +59,7 @@
                     .then(function (response) { return response.json(); })
                     .then(function (result) {
                         if (!result.success || !result.data || !result.data.url) { use.disabled = false; use.textContent = 'Try again'; return; }
+                        form.querySelector('[name="draft_revision"]').value = result.data.draft_revision;
                         choose(form, button, modal, result.data.url, result.data.media_type, false);
                     }).catch(function(){use.disabled=false;use.textContent='Try again';});
             };

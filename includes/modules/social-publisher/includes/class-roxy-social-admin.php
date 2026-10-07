@@ -13,6 +13,7 @@ final class Admin {
         add_action('admin_post_roxy_social_meta_callback', ['\\RoxySocial\\Meta', 'handle_callback']);
         add_action('admin_post_roxy_social_meta_verify', ['\\RoxySocial\\Meta', 'verify_connection']);
         add_action('admin_post_roxy_social_update_draft', [__CLASS__, 'update_draft']);
+        add_action('wp_ajax_roxy_social_update_draft', [__CLASS__, 'update_draft']);
         add_action('admin_post_roxy_social_delete_draft', [__CLASS__, 'delete_draft']);
         add_action('admin_post_roxy_social_publish_now', [__CLASS__, 'publish_now']);
         add_action('admin_post_roxy_social_remove_published', [__CLASS__, 'remove_published']);
@@ -67,7 +68,7 @@ final class Admin {
         echo '<p style="margin:10px 0 0 24px"><button type="submit" class="button">Save auto-approve setting</button></p></form>';
         self::render_manual_form();
         $rows = Store::all_recent();
-        $filter = isset($_GET['status']) ? sanitize_key((string) $_GET['status']) : 'all';
+        $filter = self::list_filter((string) ($_GET['status'] ?? 'draft'));
         if ($filter !== 'all') $rows = array_values(array_filter($rows, static function ($row) use ($filter) { return (string) $row['status'] === $filter; }));
         echo '<p>Review showing-based drafts here. Only approved posts publish when their scheduled time arrives.</p>';
         if (isset($_GET['removed_live'])) {
@@ -81,12 +82,13 @@ final class Admin {
         if (isset($_GET['status_changed']) && (string) $_GET['status_changed'] === '0') echo '<div class="notice notice-error"><p>The draft changed or is being published. Its status was not changed. Reload and review it.</p></div>';
         echo '<p><strong>After publishing:</strong> View, edit, or delete live posts in <a href="https://business.facebook.com/latest/posts/published_posts/?asset_id=297533574006330&amp;ir_qe_exposed=1&amp;business_id=624729991216395" target="_blank" rel="noopener noreferrer">Meta Business Suite</a>.</p>';
         echo '<p><strong>Show:</strong> ';
-        foreach (['all' => 'All', 'draft' => 'Drafts', 'approved' => 'Approved', 'publishing' => 'Publishing', 'posted' => 'Posted', 'failed' => 'Failed'] as $key => $label) echo '<a class="button' . ($filter === $key ? ' button-primary' : '') . '" style="margin-right:5px" href="' . esc_url(add_query_arg(['page' => 'roxy-social-posts', 'status' => $key], admin_url('admin.php'))) . '">' . esc_html($label) . '</a>';
+        foreach (['draft' => 'Drafts', 'approved' => 'Approved', 'publishing' => 'Publishing', 'posted' => 'Posted', 'needs_review' => 'Needs Review', 'failed' => 'Failed', 'all' => 'All'] as $key => $label) echo '<a class="button' . ($filter === $key ? ' button-primary' : '') . '" style="margin-right:5px" href="' . esc_url(add_query_arg(['page' => 'roxy-social-posts', 'status' => $key], admin_url('admin.php'))) . '">' . esc_html($label) . '</a>';
         echo '</p>';
         if (!$rows) {
             echo '<div class="notice notice-info"><p>Save a Friday, Saturday, or Sunday showing to create its five-post campaign.</p></div></div>';
             return;
         }
+        echo '<p><button type="button" class="button button-primary roxy-social-save-all">Save All</button> <span class="roxy-social-save-message" role="status" aria-live="polite"></span></p>';
         echo '<table class="widefat striped"><thead><tr><th>Scheduled</th><th>Campaign</th><th>Post</th><th>Media</th><th>Status</th><th>Action</th></tr></thead><tbody>';
         foreach ($rows as $row) {
             $status = (string) $row['status'];
@@ -109,7 +111,7 @@ final class Admin {
             }
             $facebook_state = !empty($row['facebook_post_id']) ? 'Posted' : (($status === 'publishing') ? 'Publishing' : (($status === 'approved') ? 'Scheduled' : (($status === 'failed' && strpos((string) $row['last_error'], 'Facebook:') !== false) ? 'Failed' : 'Not posted')));
             $instagram_state = !empty($row['instagram_media_id']) ? 'Posted' : (($status === 'publishing') ? 'Publishing' : (($status === 'approved') ? 'Scheduled' : (($status === 'failed' && stripos((string) $row['last_error'], 'Instagram video is still processing') !== false) ? 'Processing' : (($status === 'failed' && strpos((string) $row['last_error'], 'Instagram:') !== false) ? 'Failed' : 'Not posted'))));
-            echo '</td><td><strong>' . esc_html(ucwords(str_replace('_', ' ', $status))) . '</strong><br><span class="description">Facebook: ' . esc_html($facebook_state) . '<br>Instagram: ' . esc_html($instagram_state) . '</span></td><td><form id="roxy-social-draft-' . (int) $row['id'] . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_update_draft"><input type="hidden" name="id" value="' . (int) $row['id'] . '"><input type="hidden" name="media_url" value="' . esc_attr((string) $row['media_url']) . '"><input type="hidden" name="media_type" value="' . esc_attr((string) $row['media_type']) . '"><input type="hidden" name="media_changed" value="0"><input type="hidden" name="draft_revision" value="' . esc_attr(Store::draft_revision($row)) . '">' . wp_nonce_field('roxy_social_update_draft_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit"' . ((!in_array($status, ['draft', 'approved', 'needs_review', 'failed'], true) || !empty($row['facebook_post_id']) || !empty($row['instagram_media_id']) || !empty($row['instagram_container_id'])) ? ' disabled' : '') . '>Save</button></form>';
+            echo '</td><td><strong>' . esc_html(ucwords(str_replace('_', ' ', $status))) . '</strong><br><span class="description">Facebook: ' . esc_html($facebook_state) . '<br>Instagram: ' . esc_html($instagram_state) . '</span></td><td><form id="roxy-social-draft-' . (int) $row['id'] . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_update_draft"><input type="hidden" name="return_status" value="' . esc_attr($filter) . '"><input type="hidden" name="id" value="' . (int) $row['id'] . '"><input type="hidden" name="media_url" value="' . esc_attr((string) $row['media_url']) . '"><input type="hidden" name="media_type" value="' . esc_attr((string) $row['media_type']) . '"><input type="hidden" name="media_changed" value="0"><input type="hidden" name="draft_revision" value="' . esc_attr(Store::draft_revision($row)) . '">' . wp_nonce_field('roxy_social_update_draft_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit" hidden' . ((!in_array($status, ['draft', 'approved', 'needs_review', 'failed'], true) || !empty($row['facebook_post_id']) || !empty($row['instagram_media_id']) || !empty($row['instagram_container_id'])) ? ' disabled' : '') . '>Save</button></form>';
             $has_published_ids = !empty($row['facebook_post_id']) || !empty($row['instagram_media_id']);
             if (in_array($status, ['draft', 'needs_review', 'failed'], true) && !($status === 'failed' && $has_published_ids)) self::action_link((int) $row['id'], 'approved', $status === 'needs_review' ? 'Approve after remote review' : 'Approve', $status === 'needs_review', Store::draft_revision($row));
             if ($status === 'approved') self::action_link((int) $row['id'], 'draft', 'Un-approve', false, Store::draft_revision($row));
@@ -138,7 +140,8 @@ final class Admin {
             if (!empty($row['last_error'])) echo '<p class="description" style="color:#b32d2e">' . esc_html($row['last_error']) . '</p>';
             echo '</td></tr>';
         }
-        echo '</tbody></table></div>';
+        echo '</tbody></table><p><button type="button" class="button button-primary roxy-social-save-all">Save All</button> <span class="roxy-social-save-message" role="status" aria-live="polite"></span></p></div>';
+        echo '<script src="' . esc_url(content_url('plugins/roxy-suite/includes/modules/social-publisher/assets/draft-bulk-editor.js?ver=' . filemtime(dirname(__DIR__) . '/assets/draft-bulk-editor.js'))) . '"></script>';
         $picker_version=(string) filemtime(dirname(__DIR__) . '/assets/draft-media-picker.js');
         echo '<script>window.roxySocialPicker=' . wp_json_encode(['ajaxurl' => admin_url('admin-ajax.php'), 'searchNonce' => wp_create_nonce('roxy_social_hangar_search'), 'assignNonce' => wp_create_nonce('roxy_social_hangar_assign')], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ';</script><script src="' . esc_url(content_url('plugins/roxy-suite/includes/modules/social-publisher/assets/draft-media-picker.js?ver=' . $picker_version)) . '"></script>';
     }
@@ -156,16 +159,35 @@ final class Admin {
         if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
         $id = isset($_POST['id']) ? (int) $_POST['id'] : 0;
         check_admin_referer('roxy_social_update_draft_' . $id);
-        $text = sanitize_textarea_field((string) ($_POST['post_text'] ?? ''));
-        $scheduled = sanitize_text_field((string) ($_POST['scheduled_for'] ?? ''));
+        $text = sanitize_textarea_field(wp_unslash((string) ($_POST['post_text'] ?? '')));
+        $scheduled = sanitize_text_field(wp_unslash((string) ($_POST['scheduled_for'] ?? '')));
         $parsed = date_create($scheduled, wp_timezone());
         $media_url = isset($_POST['media_url']) ? esc_url_raw((string) $_POST['media_url']) : null;
         $media_type = isset($_POST['media_type']) ? sanitize_key((string) $_POST['media_type']) : null;
         $media_changed = isset($_POST['media_changed']) && (string) $_POST['media_changed'] === '1';
         if (!$media_changed) $media_url = null;
         $saved = $id > 0 && $text !== '' && $parsed && Store::update_draft($id, $text, $parsed->format('Y-m-d H:i:s'), $media_url, $media_type, (string) ($_POST['draft_revision'] ?? ''));
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&updated=' . ($saved ? '1' : '0')));
+        if (wp_doing_ajax()) {
+            if (!$saved) wp_send_json_error(['message' => 'This post changed or could not be saved. Your edits are still on this page.'], 409);
+            wp_send_json_success(['revision' => Store::draft_revision(Store::find($id))]);
+        }
+        wp_safe_redirect(self::drafts_url(['updated' => ($saved ? '1' : '0')]));
         exit;
+    }
+
+    private static function list_filter(string $filter): string {
+        $filter = sanitize_key($filter);
+        return in_array($filter, ['draft', 'approved', 'publishing', 'posted', 'needs_review', 'failed', 'all'], true) ? $filter : 'draft';
+    }
+
+    private static function drafts_url(array $args = []): string {
+        $filter = (string) ($_REQUEST['return_status'] ?? '');
+        if ($filter === '') {
+            $query = [];
+            parse_str((string) wp_parse_url(wp_get_referer() ?: '', PHP_URL_QUERY), $query);
+            if (($query['page'] ?? '') === 'roxy-social-posts') $filter = (string) ($query['status'] ?? 'draft');
+        }
+        return add_query_arg(array_merge(['page' => 'roxy-social-posts', 'status' => self::list_filter($filter)], $args), admin_url('admin.php'));
     }
 
     public static function create_manual(): void {
@@ -175,8 +197,8 @@ final class Admin {
         $scheduled = date_create(sanitize_text_field((string) ($_POST['scheduled_for'] ?? '')), wp_timezone());
         $media_url = esc_url_raw((string) ($_POST['media_url'] ?? ''));
         $media_type = self::media_type_from_url($media_url);
-        if ($text === '' || !$scheduled) wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&manual_error=missing'));
-        else { Store::create_manual(['post_text' => $text, 'scheduled_for' => $scheduled->format('Y-m-d H:i:s'), 'platform' => sanitize_key((string) ($_POST['platform'] ?? 'both')), 'media_url' => $media_url, 'media_type' => $media_type]); wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&manual_created=1')); }
+        if ($text === '' || !$scheduled) wp_safe_redirect(self::drafts_url(['manual_error' => 'missing']));
+        else { Store::create_manual(['post_text' => $text, 'scheduled_for' => $scheduled->format('Y-m-d H:i:s'), 'platform' => sanitize_key((string) ($_POST['platform'] ?? 'both')), 'media_url' => $media_url, 'media_type' => $media_type]); wp_safe_redirect(self::drafts_url(['manual_created' => '1'])); }
         exit;
     }
 
@@ -203,7 +225,7 @@ final class Admin {
         check_admin_referer('roxy_social_remove_media_' . $id);
         $temporary_id = $id > 0 ? Store::clear_media($id) : null;
         if ($temporary_id) wp_delete_attachment($temporary_id, true);
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&removed_media=1'));
+        wp_safe_redirect(self::drafts_url(['removed_media' => '1']));
         exit;
     }
 
@@ -213,7 +235,7 @@ final class Admin {
         check_admin_referer('roxy_social_delete_draft_' . $id);
         $temporary_id = $id > 0 ? Store::delete_unposted($id) : null;
         if ($temporary_id) wp_delete_attachment($temporary_id, true);
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&deleted_draft=1'));
+        wp_safe_redirect(self::drafts_url(['deleted_draft' => '1']));
         exit;
     }
 
@@ -222,7 +244,7 @@ final class Admin {
         $id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
         check_admin_referer('roxy_social_publish_now_' . $id);
         \RoxySocial\Publisher::queue_publish_now($id);
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&published_now=1'));
+        wp_safe_redirect(self::drafts_url(['published_now' => '1']));
         exit;
     }
 
@@ -231,7 +253,7 @@ final class Admin {
         $id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
         check_admin_referer('roxy_social_remove_published_' . $id);
         $removed = Publisher::remove_published($id);
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&removed_live=' . ($removed ? '1' : '0')));
+        wp_safe_redirect(self::drafts_url(['removed_live' => ($removed ? '1' : '0')]));
         exit;
     }
 
@@ -323,7 +345,7 @@ final class Admin {
         if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
         check_admin_referer('roxy_social_auto_approve');
         update_option('roxy_social_auto_approve', !empty($_POST['auto_approve']), false);
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&auto_approve_saved=1'));
+        wp_safe_redirect(self::drafts_url(['auto_approve_saved' => '1']));
         exit;
     }
 
@@ -346,11 +368,13 @@ final class Admin {
         $filename = sanitize_text_field((string) ($_POST['filename'] ?? ''));
         if ($post_id <= 0 || $asset_id <= 0 || $filename === '') wp_send_json_error('Invalid asset assignment', 400);
         $draft = Store::find($post_id);
+        $revision = (string) ($_POST['draft_revision'] ?? '');
+        if (!$draft || $revision === '' || !hash_equals(Store::draft_revision($draft), $revision)) wp_send_json_error('The draft changed. Reload before assigning media.', 409);
         $showing_ids = $draft ? explode(',', (string) $draft['showing_ids']) : [];
         $showing_id = !empty($showing_ids[0]) ? (int) $showing_ids[0] : 0;
         $attachment_id = Hangar::import_social_asset($asset_id, $filename, $showing_id, $post_id);
         if (!$attachment_id) wp_send_json_error('Download or assignment failed', 500);
-        wp_send_json_success(['post_id' => $post_id, 'asset_id' => $asset_id, 'attachment_id' => $attachment_id, 'url' => wp_get_attachment_url($attachment_id) ?: '', 'media_type' => in_array(strtolower((string) pathinfo($filename, PATHINFO_EXTENSION)), ['mp4', 'mov', 'm4v'], true) ? 'video' : 'image']);
+        wp_send_json_success(['draft_revision' => Store::draft_revision(Store::find($post_id)), 'post_id' => $post_id, 'asset_id' => $asset_id, 'attachment_id' => $attachment_id, 'url' => wp_get_attachment_url($attachment_id) ?: '', 'media_type' => in_array(strtolower((string) pathinfo($filename, PATHINFO_EXTENSION)), ['mp4', 'mov', 'm4v'], true) ? 'video' : 'image']);
     }
 
     public static function ajax_hangar_import_featured(): void {
@@ -395,7 +419,7 @@ final class Admin {
         $review_required = $row && $row['status'] === 'needs_review' && $status === 'approved';
         $review_confirmed = $is_post && (string) ($request['remote_review_confirmed'] ?? '') === '1';
         $changed = (!$review_required || $review_confirmed) && Store::update_status($id, $status, (string) ($request['draft_revision'] ?? ''));
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&status_changed=' . ($changed ? '1' : '0')));
+        wp_safe_redirect(self::drafts_url(['status_changed' => ($changed ? '1' : '0')]));
         exit;
     }
 }
