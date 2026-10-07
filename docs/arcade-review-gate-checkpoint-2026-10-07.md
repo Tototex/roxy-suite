@@ -1,0 +1,13 @@
+# Arcade prizes require manager review
+
+The live monthly Arcade worker now only queues a review candidate; it cannot automatically create a prize subscription, even when the legacy automatic-fulfillment option is enabled. Settings no longer offer automatic fulfillment and normalize that option to off when saved. Existing explicit manager approval and durable monthly claims remain in place.
+
+The review email and settings explain that scores are browser supplied, not verified gameplay. This is a protective manual-review policy, not server-side gameplay validation or evidence that a leaderboard winner is legitimate. Existing rewards remain disabled; no real candidate was queued or approved during deployment.
+
+## Verification and rollback
+
+- Nine isolated monthly-worker checks cover both legacy option states, disabled rewards, empty leaders and already-awarded months. Existing score and prize-claim regressions pass before and after deployment.
+- Actual installed WooCommerce/Subscriptions private fixtures pass before and after deployment: zero-total one-period membership, explicit expiry, monthly claim contention and uncertain-attempt retry rejection. Temporary customer/product/subscriptions/claims were removed, mail intercepted, and original subscription records/settings retained identical digests. No payment provider or real customer reward was involved.
+- Actual WordPress read-only shortcode rendering passes, with the game canvas retained. Physical gameplay and browser approval UI were not retested in this checkpoint.
+- All three original score rows retain digest `30c1a6cecd7a634b021271ac3733be3b2ce59e9e1e7f40e50c382c67b04764a3`; six reward/winner/review settings retain digest `f2ee25550e1b068a5dba1e53b66e1aa1103d7b186f3a9940dc28bcb3d2612591`. Rewards and automatic fulfillment remain 0.
+- Installed file hash `d2d4c5d28823c6d7fbfd9716c32cff69645962d4513259703a87b51b232f6f8f` matches local/candidate. Original hash `b6df46b5d13f0c38a26f4b88f35a4304f807cf100229491e257d1ed7a6ad2665` was checked before copying. Rollback bytes are checksum-verified at `I:\My Drive\Roxy Site Recovery\2026-10-07\arcade-and-updater\roxy-arcade.php`; cloud sync is not asserted.

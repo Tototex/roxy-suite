@@ -434,20 +434,9 @@ class Roxy_Arcade {
     $combined = self::get_combined_top10();
     if (empty($combined) || empty($combined[0]['user_id'])) return;
 
-    $winner_id = (int) $combined[0]['user_id'];
-    $auto_fulfill = (int) get_option(self::OPTION_AUTO_FULFILL_REWARDS, 0) === 1;
-
-    if (!$auto_fulfill) {
-      self::queue_review_candidate($month, $combined[0]);
-      return;
-    }
-
-    $sub_id = self::award_once($month, $winner_id);
-    if ($sub_id) {
-      update_option(self::OPTION_LAST_AWARDED_MONTH, $month);
-      update_option(self::OPTION_LAST_WINNER_USER_ID, $winner_id);
-      update_option(self::OPTION_LAST_WINNER_SUB_ID, (int)$sub_id);
-    }
+    // Browser-supplied scores are not proof of gameplay. Even a legacy enabled
+    // auto-fulfillment option cannot bypass explicit manager review.
+    self::queue_review_candidate($month, $combined[0]);
   }
 
   private static function award_once($month, $user_id) {
@@ -567,6 +556,7 @@ class Roxy_Arcade {
     $subject = sprintf('Roxy Arcade monthly winner review needed for %s', (string) ($candidate['month'] ?? 'this month'));
     $message = implode("\n", [
       'Automatic prize fulfillment is disabled for Roxy Arcade.',
+      'Scores are supplied by players\' browsers and are not verified gameplay. Independently vet the candidate before approving a prize.',
       '',
       'Review candidate:',
       'Month: ' . (string) ($candidate['month'] ?? ''),
@@ -629,8 +619,7 @@ class Roxy_Arcade {
     if (isset($_POST['roxy_arcade_save']) && check_admin_referer('roxy_arcade_save_settings')) {
       $enabled = isset($_POST['rewards_enabled']) ? 1 : 0;
       update_option(self::OPTION_REWARDS_ENABLED, $enabled);
-      $auto_fulfill = isset($_POST['auto_fulfill_rewards']) ? 1 : 0;
-      update_option(self::OPTION_AUTO_FULFILL_REWARDS, $auto_fulfill);
+      update_option(self::OPTION_AUTO_FULFILL_REWARDS, 0);
 
       if (isset($_POST['reset_awarded_month'])) {
         $msg = 'Award history cannot be reset to issue a duplicate prize. Review the monthly claim instead.';
@@ -648,7 +637,6 @@ class Roxy_Arcade {
     }
 
     $enabled = (int) get_option(self::OPTION_REWARDS_ENABLED, 0);
-    $auto_fulfill = (int) get_option(self::OPTION_AUTO_FULFILL_REWARDS, 0);
     $last_month = (string) get_option(self::OPTION_LAST_AWARDED_MONTH, '');
     $last_winner_id = (int) get_option(self::OPTION_LAST_WINNER_USER_ID, 0);
     $last_sub_id = (int) get_option(self::OPTION_LAST_WINNER_SUB_ID, 0);
@@ -686,12 +674,8 @@ class Roxy_Arcade {
                 <input type="checkbox" name="rewards_enabled" <?php checked($enabled, 1); ?> />
                 Enable monthly prize awarding (1st at <?php echo esc_html(get_option(self::OPTION_AWARD_TIME)); ?>)
               </label>
-              <p class="description">Keep OFF while seeding scores.</p>
-              <label style="display:block;margin-top:8px;">
-                <input type="checkbox" name="auto_fulfill_rewards" <?php checked($auto_fulfill, 1); ?> />
-                Automatically create the prize subscription without admin review
-              </label>
-              <p class="description">Recommended OFF. When disabled, the monthly job emails the admin with a review candidate instead of automatically issuing the prize.</p>
+              <p class="description">Keep OFF while seeding scores. When enabled, this only queues a candidate for manager review; it does not issue a prize automatically.</p>
+              <p class="description">Automatic fulfillment is unavailable: browser-submitted scores are not verified gameplay. Independently vet the candidate before explicitly approving a prize.</p>
             </td>
           </tr>
 
