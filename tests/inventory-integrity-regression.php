@@ -5,12 +5,15 @@ function wp_json_encode($value) { return json_encode($value); }
 function wp_salt($context) { return 'test'; }
 function current_time($format) { return '2026-10-03 01:00:00'; }
 function sanitize_text_field($value) { return (string)$value; }
+function add_filter(...$args) {}
+function remove_filter(...$args) {}
 class FakeDatabase {
     public $prefix='test_'; public $products=[]; public $orders=[]; public $insert_id=0;
     public $busy=false; public $fail_write=false; public $cancel_during_reset=false; public $commands=[]; private $saved;
     public function prepare($sql,...$args) { if(count($args)===1 && is_array($args[0]))$args=$args[0];foreach($args as $a)$sql=preg_replace('/%[sdf]/',is_numeric($a)?(string)$a:"'".$a."'",$sql,1);return $sql; }
     public function get_var($sql) { return strpos($sql,'GET_LOCK')!==false && $this->busy ? 0 : 1; }
-    public function query($sql) { $this->commands[]=$sql; if($sql==='START TRANSACTION')$this->saved=[$this->products,$this->orders]; if($sql==='ROLLBACK')[$this->products,$this->orders]=$this->saved; return 0; }
+    public function suppress_errors($value) { return false; }
+    public function query($sql) { $this->commands[]=$sql; if(strpos($sql,'RELEASE SAVEPOINT ')===0)return false; if($sql==='START TRANSACTION')$this->saved=[$this->products,$this->orders]; if($sql==='ROLLBACK')[$this->products,$this->orders]=$this->saved; return 0; }
     public function get_results($sql,$format) { return strpos($sql,'products')!==false ? array_values($this->products) : array_values(array_filter($this->orders,fn($o)=>$o['status']==='ordered')); }
     public function get_row($sql,$format) {
         if(preg_match('/submission_key=\x27([^\x27]+)\x27/',$sql,$m))foreach($this->orders as $o)if(($o['submission_key']??'')===$m[1])return $o;

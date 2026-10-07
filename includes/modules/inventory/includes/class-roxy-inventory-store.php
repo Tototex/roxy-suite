@@ -4,35 +4,106 @@ if (!defined('ABSPATH')) exit;
 
 class Store {
     private static int $transaction_depth = 0;
+    private static array $lock_owners = [];
+    private static function lock_predicate(): string {
+        global $wpdb;
+        $parts=[];
+        foreach(self::$lock_owners as $claim) $parts[]=$wpdb->prepare('(CONNECTION_ID()=%d AND IS_USED_LOCK(%s)=%d)', $claim['owner'], $claim['key'], $claim['owner']);
+        return $parts ? implode(' AND ', $parts) : '0';
+    }
+    private static function assert_owner(): void {
+        global $wpdb;
+        if (self::$lock_owners && (string)$wpdb->get_var('SELECT IF('.self::lock_predicate().',1,0)') !== '1') throw new \RuntimeException('Inventory connection or lock ownership was lost. Refresh and review changes before retrying.');
+    }
+    /** Predicate executes with the write, including wpdb retry after a reconnect. */
+    public static function guard_transaction_query(string $sql): string {
+        if (!self::$transaction_depth || !preg_match('/^\s*(?:INSERT|UPDATE|DELETE|REPLACE|ALTER|DROP|TRUNCATE|CREATE)\b/i', $sql)) return $sql;
+        $tables=[self::products_table(),self::vendors_table(),self::orders_table(),self::runs_table()];
+        $pattern=implode('|',array_map(static fn($t)=>preg_quote($t,'/'),$tables));
+        if (!preg_match('/^\s*(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|REPLACE\s+INTO|ALTER\s+TABLE|DROP\s+TABLE|TRUNCATE\s+(?:TABLE\s+)?|CREATE\s+TABLE)\s+`?(?:'.$pattern.')`?(?=[\s(])/i', $sql)) return $sql;
+        self::assert_owner();
+        $sql=rtrim(trim($sql),';'); $predicate=self::lock_predicate();
+        if (preg_match('/^(INSERT\s+INTO\s+`?(?:'.$pattern.')`?\s*\([^)]*\))\s+VALUES\s*\(([\s\S]*)\)$/i',$sql,$match)) return $match[1].' SELECT '.$match[2].' FROM DUAL WHERE '.$predicate;
+        if (preg_match('/^(?:UPDATE|DELETE)\b/i',$sql)) {
+            $where=self::where_offset($sql);
+            if ($where !== null) return substr($sql,0,$where+5).' ('.substr($sql,$where+5).') AND ('.$predicate.')';
+        }
+        throw new \RuntimeException('Unsupported inventory write inside a protected save. Nothing further was written.');
+    }
+    private static function where_offset(string $sql): ?int {
+        // Ignore WHERE appearing in names/payload string literals; group the
+        // actual predicate so an OR cannot bypass connection ownership.
+        $quote=null; $length=strlen($sql);
+        for($i=0;$i<$length;$i++) {
+            $c=$sql[$i];
+            if($quote!==null) {
+                if($c==='\\') { ++$i; continue; }
+                if($c===$quote) { if($i+1<$length && $sql[$i+1]===$quote) ++$i; else $quote=null; }
+                continue;
+            }
+            if($c==="'" || $c==='"' || $c==='`') { $quote=$c; continue; }
+            if(($i===0 || ctype_space($sql[$i-1])) && strncasecmp(substr($sql,$i,5),'WHERE',5)===0 && ($i+5===$length || ctype_space($sql[$i+5]) || $sql[$i+5]==='(')) return $i;
+        }
+        return null;
+    }
     public static function with_lock(string $resource, callable $callback) {
         global $wpdb;
         $key = 'roxy_inv_' . substr(hash('sha256', self::products_table() . '|' . $resource), 0, 48);
         if ((string) $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $key)) !== '1') {
             throw new \RuntimeException('Inventory is busy. Please refresh and try again.');
         }
-        try { return $callback(); }
-        finally { $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $key)); }
+        $owner=(int)$wpdb->get_var('SELECT CONNECTION_ID()');
+        if (!$owner) { $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $key)); throw new \RuntimeException('Inventory lock ownership could not be established.'); }
+        self::$lock_owners[]=['key'=>$key,'owner'=>$owner];
+        try { self::assert_owner(); $result=$callback(); self::assert_owner(); return $result; }
+        finally {
+            array_pop(self::$lock_owners);
+            if ((int)$wpdb->get_var('SELECT CONNECTION_ID()')===$owner && (int)$wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)',$key))===$owner) $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $key));
+        }
     }
     public static function transaction(callable $callback) {
         global $wpdb;
-        if (self::$transaction_depth > 0) return $callback();
+        if (self::$transaction_depth > 0) { self::assert_owner(); return $callback(); }
         return self::with_lock('state', static function () use ($callback, $wpdb) {
-            self::checked_write($wpdb->query('START TRANSACTION'));
+            if ((string)$wpdb->get_var('SELECT @@SESSION.autocommit')!=='1') throw new \RuntimeException('Another database transaction is active. Inventory was not saved.');
+            $probe='roxy_inv_probe_'.bin2hex(random_bytes(8));
+            self::checked_write($wpdb->query('SAVEPOINT '.$probe));
+            $errors=$wpdb->suppress_errors(true);
+            try { $outer=$wpdb->query('RELEASE SAVEPOINT '.$probe)!==false; }
+            finally { $wpdb->suppress_errors($errors); }
+            if ($outer) throw new \RuntimeException('Another database transaction is active. Inventory was not saved.');
+            self::assert_owner();
+            $owner=(int)$wpdb->get_var('SELECT CONNECTION_ID()');
+            $started=false;
             self::$transaction_depth++;
+            add_filter('query',[__CLASS__,'guard_transaction_query'],PHP_INT_MAX);
             try {
+                self::assert_owner();
+                $begin=$wpdb->query('START TRANSACTION'); $started=$begin!==false;
+                self::checked_write($begin);
                 $result = $callback();
+                self::assert_owner();
                 self::checked_write($wpdb->query('COMMIT'));
+                $started=false;
+                self::assert_owner();
                 return $result;
-            } catch (\Throwable $e) { $wpdb->query('ROLLBACK'); throw $e; }
-            finally { self::$transaction_depth--; }
+            } catch (\Throwable $e) {
+                // Losing a named lock on the original connection still requires
+                // rolling back our transaction; a replacement connection does not.
+                try { if ($started && (int)$wpdb->get_var('SELECT CONNECTION_ID()')===$owner) $wpdb->query('ROLLBACK'); } catch (\Throwable $lost) { /* Never roll back an unrelated reconnected session. */ }
+                throw $e;
+            }
+            finally { remove_filter('query',[__CLASS__,'guard_transaction_query'],PHP_INT_MAX); self::$transaction_depth--; }
         });
     }
     private static function checked_write($result): void {
         if ($result === false) throw new \RuntimeException('Inventory could not be saved. No success is being reported; please refresh and retry.');
+        self::assert_owner();
     }
     private static function checked_read(): void {
         global $wpdb;
         if (!empty($wpdb->last_error)) throw new \RuntimeException('Inventory could not be read. Please refresh and retry.');
+        self::assert_owner();
     }
     private static function rows(string $sql): array {
         global $wpdb; $rows=$wpdb->get_results($sql,ARRAY_A); self::checked_read();

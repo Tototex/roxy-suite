@@ -23,6 +23,8 @@ namespace {
     function admin_url($path) { return 'https://example.test/wp-admin/' . $path; }
     function add_query_arg($key, $value, $url) { return $url . '&' . $key . '=' . $value; }
     function is_wp_error($value) { return false; }
+    function add_filter(...$args) {}
+    function remove_filter(...$args) {}
     function wp_remote_retrieve_response_code($response) { return $response['code']; }
     function wp_remote_retrieve_body($response) { return json_encode($response['data']); }
     function wp_remote_get($url, $args) {
@@ -68,8 +70,10 @@ namespace {
         }
         public function get_results($sql, $format) { return []; }
         public function get_var($sql) { return 1; }
+        public function suppress_errors($value) { return false; }
         public function query($sql) {
             $GLOBALS['test_queries'][] = $sql;
+            if (strpos($sql,'RELEASE SAVEPOINT ')===0) return false;
             if ($sql === 'START TRANSACTION') $this->saved = [$this->products, $this->orders, $this->runs];
             if ($sql === 'ROLLBACK') [$this->products, $this->orders, $this->runs] = $this->saved;
             return 0;
