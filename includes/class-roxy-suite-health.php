@@ -614,6 +614,8 @@ class Health {
         if (!self::module_enabled('requested_showings')) return [];
 
         $items = [];
+        global $wpdb;
+        $wpdb->last_error = '';
         $active = get_posts([
             'post_type' => 'roxy_req_showing',
             'post_status' => ['publish', 'draft'],
@@ -625,18 +627,16 @@ class Health {
             ]],
         ]);
 
-        $items[] = self::item('Open requests', count($active) > 0 ? count($active) . ' request(s)' : 'None', self::PASS);
+        $items[] = $wpdb->last_error !== '' || !is_array($active)
+            ? self::item('Open requests', 'Read unavailable', self::WARN, 'The request list could not be verified; this is not an empty list.')
+            : self::item('Open requests', count($active) > 0 ? count($active) . ' request(s)' : 'None', self::PASS);
 
         $items[] = self::scheduled_run_item('Daily review', 'roxy_rs_daily_review_last_result', true);
 
         if (function_exists('roxy_rs_table_backings')) {
             global $wpdb;
             $table = roxy_rs_table_backings();
-            if (self::table_exists($table)) {
-                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$table}`");
-                $items[] = self::item('Backing records', $count . ' total', self::PASS);
-            }
+            $items[] = self::record_count_item('Backing records', $table);
         }
 
         return $items;
@@ -647,11 +647,7 @@ class Health {
 
         global $wpdb;
         $table = $wpdb->prefix . 'roxy_will_call_checkins';
-        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$table}`");
-        return [
-            self::item('Check-in records', "$count total rows", self::PASS),
-        ];
+        return [self::record_count_item('Check-in records', $table)];
     }
 
     private static function functional_arcade(): array {
@@ -659,11 +655,7 @@ class Health {
 
         global $wpdb;
         $table = $wpdb->prefix . 'roxy_arcade_scores';
-        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$table}`");
-        return [
-            self::item('Score records', "$count total", self::PASS),
-        ];
+        return [self::record_count_item('Score records', $table)];
     }
 
     private static function functional_grosses(): array {
@@ -677,8 +669,7 @@ class Health {
             return [self::item('Report table', 'Missing — run activation', self::FAIL)];
         }
 
-        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$t_reports}`");
+        $saved_reports = self::record_count_item('Saved reports', $t_reports);
 
         $status      = get_option('roxy_grosses_last_report', []);
         $last_date   = is_array($status) && !empty($status['report_date']) ? $status['report_date'] : 'Never';
@@ -740,7 +731,7 @@ class Health {
         }
 
         return [
-            self::item('Saved reports', "$count total", self::PASS),
+            $saved_reports,
             self::item('Last report', $last_date . ($last_mode ? " ($last_mode)" : ''), self::PASS),
             self::item('Next daily cron', $next_local ?: 'Not scheduled', $next_local ? self::PASS : ($sched_enabled ? self::FAIL : self::PASS), $next_local ? '' : ($sched_enabled ? 'The daily grosses cron hook is missing.' : '')),
             self::item('Next advertiser cron', $next_advertiser_local ?: 'Not scheduled', $next_advertiser_local ? self::PASS : ($advertiser_enabled ? self::FAIL : self::PASS), $next_advertiser_local ? '' : ($advertiser_enabled ? 'The advertiser cron hook is missing.' : '')),
@@ -791,6 +782,25 @@ class Health {
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
+
+    /** SQL failure and malformed results must never become a green zero count. */
+    private static function record_count_item(string $label, string $table): array {
+        global $wpdb;
+        try {
+            if (!preg_match('/^[a-zA-Z0-9_]+$/D', $table)) throw new \RuntimeException('Invalid table identity.');
+            $wpdb->last_error = '';
+            $exists = self::table_exists($table);
+            if ($wpdb->last_error !== '' || !$exists) throw new \RuntimeException('Table unavailable.');
+            $wpdb->last_error = '';
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $count = $wpdb->get_var("SELECT COUNT(*) FROM `{$table}`");
+            if ($wpdb->last_error !== '' || !(is_int($count) || is_string($count))
+                || !preg_match('/^(0|[1-9][0-9]*)$/D', (string) $count)) throw new \RuntimeException('Count unavailable.');
+            return self::item($label, (string) $count . ' total', self::PASS);
+        } catch (\Throwable $error) {
+            return self::item($label, 'Read unavailable', self::WARN, 'The stored record count could not be verified; this is not zero records.');
+        }
+    }
 
     private static function module_enabled(string $key): bool {
         return roxy_suite_module_enabled($key);
