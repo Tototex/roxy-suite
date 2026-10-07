@@ -325,7 +325,51 @@ class Health {
             self::item('Monthly advertiser cron', $advertiser_cron ? 'Scheduled' : ($advertiser_enabled ? 'Missing' : 'Not needed'),
                 $advertiser_cron ? self::PASS : ($advertiser_enabled ? self::FAIL : self::PASS),
                 $advertiser_cron ? '' : ($advertiser_enabled ? 'Monthly advertiser sends are enabled, but the cron hook is not registered.' : '')),
+            self::advertiser_monthly_freshness($settings, get_option('roxy_grosses_last_advertiser_month', ''), null),
         ], 'grosses');
+    }
+
+    /** Check the saved advertiser completion marker without running the job. */
+    private static function advertiser_monthly_freshness(array $settings, $completed_month, ?\DateTimeImmutable $now = null): array {
+        if (($settings['advertiser_schedule_enabled'] ?? '0') !== '1') {
+            return self::item('Monthly advertiser completion', 'Not needed (disabled)', self::PASS);
+        }
+
+        try {
+            $timezone_name = class_exists('\\RoxyGrosses\\Settings')
+                ? \RoxyGrosses\Settings::get_report_timezone()
+                : (function_exists('wp_timezone_string') ? wp_timezone_string() : 'UTC');
+            $timezone = new \DateTimeZone($timezone_name);
+            $now = ($now ?? new \DateTimeImmutable('now', $timezone))->setTimezone($timezone);
+            $day = max(1, min(31, (int) ($settings['advertiser_schedule_day'] ?? 1)));
+            $time = (string) ($settings['advertiser_schedule_time'] ?? '09:00');
+            if (!preg_match('/^(\d{2}):(\d{2})$/', $time, $matches) || (int) $matches[1] > 23 || (int) $matches[2] > 59) {
+                throw new \RuntimeException('Invalid advertiser schedule time.');
+            }
+
+            $due_day = min($day, (int) $now->format('t'));
+            $due = $now->setDate((int) $now->format('Y'), (int) $now->format('n'), $due_day)
+                ->setTime((int) $matches[1], (int) $matches[2], 0);
+            $due_passed = $now >= $due;
+            $expected = $due_passed
+                ? $now->modify('first day of last month')->format('Y-m')
+                : $now->modify('first day of -2 months')->format('Y-m');
+
+            if (!is_string($completed_month) || $completed_month === '') {
+                return self::item('Monthly advertiser completion', 'Never', $due_passed ? self::WARN : self::PASS,
+                    $due_passed ? "No completion is recorded; expected {$expected}." : 'The first scheduled completion is still pending.');
+            }
+            if (!preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $completed_month)
+                || $completed_month > $now->format('Y-m') || $completed_month > $expected) {
+                return self::item('Monthly advertiser completion', $completed_month, self::WARN, 'The saved month is malformed or later than the expected cycle.');
+            }
+            if ($completed_month !== $expected) {
+                return self::item('Monthly advertiser completion', $completed_month, self::WARN, "Expected completed month {$expected}.");
+            }
+            return self::item('Monthly advertiser completion', $completed_month, self::PASS, 'A marker exists for the expected month; delivery is not independently verified.');
+        } catch (\Throwable $error) {
+            return self::item('Monthly advertiser completion', 'Unavailable', self::WARN, 'Could not validate the monthly schedule or completion marker.');
+        }
     }
 
     // ── Functional checks (on-demand only) ─────────────────────────────────────
