@@ -112,6 +112,27 @@ namespace RoxyInventory {
 }
 namespace {
     $wpdb = new TestDatabase();
+    $known_costs = \RoxyInventory\Admin::cost_summary([
+        ['product'=>['unit_cost'=>2.5],'qty'=>3],
+        ['product'=>['unit_cost'=>0],'qty'=>0],
+    ]);
+    check($known_costs === ['known_total'=>7.5,'incomplete'=>false], 'Zero-quantity unknown-cost rows do not affect known estimate');
+    $unknown_costs = \RoxyInventory\Admin::cost_summary([
+        ['product'=>['unit_cost'=>2.5],'qty'=>3],
+        ['product'=>['unit_cost'=>0],'qty'=>1],
+    ]);
+    check($unknown_costs === ['known_total'=>7.5,'incomplete'=>true], 'Positive quantity with zero cost marks estimate incomplete without inventing a price');
+    $history_costs = \RoxyInventory\Admin::cost_summary([
+        ['quantity'=>2,'unit_cost'=>'2.25'],
+        ['quantity'=>3,'unit_cost'=>0],
+    ]);
+    check($history_costs === ['known_total'=>4.5,'incomplete'=>true], 'Raw stored history quantity field recognizes positive unknown-cost lines');
+    foreach (['NaN','INF',NAN,INF,'1e309','not-a-price'] as $invalid_cost) {
+        $summary = \RoxyInventory\Admin::cost_summary([['quantity'=>1,'unit_cost'=>$invalid_cost]]);
+        check($summary === ['known_total'=>0.0,'incomplete'=>true], 'Malformed or non-finite history cost is unknown: '.$invalid_cost);
+        check(!\RoxyInventory\Admin::verified_positive_cost($invalid_cost), 'Malformed or non-finite unit cost fails positive-cost validation: '.$invalid_cost);
+    }
+    check(\RoxyInventory\Admin::verified_positive_cost('2.25'), 'Finite positive unit cost remains known');
     foreach (['ordered', 'rejected'] as $decision) {
         $wpdb->orders[1] = ['id' => 1, 'status' => 'pending_manager'];
         check(\RoxyInventory\Store::update_order_status(1, 'approval_emailed'), 'Submission status saved');

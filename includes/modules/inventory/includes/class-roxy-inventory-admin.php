@@ -22,17 +22,19 @@ class Admin {
         $vendors = Store::vendors(); $products = Store::products();
         echo '<h2>Suggested orders</h2><table class="widefat striped"><thead><tr><th>Vendor</th><th>Items</th><th>Estimated total</th><th>Minimum</th><th>Status</th><th>Action</th></tr></thead><tbody>';
         foreach ($vendors as $vendor) {
-            $rows = []; $total = 0;
-            foreach ($products as $p) { if (strcasecmp((string) $p['vendor'], (string) $vendor['name']) !== 0) continue; $qty = self::qty($p); if ($qty <= 0) continue; $rows[] = $p; $total += $qty * (float) $p['unit_cost']; }
+            $rows = [];
+            foreach ($products as $p) { if (strcasecmp((string) $p['vendor'], (string) $vendor['name']) !== 0) continue; $qty = self::qty($p); if ($qty <= 0) continue; $rows[] = ['product'=>$p,'qty'=>$qty]; }
+            $estimate = self::cost_summary($rows); $total = $estimate['known_total'];
             $open = Store::open_order_for_vendor((string) $vendor['name']);
             if ($open) {
                 $status = (string) $open['status'];
                 $status_label = $status === 'pending_manager' ? 'Submission awaiting review' : ($status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'ordered' ? 'Ordered' : 'Order in review'));
             } else {
-                $status_label = $total >= (float) $vendor['minimum_amount'] ? 'Ready for review' : 'Below minimum';
+                $status_label = $estimate['incomplete'] ? 'Cost incomplete' : ($total >= (float) $vendor['minimum_amount'] ? 'Ready for review' : 'Below minimum');
             }
             $vendor_link = admin_url('admin.php?page=roxy-inventory&tab=dashboard&vendor=' . rawurlencode($vendor['name']));
-            echo '<tr><td><a href="' . esc_url($vendor_link) . '">' . esc_html($vendor['name']) . '</a></td><td>' . count($rows) . '</td><td>$' . number_format($total,2) . '</td><td>$' . number_format((float) $vendor['minimum_amount'],2) . '</td><td>' . esc_html($status_label) . '</td><td><a class="button" href="' . esc_url($vendor_link) . '">Review Order</a></td></tr>';
+            $estimate_label = $estimate['incomplete'] ? 'Incomplete — $' . number_format($total,2) . ' known' : '$' . number_format($total,2);
+            echo '<tr><td><a href="' . esc_url($vendor_link) . '">' . esc_html($vendor['name']) . '</a></td><td>' . count($rows) . '</td><td>' . esc_html($estimate_label) . '</td><td>$' . number_format((float) $vendor['minimum_amount'],2) . '</td><td>' . esc_html($status_label) . '</td><td><a class="button" href="' . esc_url($vendor_link) . '">Review Order</a></td></tr>';
         }
         echo '</tbody></table><p><a href="' . esc_url(self::url('products')) . '">Configure vendors, pack sizes, reorder points, targets, costs, and manual quantities.</a></p>';
     }
@@ -50,29 +52,33 @@ class Admin {
         echo '<h2>' . esc_html($name) . ' order review</h2><p>Edit quantities before submitting. Quantities must be whole order units, and the vendor minimum must be met.</p>';
         $direct = Settings::get('direct_vendor_sending_enabled') === '1' && $vendor['order_method'] === 'email';
         echo '<p>Submit Order sends this order to ' . esc_html($direct ? (string) $vendor['email'] . ' directly and marks it Ordered.' : 'the manager for review. The vendor is contacted manually.') . '</p>';
-        $rows = []; $total = 0;
+        $rows = [];
         foreach (Store::products() as $p) {
             if (strcasecmp((string) $p['vendor'], $name) !== 0) continue;
             $qty = self::qty($p);
-            $rows[] = ['product' => $p, 'qty' => $qty]; $total += $qty * (float) $p['unit_cost'];
+            $rows[] = ['product' => $p, 'qty' => $qty];
         }
+        $estimate = self::cost_summary($rows); $total = $estimate['known_total'];
         $minimum = (float) $vendor['minimum_amount'];
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
         echo wp_nonce_field('roxy_inventory_send_draft','_wpnonce',true,false) . '<input type="hidden" name="action" value="roxy_inventory_send_draft"><input type="hidden" name="vendor" value="' . esc_attr($name) . '">';
         $review_products = array_column($rows, 'product');
         echo '<input type="hidden" name="review_token" value="' . esc_attr(self::review_token($vendor,$review_products)) . '"><input type="hidden" name="submission_key" value="' . esc_attr(hash('sha256',wp_generate_uuid4())) . '">';
-        echo '<p>All tracked vendor items are shown. Set an item to zero to skip it, or increase a zero quantity to add it intentionally.</p>';
+        echo '<p>All tracked vendor items are shown. Set an item to zero to skip it, or increase a zero quantity to add it intentionally. A zero unit cost is treated as unknown, so add a verified positive purchase cost before ordering that item.</p>';
         echo '<table class="widefat striped" id="roxy-inventory-vendor-review"><thead><tr><th>Product</th><th>On hand</th><th>Pack</th><th>Order qty</th><th>Unit cost</th><th>Line total</th></tr></thead><tbody>';
         foreach ($rows as $row) {
-            $p = $row['product']; $id = (int) $p['id']; $qty = (int) $row['qty']; $cost = (float) $p['unit_cost'];
-            echo '<tr><td>' . esc_html($p['name']) . '</td><td>' . esc_html(number_format((float) $p['on_hand'],0)) . '</td><td>' . esc_html(number_format((float) $p['pack_size'],0)) . '</td><td><input class="roxy-order-qty" data-cost="' . esc_attr($cost) . '" name="order_qty[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($qty) . '" style="width:90px"' . ($open ? ' disabled' : '') . '></td><td>$' . number_format($cost,2) . '</td><td class="roxy-order-line-total">$' . number_format($qty * $cost,2) . '</td></tr>';
+            $p = $row['product']; $id = (int) $p['id']; $qty = (int) $row['qty']; $raw_cost = $p['unit_cost'] ?? null; $known = self::verified_positive_cost($raw_cost); $cost = $known ? (float)$raw_cost : 0.0;
+            $cost_label = $known ? '$' . number_format($cost,2) : 'Unknown';
+            $line_label = $known ? '$' . number_format($qty * $cost,2) : ($qty === 0 ? '$0.00' : 'Unknown');
+            echo '<tr><td>' . esc_html($p['name']) . '</td><td>' . esc_html(number_format((float) $p['on_hand'],0)) . '</td><td>' . esc_html(number_format((float) $p['pack_size'],0)) . '</td><td><input class="roxy-order-qty" data-cost="' . esc_attr($known ? $cost : '') . '" name="order_qty[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($qty) . '" style="width:90px"' . ($open ? ' disabled' : '') . '></td><td>' . esc_html($cost_label) . '</td><td class="roxy-order-line-total">' . esc_html($line_label) . '</td></tr>';
         }
-        echo '</tbody><tfoot><tr><th colspan="5">Estimated total</th><th id="roxy-order-total">$' . number_format($total,2) . '</th></tr></tfoot></table><input type="hidden" name="review_complete" value="1">';
+        $estimate_label = $estimate['incomplete'] ? 'Incomplete — $' . number_format($total,2) . ' known' : '$' . number_format($total,2);
+        echo '</tbody><tfoot><tr><th colspan="5">Estimated total</th><th id="roxy-order-total">' . esc_html($estimate_label) . '</th></tr></tfoot></table><input type="hidden" name="review_complete" value="1">';
         if (!$rows) echo '<p>No suggested items for this vendor.</p>';
         if ($open) echo '<p><a class="button" href="' . esc_url(self::url('dashboard')) . '">Back to all vendors</a></p>';
-        else echo '<p><button type="submit" class="button button-primary" id="roxy-submit-vendor-order"' . (($rows && $total >= $minimum) ? '' : ' disabled') . '>Submit Order</button> <span id="roxy-order-minimum" data-minimum="' . esc_attr($minimum) . '">Minimum: $' . number_format($minimum,2) . '</span></p>';
+        else echo '<p><button type="submit" class="button button-primary" id="roxy-submit-vendor-order"' . (($rows && !$estimate['incomplete'] && $total >= $minimum) ? '' : ' disabled') . '>Submit Order</button> <span id="roxy-order-minimum" data-minimum="' . esc_attr($minimum) . '">Minimum: $' . number_format($minimum,2) . '</span></p>';
         echo '</form><p><a class="button" href="' . esc_url(self::url('dashboard')) . '">Back to all vendors</a></p>';
-        if (!$open) echo '<script>(function(){var t=document.getElementById("roxy-inventory-vendor-review"),b=document.getElementById("roxy-submit-vendor-order"),m=document.getElementById("roxy-order-minimum");if(!t||!b||!m)return;function c(){var total=0;t.querySelectorAll(".roxy-order-qty").forEach(function(i){var q=Math.max(0,parseInt(i.value||"0",10)),cost=parseFloat(i.dataset.cost||"0"),cell=i.closest("tr").querySelector(".roxy-order-line-total");total+=q*cost;if(cell)cell.textContent="$"+(q*cost).toFixed(2);});document.getElementById("roxy-order-total").textContent="$"+total.toFixed(2);b.disabled=!(total>=parseFloat(m.dataset.minimum||"0"));}t.addEventListener("input",c);})();</script>';
+        if (!$open) echo '<script>(function(){var t=document.getElementById("roxy-inventory-vendor-review"),b=document.getElementById("roxy-submit-vendor-order"),m=document.getElementById("roxy-order-minimum");if(!t||!b||!m)return;function c(){var total=0,incomplete=false;t.querySelectorAll(".roxy-order-qty").forEach(function(i){var q=Math.max(0,parseInt(i.value||"0",10)),raw=i.dataset.cost,cost=parseFloat(raw||"0"),known=raw!==""&&cost>0,cell=i.closest("tr").querySelector(".roxy-order-line-total");if(q>0&&!known){incomplete=true;if(cell)cell.textContent="Unknown";}else if(cell)cell.textContent="$"+(q*cost).toFixed(2);if(known)total+=q*cost;});document.getElementById("roxy-order-total").textContent=incomplete?"Incomplete — $"+total.toFixed(2)+" known":"$"+total.toFixed(2);b.disabled=incomplete||!(total>=parseFloat(m.dataset.minimum||"0"));}t.addEventListener("input",c);})();</script>';
     }
     private static function unassigned(): void { $vendors=Store::vendors(); echo '<h2>Unassigned / not tracked products</h2><p>Assign vendors and change statuses, then save once. Not tracked items may remain without a vendor and never generate order quantities.</p><form method="post" action="'.esc_url(admin_url('admin-post.php')).'">'.wp_nonce_field('roxy_inventory_bulk_save','_wpnonce',true,false).'<input type="hidden" name="action" value="roxy_inventory_bulk_save"><table class="widefat striped"><thead><tr><th>Product</th><th>On hand</th><th>Vendor</th><th>Status</th></tr></thead><tbody>'; foreach(Store::review_products() as $p) { $status=($p['tracking_status']??'tracked'); echo '<tr><td>'.esc_html($p['name']).'</td><td>'.esc_html($p['on_hand']).'</td><td><select name="vendor['.esc_attr($p['id']).']"><option value="">Unassigned</option>'; foreach($vendors as $v) echo '<option value="'.esc_attr($v['name']).'" '.selected($p['vendor'],$v['name'],false).'>'.esc_html($v['name']).'</option>'; echo '</select></td><td><select name="tracking_status['.esc_attr($p['id']).']"><option value="tracked" '.selected($status,'tracked',false).'>Tracked</option><option value="not_tracked" '.selected($status,'not_tracked',false).'>Not tracked</option></select></td></tr>'; } echo '</tbody></table><p>'.get_submit_button('Save all changes','primary','submit',false).'</p></form>'; }
     private static function history(): void {
@@ -91,7 +97,10 @@ class Admin {
             $action = '<a class="button" href="' . esc_url($view_url) . '">View items</a>';
             if ($status === 'approval_emailed') $action .= ' <a class="button" href="' . esc_url(self::decision_url((int)$o['id'], 'ordered')) . '">Ordered</a> <a class="button" href="' . esc_url(self::decision_url((int)$o['id'], 'rejected')) . '">Rejected</a>';
             if ($status === 'pending_manager') $action .= ' <a class="button" href="' . esc_url(self::decision_url((int)$o['id'], 'ordered')) . '">Confirm placed order</a>';
-            echo '<tr><td>' . esc_html($o['created_at']) . '</td><td>' . esc_html($o['vendor']) . '</td><td>' . esc_html($label) . '</td><td>' . esc_html($o['item_count']) . '</td><td>$' . number_format((float)$o['estimated_total'], 2) . '</td><td>' . $action . '</td></tr>';
+            $order_lines = json_decode((string)($o['payload'] ?? ''), true);
+            $order_estimate = is_array($order_lines) ? self::cost_summary($order_lines) : ['known_total'=>(float)$o['estimated_total'],'incomplete'=>false];
+            $total_label = $order_estimate['incomplete'] ? 'Incomplete — $' . number_format($order_estimate['known_total'],2) . ' known' : '$' . number_format((float)$o['estimated_total'],2);
+            echo '<tr><td>' . esc_html($o['created_at']) . '</td><td>' . esc_html($o['vendor']) . '</td><td>' . esc_html($label) . '</td><td>' . esc_html($o['item_count']) . '</td><td>' . esc_html($total_label) . '</td><td>' . $action . '</td></tr>';
         }
         echo '</tbody></table>';
         echo '<p>';
@@ -101,6 +110,7 @@ class Admin {
         if (!$selected) return;
         $lines = json_decode((string) ($selected['payload'] ?? ''), true);
         if (!is_array($lines)) $lines = [];
+        $selected_estimate = self::cost_summary($lines);
         echo '<h2>Order #' . esc_html((string) $selected['id']) . ' — ' . esc_html($selected['vendor']) . '</h2>';
         if ((string) $selected['status'] === 'pending_manager') echo '<div class="notice notice-warning inline"><p>Email delivery for this submission may be unconfirmed. Check the manager/vendor inbox before retrying; cancel only if the order was not placed.</p></div>';
         echo '<p>Check each item as you add it to the vendor cart, then save your progress.</p>';
@@ -114,12 +124,30 @@ class Admin {
             $checked = !empty($line['added_to_cart']);
             if (!empty($line['stock_increase_detected_at'])) echo '<tr><td colspan="6"><small>Stock increase observed for '.esc_html((string)($line['product']??'')).': '.esc_html((string)$line['stock_increase_from']).' → '.esc_html((string)$line['stock_increase_to']).' at '.esc_html((string)$line['stock_increase_detected_at']).'. This unlocks reordering; it does not confirm the whole order arrived.</small></td></tr>';
             if (!empty($line['cart_progress_at'])) echo '<tr><td colspan="6"><small>Cart progress last changed at '.esc_html((string)$line['cart_progress_at']).' by user #'.esc_html((string)($line['cart_progress_by']??'')).'.</small></td></tr>';
-            echo '<tr><td><input type="checkbox" name="added_to_cart[' . esc_attr((int) $index) . ']" value="1" ' . checked($checked, true, false) . ' aria-label="Added to cart: ' . esc_attr((string) ($line['product'] ?? '')) . '"></td><td>' . esc_html((string) ($line['product'] ?? '')) . '</td><td>' . esc_html(number_format($quantity, 0, '.', '')) . '</td><td>' . esc_html(number_format((float) ($line['pack_size'] ?? 0), 0, '.', '')) . '</td><td>$' . number_format($unit_cost, 2) . '</td><td>$' . number_format((float) ($line['line_total'] ?? ($quantity * $unit_cost)), 2) . '</td></tr>';
+            $cost_known = self::verified_positive_cost($line['unit_cost'] ?? null);
+            $cost_label = $cost_known ? '$' . number_format($unit_cost,2) : 'Unknown';
+            $line_total_label = !$cost_known ? ($quantity > 0 ? 'Unknown' : '$0.00') : '$' . number_format((float) ($line['line_total'] ?? ($quantity * $unit_cost)), 2);
+            echo '<tr><td><input type="checkbox" name="added_to_cart[' . esc_attr((int) $index) . ']" value="1" ' . checked($checked, true, false) . ' aria-label="Added to cart: ' . esc_attr((string) ($line['product'] ?? '')) . '"></td><td>' . esc_html((string) ($line['product'] ?? '')) . '</td><td>' . esc_html(number_format($quantity, 0, '.', '')) . '</td><td>' . esc_html(number_format((float) ($line['pack_size'] ?? 0), 0, '.', '')) . '</td><td>' . esc_html($cost_label) . '</td><td>' . esc_html($line_total_label) . '</td></tr>';
         }
-        echo '</tbody><tfoot><tr><th colspan="5">Estimated total</th><th>$' . number_format((float) $selected['estimated_total'], 2) . '</th></tr></tfoot></table><p>' . get_submit_button('Save cart progress', 'primary', 'submit', false) . ' <a class="button" href="' . esc_url(self::url('history')) . '">Close itemized view</a></p></form>';
+        $selected_total_label = $selected_estimate['incomplete'] ? 'Incomplete — $' . number_format($selected_estimate['known_total'],2) . ' known' : '$' . number_format((float) $selected['estimated_total'],2);
+        echo '</tbody><tfoot><tr><th colspan="5">Estimated total</th><th>' . esc_html($selected_total_label) . '</th></tr></tfoot></table><p>' . get_submit_button('Save cart progress', 'primary', 'submit', false) . ' <a class="button" href="' . esc_url(self::url('history')) . '">Close itemized view</a></p></form>';
         if (in_array((string) $selected['status'], ['pending_manager','approval_emailed','ordered'], true)) echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:8px" onsubmit="return confirm(\'Cancel this order and release the vendor for a new order?\');">' . wp_nonce_field('roxy_inventory_cancel_order','_wpnonce',true,false) . '<input type="hidden" name="action" value="roxy_inventory_cancel_order"><input type="hidden" name="order_id" value="' . esc_attr((int) $selected['id']) . '">' . get_submit_button('Cancel Order', 'secondary', 'submit', false) . '</form>';
     }
     private static function qty(array $p): float { if(($p['tracking_status']??'tracked')!=='tracked') return 0; $override = $p['override_qty'] === null || $p['override_qty']==='' ? null : (float)$p['override_qty']; if ($override !== null) return max(0,$override); $need=max(0,(float)$p['target_stock']-(float)$p['on_hand']); if ($need <= 0 || (float)$p['on_hand'] > (float)$p['reorder_point']) return 0; $pack=max(1,(float)$p['pack_size']); return ceil($need/$pack)*$pack; }
+    public static function verified_positive_cost($value): bool {
+        return is_numeric($value) && is_finite((float)$value) && (float)$value > 0;
+    }
+    public static function cost_summary(array $rows): array {
+        $known_total = 0.0; $incomplete = false;
+        foreach ($rows as $row) {
+            $quantity = max(0, (float) ($row['qty'] ?? $row['quantity'] ?? 0));
+            if ($quantity <= 0) continue;
+            $cost = (float) ($row['product']['unit_cost'] ?? $row['unit_cost'] ?? 0);
+            if (!self::verified_positive_cost($row['product']['unit_cost'] ?? $row['unit_cost'] ?? null)) { $incomplete = true; continue; }
+            $known_total += $quantity * $cost;
+        }
+        return ['known_total'=>round($known_total,2),'incomplete'=>$incomplete];
+    }
     private static function vendors(): void {
         echo '<h2>Vendors</h2><table class="widefat striped"><thead><tr><th>Vendor</th><th>Order method</th><th>Email</th><th>Minimum amount</th><th>Delivery / notes</th><th>Save</th></tr></thead><tbody>';
         foreach (Store::vendors() as $v) {
@@ -315,6 +343,7 @@ class Admin {
             $raw=$quantities[$p['id']] ?? null;
             if (!is_scalar($raw) || !preg_match('/^\d+$/D',(string)$raw) || (float)$raw>1000000) throw new \RuntimeException('Use nonnegative whole quantities for every reviewed item.');
             $q=(int)$raw; if ($q===0) continue;
+            if (!self::verified_positive_cost($p['unit_cost'] ?? null)) throw new \RuntimeException('A positive finite verified unit cost is required for every ordered item. Zero or invalid unit cost is treated as unknown.');
             $line_total=round($q*(float)$p['unit_cost'],2);
             $lines[]=['product'=>(string)$p['name'],'square_variation_id'=>(string)$p['square_variation_id'],'on_hand'=>(float)$p['on_hand'],'quantity'=>$q,'pack_size'=>(float)$p['pack_size'],'unit_cost'=>(float)$p['unit_cost'],'line_total'=>$line_total];
             $total+=$line_total;
@@ -464,7 +493,7 @@ class Admin {
             foreach ($vendors as $vendor) echo '<option value="' . esc_attr($vendor['name']) . '"' . selected($product['vendor'],$vendor['name'],false) . '>' . esc_html($vendor['name']) . '</option>';
             echo '</select></td><td><input name="pack_size[' . $id . ']" type="number" min="1" step="1" value="' . esc_attr($pack) . '"></td><td><input name="reorder_point[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($reorder) . '"></td><td><input name="target_stock[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($target) . '"></td><td><input name="unit_cost[' . $id . ']" type="number" min="0" step="0.01" value="' . esc_attr($cost) . '"></td><td><input name="override_qty[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($override) . '" placeholder="auto"></td><td>' . esc_html(number_format((float) self::qty($product), 0, '.', '')) . '</td></tr>';
         }
-        echo '</tbody></table><input type="hidden" name="product_rows_complete" value="1"><p>' . get_submit_button('Save all product changes','primary','submit',false) . '</p></form>';
+        echo '</tbody></table><p class="description">A unit cost of 0 means unknown; the system cannot distinguish an unknown cost from a genuinely free item.</p><input type="hidden" name="product_rows_complete" value="1"><p>' . get_submit_button('Save all product changes','primary','submit',false) . '</p></form>';
         // Send the table as one variable, avoiding PHP max_input_vars truncation.
         // The complete marker still rejects an incomplete non-JavaScript submission.
         echo <<<'JS'

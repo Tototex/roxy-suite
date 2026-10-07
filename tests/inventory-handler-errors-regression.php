@@ -16,19 +16,27 @@ if (($argv[1] ?? '') === '--worker') {
   $GLOBALS['inventory_worker_schedule_calls'] = 0;
   $GLOBALS['inventory_worker_mail_calls'] = 0;
   $GLOBALS['inventory_worker_order_status'] = '';
+  $GLOBALS['inventory_worker_created_lines'] = [];
 
   eval('namespace '.$namespace.';
     final class Store {
       public static array $calls=[];
       public static function update_product(int $id,array $data):void { $GLOBALS["inventory_worker_events"][]="product-write"; if($GLOBALS["inventory_worker_case"]==="product_fail") throw new \\RuntimeException("product storage failure"); self::$calls[]=["product",$id,$data]; }
       public static function update_vendor(int $id,array $data):void { $GLOBALS["inventory_worker_events"][]="vendor-write"; if($GLOBALS["inventory_worker_case"]==="vendor_fail") throw new \\RuntimeException("vendor storage failure"); self::$calls[]=["vendor",$id,$data]; }
-      public static function log(string $type,string $status,string $message):bool { self::$calls[]=["log",$type,$status]; return false; }
+      public static function log(string $type,string $status,string $message):bool { self::$calls[]=["log",$type,$status]; return $GLOBALS["inventory_worker_case"]==="zero_qty_unknown_cost"; }
       public static function vendors():array { return [["name"=>"Fixture Vendor","order_method"=>"phone","email"=>"","minimum_amount"=>0.0]]; }
       public static function all_vendors():array { return self::vendors(); }
-      public static function products():array { return [["id"=>4,"name"=>"Fixture Item","vendor"=>"Fixture Vendor","square_variation_id"=>"var-4","on_hand"=>2,"pack_size"=>1,"unit_cost"=>5,"minimum_amount"=>0]]; }
+      public static function products():array {
+        $products=[["id"=>4,"name"=>"Fixture Item","vendor"=>"Fixture Vendor","square_variation_id"=>"var-4","on_hand"=>2,"pack_size"=>1,"unit_cost"=>5,"minimum_amount"=>0]];
+        if($GLOBALS["inventory_worker_case"]==="unknown_cost")$products[0]["unit_cost"]=0;
+        if($GLOBALS["inventory_worker_case"]==="malformed_cost")$products[0]["unit_cost"]="not-a-price";
+        if($GLOBALS["inventory_worker_case"]==="overflowing_cost")$products[0]["unit_cost"]="1e309";
+        if($GLOBALS["inventory_worker_case"]==="zero_qty_unknown_cost")$products[]=["id"=>5,"name"=>"Unknown Cost Item","vendor"=>"Fixture Vendor","square_variation_id"=>"var-5","on_hand"=>2,"pack_size"=>1,"unit_cost"=>0,"minimum_amount"=>0];
+        return $products;
+      }
       public static function transaction(callable $callback) { return $callback(); }
       public static function order_for_submission(string $key):?array { $GLOBALS["inventory_worker_events"][]="submission-lookup"; return $GLOBALS["inventory_worker_case"]==="samekey_replay"?["id"=>73]:null; }
-      public static function create_order(string $vendor,array $lines,float $total,float $minimum,string $status="pending_manager",?string $key=null):int { self::$calls[]=["create_order",$status]; return 73; }
+      public static function create_order(string $vendor,array $lines,float $total,float $minimum,string $status="pending_manager",?string $key=null):int { $GLOBALS["inventory_worker_created_lines"]=$lines; self::$calls[]=["create_order",$status]; return 73; }
       public static function order(int $id):?array { return ["id"=>$id,"vendor"=>"Fixture Vendor","status"=>$GLOBALS["inventory_worker_case"]==="cancel_log_failure"?"ordered":"approval_emailed"]; }
       public static function update_order_status(int $id,string $status):bool { if(str_contains($GLOBALS["inventory_worker_case"],"status_failure"))throw new \\RuntimeException("status storage failure"); $GLOBALS["inventory_worker_order_status"]=$status; self::$calls[]=["status",$id,$status]; return true; }
     }
@@ -107,9 +115,14 @@ if (($argv[1] ?? '') === '--worker') {
     case 'unsent_status_failure':
     case 'throw_mail_uncertain':
     case 'samekey_replay':
+    case 'unknown_cost':
+    case 'malformed_cost':
+    case 'overflowing_cost':
+    case 'zero_qty_unknown_cost':
       $store=$namespace.'\\Store';
       $vendor=$admin::review_token($store::vendors()[0], $store::products());
       $_POST=['vendor'=>'Fixture Vendor','submission_key'=>str_repeat('a',64),'review_complete'=>'1','review_token'=>$vendor,'order_qty'=>['4'=>'1']];
+      if($case==='zero_qty_unknown_cost')$_POST['order_qty']['5']='0';
       $call=static fn()=>$admin::send_draft(); break;
     case 'cancel_log_failure': $_POST=['order_id'=>73]; $call=static fn()=>$admin::cancel_order(); break;
     case 'decision_log_failure':
@@ -121,7 +134,7 @@ if (($argv[1] ?? '') === '--worker') {
   $redirect=''; $died='';
   try { $call(); } catch(InventoryWorkerRedirect $e) { $redirect=$e->url; } catch(InventoryWorkerDie $e) { $died=$e->getMessage(); }
   $store='\\'.$namespace.'\\Store';
-  echo json_encode(['case'=>$case,'redirect'=>$redirect,'died'=>$died,'events'=>$GLOBALS['inventory_worker_events'],'store_calls'=>$store::$calls,'schedule_calls'=>$GLOBALS['inventory_worker_schedule_calls'],'mail_calls'=>$GLOBALS['inventory_worker_mail_calls'],'order_status'=>$GLOBALS['inventory_worker_order_status'],'option'=>$GLOBALS['inventory_worker_option']]);
+  echo json_encode(['case'=>$case,'redirect'=>$redirect,'died'=>$died,'events'=>$GLOBALS['inventory_worker_events'],'store_calls'=>$store::$calls,'schedule_calls'=>$GLOBALS['inventory_worker_schedule_calls'],'mail_calls'=>$GLOBALS['inventory_worker_mail_calls'],'order_status'=>$GLOBALS['inventory_worker_order_status'],'created_lines'=>$GLOBALS['inventory_worker_created_lines'],'option'=>$GLOBALS['inventory_worker_option']]);
   exit;
 }
 
@@ -166,6 +179,12 @@ foreach(['send_log_failure','cancel_log_failure','decision_log_failure'] as $cas
   if($case==='cancel_log_failure')$check($result['order_status']==='cancelled','cancel-log failure reports the already-completed cancellation');
   if($case==='decision_log_failure')$check($result['order_status']==='ordered','decision-log failure reports the already-completed vendor decision');
 }
+foreach(['unknown_cost','malformed_cost','overflowing_cost'] as $case) {
+  $invalid_cost=$run($case);$q=$url_args($invalid_cost);
+  $check(($q['ok']??'')==='0'&&str_contains(rawurldecode($q['message']??''),'positive finite verified unit cost')&&$invalid_cost['mail_calls']===0&&!in_array(['create_order','pending_manager'],$invalid_cost['store_calls'],true),'positive quantity with '.$case.' is rejected before order creation or mail');
+}
+$zero_unknown=$run('zero_qty_unknown_cost');
+$check(($url_args($zero_unknown)['ok']??'')==='1'&&$zero_unknown['mail_calls']===1&&in_array(['create_order','pending_manager'],$zero_unknown['store_calls'],true)&&count($zero_unknown['created_lines'])===1&&$zero_unknown['created_lines'][0]['product']==='Fixture Item','unknown-cost row at zero quantity is omitted while a separately priced order is created and mailed');
 foreach(['sent_status_failure'] as $case) {
   $result=$run($case); $q=$url_args($result); $message=rawurldecode($q['message']??'');
   $check(($q['ok']??'')==='0' && ($q['order_id']??'')==='73' && str_contains($message,'Order email sent'),'status failure preserves actual mail outcome: '.$case);
