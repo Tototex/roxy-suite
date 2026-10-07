@@ -8,6 +8,7 @@ class Square {
   private const IN_STORE_PURCHASE_CATEGORY = 'In Store Purchase';
   private static int $sale_snapshot_depth = 0;
   private static array $sale_snapshot = [];
+  private static array $category_snapshot = [];
 
   /** PHP 8.0-compatible equivalent of array_is_list(). */
   private static function is_list(array $value): bool {
@@ -19,12 +20,12 @@ class Square {
   /** One immutable sale-day read per managed operation; never a persistent cache. */
   public static function with_sale_snapshot(callable $operation) {
     $outer = self::$sale_snapshot_depth === 0;
-    if ($outer) self::$sale_snapshot = [];
+    if ($outer) { self::$sale_snapshot = []; self::$category_snapshot = []; }
     ++self::$sale_snapshot_depth;
     try { return $operation(); }
     finally {
       --self::$sale_snapshot_depth;
-      if ($outer) self::$sale_snapshot = [];
+      if ($outer) { self::$sale_snapshot = []; self::$category_snapshot = []; }
     }
   }
 
@@ -201,10 +202,18 @@ class Square {
 
     $cache = [];
     $uncached = [];
+    $settings = Settings::get_all();
+    $scope = hash('sha256', serialize([$settings['square_environment'] ?? 'production', Settings::square_access_token()]));
+    $managed = self::$sale_snapshot_depth > 0;
 
     foreach ($catalog_object_ids as $catalog_object_id) {
+      if ($managed && array_key_exists($catalog_object_id, self::$category_snapshot[$scope] ?? [])) {
+        $cache[$catalog_object_id] = self::$category_snapshot[$scope][$catalog_object_id];
+        continue;
+      }
       $cache_key = self::catalog_category_cache_key($catalog_object_id);
-      $cached = get_transient($cache_key);
+      // Managed reports require fresh metadata once, then share it for this operation.
+      $cached = $managed ? false : get_transient($cache_key);
       if (is_string($cached) && $cached !== '') {
         $cache[$catalog_object_id] = $cached;
         continue;
@@ -219,16 +228,8 @@ class Square {
       ]);
 
       $all_objects = [];
-      foreach ((array) ($data['objects'] ?? []) as $object) {
-        if (is_array($object) && !empty($object['id'])) {
-          $all_objects[(string) $object['id']] = $object;
-        }
-      }
-      foreach ((array) ($data['related_objects'] ?? []) as $object) {
-        if (is_array($object) && !empty($object['id'])) {
-          $all_objects[(string) $object['id']] = $object;
-        }
-      }
+      self::index_catalog_objects($all_objects, $data['objects'] ?? []);
+      self::index_catalog_objects($all_objects, $data['related_objects'] ?? []);
 
       $missing_category_ids = [];
       foreach ($batch as $catalog_object_id) {
@@ -254,16 +255,13 @@ class Square {
           'object_ids' => array_values($category_batch),
         ]);
 
-        foreach ((array) ($category_data['objects'] ?? []) as $object) {
-          if (is_array($object) && !empty($object['id'])) {
-            $all_objects[(string) $object['id']] = $object;
-          }
-        }
+        self::index_catalog_objects($all_objects, $category_data['objects'] ?? []);
       }
 
       foreach ($batch as $catalog_object_id) {
         $category_name = self::catalog_reporting_category_name($catalog_object_id, $all_objects);
         $cache[$catalog_object_id] = $category_name;
+        if ($managed) self::$category_snapshot[$scope][$catalog_object_id] = $category_name;
         if ($category_name !== '') {
           set_transient(self::catalog_category_cache_key($catalog_object_id), $category_name, DAY_IN_SECONDS * 14);
         } else {
@@ -282,6 +280,18 @@ class Square {
 
     $category_name = (string) ($category_map[$catalog_object_id] ?? '');
     return $category_name !== '' && strcasecmp($category_name, self::IN_STORE_PURCHASE_CATEGORY) === 0;
+  }
+
+  private static function index_catalog_objects(array &$index, array $objects): void {
+    if (!self::is_list($objects)) throw new \RuntimeException('Square returned an invalid catalog list. No report was calculated.');
+    foreach ($objects as $object) {
+      if (!is_array($object) || !is_string($object['id'] ?? null) || $object['id'] === '' || !is_string($object['type'] ?? null) || $object['type'] === '') {
+        throw new \RuntimeException('Square returned an invalid catalog object. No report was calculated.');
+      }
+      $id = $object['id'];
+      if (isset($index[$id]) && $index[$id] != $object) throw new \RuntimeException('Square returned conflicting catalog metadata. No report was calculated.');
+      $index[$id] = $object;
+    }
   }
 
   private static function request(string $method, string $path, array $body = null, ?float $deadline = null): array {

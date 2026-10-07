@@ -103,7 +103,7 @@ try {
     return substr_replace($source, $body, $start, $next-$start);
   };
   $reporter_source = $replace_method_build($reporter_source, 'send_report_locked');
-  $reporter_source = $replace_method_build($reporter_source, 'save_report_draft');
+  $reporter_source = $replace_method_build($reporter_source, 'save_report_draft_snapshot');
   $reporter_source = str_replace('namespace RoxyGrosses;', 'namespace '.$namespace.';', $reporter_source);
   eval('?>'.$reporter_source);
 

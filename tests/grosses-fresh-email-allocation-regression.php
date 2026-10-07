@@ -54,7 +54,7 @@ namespace {
     return substr_replace($source, $body, $start, $next - $start);
   };
   $source = $replace_method_build($source, 'send_report_locked');
-  $source = $replace_method_build($source, 'save_report_draft');
+  $source = $replace_method_build($source, 'save_report_draft_snapshot');
   $source = str_replace('namespace RoxyGrosses;', 'namespace FreshEmailAllocationFixture;', $source);
   eval('?>'.$source);
 

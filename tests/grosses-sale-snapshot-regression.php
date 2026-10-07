@@ -13,6 +13,11 @@ namespace RoxyGrosses {
 
 namespace {
   if (!defined('ABSPATH')) define('ABSPATH', __DIR__);
+  if (!defined('DAY_IN_SECONDS')) define('DAY_IN_SECONDS', 86400);
+  $GLOBALS['category_transients'] = [];
+  function get_transient($key) { return $GLOBALS['category_transients'][$key] ?? false; }
+  function set_transient($key, $value, $ttl) { $GLOBALS['category_transients'][$key] = $value; return true; }
+  function delete_transient($key) { unset($GLOBALS['category_transients'][$key]); return true; }
   final class SaleSnapshotNetworkError extends \RuntimeException { public function get_error_message(): string { return $this->getMessage(); } }
   $GLOBALS['sale_snapshot_calls'] = [];
   $GLOBALS['sale_snapshot_responses'] = [];
@@ -108,4 +113,54 @@ namespace {
     sale_snapshot_must_throw(static fn() => $square::fetch_orders_for_date('2026-02-30'), 'invalid calendar date remains rejected');
   });
   sale_snapshot_check($GLOBALS['sale_snapshot_calls']===[], 'invalid date fails before any Square request');
+
+  $category_response = static function (string $name): array {
+    return ['status'=>200,'body'=>json_encode(['objects'=>[
+      ['id'=>'v','type'=>'ITEM_VARIATION','item_variation_data'=>['item_id'=>'i']],
+      ['id'=>'i','type'=>'ITEM','item_data'=>['reporting_category'=>['id'=>'c']]],
+      ['id'=>'c','type'=>'CATEGORY','category_data'=>['name'=>$name]],
+    ]])];
+  };
+  $GLOBALS['category_transients']['roxy_grosses_sq_cat_'.md5('v')] = 'Stale category';
+  sale_snapshot_reset([$category_response('In Store Purchase'), $category_response('Changed category')]);
+  $first = $square::with_sale_snapshot(static function () use ($square) {
+    $a = $square::concession_reporting_categories(['v','v']);
+    $b = $square::with_sale_snapshot(static fn() => $square::concession_reporting_categories(['v']));
+    sale_snapshot_check($a === $b && $a['v'] === 'In Store Purchase', 'managed category read ignores stale transient and shares fresh metadata');
+    return $a;
+  });
+  $second = $square::with_sale_snapshot(static fn() => $square::concession_reporting_categories(['v']));
+  sale_snapshot_check($second['v']==='Changed category' && count($GLOBALS['sale_snapshot_calls'])===2, 'next operation refreshes category assignments');
+  sale_snapshot_reset([['status'=>200,'body'=>'{"objects":[]}']]);
+  $square::with_sale_snapshot(static function () use ($square) {
+    $a = $square::concession_reporting_categories(['missing']);
+    $b = $square::concession_reporting_categories(['missing']);
+    sale_snapshot_check($a===$b && $a['missing']==='', 'empty category result shared only within operation');
+  });
+  sale_snapshot_check(count($GLOBALS['sale_snapshot_calls'])===1, 'empty category lookup avoids repeat requests');
+  sale_snapshot_reset([$category_response('Before exception'), $category_response('After exception')]);
+  sale_snapshot_must_throw(static function () use ($square) {
+    $square::with_sale_snapshot(static function () use ($square) {
+      $square::concession_reporting_categories(['v']);
+      throw new \RuntimeException('abort metadata operation');
+    });
+  }, 'metadata operation exception propagates');
+  $after = $square::with_sale_snapshot(static fn() => $square::concession_reporting_categories(['v']));
+  sale_snapshot_check($after['v']==='After exception', 'exception clears category snapshot');
+  sale_snapshot_reset([$category_response('Sandbox category'),$category_response('Production category')]);
+  $square::with_sale_snapshot(static function () use ($square) {
+    \RoxyGrosses\Settings::$environment = 'sandbox';
+    $a = $square::concession_reporting_categories(['v']);
+    \RoxyGrosses\Settings::$environment = 'production';
+    $b = $square::concession_reporting_categories(['v']);
+    sale_snapshot_check($a['v']==='Sandbox category' && $b['v']==='Production category', 'category snapshot separates environments');
+  });
+  foreach ([['objects'=>['invalid']], ['objects'=>[['id'=>'v','type'=>'ITEM_VARIATION']], 'related_objects'=>[['id'=>'v','type'=>'ITEM']]]] as $invalid) {
+    sale_snapshot_reset([['status'=>200,'body'=>json_encode($invalid)], $category_response('Recovered category')]);
+    $square::with_sale_snapshot(static function () use ($square) {
+      sale_snapshot_must_throw(static fn() => $square::concession_reporting_categories(['v']), 'malformed or conflicting catalog metadata fails closed');
+      $retry = $square::concession_reporting_categories(['v']);
+      sale_snapshot_check($retry['v']==='Recovered category', 'failed category retrieval is not cached');
+    });
+  }
 }

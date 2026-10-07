@@ -399,6 +399,10 @@ class Reporter {
   }
 
   public static function pull_into_database(string $report_date, string $mode = 'manual-pull'): array {
+    return Square::with_sale_snapshot(static fn() => self::pull_into_database_snapshot($report_date, $mode));
+  }
+
+  private static function pull_into_database_snapshot(string $report_date, string $mode): array {
     try {
       $reports = self::build_reports($report_date);
       $summary = self::summarize_reports($reports);
@@ -407,7 +411,7 @@ class Reporter {
       }
 
       $entry_result = Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, null), 'update');
-      self::rebalance_concessions_for_date($report_date);
+      self::rebalance_concessions_for_report_dates($reports, $report_date);
       Store::upsert_history_rows($reports, $mode, null);
       $message = sprintf(
         'Pulled %d row(s) for %s. %d created, %d updated, %d skipped.',
@@ -448,6 +452,10 @@ class Reporter {
   }
 
   public static function pull_live_into_database(string $report_date, string $mode = 'manual-live-pull'): array {
+    return Square::with_sale_snapshot(static fn() => self::pull_live_into_database_snapshot($report_date, $mode));
+  }
+
+  private static function pull_live_into_database_snapshot(string $report_date, string $mode): array {
     try {
       $rows = self::build_live_reports($report_date);
       if (!$rows) {
@@ -564,7 +572,7 @@ class Reporter {
       if ($live_rows) {
         $live_result = Store::upsert_live_entries($live_rows, 'update');
       }
-      self::rebalance_concessions_for_date($report_date);
+      self::rebalance_concessions_for_report_dates($movie_rows, $report_date);
       if ((int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', $lock)) !== 1) throw new \RuntimeException('Grosses refund refresh lost its database lock.');
       $scan_date = $cutoff->format('Y-m-d');
       $pending_dates = $snapshot->pending_source_dates();
@@ -993,6 +1001,10 @@ class Reporter {
   }
 
   public static function save_report_draft(string $report_date, string $mode = 'review'): array {
+    return Square::with_sale_snapshot(static fn() => self::save_report_draft_snapshot($report_date, $mode));
+  }
+
+  private static function save_report_draft_snapshot(string $report_date, string $mode): array {
     try {
       $reports = self::build_reports($report_date);
       $summary = self::summarize_reports($reports);
@@ -1588,6 +1600,17 @@ class Reporter {
     return false;
   }
 
+  private static function rebalance_concessions_for_report_dates(array $reports, string $requested_date): void {
+    $dates = [$requested_date => true];
+    foreach ($reports as $report) {
+      $date = (string) ($report['report_date'] ?? '');
+      if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) $dates[$date] = true;
+    }
+    $dates = array_keys($dates);
+    sort($dates, SORT_STRING);
+    foreach ($dates as $date) self::rebalance_concessions_for_date($date);
+  }
+
   private static function rebalance_concessions_for_date(string $report_date): array {
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date)) {
       return ['rows' => 0, 'updated' => 0, 'concessions_total' => 0.0];
@@ -1607,6 +1630,7 @@ class Reporter {
         'general_qty' => max(0, (int) ($row['general_qty'] ?? 0)),
         'discount_qty' => max(0, (int) ($row['discount_qty'] ?? 0)),
         'group_qty' => max(0, (int) ($row['group_qty'] ?? 0)),
+        '_is_locked' => !empty($row['is_locked']),
         'concessions_total' => 0.0,
       ];
     }
@@ -1625,6 +1649,7 @@ class Reporter {
         'online_qty' => max(0, (int) ($row['online_qty'] ?? 0)),
         'door_qty' => max(0, (int) ($row['door_qty'] ?? 0)),
         'group_sub_qty' => max(0, (int) ($row['group_sub_qty'] ?? 0)),
+        '_is_locked' => !empty($row['is_locked']),
         'concessions_total' => 0.0,
       ];
     }
@@ -1640,6 +1665,7 @@ class Reporter {
         '_start_at' => self::start_at_for_entry_row($report_date, (string) ($row['show_time'] ?? '')),
         'show_time' => (string) ($row['show_time'] ?? ''),
         'concessions_total' => 0.0,
+        '_is_locked' => !empty($row['is_locked']),
       ];
     }
 
@@ -1655,18 +1681,19 @@ class Reporter {
       $entry_id = (int) ($report['_entry_id'] ?? 0);
       $kind = (string) ($report['_entry_kind'] ?? '');
       $concessions = round((float) ($report['concessions_total'] ?? 0), 2);
-      $concessions_total += $concessions;
       if ($entry_id <= 0) {
         continue;
       }
 
-      if ($kind === 'movie' && Store::update_entry($entry_id, ['concessions_total' => $concessions])) {
-        $updated++;
-      } elseif ($kind === 'live' && Store::update_live_entry($entry_id, ['concessions_total' => $concessions])) {
-        $updated++;
-      } elseif ($kind === 'rental' && Store::update_rental_entry($entry_id, ['concessions_total' => $concessions])) {
-        $updated++;
-      }
+      if (!empty($report['_is_locked'])) continue;
+      $saved = $kind === 'movie'
+        ? Store::update_entry($entry_id, ['concessions_total' => $concessions])
+        : ($kind === 'live'
+          ? Store::update_live_entry($entry_id, ['concessions_total' => $concessions])
+          : Store::update_rental_entry($entry_id, ['concessions_total' => $concessions]));
+      if (!$saved) throw new \RuntimeException('Could not save the concessions allocation for ' . $report_date . '. The report refresh was not completed.');
+      $updated++;
+      $concessions_total += $concessions;
     }
 
     return [
@@ -2228,6 +2255,10 @@ class Reporter {
   }
 
   public static function reconciliation_rows(string $date_from, string $date_to): array {
+    return Square::with_sale_snapshot(static fn() => self::reconciliation_rows_snapshot($date_from, $date_to));
+  }
+
+  private static function reconciliation_rows_snapshot(string $date_from, string $date_to): array {
     $date_from = sanitize_text_field($date_from);
     $date_to = sanitize_text_field($date_to);
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_from) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_to)) {
