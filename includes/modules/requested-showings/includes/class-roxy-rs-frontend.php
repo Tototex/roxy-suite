@@ -307,6 +307,11 @@ class Frontend {
 
         $deadline_at = self::deadline_for_target($target_at);
         $pricing_profile = (string) ($selected_slot['profile'] ?? 'movie_evening');
+        $default_goal = Settings::funding_goal_cents();
+        $default_sponsor = Settings::sponsor_amount_cents();
+        if (is_wp_error($default_goal) || is_wp_error($default_sponsor)) {
+            self::redirect_notice('error', 'Requested-showing currency defaults need administrator review. No request was created.');
+        }
 
         $post_id = wp_insert_post([
             'post_type' => CPT::POST_TYPE,
@@ -326,8 +331,6 @@ class Frontend {
         update_post_meta($post_id, CPT::META_TARGET_AT, $target_at);
         update_post_meta($post_id, CPT::META_DEADLINE_AT, $deadline_at);
         update_post_meta($post_id, CPT::META_PRICING_PROFILE, $pricing_profile);
-        $default_goal = Settings::funding_goal_cents();
-        $default_sponsor = max($default_goal, Settings::sponsor_amount_cents());
         update_post_meta($post_id, CPT::META_MIN_SUPPORT, 0);
         update_post_meta($post_id, CPT::META_FUNDING_GOAL, $default_goal);
         update_post_meta($post_id, CPT::META_SPONSOR_AMOUNT, $default_sponsor);

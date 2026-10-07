@@ -123,11 +123,11 @@ class CPT {
     }
 
     public static function funding_goal_cents(int $post_id) {
-        return self::stored_cents($post_id, self::META_FUNDING_GOAL, Settings::funding_goal_cents());
+        return self::stored_cents($post_id, self::META_FUNDING_GOAL, [Settings::class, 'funding_goal_cents']);
     }
 
     public static function sponsor_amount_cents(int $post_id) {
-        $amount = self::stored_cents($post_id, self::META_SPONSOR_AMOUNT, Settings::sponsor_amount_cents());
+        $amount = self::stored_cents($post_id, self::META_SPONSOR_AMOUNT, [Settings::class, 'sponsor_amount_cents']);
         if (is_wp_error($amount)) return $amount;
         $goal = self::funding_goal_cents($post_id);
         if (is_wp_error($goal)) return $goal;
@@ -136,13 +136,15 @@ class CPT {
     }
 
     /** Funding goal and sponsor amount are cents; missing history defaults, but invalid explicit values block use. */
-    private static function stored_cents(int $post_id, string $meta_key, int $fallback) {
+    private static function stored_cents(int $post_id, string $meta_key, $fallback) {
         $unit = get_post_meta($post_id, self::META_FUNDING_UNIT_VERSION, true);
         if ($unit !== '' && $unit !== self::FUNDING_UNIT_CENTS_V1) {
             return new \WP_Error('unsupported_funding_unit', 'The saved funding currency unit is unsupported. Review this request before accepting backing.');
         }
         $value = get_post_meta($post_id, $meta_key, true);
-        if ($value === '' || $value === null) return $fallback;
+        if ($value === '' || $value === null) {
+            return is_callable($fallback) ? call_user_func($fallback) : $fallback;
+        }
         if (!is_scalar($value) || !preg_match('/^[0-9]+$/D', (string) $value)) {
             return new \WP_Error('invalid_funding_amount', 'A saved funding amount is invalid. Review this request before accepting backing.');
         }
@@ -410,10 +412,10 @@ class CPT {
             set_transient('roxy_rs_invalid_currency_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
             return;
         }
-        if (is_wp_error($saved_goal)) $saved_goal = Settings::funding_goal_cents();
-        if (is_wp_error($saved_sponsor)) $saved_sponsor = Settings::sponsor_amount_cents();
-        $funding_goal = self::parse_currency_input($goal_input, $saved_goal);
-        $sponsor_amount = self::parse_currency_input($sponsor_input, $saved_sponsor);
+        $goal_default = is_wp_error($saved_goal) ? null : $saved_goal;
+        $sponsor_default = is_wp_error($saved_sponsor) ? null : $saved_sponsor;
+        $funding_goal = self::parse_currency_input($goal_input, $goal_default);
+        $sponsor_amount = self::parse_currency_input($sponsor_input, $sponsor_default);
         $currency_inputs = [];
         foreach ([
             'roxy_rs_general_price' => self::META_GENERAL_PRICE,

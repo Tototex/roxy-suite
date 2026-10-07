@@ -15,6 +15,7 @@ $GLOBALS['money_meta'] = [];
 $GLOBALS['money_writes'] = [];
 $GLOBALS['money_options'] = [];
 $GLOBALS['money_redirects'] = [];
+$GLOBALS['money_insert_calls'] = 0;
 function check_money($ok, $label) { if (!$ok) throw new \RuntimeException($label); echo "PASS: $label\n"; }
 function get_option($key, $default = false) { return $GLOBALS['money_options'][$key] ?? $default; }
 function update_option($key, $value, $autoload = null) { $GLOBALS['money_options'][$key] = $value; return true; }
@@ -42,7 +43,10 @@ function wp_safe_redirect($url) { $GLOBALS['money_redirects'][] = $url; throw ne
 function add_query_arg($args, $url) { return $url . '?' . http_build_query($args); }
 function admin_url($path = '') { return 'https://fixture.invalid/' . $path; }
 function wp_nonce_field(...$args) {}
-function wp_insert_post($args, $error = false) { return 88; }
+function esc_attr($value) { return htmlspecialchars((string) $value, ENT_QUOTES); }
+function esc_url($value) { return (string) $value; }
+function submit_button(...$args) {}
+function wp_insert_post($args, $error = false) { $GLOBALS['money_insert_calls']++; return 88; }
 function is_user_logged_in() { return true; }
 function sanitize_email($value) { return (string) $value; }
 function sanitize_textarea_field($value) { return (string) $value; }
@@ -71,6 +75,12 @@ foreach (['1.001', '1e2', '-1', '1,000', 'abc', '21474836.48', ['5']] as $invali
 }
 check_money(\RoxyRS\CPT::parse_currency_input('', 725) === 725, 'blank amount uses explicit caller default');
 
+$settings_key = \RoxyRS\Settings::OPTION_KEY;
+check_money(\RoxyRS\Settings::funding_goal_cents() === 30000 && \RoxyRS\Settings::sponsor_amount_cents() === 30000,
+    'missing Settings option retains the documented defaults');
+$GLOBALS['money_options'][$settings_key] = ['sponsor_ticket_qty'=>4];
+check_money(\RoxyRS\Settings::funding_goal_cents() === 30000 && \RoxyRS\Settings::sponsor_amount_cents() === 30000,
+    'omitted currency keys retain defaults when unrelated Settings fields exist');
 $GLOBALS['money_options'][\RoxyRS\Settings::OPTION_KEY] = ['funding_goal_cents'=>30000, 'sponsor_amount_cents'=>30000];
 $GLOBALS['money_meta'][10] = [
     \RoxyRS\CPT::META_FUNDING_GOAL => '500',
@@ -81,6 +91,22 @@ foreach (['100'=>100, '999'=>999] as $raw=>$expected) {
     $GLOBALS['money_meta'][10][\RoxyRS\CPT::META_FUNDING_GOAL] = $raw;
     check_money(\RoxyRS\CPT::funding_goal_cents(10) === $expected, 'small persisted cents are preserved exactly');
 }
+$GLOBALS['money_options'][$settings_key] = ['funding_goal_cents'=>'999999garbage'];
+check_money(is_wp_error(\RoxyRS\Settings::funding_goal_cents()), 'malformed explicit Settings goal returns a controlled error instead of clamping');
+check_money(is_wp_error(\RoxyRS\Settings::sponsor_amount_cents()) && \RoxyRS\Settings::sponsor_ticket_qty() === 2,
+    'sponsor default is withheld for corrupt currency while non-currency getters remain safe');
+$GLOBALS['money_options'][$settings_key] = ['funding_goal_cents'=>999999];
+check_money(is_wp_error(\RoxyRS\Settings::sponsor_amount_cents()), 'missing sponsor amount below a valid high goal is not synthesized upward');
+$GLOBALS['money_options'][$settings_key] = ['funding_goal_cents'=>999999, 'sponsor_amount_cents'=>50000];
+check_money(is_wp_error(\RoxyRS\Settings::sponsor_amount_cents()), 'explicit sponsor below the saved goal is rejected without clamping');
+$GLOBALS['money_options'][$settings_key] = ['funding_goal_cents'=>30000, 'sponsor_amount_cents'=>'1e6'];
+check_money(is_wp_error(\RoxyRS\Settings::sponsor_amount_cents()), 'non-decimal persisted sponsor cents are rejected');
+$GLOBALS['money_options'][$settings_key] = ['funding_goal_cents'=>'bad', 'sponsor_amount_cents'=>'bad'];
+$GLOBALS['money_meta'][10][\RoxyRS\CPT::META_FUNDING_GOAL] = '500';
+$GLOBALS['money_meta'][10][\RoxyRS\CPT::META_SPONSOR_AMOUNT] = '800';
+check_money(\RoxyRS\CPT::funding_goal_cents(10) === 500 && \RoxyRS\CPT::sponsor_amount_cents(10) === 800,
+    'valid explicit per-request amounts do not depend on corrupt global defaults');
+$GLOBALS['money_options'][$settings_key] = ['funding_goal_cents'=>30000, 'sponsor_amount_cents'=>30000];
 $GLOBALS['money_meta'][10][\RoxyRS\CPT::META_FUNDING_GOAL] = '500';
 $GLOBALS['money_meta'][10][\RoxyRS\CPT::META_SPONSOR_AMOUNT] = '800';
 $GLOBALS['money_meta'][10][\RoxyRS\CPT::META_GENERAL_PRICE] = '0.10';
@@ -126,6 +152,20 @@ check_money(($GLOBALS['money_meta'][11][\RoxyRS\CPT::META_FUNDING_GOAL] ?? null)
     && ($GLOBALS['money_meta'][11][\RoxyRS\CPT::META_FUNDING_UNIT_VERSION] ?? null) === 'cents_v1'
     && ($GLOBALS['money_meta'][11][\RoxyRS\CPT::META_GENERAL_PRICE] ?? null) === '12.00', 'valid CPT save stores funding amounts as marked cents');
 
+$GLOBALS['money_options'][$settings_key] = ['funding_goal_cents'=>'bad', 'sponsor_amount_cents'=>'bad'];
+$GLOBALS['money_meta'][14] = [
+    \RoxyRS\CPT::META_STATUS=>'pending_review',
+    \RoxyRS\CPT::META_FUNDING_GOAL=>'12500',
+    \RoxyRS\CPT::META_SPONSOR_AMOUNT=>'18000',
+];
+$_POST = ['roxy_rs_nonce'=>'fixture', 'roxy_rs_status'=>'pending_review', 'roxy_rs_funding_goal'=>'', 'roxy_rs_sponsor_amount'=>''];
+$GLOBALS['money_writes'] = [];
+\RoxyRS\CPT::save(14, (object)['post_status'=>'draft']);
+check_money((int) ($GLOBALS['money_meta'][14][\RoxyRS\CPT::META_FUNDING_GOAL] ?? 0) === 12500
+    && (int) ($GLOBALS['money_meta'][14][\RoxyRS\CPT::META_SPONSOR_AMOUNT] ?? 0) === 18000,
+    'CPT admin save preserves valid explicit request amounts despite corrupt global defaults');
+$GLOBALS['money_options'][$settings_key] = ['funding_goal_cents'=>30000, 'sponsor_amount_cents'=>30000];
+
 $GLOBALS['money_meta'][12] = [
     \RoxyRS\CPT::META_FUNDING_GOAL=>'garbage',
     \RoxyRS\CPT::META_SPONSOR_AMOUNT=>'10000',
@@ -148,10 +188,12 @@ $_POST = [
     'roxy_rs_funding_goal'=>'100.00', 'roxy_rs_sponsor_amount'=>'150.00',
     'roxy_rs_general_price'=>'12.00', 'roxy_rs_discount_price'=>'8.00', 'roxy_rs_matinee_price'=>'6.00',
 ];
+$GLOBALS['money_options'][$settings_key] = ['funding_goal_cents'=>'broken', 'sponsor_amount_cents'=>30000];
 $GLOBALS['money_writes'] = [];
 \RoxyRS\CPT::save(12, (object)['post_status'=>'draft']);
 check_money(($GLOBALS['money_meta'][12][\RoxyRS\CPT::META_FUNDING_GOAL] ?? null) === 10000
-    && ($GLOBALS['money_meta'][12][\RoxyRS\CPT::META_FUNDING_UNIT_VERSION] ?? null) === 'cents_v1', 'admin can explicitly repair malformed or unsupported saved units');
+    && ($GLOBALS['money_meta'][12][\RoxyRS\CPT::META_FUNDING_UNIT_VERSION] ?? null) === 'cents_v1', 'admin can explicitly repair malformed request units despite corrupt global defaults');
+$GLOBALS['money_options'][$settings_key] = ['funding_goal_cents'=>30000, 'sponsor_amount_cents'=>30000];
 
 $old_options = $GLOBALS['money_options'][\RoxyRS\Settings::OPTION_KEY];
 foreach ([['12.345','20.00'], ['0','20.00'], ['0.99','20.00'], ['5.00','0.99'], ['12.00','11.99']] as [$goal, $sponsor]) {
@@ -160,6 +202,22 @@ foreach ([['12.345','20.00'], ['0','20.00'], ['0.99','20.00'], ['5.00','0.99'], 
     check_money($GLOBALS['money_options'][\RoxyRS\Settings::OPTION_KEY] === $old_options, 'invalid or inconsistent Settings amounts leave the option unchanged');
 }
 
+$GLOBALS['money_options'][$settings_key] = ['funding_goal_cents'=>'broken', 'sponsor_amount_cents'=>30000];
+ob_start(); \RoxyRS\Settings::render_page(false); $settings_html = ob_get_clean();
+check_money(strpos($settings_html, 'Saved currency settings need review') !== false
+    && strpos($settings_html, 'name="funding_goal"') !== false
+    && strpos($settings_html, 'value=""') !== false,
+    'Settings page renders a controlled repair form instead of casting corrupt values');
+$_POST = ['funding_goal'=>'', 'sponsor_amount'=>''];
+try { \RoxyRS\Settings::handle_save(); } catch (\RoxyRS\TestRedirect $expected) {}
+check_money($GLOBALS['money_options'][$settings_key]['funding_goal_cents'] === 'broken',
+    'blank Settings repair does not replace malformed persisted currency with defaults');
+$_POST = ['funding_goal'=>'125.00', 'sponsor_amount'=>'180.00'];
+try { \RoxyRS\Settings::handle_save(); } catch (\RoxyRS\TestRedirect $expected) {}
+check_money(($GLOBALS['money_options'][$settings_key]['funding_goal_cents'] ?? null) === 12500
+    && ($GLOBALS['money_options'][$settings_key]['sponsor_amount_cents'] ?? null) === 18000,
+    'Settings admin can repair malformed persisted currency with explicit valid values');
+
 $GLOBALS['money_meta'] = [];
 $GLOBALS['money_options'][\RoxyRS\Settings::OPTION_KEY] = ['funding_goal_cents'=>12500, 'sponsor_amount_cents'=>18000, 'sponsor_ticket_qty'=>2];
 $_POST = ['title'=>'Fixture request', 'requester_name'=>'Tester', 'requester_email'=>'fixture@example.invalid', 'target_at'=>'2040-03-15T17:00', 'notes'=>''];
@@ -167,5 +225,13 @@ try { \RoxyRS\Frontend::handle_submit_request(); } catch (\RoxyRS\TestRedirect $
 check_money(($GLOBALS['money_meta'][88][\RoxyRS\CPT::META_FUNDING_GOAL] ?? null) === 12500
     && ($GLOBALS['money_meta'][88][\RoxyRS\CPT::META_SPONSOR_AMOUNT] ?? null) === 18000
     && ($GLOBALS['money_meta'][88][\RoxyRS\CPT::META_FUNDING_UNIT_VERSION] ?? null) === 'cents_v1', 'new frontend requests write default amounts as marked integer cents');
+$GLOBALS['money_meta'] = [];
+$GLOBALS['money_writes'] = [];
+$GLOBALS['money_options'][$settings_key] = ['funding_goal_cents'=>'broken', 'sponsor_amount_cents'=>30000];
+$insert_calls_before = $GLOBALS['money_insert_calls'];
+$_POST = ['title'=>'Fixture request', 'requester_name'=>'Tester', 'requester_email'=>'fixture@example.invalid', 'target_at'=>'2040-03-15T17:00', 'notes'=>''];
+try { \RoxyRS\Frontend::handle_submit_request(); } catch (\RoxyRS\TestRedirect $expected) {}
+check_money($GLOBALS['money_insert_calls'] === $insert_calls_before && $GLOBALS['money_writes'] === [],
+    'corrupt global defaults stop new-request creation before any post or metadata writes');
 echo "All requested-money regressions passed.\n";
 }
