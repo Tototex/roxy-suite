@@ -98,6 +98,7 @@ class Health {
         $wp_ok  = version_compare(get_bloginfo('version'), '6.0', '>=');
         $wc_ok  = class_exists('WooCommerce');
         $as_ok  = class_exists('ActionScheduler') || function_exists('as_enqueue_async_action');
+        $storage = Compatibility::order_storage_status();
 
         // Core has no toggle key — it is always enabled
         return self::module('Core / Environment', null, [
@@ -109,6 +110,7 @@ class Health {
                 $wc_ok ? self::PASS : self::FAIL, $wc_ok ? '' : 'WooCommerce is required'),
             self::item('Action Scheduler', $as_ok ? 'Available' : 'Not found',
                 $as_ok ? self::PASS : self::WARN, $as_ok ? '' : 'Required by Event Booking'),
+            self::item('WooCommerce order storage', $storage['value'], $storage['status'], $storage['message']),
         ]);
     }
 
