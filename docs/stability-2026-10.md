@@ -14,7 +14,7 @@ Refund attribution confirmed 2026-10-06: later Square ticket refunds correct ori
 |---|---|---|
 | C1 | In progress | Inventory/Social coverage and honest diagnostic labels deployed; live diagnostics detect one existing failed Social job. Remaining modules need job freshness coverage. |
 | C2 | In progress | Rollback branch preserved; changed-file backups and selective deployment used. Release-wide reproducibility/manifest workflow remains open. |
-| C3 | Resolved | PHP 8.0 minimum declared in plugin and diagnostics; isolated regression and live PHP 8.3 diagnostics pass. |
+| C3 | Reopened | PHP 8.0 minimum declared, but later Grosses changes introduced native PHP 8.1 array_is_list calls. Compatibility correction under review; current live PHP 8.3 is unaffected. |
 | C4 | Open | See audit; no resolution claimed. |
 | C5 | Resolved | Five-minute failure backoff; error/HTTP/malformed/missing-asset and successful-cache regression checks pass. |
 | C6 | Open | See audit; no resolution claimed. |

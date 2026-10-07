@@ -58,6 +58,13 @@ $fallback = ['product_row_count'=>'1','product_rows_complete'=>'1','vendor'=>[1=
 check(count(\RoxyInventory\Admin::product_rows_from_submission($fallback)) === 1, 'I1: complete non-JavaScript fallback accepted');
 unset($fallback['target_stock']);
 check(\RoxyInventory\Admin::product_rows_from_submission($fallback) === null, 'I1: truncated fallback rejected');
+foreach(['bad_cost'=>['unit_cost'=>'1.555'],'overflow'=>['target_stock'=>'10000000000']]as$case=>$change){
+    $row=['vendor'=>'Vistar','pack_size'=>'12','reorder_point'=>'20','target_stock'=>'60','unit_cost'=>'1.50','override_qty'=>''];
+    $p=['product_rows_complete'=>'1','product_row_count'=>'1','product_rows_json'=>json_encode([1=>array_merge($row,$change)])];
+    check(\RoxyInventory\Admin::product_rows_from_submission($p)===null,'I9: invalid rule '.$case.' rejected before writes');
+}
+check(\RoxyInventory\Admin::product_rows_from_submission(['product_rows_complete'=>'1','product_row_count'=>['1']])===null,'I9: array row count rejected safely');
+check(\RoxyInventory\Admin::product_rows_from_submission(['product_rows_complete'=>'1','product_row_count'=>'1','product_rows_json'=>['bad']])===null,'I9: non-string JSON submission rejected safely');
 
 $next = new \ReflectionMethod(\RoxyInventory\Scheduler::class, 'next_time'); $next->setAccessible(true);
 foreach (['2026-10-31 23:01'=>'2026-11-01 23:00', '2026-03-07 23:01'=>'2026-03-08 23:00'] as $date => $expected) {

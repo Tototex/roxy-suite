@@ -239,7 +239,14 @@ class Store {
             self::checked_write($wpdb->insert(self::products_table(), $data));
         }
     }
-    public static function update_product(int $id, array $data): void { global $wpdb; self::transaction(static function () use ($id,$data,$wpdb) { self::checked_write($wpdb->update(self::products_table(), $data, ['id' => $id])); }); }
+    private static function require_row(string $table, int $id): void {
+        global $wpdb;
+        if ($id < 1) throw new \RuntimeException('Invalid inventory record. Nothing was saved.');
+        $found=$wpdb->get_var($wpdb->prepare('SELECT id FROM '.$table.' WHERE id=%d',$id));
+        self::checked_read();
+        if ($found === null || (int)$found !== $id) throw new \RuntimeException('This inventory record no longer exists. Refresh before saving.');
+    }
+    public static function update_product(int $id, array $data): void { global $wpdb; self::transaction(static function () use ($id,$data,$wpdb) { self::require_row(self::products_table(),$id); self::checked_write($wpdb->update(self::products_table(), $data, ['id' => $id])); }); }
     public static function deactivate_missing(array $square_variation_ids): int {
         global $wpdb;
         $ids = array_values(array_filter(array_map('strval', $square_variation_ids)));
@@ -248,7 +255,7 @@ class Store {
         $sql = $wpdb->prepare("UPDATE " . self::products_table() . " SET active=0, updated_at=%s WHERE active=1 AND square_variation_id NOT IN ($placeholders)", array_merge([current_time('mysql')], $ids));
         $result = $wpdb->query($sql); self::checked_write($result); return (int) $result;
     }
-    public static function update_vendor(int $id, array $data): void { global $wpdb; self::transaction(static function () use ($id,$data,$wpdb) { self::checked_write($wpdb->update(self::vendors_table(), $data, ['id' => $id])); }); }
+    public static function update_vendor(int $id, array $data): void { global $wpdb; self::transaction(static function () use ($id,$data,$wpdb) { self::require_row(self::vendors_table(),$id); self::checked_write($wpdb->update(self::vendors_table(), $data, ['id' => $id])); }); }
     public static function log(string $type, string $status, string $message): bool {
         global $wpdb;
         // Logging follows irreversible email actions too: never disguise a sent

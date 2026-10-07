@@ -150,17 +150,23 @@ class Admin {
     public static function save_product(): void {
         self::guard();
         check_admin_referer('roxy_inventory_save_product');
-        $id = (int) ($_POST['id'] ?? 0);
         try {
-            Store::update_product($id, [
-                'vendor' => sanitize_text_field(wp_unslash($_POST['vendor'] ?? '')),
-                'pack_size' => max(1, (float) ($_POST['pack_size'] ?? 1)),
-                'reorder_point' => max(0, (float) ($_POST['reorder_point'] ?? 0)),
-                'target_stock' => max(0, (float) ($_POST['target_stock'] ?? 0)),
-                'unit_cost' => max(0, (float) ($_POST['unit_cost'] ?? 0)),
-                'override_qty' => ($_POST['override_qty'] ?? '') === '' ? null : max(0, (float) $_POST['override_qty']),
-                'tracking_status' => in_array(($_POST['tracking_status'] ?? 'tracked'), ['tracked', 'not_tracked'], true) ? $_POST['tracking_status'] : 'tracked',
-            ]);
+            $id=self::record_id($_POST['id']??null); $row=[];
+            foreach(['vendor','pack_size','reorder_point','target_stock','unit_cost','override_qty'] as $field) {
+                if(!array_key_exists($field,$_POST))throw new \RuntimeException('Incomplete product changes. Refresh before saving.');
+                $row[$field]=$_POST[$field];
+            }
+            $rows=self::product_rows_from_submission(['product_rows_complete'=>'1','product_row_count'=>'1','product_rows_json'=>wp_json_encode([$id=>$row])]);
+            if($rows===null)throw new \RuntimeException('Use nonnegative whole quantities and a cost with at most two decimals.');
+            $has_status=array_key_exists('tracking_status',$_POST); $status=$_POST['tracking_status']??null;
+            if(array_key_exists('tracking_status',$_POST)) {
+                if(!in_array($status,['tracked','not_tracked'],true))throw new \RuntimeException('Invalid tracking status.');
+            }
+            Store::transaction(static function()use($id,$row,$has_status,$status){
+                $changes=self::product_changes($row,array_column(Store::all_vendors(),'name'));
+                if($has_status)$changes['tracking_status']=$status;
+                Store::update_product($id,$changes);
+            });
         } catch (\Throwable $error) {
             self::redirect('products', 'Product could not be saved: ' . $error->getMessage(), false);
         }
@@ -169,10 +175,12 @@ class Admin {
     public static function bulk_save(): void {
         self::guard(); check_admin_referer('roxy_inventory_bulk_save');
         try { Store::transaction(static function () {
+            if(!is_array($_POST['tracking_status']??null)||!is_array($_POST['vendor']??null))throw new \RuntimeException('Incomplete product changes; nothing was saved.');
+            $names=array_column(Store::all_vendors(),'name');
             foreach((array)($_POST['tracking_status']??[]) as $id=>$status) {
-                $id=absint($id); $status=sanitize_key($status);
+                $id=self::record_id($id);
                 if(!$id || !in_array($status,['tracked','not_tracked'],true) || !array_key_exists($id,(array)($_POST['vendor']??[]))) throw new \RuntimeException('Incomplete product changes; nothing was saved.');
-                $vendor=sanitize_text_field(wp_unslash($_POST['vendor'][$id]));
+                $vendor=self::validated_vendor($_POST['vendor'][$id],$names);
                 Store::update_product($id,['vendor'=>$vendor,'tracking_status'=>$status]);
             }
         }); } catch (\Throwable $e) { self::redirect('unassigned',$e->getMessage(),false); }
@@ -182,11 +190,19 @@ class Admin {
         self::guard();
         check_admin_referer('roxy_inventory_save_vendor');
         try {
-            Store::update_vendor((int) ($_POST['id'] ?? 0), [
-                'order_method' => sanitize_text_field(wp_unslash($_POST['order_method'] ?? '')),
-                'email' => sanitize_email($_POST['email'] ?? ''),
-                'minimum_amount' => max(0, (float) ($_POST['minimum_amount'] ?? 0)),
-                'delivery_notes' => sanitize_textarea_field(wp_unslash($_POST['delivery_notes'] ?? '')),
+            $id=self::record_id($_POST['id']??null);
+            foreach(['order_method','email','minimum_amount','delivery_notes']as$field)if(!array_key_exists($field,$_POST)||!is_string($_POST[$field]))throw new \RuntimeException('Incomplete vendor changes. Refresh before saving.');
+            $method=sanitize_text_field(wp_unslash($_POST['order_method']));
+            if(!in_array($method,['email','online','manual','text','phone'],true))throw new \RuntimeException('Use email, online, manual, text, or phone as the order method.');
+            $email=sanitize_email(wp_unslash($_POST['email']));
+            if(trim($_POST['email'])!=='' && (!$email||!is_email($email)))throw new \RuntimeException('Enter a valid vendor email address or leave it blank.');
+            $minimum=$_POST['minimum_amount'];
+            if(!is_numeric($minimum)||!is_finite((float)$minimum)||(float)$minimum<0||(float)$minimum>9999999999.99||round((float)$minimum,2)!==(float)$minimum)throw new \RuntimeException('Use a nonnegative vendor minimum with at most two decimals.');
+            Store::update_vendor($id, [
+                'order_method' => $method,
+                'email' => $email,
+                'minimum_amount' => (float)$minimum,
+                'delivery_notes' => sanitize_textarea_field(wp_unslash($_POST['delivery_notes'])),
                 'updated_at' => current_time('mysql'),
             ]);
         } catch (\Throwable $error) {
@@ -452,8 +468,10 @@ JS;
     }
     public static function product_rows_from_submission(array $post): ?array {
         if (($post['product_rows_complete'] ?? '') !== '1' || !isset($post['product_row_count'])) return null;
+        if(!is_scalar($post['product_row_count'])||!ctype_digit((string)$post['product_row_count'])||(int)$post['product_row_count']>20000)return null;
         $rows = [];
         if (!empty($post['product_rows_json'])) {
+            if(!is_string($post['product_rows_json'])||strlen($post['product_rows_json'])>5000000)return null;
             $rows = json_decode(wp_unslash($post['product_rows_json']), true);
             if (!is_array($rows)) return null;
         } else {
@@ -466,23 +484,38 @@ JS;
         }
         if (count($rows) !== (int) $post['product_row_count']) return null;
         foreach ($rows as $id => $row) {
-            if (!ctype_digit((string) $id) || (int) $id < 1 || !is_array($row)) return null;
+            if (!ctype_digit((string) $id) || (int) $id < 1 || (string)(int)$id!==(string)$id || !is_array($row)) return null;
             foreach (['vendor','pack_size','reorder_point','target_stock','unit_cost','override_qty'] as $field) {
                 if (!array_key_exists($field, $row) || !is_scalar($row[$field])) return null;
                 if ($field === 'vendor' || ($field === 'override_qty' && $row[$field] === '')) continue;
-                if (!is_numeric($row[$field]) || !is_finite((float) $row[$field]) || (float) $row[$field] < 0) return null;
+                if (!is_numeric($row[$field]) || !is_finite((float) $row[$field]) || (float) $row[$field] < 0 || (float)$row[$field]>9999999999.99) return null;
+                if ($field === 'unit_cost' && round((float)$row[$field],2)!==(float)$row[$field]) return null;
                 if ($field !== 'unit_cost' && floor((float) $row[$field]) !== (float) $row[$field]) return null;
                 if ($field === 'pack_size' && (float) $row[$field] < 1) return null;
             }
         }
         return $rows;
     }
+    private static function record_id($id): int {
+        if(!is_scalar($id)||!ctype_digit((string)$id)||(int)$id<1||(string)(int)$id!==(string)$id)throw new \RuntimeException('Invalid inventory record identity.');
+        return (int)$id;
+    }
+    private static function validated_vendor($raw, array $names): string {
+        if(!is_string($raw))throw new \RuntimeException('Invalid vendor selection.');
+        $name=sanitize_text_field(wp_unslash($raw));
+        if($name==='')return '';
+        foreach($names as $known)if(strcasecmp($name,(string)$known)===0)return (string)$known;
+        throw new \RuntimeException('This vendor no longer exists. Refresh before saving.');
+    }
+    private static function product_changes(array $row,array $names): array {
+        return ['vendor'=>self::validated_vendor($row['vendor'],$names),'pack_size'=>(float)$row['pack_size'],'reorder_point'=>(float)$row['reorder_point'],'target_stock'=>(float)$row['target_stock'],'unit_cost'=>(float)$row['unit_cost'],'override_qty'=>$row['override_qty']===''?null:(float)$row['override_qty']];
+    }
     public static function products_bulk_save(): void {
         self::guard(); check_admin_referer('roxy_inventory_products_bulk_save');
         $rows = self::product_rows_from_submission($_POST);
         if ($rows === null) self::redirect('products','The product form was incomplete or invalid. Nothing was saved; reload and try again.',false);
-        try { Store::transaction(static function () use ($rows) { foreach ($rows as $id => $row) {
-            Store::update_product((int) $id,array('vendor'=>sanitize_text_field(wp_unslash($row['vendor'])),'pack_size'=>(float)$row['pack_size'],'reorder_point'=>(float)$row['reorder_point'],'target_stock'=>(float)$row['target_stock'],'unit_cost'=>(float)$row['unit_cost'],'override_qty'=>($row['override_qty'] === '' ? null : (float)$row['override_qty'])));
+        try { Store::transaction(static function () use ($rows) { $names=array_column(Store::all_vendors(),'name'); foreach ($rows as $id => $row) {
+            Store::update_product((int) $id,self::product_changes($row,$names));
         } }); } catch (\Throwable $e) { self::redirect('products',$e->getMessage(),false); }
         self::redirect('products','All product changes saved.',true);
     }

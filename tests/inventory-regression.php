@@ -69,7 +69,7 @@ namespace {
             return $this->orders[(int) ($match[1] ?? 0)] ?? null;
         }
         public function get_results($sql, $format) { return []; }
-        public function get_var($sql) { return 1; }
+        public function get_var($sql) { if(preg_match('/SELECT id FROM .*products WHERE id=(\d+)/',$sql,$m)){foreach($this->products as $p)if($p['id']==(int)$m[1])return $p['id'];return null;}return 1; }
         public function suppress_errors($value) { return false; }
         public function query($sql) {
             $GLOBALS['test_queries'][] = $sql;

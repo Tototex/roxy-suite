@@ -24,6 +24,7 @@ if (($argv[1] ?? '') === '--worker') {
       public static function update_vendor(int $id,array $data):void { $GLOBALS["inventory_worker_events"][]="vendor-write"; if($GLOBALS["inventory_worker_case"]==="vendor_fail") throw new \\RuntimeException("vendor storage failure"); self::$calls[]=["vendor",$id,$data]; }
       public static function log(string $type,string $status,string $message):bool { self::$calls[]=["log",$type,$status]; return false; }
       public static function vendors():array { return [["name"=>"Fixture Vendor","order_method"=>"phone","email"=>"","minimum_amount"=>0.0]]; }
+      public static function all_vendors():array { return self::vendors(); }
       public static function products():array { return [["id"=>4,"name"=>"Fixture Item","vendor"=>"Fixture Vendor","square_variation_id"=>"var-4","on_hand"=>2,"pack_size"=>1,"unit_cost"=>5,"minimum_amount"=>0]]; }
       public static function transaction(callable $callback) { return $callback(); }
       public static function order_for_submission(string $key):?array { return null; }
@@ -68,8 +69,23 @@ if (($argv[1] ?? '') === '--worker') {
   $admin='\\'.$namespace.'\\Admin';
   $_POST=[]; $_SERVER['REQUEST_METHOD']='POST';
   switch($case) {
-    case 'product_fail': $_POST=['id'=>9]; $call=static fn()=>$admin::save_product(); break;
-    case 'vendor_fail': $_POST=['id'=>6]; $call=static fn()=>$admin::save_vendor(); break;
+    case 'product_fail': case 'product_missing': case 'product_fraction': case 'product_bad_cost': case 'product_bad_vendor': case 'product_bad_id': case 'product_bad_status': case 'product_success': case 'product_untracked':
+      $_POST=['id'=>9,'vendor'=>'Fixture Vendor','pack_size'=>'12','reorder_point'=>'20','target_stock'=>'60','unit_cost'=>'1.50','override_qty'=>''];
+      if($case==='product_missing')unset($_POST['target_stock']);
+      if($case==='product_fraction')$_POST['pack_size']='1.5';
+      if($case==='product_bad_cost')$_POST['unit_cost']='1.555';
+      if($case==='product_bad_vendor')$_POST['vendor']='Unknown';
+      if($case==='product_bad_id')$_POST['id']=['9'];
+      if($case==='product_bad_status')$_POST['tracking_status']='maybe';
+      if($case==='product_untracked')$_POST['tracking_status']='not_tracked';
+      $call=static fn()=>$admin::save_product();break;
+    case 'vendor_fail': case 'vendor_missing': case 'vendor_bad_method': case 'vendor_bad_email': case 'vendor_bad_minimum': case 'vendor_success':
+      $_POST=['id'=>6,'order_method'=>'email','email'=>'vendor@example.invalid','minimum_amount'=>'25.00','delivery_notes'=>''];
+      if($case==='vendor_missing')unset($_POST['email']);
+      if($case==='vendor_bad_method')$_POST['order_method']='bitcoin';
+      if($case==='vendor_bad_email')$_POST['email']='invalid';
+      if($case==='vendor_bad_minimum')$_POST['minimum_amount']='-1';
+      $call=static fn()=>$admin::save_vendor();break;
     case 'settings_unchanged': $GLOBALS['inventory_worker_update_option']=false; $GLOBALS['inventory_worker_option']=['fixture'=>'normalized']; $_POST=[]; $call=static fn()=>$admin::save_settings(); break;
     case 'settings_not_saved': $GLOBALS['inventory_worker_update_option']=false; $GLOBALS['inventory_worker_option']=['fixture'=>'old']; $_POST=[]; $call=static fn()=>$admin::save_settings(); break;
     case 'settings_schedule_failure': $_POST=[]; $call=static fn()=>$admin::save_settings(); break;
@@ -111,6 +127,7 @@ foreach(['product_fail'=>'roxy_inventory_save_product','vendor_fail'=>'roxy_inve
   $result=$run($case);$query=$url_args($result);
   $check(($query['ok']??'')==='0'&&str_contains(rawurldecode($query['message']??''),'could not be saved'),$case.' reports failure rather than success');
   $check(array_slice($result['events'],0,2)===['guard','nonce:'.$nonce],$case.' retains authorization and nonce checks before storage');
+  $check(in_array($case==='product_fail'?'product-write':'vendor-write',$result['events'],true),$case.' reaches injected storage failure with a valid complete form');
 }
 $unchanged=$run('settings_unchanged');$q=$url_args($unchanged);
 $check(($q['ok']??'')==='1'&&str_contains(rawurldecode($q['message']??''),'saved')&&$unchanged['schedule_calls']===1,'unchanged sanitized settings (false update_option with equal stored value) are accepted and schedule sync runs');
@@ -130,5 +147,15 @@ foreach(['sent_status_failure','unsent_status_failure'] as $case) {
   $result=$run($case); $q=$url_args($result); $message=rawurldecode($q['message']??'');
   $check(($q['ok']??'')==='0' && ($q['order_id']??'')==='73' && str_contains($message,$case==='sent_status_failure'?'Order email sent':'Order email was not sent'),'status failure preserves actual mail outcome: '.$case);
   $check($result['mail_calls']===1 && $result['order_status']==='','status failure does not repeat email or invent saved status: '.$case);
+}
+foreach(['product_missing','product_fraction','product_bad_cost','product_bad_vendor','product_bad_id','product_bad_status','vendor_missing','vendor_bad_method','vendor_bad_email','vendor_bad_minimum']as$case){
+  $result=$run($case);$q=$url_args($result);
+  $check(($q['ok']??'')==='0' && !$result['store_calls'],$case.' rejects before any storage write');
+}
+foreach(['product_success','product_untracked','vendor_success']as$case){
+  $result=$run($case);$q=$url_args($result);
+  $check(($q['ok']??'')==='1' && count($result['store_calls'])===1,$case.' complete valid save remains available');
+  if($case==='product_success')$check(!array_key_exists('tracking_status',$result['store_calls'][0][2]),'legacy rule save without status cannot reset Not tracked');
+  if($case==='product_untracked')$check($result['store_calls'][0][2]['tracking_status']==='not_tracked','explicit Not tracked status retained');
 }
 echo "Passed {$checks} isolated Inventory handler error checks.\n";

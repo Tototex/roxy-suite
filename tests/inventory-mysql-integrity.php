@@ -15,7 +15,7 @@ $tables=[];
 $before_hash=hash('sha256',wp_json_encode($wpdb->get_results('SELECT * FROM '.$original_prefix.'roxy_inventory_orders ORDER BY id',ARRAY_A)));
 $errors=$wpdb->suppress_errors(true);
 try {
-    foreach(['products','orders','runs'] as $type) {
+    foreach(['products','orders','runs','vendors'] as $type) {
         $table=$fixture_prefix.'roxy_inventory_'.$type;
         $tables[]=$table;
         $check($wpdb->query("CREATE TEMPORARY TABLE `$table` LIKE `{$original_prefix}roxy_inventory_$type`")!==false, 'temporary '.$type.' fixture created');
@@ -35,6 +35,14 @@ try {
     $products=$fixture_prefix.'roxy_inventory_products';
     $check($wpdb->insert($products,['square_variation_id'=>'fixture-v','name'=>'Fixture candy','on_hand'=>25,'updated_at'=>current_time('mysql')])===1,'fixture product stored');
     $product_id=(int)$wpdb->insert_id;
+    $failed=false;try{$store::update_product(999999999,['on_hand'=>99]);}catch(Throwable $e){$failed=true;}
+    $check($failed,'missing product update cannot report a successful save');
+    $vendors=$fixture_prefix.'roxy_inventory_vendors';
+    $check($wpdb->insert($vendors,['name'=>'TEMPORARY VENDOR','order_method'=>'manual','updated_at'=>current_time('mysql')])===1,'temporary vendor stored');
+    $vendor_id=(int)$wpdb->insert_id;$store::update_vendor($vendor_id,['minimum_amount'=>25]);
+    $check((float)$wpdb->get_var("SELECT minimum_amount FROM `$vendors` WHERE id=$vendor_id")===25.0,'existing vendor saves under ownership');
+    $failed=false;try{$store::update_vendor(999999999,['minimum_amount'=>99]);}catch(Throwable $e){$failed=true;}
+    $check($failed,'missing vendor update cannot report a successful save');
     $check($store::mark_stock_increases(['fixture-v'=>20])===1 && $store::order($id)['status']==='stock_increased','real partial arrival below submission snapshot detected');
     $prior=$store::order($id)['payload'];
     $check(!$store::update_order_payload($id,[$line],'stale'),'real stale progress rejected');
