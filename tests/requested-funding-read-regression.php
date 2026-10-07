@@ -61,7 +61,11 @@ namespace {
     function roxy_rs_module_fixture_unused(): void {}
     function current_time(string $type, bool $gmt = false): string { return '2026-10-06 12:00:00'; }
     function get_option(string $key, $default = false) { return $GLOBALS['funding_fixture']['options'][$key] ?? $default; }
-    function update_option(string $key, $value, bool $autoload = true): bool { $GLOBALS['funding_fixture']['options'][$key] = $value; return true; }
+    function update_option(string $key, $value, bool $autoload = true): bool {
+        if (!empty($GLOBALS['funding_fixture']['telemetry_throws'])) throw new RuntimeException('fixture telemetry outage');
+        if (!empty($GLOBALS['funding_fixture']['telemetry_false'])) return false;
+        $GLOBALS['funding_fixture']['options'][$key] = $value; return true;
+    }
     function get_post_meta(int $id, string $key, bool $single = false) { return $GLOBALS['funding_fixture']['meta'][$id][$key] ?? ''; }
     function update_post_meta(int $id, string $key, $value): bool { $GLOBALS['funding_fixture']['updates'][] = [$id,$key,$value]; $GLOBALS['funding_fixture']['meta'][$id][$key] = $value; return true; }
     function get_posts(array $args = []): array {
@@ -104,7 +108,7 @@ namespace {
         $root . '/includes/modules/requested-showings/includes/repository.php',
         $root . '/includes/modules/requested-showings/includes/class-roxy-rs-cpt.php',
         $root . '/includes/modules/requested-showings/includes/class-roxy-rs-frontend.php',
-        $root . '/includes/modules/requested-showings/includes/class-roxy-rs-conversion.php',
+        $argv[2] ?? $root . '/includes/modules/requested-showings/includes/class-roxy-rs-conversion.php',
     ] as $file) {
         if (!is_file($file)) throw new RuntimeException('Fixture source missing: ' . $file);
         require_once $file;
@@ -201,7 +205,19 @@ namespace {
     $review = $GLOBALS['funding_fixture']['options']['roxy_rs_daily_review_last_result'] ?? [];
     $check(($review['version'] ?? 0) === 1 && ($review['status'] ?? '') === 'completed'
         && ($review['run_id'] ?? '') !== '' && ($review['started_at'] ?? '') !== '' && ($review['completed_at'] ?? '') !== '',
-        'successful daily review records a verified completion result');
+        'successful daily review records its reported completion result');
+
+    foreach (['telemetry_throws', 'telemetry_false'] as $fault) {
+        $GLOBALS['funding_fixture'][$fault] = true;
+        \RoxyRS\Conversion::run_daily_review();
+        $check($GLOBALS['funding_fixture']['updates'] === [], 'logging failure does not interrupt empty review: ' . $fault);
+        $GLOBALS['funding_fixture']['posts_error'] = true;
+        $message = '';
+        try { \RoxyRS\Conversion::run_daily_review(); } catch (RuntimeException $error) { $message = $error->getMessage(); }
+        $check(strpos($message, 'could not verify its request list') !== false, 'logging failure preserves original review error: ' . $fault);
+        $GLOBALS['funding_fixture']['posts_error'] = false;
+        $GLOBALS['funding_fixture'][$fault] = false;
+    }
 
     $_POST = ['request_id'=>41,'general_qty'=>'0','discount_qty'=>'0','subscriber_qty'=>'1'];
     $GLOBALS['funding_fixture']['cache'] = [];

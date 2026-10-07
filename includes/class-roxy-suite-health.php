@@ -627,22 +627,7 @@ class Health {
 
         $items[] = self::item('Open requests', count($active) > 0 ? count($active) . ' request(s)' : 'None', self::PASS);
 
-        $review = get_option('roxy_rs_daily_review_last_result', null);
-        if (!is_array($review) || (int) ($review['version'] ?? 0) !== 1) {
-            $items[] = self::item('Daily review', 'No verified run recorded', self::WARN, 'The scheduler has not yet written a durable completion result.');
-        } else {
-            $review_status = (string) ($review['status'] ?? '');
-            $completed_at = (string) ($review['completed_at'] ?? '');
-            if ($review_status === 'completed' && $completed_at !== '') {
-                $items[] = self::item('Daily review', 'Completed ' . $completed_at, self::PASS);
-            } elseif ($review_status === 'running') {
-                $items[] = self::item('Daily review', 'Run in progress', self::WARN, 'A concurrent or interrupted scheduler run requires observation.');
-            } elseif ($review_status === 'failed') {
-                $items[] = self::item('Daily review', 'Last run failed', self::FAIL, (string) ($review['error'] ?? 'The scheduler reported a failure.'));
-            } else {
-                $items[] = self::item('Daily review', 'Outcome unavailable', self::WARN, 'The saved scheduler result is incomplete or unrecognized.');
-            }
-        }
+        $items[] = self::scheduled_run_item('Daily review', 'roxy_rs_daily_review_last_result', true);
 
         if (function_exists('roxy_rs_table_backings')) {
             global $wpdb;
@@ -766,24 +751,43 @@ class Health {
         ];
     }
 
-    private static function scheduled_run_item(string $label, string $option, bool $enabled): array {
+    private static function scheduled_run_item(string $label, string $option, bool $enabled, ?\DateTimeImmutable $now = null): array {
         if (!$enabled) return self::item($label, 'Not needed (disabled)', self::PASS);
         $result = get_option($option, null);
-        if (!is_array($result) || (int) ($result['version'] ?? 0) !== 1) {
-            return self::item($label, 'No verified run recorded', self::WARN, 'The scheduler has not written a durable run outcome.');
+        if (!is_array($result) || ($result['version'] ?? null) !== 1) {
+            return self::item($label, 'No run outcome recorded', self::WARN, 'No supported scheduler outcome is available.');
         }
-        $status = (string) ($result['status'] ?? '');
-        $when = (string) ($result['completed_at'] ?? $result['started_at'] ?? '');
-        if ($status === 'completed' || $status === 'skipped') {
-            return self::item($label, ucfirst($status) . ($when ? ' ' . $when : ''), self::PASS, (string) ($result['message'] ?? ''));
+        $status = $result['status'] ?? null;
+        $started = self::scheduler_utc_time($result['started_at'] ?? null);
+        $finished = self::scheduler_utc_time($result['completed_at'] ?? null);
+        $now = $now ?? new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        if (!is_string($result['run_id'] ?? null) || trim($result['run_id']) === '' || !$started
+            || $started > $now || !in_array($status, ['running', 'completed', 'failed', 'skipped'], true)
+            || ($status === 'running' ? ($result['completed_at'] ?? null) !== '' : (!$finished || $finished < $started || $finished > $now))) {
+            return self::item($label, 'Outcome unavailable', self::WARN, 'The saved outcome has missing, invalid, or future run evidence.');
         }
+        $message = $result['message'] ?? $result['error'] ?? '';
+        $message = is_string($message) ? $message : '';
+        if ($status === 'failed') return self::item($label, 'Last recorded run failed', self::FAIL, $message);
+        if ($now->getTimestamp() - $started->getTimestamp() > 48 * 3600) {
+            return self::item($label, 'Last recorded run is stale', self::WARN, 'Started ' . $result['started_at'] . ' UTC; no recent run outcome is recorded.');
+        }
+        if ($status === 'completed') {
+            return self::item($label, 'Reported completion ' . $result['completed_at'] . ' UTC', self::PASS,
+                'The worker returned normally; this is not independent verification of email delivery or every downstream write. ' . $message);
+        }
+        if ($status === 'skipped') return self::item($label, 'Skipped ' . $result['completed_at'] . ' UTC', self::WARN,
+            'No work was performed by this invocation. Check the separate completion/freshness markers. ' . $message);
         if ($status === 'running') {
             return self::item($label, 'Run in progress', self::WARN, 'The last run may still be active or may have been interrupted.');
         }
-        if ($status === 'failed') {
-            return self::item($label, 'Last run failed', self::FAIL, (string) ($result['message'] ?? 'The scheduler reported a failure.'));
-        }
         return self::item($label, 'Outcome unavailable', self::WARN, 'The saved scheduler result is incomplete or unrecognized.');
+    }
+
+    private static function scheduler_utc_time($value): ?\DateTimeImmutable {
+        if (!is_string($value) || !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $value)) return null;
+        $date = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $value, new \DateTimeZone('UTC'));
+        return $date && $date->format('Y-m-d H:i:s') === $value ? $date : null;
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────────

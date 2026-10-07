@@ -367,17 +367,12 @@ class Conversion {
             return false;
         }
 
-        $saved = update_option(self::DAILY_REVIEW_RESULT_OPTION, $result, false);
-        if ($saved === false && function_exists('get_option')) {
-            $current = get_option(self::DAILY_REVIEW_RESULT_OPTION, null);
-            if (is_array($current)
-                && ($current['run_id'] ?? '') === ($result['run_id'] ?? '')
-                && ($current['status'] ?? '') === ($result['status'] ?? '')) {
-                return true;
-            }
+        try {
+            // Best-effort observation only: cached reads cannot prove durability.
+            return update_option(self::DAILY_REVIEW_RESULT_OPTION, $result, false) === true;
+        } catch (\Throwable $error) {
             return false;
         }
-        return true;
     }
 
     private static function daily_review_error_text(\Throwable $error): string {
