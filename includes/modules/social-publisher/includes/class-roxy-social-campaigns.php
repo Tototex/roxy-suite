@@ -89,7 +89,8 @@ final class Campaigns {
 
     public static function auto_assign_media(string $campaign_key, string $title, int $showing_id): void {
         if ($campaign_key === '' || $title === '' || !Hangar::has_credentials()) return;
-        $assets = array_values(array_filter(Hangar::search($title), static function (array $asset): bool {
+        $assets = array_values(array_filter(Hangar::search($title), static function (array $asset) use ($title): bool {
+            if (!self::asset_matches_title($asset, $title)) return false;
             $filename = strtolower((string) ($asset['filename'] ?? ''));
             $type = strtolower((string) ($asset['asset_category'] ?? '') . ' ' . (string) ($asset['file_type'] ?? ''));
             return strpos($type, 'video') !== false || (bool) preg_match('/\.(mp4|mov|m4v|webm)$/i', $filename);
@@ -176,6 +177,19 @@ final class Campaigns {
         return (bool) preg_match('/9x16|vertical|portrait|1080x1920|1080x1350|4x5/', $text);
     }
 
+    public static function asset_matches_title(array $asset, string $title): bool {
+        $normalize = static fn(string $value): string => strtolower((string) preg_replace('/[^a-z0-9]/i', '', remove_accents($value)));
+        $text = implode(' ', [(string) ($asset['filename'] ?? ''), (string) ($asset['asset_name'] ?? '')]);
+        $full = $normalize($title);
+        if ($full !== '' && strpos($normalize($text), $full) !== false) return true;
+        $words = preg_split('/\s+/', trim($title));
+        foreach ([$words, array_values(array_filter($words, static fn(string $word): bool => !in_array(strtolower($word), ['the', 'a', 'an'], true))), array_values(array_filter($words, static fn(string $word): bool => !in_array(strtolower($word), ['of', 'the', 'and', 'a', 'an'], true)))] as $parts) {
+            $initials = implode('', array_map(static fn(string $word): string => substr($word, 0, 1), $parts));
+            if (strlen($initials) >= 3 && preg_match('/(?:^|[^a-z0-9])' . preg_quote($initials, '/') . '(?:$|[^a-z0-9])/i', $text)) return true;
+        }
+        return false;
+    }
+
     private static function format_showtimes(array $showings): string {
         $lines = [];
         foreach ($showings as $showing) {
@@ -222,6 +236,7 @@ final class Campaigns {
         $lines = [];
         foreach (preg_split('/\R/', (string) ($draft['post_text'] ?? '')) as $line) {
             if (!preg_match('/\b\d{1,2}:\d{2}\s*[AP]M\b|\b\d{1,2}\s*[AP]M\b/i', $line)) continue;
+            $line = preg_replace('/^[^\p{L}\p{N}]*/u', '', $line);
             $lines[] = trim((string) preg_replace('/^\s*(?:Tonight|Today)\s*[—-]\s*/u', '', $line));
         }
         if (count($lines) !== count($rows)) return false;
