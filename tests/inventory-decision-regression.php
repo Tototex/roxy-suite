@@ -54,4 +54,13 @@ try { \RoxyInventory\Admin::order_decision(); } catch (RuntimeException $e) { $m
 check(\RoxyInventory\Store::$writes===1 && \RoxyInventory\Store::$status==='ordered' && strpos($message,'REDIRECT:')===0 && strpos($message,'tab=history')!==false, 'confirmed POST changes once and redirects to Order History');
 try { \RoxyInventory\Admin::order_decision(); } catch (RuntimeException $e) { $message=$e->getMessage(); }
 check(\RoxyInventory\Store::$writes===1 && strpos($message,'already been marked')!==false, 'replayed confirmation does not change a closed order');
+\RoxyInventory\Store::$status='pending_manager'; $GLOBALS['manager']=false;
+try { \RoxyInventory\Admin::order_decision(); } catch (RuntimeException $e) { $message=$e->getMessage(); }
+check(\RoxyInventory\Store::$writes===1 && strpos($message,'signed-in manager')!==false,'anonymous signed link cannot resolve uncertain pending submission');
+$GLOBALS['manager']=true; $_SERVER['REQUEST_METHOD']='GET'; $_GET=$_POST;
+try { \RoxyInventory\Admin::order_decision(); } catch (RuntimeException $e) { $message=$e->getMessage(); }
+check(\RoxyInventory\Store::$writes===1 && strpos($message,'Confirm Ordered')!==false,'manager pending placement confirmation GET remains read-only');
+$_SERVER['REQUEST_METHOD']='POST';
+try { \RoxyInventory\Admin::order_decision(); } catch (RuntimeException $e) { $message=$e->getMessage(); }
+check(\RoxyInventory\Store::$writes===2 && \RoxyInventory\Store::$status==='ordered' && strpos($message,'REDIRECT:')===0,'authorized manager explicitly confirms pending order placed via nonce-checked POST');
 }

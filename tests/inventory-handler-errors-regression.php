@@ -27,7 +27,7 @@ if (($argv[1] ?? '') === '--worker') {
       public static function all_vendors():array { return self::vendors(); }
       public static function products():array { return [["id"=>4,"name"=>"Fixture Item","vendor"=>"Fixture Vendor","square_variation_id"=>"var-4","on_hand"=>2,"pack_size"=>1,"unit_cost"=>5,"minimum_amount"=>0]]; }
       public static function transaction(callable $callback) { return $callback(); }
-      public static function order_for_submission(string $key):?array { return null; }
+      public static function order_for_submission(string $key):?array { $GLOBALS["inventory_worker_events"][]="submission-lookup"; return $GLOBALS["inventory_worker_case"]==="samekey_replay"?["id"=>73]:null; }
       public static function create_order(string $vendor,array $lines,float $total,float $minimum,string $status="pending_manager",?string $key=null):int { self::$calls[]=["create_order",$status]; return 73; }
       public static function order(int $id):?array { return ["id"=>$id,"vendor"=>"Fixture Vendor","status"=>$GLOBALS["inventory_worker_case"]==="cancel_log_failure"?"ordered":"approval_emailed"]; }
       public static function update_order_status(int $id,string $status):bool { if(str_contains($GLOBALS["inventory_worker_case"],"status_failure"))throw new \\RuntimeException("status storage failure"); $GLOBALS["inventory_worker_order_status"]=$status; self::$calls[]=["status",$id,$status]; return true; }
@@ -60,7 +60,7 @@ if (($argv[1] ?? '') === '--worker') {
   function absint($value):int { return abs((int)$value); }
   function update_option($key,$value):bool { $GLOBALS['inventory_worker_events'][]='option-write'; if($GLOBALS['inventory_worker_update_option']) $GLOBALS['inventory_worker_option']=$value; return (bool)$GLOBALS['inventory_worker_update_option']; }
   function get_option($key,$default=false) { return $GLOBALS['inventory_worker_option'] ?? $default; }
-  function wp_mail($to,$subject,$body):bool { $GLOBALS['inventory_worker_mail_calls']++; return $GLOBALS['inventory_worker_case']!=='unsent_status_failure'; }
+  function wp_mail($to,$subject,$body):bool { $GLOBALS['inventory_worker_mail_calls']++; if($GLOBALS['inventory_worker_case']==='throw_mail_uncertain')throw new RuntimeException('transport response lost'); return !in_array($GLOBALS['inventory_worker_case'],['unsent_status_failure','samekey_replay'],true); }
 
   $source=file_get_contents($candidate);
   if(!is_string($source)) throw new RuntimeException('Could not read candidate source.');
@@ -105,6 +105,8 @@ if (($argv[1] ?? '') === '--worker') {
     case 'send_log_failure':
     case 'sent_status_failure':
     case 'unsent_status_failure':
+    case 'throw_mail_uncertain':
+    case 'samekey_replay':
       $store=$namespace.'\\Store';
       $vendor=$admin::review_token($store::vendors()[0], $store::products());
       $_POST=['vendor'=>'Fixture Vendor','submission_key'=>str_repeat('a',64),'review_complete'=>'1','review_token'=>$vendor,'order_qty'=>['4'=>'1']];
@@ -164,11 +166,18 @@ foreach(['send_log_failure','cancel_log_failure','decision_log_failure'] as $cas
   if($case==='cancel_log_failure')$check($result['order_status']==='cancelled','cancel-log failure reports the already-completed cancellation');
   if($case==='decision_log_failure')$check($result['order_status']==='ordered','decision-log failure reports the already-completed vendor decision');
 }
-foreach(['sent_status_failure','unsent_status_failure'] as $case) {
+foreach(['sent_status_failure'] as $case) {
   $result=$run($case); $q=$url_args($result); $message=rawurldecode($q['message']??'');
-  $check(($q['ok']??'')==='0' && ($q['order_id']??'')==='73' && str_contains($message,$case==='sent_status_failure'?'Order email sent':'Order email was not sent'),'status failure preserves actual mail outcome: '.$case);
+  $check(($q['ok']??'')==='0' && ($q['order_id']??'')==='73' && str_contains($message,'Order email sent'),'status failure preserves actual mail outcome: '.$case);
   $check($result['mail_calls']===1 && $result['order_status']==='','status failure does not repeat email or invent saved status: '.$case);
 }
+foreach(['unsent_status_failure','throw_mail_uncertain'] as $case) {
+  $result=$run($case); $q=$url_args($result); $message=rawurldecode($q['message']??'');
+  $check(($q['ok']??'')==='0' && ($q['order_id']??'')==='73' && str_contains($message,'delivery could not be confirmed') && str_contains($message,'Do not resubmit') && str_contains($message,'cancel only if the order was not placed'),$case.' warns against retry after uncertain delivery');
+  $check($result['mail_calls']===1 && $result['order_status']==='' && in_array(['create_order','pending_manager'],$result['store_calls'],true) && !in_array(['status',73,'email_failed'],$result['store_calls'],true),$case.' leaves pending status in place without releasing vendor');
+}
+$replay=$run('samekey_replay'); $q=$url_args($replay);
+$check(($q['ok']??'')==='1' && ($q['order_id']??'')==='73' && str_contains(rawurldecode($q['message']??''),'No second email was sent') && $replay['mail_calls']===0 && !in_array(['create_order','pending_manager'],$replay['store_calls'],true),'same submission-key replay never sends another email');
 foreach(['product_missing','product_fraction','product_bad_cost','product_bad_vendor','product_bad_id','product_bad_status','vendor_missing','vendor_bad_method','vendor_bad_email','vendor_bad_minimum']as$case){
   $result=$run($case);$q=$url_args($result);
   $check(($q['ok']??'')==='0' && !$result['store_calls'],$case.' rejects before any storage write');

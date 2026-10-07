@@ -27,7 +27,7 @@ class Admin {
             $open = Store::open_order_for_vendor((string) $vendor['name']);
             if ($open) {
                 $status = (string) $open['status'];
-                $status_label = $status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'ordered' ? 'Ordered' : 'Order in review');
+                $status_label = $status === 'pending_manager' ? 'Submission awaiting review' : ($status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'ordered' ? 'Ordered' : 'Order in review'));
             } else {
                 $status_label = $total >= (float) $vendor['minimum_amount'] ? 'Ready for review' : 'Below minimum';
             }
@@ -44,7 +44,7 @@ class Admin {
         $status_text = '';
         if ($open) {
             $status = (string) $open['status'];
-            $status_text = $status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'ordered' ? 'Ordered' : 'Order in review');
+            $status_text = $status === 'pending_manager' ? 'Submission awaiting review' : ($status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'ordered' ? 'Ordered' : 'Order in review'));
             echo '<div class="notice notice-warning inline"><p>This vendor already has an open order: <strong>' . esc_html($status_text) . '</strong>. A new order cannot be submitted until a stock increase is detected.</p><p><a class="button" href="' . esc_url(add_query_arg(['tab'=>'history','order_id'=>(int) $open['id']], self::url('history'))) . '">View existing order</a></p></div>';
         }
         echo '<h2>' . esc_html($name) . ' order review</h2><p>Edit quantities before submitting. Quantities must be whole order units, and the vendor minimum must be met.</p>';
@@ -86,10 +86,11 @@ class Admin {
         echo '<table class="widefat striped"><thead><tr><th>Date</th><th>Vendor</th><th>Status</th><th>Items</th><th>Total</th><th>Action</th></tr></thead><tbody>';
         foreach (Store::orders($page,$search) as $o) {
             $status = (string) $o['status'];
-            $label = $status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'stock_increased' ? 'Stock increase detected' : ucfirst(str_replace('_', ' ', $status)));
+            $label = $status === 'pending_manager' ? 'Submission awaiting review' : ($status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'stock_increased' ? 'Stock increase detected' : ucfirst(str_replace('_', ' ', $status))));
             $view_url = add_query_arg(['tab' => 'history', 'order_id' => (int) $o['id']], self::url('history'));
             $action = '<a class="button" href="' . esc_url($view_url) . '">View items</a>';
             if ($status === 'approval_emailed') $action .= ' <a class="button" href="' . esc_url(self::decision_url((int)$o['id'], 'ordered')) . '">Ordered</a> <a class="button" href="' . esc_url(self::decision_url((int)$o['id'], 'rejected')) . '">Rejected</a>';
+            if ($status === 'pending_manager') $action .= ' <a class="button" href="' . esc_url(self::decision_url((int)$o['id'], 'ordered')) . '">Confirm placed order</a>';
             echo '<tr><td>' . esc_html($o['created_at']) . '</td><td>' . esc_html($o['vendor']) . '</td><td>' . esc_html($label) . '</td><td>' . esc_html($o['item_count']) . '</td><td>$' . number_format((float)$o['estimated_total'], 2) . '</td><td>' . $action . '</td></tr>';
         }
         echo '</tbody></table>';
@@ -101,6 +102,7 @@ class Admin {
         $lines = json_decode((string) ($selected['payload'] ?? ''), true);
         if (!is_array($lines)) $lines = [];
         echo '<h2>Order #' . esc_html((string) $selected['id']) . ' — ' . esc_html($selected['vendor']) . '</h2>';
+        if ((string) $selected['status'] === 'pending_manager') echo '<div class="notice notice-warning inline"><p>Email delivery for this submission may be unconfirmed. Check the manager/vendor inbox before retrying; cancel only if the order was not placed.</p></div>';
         echo '<p>Check each item as you add it to the vendor cart, then save your progress.</p>';
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">' . wp_nonce_field('roxy_inventory_save_order_items', '_wpnonce', true, false);
         echo '<input type="hidden" name="action" value="roxy_inventory_save_order_items"><input type="hidden" name="order_id" value="' . esc_attr((int) $selected['id']) . '">';
@@ -277,11 +279,12 @@ class Admin {
         $order_id=$prepared['id']; $vendor_row=$prepared['vendor']; $lines=$prepared['lines']; $total=$prepared['total'];
         $direct = $prepared['direct'];
         $email = $prepared['email'];
-        if (!$email['to'] || !wp_mail($email['to'], $email['subject'], $email['body'])) {
-            try { $saved = Store::update_order_status($order_id, 'email_failed'); }
-            catch (\Throwable $e) { $saved = false; }
-            if (!$saved) self::redirect('history', 'Order email was not sent, and the failure status could not be saved. Review this order before retrying.', false, $order_id);
-            self::redirect('dashboard', 'Could not send the order email.', false);
+        try { $mail_sent = $email['to'] !== '' && wp_mail($email['to'], $email['subject'], $email['body']); }
+        catch (\Throwable $error) { $mail_sent = false; }
+        if (!$mail_sent) {
+            try { Store::log('email_delivery', 'uncertain', 'Delivery could not be confirmed for order #' . $order_id . ' to ' . ($direct ? 'vendor' : 'manager') . '.'); }
+            catch (\Throwable $error) { /* The persistent pending order remains the retry guard. */ }
+            self::redirect('history', 'Order email delivery could not be confirmed. Do not resubmit; check the manager/vendor inbox, then cancel only if the order was not placed.', false, $order_id);
         }
         try { $saved = Store::update_order_status($order_id, $direct ? 'ordered' : 'approval_emailed'); }
         catch (\Throwable $e) { $saved = false; }
@@ -417,7 +420,8 @@ class Admin {
         if (!$valid) wp_die('This order link is invalid or expired. Please open Order History while signed in to mark the order.');
         $found = Store::order($order_id);
         if (!$found) wp_die('Order not found.');
-        if ((string) $found['status'] !== 'approval_emailed') wp_die('This order has already been marked.');
+        $pending_confirmation = (string)$found['status'] === 'pending_manager' && $decision === 'ordered' && roxy_suite_user_can_access_admin();
+        if ((string) $found['status'] !== 'approval_emailed' && !$pending_confirmation) wp_die('This order has already been marked, or requires a signed-in manager to confirm placement.');
         $nonce_action = 'roxy_inventory_order_decision_' . $token;
         if (!$is_post) {
             // Email scanners/prefetchers may open links. GET must never change an order.
