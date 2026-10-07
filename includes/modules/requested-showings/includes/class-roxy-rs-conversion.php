@@ -6,6 +6,8 @@ if (!defined('ABSPATH')) {
 }
 
 class Conversion {
+    private const DAILY_REVIEW_RESULT_OPTION = 'roxy_rs_daily_review_last_result';
+
     public static function init(): void {
         add_action('template_redirect', [__CLASS__, 'maybe_redirect_to_showing'], 1);
         add_action('admin_post_roxy_rs_activate_request', [__CLASS__, 'handle_activate_request']);
@@ -249,6 +251,59 @@ class Conversion {
     }
 
     public static function run_daily_review(): void {
+        $run_id = function_exists('wp_generate_uuid4') ? wp_generate_uuid4() : bin2hex(random_bytes(16));
+        $started_at = current_time('mysql', true);
+        $lease = null;
+        $telemetry_started = false;
+
+        try {
+            // Prevent overlapping cron workers from reviewing the same request
+            // set. Isolated repository fixtures may load this class without the
+            // full ticket storage layer, so they intentionally skip the lease.
+            if (class_exists(ConversionClaims::class)) {
+                $lease = ConversionClaims::lease('daily-review');
+            }
+            $telemetry_started = self::save_daily_review_result([
+                'version' => 1,
+                'run_id' => (string) $run_id,
+                'status' => 'running',
+                'started_at' => (string) $started_at,
+                'completed_at' => '',
+                'error' => '',
+            ]);
+
+            self::perform_daily_review();
+
+            if ($telemetry_started) {
+                self::save_daily_review_result([
+                    'version' => 1,
+                    'run_id' => (string) $run_id,
+                    'status' => 'completed',
+                    'started_at' => (string) $started_at,
+                    'completed_at' => (string) current_time('mysql', true),
+                    'error' => '',
+                ]);
+            }
+        } catch (\Throwable $error) {
+            if ($telemetry_started) {
+                self::save_daily_review_result([
+                    'version' => 1,
+                    'run_id' => (string) $run_id,
+                    'status' => 'failed',
+                    'started_at' => (string) $started_at,
+                    'completed_at' => (string) current_time('mysql', true),
+                    'error' => sanitize_text_field($error->getMessage()),
+                ]);
+            }
+            throw $error;
+        } finally {
+            if ($lease !== null) {
+                $lease->release_lease();
+            }
+        }
+    }
+
+    private static function perform_daily_review(): void {
         global $wpdb;
         $wpdb->last_error = '';
         $posts = get_posts([
@@ -304,6 +359,25 @@ class Conversion {
                 update_post_meta($request_id, CPT::META_REVIEW_NOTIFIED, current_time('mysql'));
             }
         }
+    }
+
+    /** Save scheduler state without changing the review outcome on telemetry failure. */
+    private static function save_daily_review_result(array $result): bool {
+        if (!function_exists('update_option')) {
+            return false;
+        }
+
+        $saved = update_option(self::DAILY_REVIEW_RESULT_OPTION, $result, false);
+        if ($saved === false && function_exists('get_option')) {
+            $current = get_option(self::DAILY_REVIEW_RESULT_OPTION, null);
+            if (is_array($current)
+                && ($current['run_id'] ?? '') === ($result['run_id'] ?? '')
+                && ($current['status'] ?? '') === ($result['status'] ?? '')) {
+                return true;
+            }
+            return false;
+        }
+        return true;
     }
 
     public static function mark_failed(int $request_id): void {

@@ -56,10 +56,12 @@ namespace {
     $GLOBALS['wpdb'] = new FundingFixtureWpdb();
     $GLOBALS['funding_fixture'] = [
         'meta'=>[41=>['_roxy_rs_status'=>'active','_roxy_rs_funding_goal'=>5000,'_roxy_rs_deadline_at'=>'2000-01-01 00:00:00']],
-        'updates'=>[], 'mail'=>0, 'posts'=>[], 'posts_error'=>false,
+        'updates'=>[], 'mail'=>0, 'posts'=>[], 'posts_error'=>false, 'options'=>[],
     ];
     function roxy_rs_module_fixture_unused(): void {}
     function current_time(string $type, bool $gmt = false): string { return '2026-10-06 12:00:00'; }
+    function get_option(string $key, $default = false) { return $GLOBALS['funding_fixture']['options'][$key] ?? $default; }
+    function update_option(string $key, $value, bool $autoload = true): bool { $GLOBALS['funding_fixture']['options'][$key] = $value; return true; }
     function get_post_meta(int $id, string $key, bool $single = false) { return $GLOBALS['funding_fixture']['meta'][$id][$key] ?? ''; }
     function update_post_meta(int $id, string $key, $value): bool { $GLOBALS['funding_fixture']['updates'][] = [$id,$key,$value]; $GLOBALS['funding_fixture']['meta'][$id][$key] = $value; return true; }
     function get_posts(array $args = []): array {
@@ -183,6 +185,8 @@ namespace {
     $threw = false;
     try { \RoxyRS\Conversion::run_daily_review(); } catch (RuntimeException $error) { $threw = true; }
     $check($threw && $GLOBALS['funding_fixture']['updates'] === [] && $GLOBALS['funding_fixture']['mail'] === 0, 'daily review aborts on request-list SQL error');
+    $review = $GLOBALS['funding_fixture']['options']['roxy_rs_daily_review_last_result'] ?? [];
+    $check(($review['status'] ?? '') === 'failed' && ($review['error'] ?? '') !== '', 'failed daily review records a failure result');
     $GLOBALS['funding_fixture']['posts_error'] = false;
     $GLOBALS['funding_fixture']['posts'] = [(object) ['ID'=>41]];
     $threw = false;
@@ -194,6 +198,10 @@ namespace {
     $GLOBALS['funding_fixture']['posts'] = [];
     \RoxyRS\Conversion::run_daily_review();
     $check($GLOBALS['funding_fixture']['updates'] === [] && $GLOBALS['funding_fixture']['mail'] === 0, 'valid empty daily review remains a successful no-op');
+    $review = $GLOBALS['funding_fixture']['options']['roxy_rs_daily_review_last_result'] ?? [];
+    $check(($review['version'] ?? 0) === 1 && ($review['status'] ?? '') === 'completed'
+        && ($review['run_id'] ?? '') !== '' && ($review['started_at'] ?? '') !== '' && ($review['completed_at'] ?? '') !== '',
+        'successful daily review records a verified completion result');
 
     $_POST = ['request_id'=>41,'general_qty'=>'0','discount_qty'=>'0','subscriber_qty'=>'1'];
     $GLOBALS['funding_fixture']['cache'] = [];
@@ -214,6 +222,9 @@ namespace {
     $GLOBALS['funding_fixture']['meta'][41]['_roxy_rs_deadline_at'] = '2000-01-01 00:00:00';
     \RoxyRS\Conversion::run_daily_review();
     $check(($GLOBALS['funding_fixture']['meta'][41]['_roxy_rs_status'] ?? '') === 'failed', 'verified expired underfunded request retains ordinary closure behavior');
+
+    $review = $GLOBALS['funding_fixture']['options']['roxy_rs_daily_review_last_result'] ?? [];
+    $check(($review['status'] ?? '') === 'completed', 'ordinary request transitions still finish with completed telemetry');
 
     echo "Passed {$checks} requested funding-read regressions.\n";
 }

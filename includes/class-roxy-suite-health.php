@@ -627,6 +627,23 @@ class Health {
 
         $items[] = self::item('Open requests', count($active) > 0 ? count($active) . ' request(s)' : 'None', self::PASS);
 
+        $review = get_option('roxy_rs_daily_review_last_result', null);
+        if (!is_array($review) || (int) ($review['version'] ?? 0) !== 1) {
+            $items[] = self::item('Daily review', 'No verified run recorded', self::WARN, 'The scheduler has not yet written a durable completion result.');
+        } else {
+            $review_status = (string) ($review['status'] ?? '');
+            $completed_at = (string) ($review['completed_at'] ?? '');
+            if ($review_status === 'completed' && $completed_at !== '') {
+                $items[] = self::item('Daily review', 'Completed ' . $completed_at, self::PASS);
+            } elseif ($review_status === 'running') {
+                $items[] = self::item('Daily review', 'Run in progress', self::WARN, 'A concurrent or interrupted scheduler run requires observation.');
+            } elseif ($review_status === 'failed') {
+                $items[] = self::item('Daily review', 'Last run failed', self::FAIL, (string) ($review['error'] ?? 'The scheduler reported a failure.'));
+            } else {
+                $items[] = self::item('Daily review', 'Outcome unavailable', self::WARN, 'The saved scheduler result is incomplete or unrecognized.');
+            }
+        }
+
         if (function_exists('roxy_rs_table_backings')) {
             global $wpdb;
             $table = roxy_rs_table_backings();
