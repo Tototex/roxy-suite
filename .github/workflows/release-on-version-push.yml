@@ -141,9 +141,11 @@ jobs:
           rsync -av \
             --exclude='.git' \
             --exclude='.github' \
+            --exclude='/.gitignore' \
             --exclude='build' \
             --exclude='/tests/' \
             --exclude='/docs/' \
+            --exclude='/tools/' \
             --exclude='/RoxyEdit.md' \
             --exclude='.DS_Store' \
             ./ "$STAGE_DIR"/

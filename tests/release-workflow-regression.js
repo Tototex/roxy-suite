@@ -40,6 +40,8 @@ const script = (name) => {
     }
   }
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'roxy-release-fixture-'));
+  check(source.includes("--exclude='/tools/'"), 'maintenance/conversion tools are excluded from public runtime releases');
+  check(source.includes("--exclude='/.gitignore'"), 'repository ignore metadata is excluded from public runtime releases');
   try {
     fs.mkdirSync(path.join(temp, 'build', 'roxy-suite', 'includes'), { recursive: true });
     fs.writeFileSync(path.join(temp, 'build', 'roxy-suite', 'z.php'), 'fixture-z');
