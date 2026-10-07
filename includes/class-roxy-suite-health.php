@@ -221,7 +221,48 @@ class Health {
                 $product_ok ? '' : 'Set a booking product ID in EB Settings'),
             self::item('Daily booking health check', $health_cron ? 'Scheduled' : 'Missing', $health_cron ? self::PASS : self::WARN,
                 $health_cron ? '' : 'Reactivate the plugin to schedule the daily check'),
+            self::event_booking_monitor_result(),
         ], 'event_booking');
+    }
+
+    /** Surface the saved daily monitor outcome only; never execute the monitor here. */
+    private static function event_booking_monitor_result(): array {
+        $result = get_option('roxy_eb_health_last_result', null);
+        if (!is_array($result) || !isset($result['checked_at']) || !is_string($result['checked_at']) || $result['checked_at'] === '') {
+            return self::item('Last daily booking monitor', 'No valid result recorded', self::WARN,
+                'The scheduled monitor has not recorded a completed check.');
+        }
+
+        $timezone = wp_timezone();
+        $checked = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $result['checked_at'], $timezone);
+        $parse = \DateTimeImmutable::getLastErrors();
+        if (!$checked || ($parse !== false && ($parse['warning_count'] > 0 || $parse['error_count'] > 0))
+            || $checked->format('Y-m-d H:i:s') !== $result['checked_at']) {
+            return self::item('Last daily booking monitor', 'Invalid check timestamp', self::WARN,
+                'The stored monitor result needs review; no check was rerun.');
+        }
+
+        $now = new \DateTimeImmutable('now', $timezone);
+        $age = $now->getTimestamp() - $checked->getTimestamp();
+        if ($age < 0) {
+            return self::item('Last daily booking monitor', $result['checked_at'] . ' (future timestamp)', self::WARN,
+                'The stored check time is ahead of the site clock.');
+        }
+        if ($age > 36 * HOUR_IN_SECONDS) {
+            return self::item('Last daily booking monitor', $result['checked_at'] . ' (stale)', self::WARN,
+                'No daily monitor result was recorded in the last 36 hours.');
+        }
+        if (!array_key_exists('ok', $result) || !is_bool($result['ok']) || !is_array($result['errors'] ?? null)) {
+            return self::item('Last daily booking monitor', $result['checked_at'] . ' (invalid result)', self::WARN,
+                'The stored monitor outcome is incomplete.');
+        }
+        if (!$result['ok'] || $result['errors']) {
+            $error_count = count($result['errors']);
+            return self::item('Last daily booking monitor', sprintf('Failed at %s (%d recorded error(s))', $result['checked_at'], $error_count), self::FAIL,
+                'The saved monitor reported a problem. Review Event Booking configuration and the monitor result.');
+        }
+
+        return self::item('Last daily booking monitor', $result['checked_at'] . ' — passed', self::PASS);
     }
 
     private static function module_arcade_structural(): array {
@@ -324,9 +365,29 @@ class Health {
         if (!self::module_enabled('inventory')) return [];
         global $wpdb;
         $table = $wpdb->prefix . 'roxy_inventory_runs';
-        if (!self::table_exists($table)) return [];
-        $latest = $wpdb->get_row("SELECT status,created_at FROM $table WHERE run_type='pull' ORDER BY id DESC LIMIT 1", ARRAY_A);
-        $success = $wpdb->get_var("SELECT created_at FROM $table WHERE run_type='pull' AND status='success' ORDER BY id DESC LIMIT 1");
+        try {
+            $table_exists = self::table_exists($table);
+            if ($wpdb->last_error !== '') throw new \RuntimeException('Inventory run table could not be checked.');
+            if (!$table_exists) return [];
+            if (!class_exists('\\RoxyInventory\\Store')) throw new \RuntimeException('Inventory run reader is unavailable.');
+            $latest = \RoxyInventory\Store::latest_run('pull');
+            $success = $wpdb->get_var("SELECT created_at FROM $table WHERE run_type='pull' AND status='success' ORDER BY id DESC LIMIT 1");
+            if ($wpdb->last_error !== '') throw new \RuntimeException('Inventory success history could not be read.');
+            $valid_stamp = static function ($value): bool {
+                if (!is_string($value)) return false;
+                $stamp = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $value, wp_timezone());
+                $errors = \DateTimeImmutable::getLastErrors();
+                return $stamp && (!$errors || (!$errors['warning_count'] && !$errors['error_count']))
+                    && $stamp->format('Y-m-d H:i:s') === $value && $stamp->getTimestamp() <= time();
+            };
+            if ($success !== null && !$valid_stamp($success)) throw new \RuntimeException('Inventory success timestamp is invalid.');
+            if ($latest !== null && (!is_array($latest) || !$valid_stamp($latest['created_at'] ?? null) || !is_string($latest['status'] ?? null))) throw new \RuntimeException('Inventory run record is invalid.');
+        } catch (\Throwable $error) {
+            return [
+                self::item('Last inventory pull', 'Run history unavailable', self::WARN, 'Run history could not be verified; no empty-history conclusion was made.'),
+                self::item('Last successful inventory pull', 'Unavailable', self::WARN, 'Check inventory run-history storage before relying on freshness status.'),
+            ];
+        }
         $enabled = (get_option('roxy_inventory_settings', [])['schedule_enabled'] ?? '1') === '1';
         $stale = false;
         if ($success) {
