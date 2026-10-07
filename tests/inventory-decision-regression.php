@@ -6,7 +6,7 @@ namespace RoxyInventory {
         public static $status = 'approval_emailed';
         public static function order($id) { return ['id'=>$id,'vendor'=>'Test vendor','status'=>self::$status]; }
         public static function update_order_status($id,$status) { self::$writes++; self::$status=$status; return true; }
-        public static function log(...$args) {}
+        public static function log(...$args) { return true; }
     }
 }
 namespace {

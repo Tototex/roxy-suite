@@ -15,7 +15,7 @@ $tables=[];
 $before_hash=hash('sha256',wp_json_encode($wpdb->get_results('SELECT * FROM '.$original_prefix.'roxy_inventory_orders ORDER BY id',ARRAY_A)));
 $errors=$wpdb->suppress_errors(true);
 try {
-    foreach(['products','orders'] as $type) {
+    foreach(['products','orders','runs'] as $type) {
         $table=$fixture_prefix.'roxy_inventory_'.$type;
         $tables[]=$table;
         $check($wpdb->query("CREATE TEMPORARY TABLE `$table` LIKE `{$original_prefix}roxy_inventory_$type`")!==false, 'temporary '.$type.' fixture created');
@@ -42,6 +42,21 @@ try {
     try {$store::transaction(static function()use($store,$product_id){$store::update_product($product_id,['on_hand'=>99]);$store::update_product($product_id,['nonexistent_fixture_column'=>1]);});}catch(Throwable $e){$failed=true;}
     $stock=(float)$wpdb->get_var("SELECT on_hand FROM `$products` WHERE id=$product_id");
     $check($failed && $stock===25.0,'real failed later write rolls back earlier stock change');
+    $runs=$fixture_prefix.'roxy_inventory_runs';
+    $check($store::log('pull','success','Temporary fixture'),'activity insert succeeds in temporary table');
+    $check($store::latest_run('pull')['message']==='Temporary fixture','latest activity reads stored result');
+    $check($wpdb->query("DROP TEMPORARY TABLE `$runs`")!==false,'activity failure fixture removes only temporary table');
+    // Shadow the now-missing temporary table name with an impossible schema:
+    // the random prefix cannot resolve to any production activity table.
+    $failed=false;
+    try {$store::transaction(static function()use($store,$product_id){
+        $store::update_product($product_id,['on_hand'=>99]);
+        if(!$store::log('pull','success','Must fail'))throw new RuntimeException('Activity write failed');
+    });}catch(Throwable $e){$failed=true;}
+    $check($failed && (float)$wpdb->get_var("SELECT on_hand FROM `$products` WHERE id=$product_id")===25.0,'actual failed activity rolls back stock change');
+    $check($store::log('approval_email','success','No real email')===false,'actual post-email activity failure is nonthrowing');
+    $failed=false;try{$store::latest_run('pull');}catch(Throwable $e){$failed=true;}
+    $check($failed,'activity read error is not mistaken for no previous pull');
     $primary=$wpdb;
     $second=new wpdb(DB_USER,DB_PASSWORD,DB_NAME,DB_HOST);
     $second->prefix=$fixture_prefix;

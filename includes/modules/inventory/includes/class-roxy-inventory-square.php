@@ -40,9 +40,14 @@ class Square {
         [$deactivated,$reset] = Store::transaction(static function () use ($items) {
             $previous=Store::stock_snapshot();
             foreach ($items as $item) Store::upsert_product($item);
-            return [Store::deactivate_missing(array_keys($items)), Store::mark_stock_increases($previous)];
+            $deactivated = Store::deactivate_missing(array_keys($items));
+            $reset = Store::mark_stock_increases($previous);
+            if (!Store::log('pull', 'success', count($items) . ' Square variations pulled; ' . $deactivated . ' missing variations deactivated; ' . $reset . ' orders reset after stock increases.')) {
+                throw new \RuntimeException('The pull activity could not be saved. Inventory changes were rolled back; please retry.');
+            }
+            return [$deactivated, $reset];
         });
-        Store::log('pull', 'success', count($items) . ' Square variations pulled; ' . $deactivated . ' missing variations deactivated; ' . $reset . ' orders reset after stock increases.'); return $items;
+        return $items;
     }
 
     private static function list_catalog(): array {

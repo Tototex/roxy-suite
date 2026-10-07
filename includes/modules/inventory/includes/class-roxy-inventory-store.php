@@ -178,8 +178,17 @@ class Store {
         $result = $wpdb->query($sql); self::checked_write($result); return (int) $result;
     }
     public static function update_vendor(int $id, array $data): void { global $wpdb; self::transaction(static function () use ($id,$data,$wpdb) { self::checked_write($wpdb->update(self::vendors_table(), $data, ['id' => $id])); }); }
-    public static function log(string $type, string $status, string $message): void { global $wpdb; $wpdb->insert(self::runs_table(), ['run_type'=>$type,'status'=>$status,'message'=>$message,'created_at'=>current_time('mysql')]); }
-    public static function latest_run(string $type): ?array { global $wpdb; $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::runs_table() . " WHERE run_type=%s ORDER BY id DESC LIMIT 1", $type), ARRAY_A); return is_array($row) ? $row : null; }
+    public static function log(string $type, string $status, string $message): bool {
+        global $wpdb;
+        // Logging follows irreversible email actions too: never disguise a sent
+        // email as an unsent one by throwing from this secondary write.
+        try {
+            if ($wpdb->insert(self::runs_table(), ['run_type'=>$type,'status'=>$status,'message'=>$message,'created_at'=>current_time('mysql')]) !== false) return true;
+        } catch (\Throwable $e) { /* Fall back without exposing database details. */ }
+        error_log('Roxy Inventory activity log could not be saved (' . $type . '/' . $status . ').');
+        return false;
+    }
+    public static function latest_run(string $type): ?array { global $wpdb; $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::runs_table() . " WHERE run_type=%s ORDER BY id DESC LIMIT 1", $type), ARRAY_A); self::checked_read(); return is_array($row) ? $row : null; }
     public static function create_order(string $vendor, array $lines, float $total, float $minimum, string $status = 'approval_emailed', ?string $submission_key = null): int {
         global $wpdb;
         return self::transaction(static function () use ($vendor,$lines,$total,$minimum,$status,$submission_key,$wpdb) {

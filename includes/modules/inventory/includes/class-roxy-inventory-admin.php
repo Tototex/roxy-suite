@@ -147,7 +147,25 @@ class Admin {
         echo '</table>' . get_submit_button('Save Inventory Settings') . '</form>';
     }
     public static function pull(): void { self::guard(); check_admin_referer('roxy_inventory_pull'); try { $n=count(Square::pull()); self::redirect('dashboard','Pulled '.$n.' products from Square.',true); } catch(\Throwable $e){ Store::log('pull','failed',$e->getMessage()); self::redirect('dashboard',$e->getMessage(),false); } }
-    public static function save_product(): void { self::guard(); check_admin_referer('roxy_inventory_save_product'); $id=(int)$_POST['id']; Store::update_product($id,['vendor'=>sanitize_text_field(wp_unslash($_POST['vendor']??'')),'pack_size'=>max(1,(float)($_POST['pack_size']??1)),'reorder_point'=>max(0,(float)($_POST['reorder_point']??0)),'target_stock'=>max(0,(float)($_POST['target_stock']??0)),'unit_cost'=>max(0,(float)($_POST['unit_cost']??0)),'override_qty'=>($_POST['override_qty']??'')===''?null:max(0,(float)$_POST['override_qty']),'tracking_status'=>in_array(($_POST['tracking_status']??'tracked'),['tracked','not_tracked'],true)?$_POST['tracking_status']:'tracked']); self::redirect('products','Product saved.',true); }
+    public static function save_product(): void {
+        self::guard();
+        check_admin_referer('roxy_inventory_save_product');
+        $id = (int) ($_POST['id'] ?? 0);
+        try {
+            Store::update_product($id, [
+                'vendor' => sanitize_text_field(wp_unslash($_POST['vendor'] ?? '')),
+                'pack_size' => max(1, (float) ($_POST['pack_size'] ?? 1)),
+                'reorder_point' => max(0, (float) ($_POST['reorder_point'] ?? 0)),
+                'target_stock' => max(0, (float) ($_POST['target_stock'] ?? 0)),
+                'unit_cost' => max(0, (float) ($_POST['unit_cost'] ?? 0)),
+                'override_qty' => ($_POST['override_qty'] ?? '') === '' ? null : max(0, (float) $_POST['override_qty']),
+                'tracking_status' => in_array(($_POST['tracking_status'] ?? 'tracked'), ['tracked', 'not_tracked'], true) ? $_POST['tracking_status'] : 'tracked',
+            ]);
+        } catch (\Throwable $error) {
+            self::redirect('products', 'Product could not be saved: ' . $error->getMessage(), false);
+        }
+        self::redirect('products', 'Product saved.', true);
+    }
     public static function bulk_save(): void {
         self::guard(); check_admin_referer('roxy_inventory_bulk_save');
         try { Store::transaction(static function () {
@@ -160,8 +178,42 @@ class Admin {
         }); } catch (\Throwable $e) { self::redirect('unassigned',$e->getMessage(),false); }
         self::redirect('unassigned','All product changes saved.',true);
     }
-    public static function save_vendor(): void { self::guard(); check_admin_referer('roxy_inventory_save_vendor'); Store::update_vendor((int)$_POST['id'],['order_method'=>sanitize_text_field(wp_unslash($_POST['order_method']??'')),'email'=>sanitize_email($_POST['email']??''),'minimum_amount'=>max(0,(float)($_POST['minimum_amount']??0)),'delivery_notes'=>sanitize_textarea_field(wp_unslash($_POST['delivery_notes']??'')),'updated_at'=>current_time('mysql')]); self::redirect('vendors','Vendor saved.',true); }
-    public static function save_settings(): void { self::guard(); check_admin_referer('roxy_inventory_save_settings'); $input=$_POST; $sanitized=Settings::sanitize($input); update_option(Settings::OPTION_KEY,$sanitized); Scheduler::sync_schedule(); self::redirect('settings','Inventory settings saved.',true); }
+    public static function save_vendor(): void {
+        self::guard();
+        check_admin_referer('roxy_inventory_save_vendor');
+        try {
+            Store::update_vendor((int) ($_POST['id'] ?? 0), [
+                'order_method' => sanitize_text_field(wp_unslash($_POST['order_method'] ?? '')),
+                'email' => sanitize_email($_POST['email'] ?? ''),
+                'minimum_amount' => max(0, (float) ($_POST['minimum_amount'] ?? 0)),
+                'delivery_notes' => sanitize_textarea_field(wp_unslash($_POST['delivery_notes'] ?? '')),
+                'updated_at' => current_time('mysql'),
+            ]);
+        } catch (\Throwable $error) {
+            self::redirect('vendors', 'Vendor could not be saved: ' . $error->getMessage(), false);
+        }
+        self::redirect('vendors', 'Vendor saved.', true);
+    }
+    public static function save_settings(): void {
+        self::guard();
+        check_admin_referer('roxy_inventory_save_settings');
+        try {
+            $sanitized = Settings::sanitize($_POST);
+            $updated = update_option(Settings::OPTION_KEY, $sanitized);
+            $saved = $updated || get_option(Settings::OPTION_KEY, null) === $sanitized;
+        } catch (\Throwable $error) {
+            self::redirect('settings', 'Inventory settings could not be saved: ' . $error->getMessage(), false);
+        }
+        if (!$saved) {
+            self::redirect('settings', 'Inventory settings were not saved.', false);
+        }
+        try {
+            Scheduler::sync_schedule();
+        } catch (\Throwable $error) {
+            self::redirect('settings', 'Inventory settings were saved, but schedule synchronization failed: ' . $error->getMessage(), false);
+        }
+        self::redirect('settings', 'Inventory settings saved.', true);
+    }
     public static function send_draft(): void {
         self::guard(); check_admin_referer('roxy_inventory_send_draft');
         $vendor = sanitize_text_field(wp_unslash($_POST['vendor'] ?? ''));
@@ -194,11 +246,17 @@ class Admin {
         $direct = $prepared['direct'];
         $email = $prepared['email'];
         if (!$email['to'] || !wp_mail($email['to'], $email['subject'], $email['body'])) {
-            Store::update_order_status($order_id, 'email_failed');
+            try { $saved = Store::update_order_status($order_id, 'email_failed'); }
+            catch (\Throwable $e) { $saved = false; }
+            if (!$saved) self::redirect('history', 'Order email was not sent, and the failure status could not be saved. Review this order before retrying.', false, $order_id);
             self::redirect('dashboard', 'Could not send the order email.', false);
         }
-        if (!Store::update_order_status($order_id, $direct ? 'ordered' : 'approval_emailed')) self::redirect('history', 'Order email sent, but the order status could not be updated. Check this order before submitting again.', false, $order_id);
-        Store::log($direct ? 'vendor_email' : 'approval_email', 'success', 'Order email sent to ' . ($direct ? 'the vendor' : 'the configured manager') . ' for ' . $vendor . '.');
+        try { $saved = Store::update_order_status($order_id, $direct ? 'ordered' : 'approval_emailed'); }
+        catch (\Throwable $e) { $saved = false; }
+        if (!$saved) self::redirect('history', 'Order email sent, but the order status could not be updated. Check this order before submitting again.', false, $order_id);
+        if (!Store::log($direct ? 'vendor_email' : 'approval_email', 'success', 'Order email sent to ' . ($direct ? 'the vendor' : 'the configured manager') . ' for ' . $vendor . '.')) {
+            self::redirect('history', 'Order #' . $order_id . ' was emailed and its status was updated, but the activity log could not be saved. Do not submit this order again.', false, $order_id);
+        }
         self::redirect('dashboard', $direct ? 'Order emailed to the vendor and marked Ordered.' : 'Order submitted to the manager for approval.', true);
     }
     public static function review_token(array $vendor, array $products): string {
@@ -299,8 +357,12 @@ class Admin {
         $order = Store::order($order_id);
         if (!$order) self::redirect('history', 'Order not found.', false);
         if (!in_array((string) $order['status'], ['pending_manager','approval_emailed','ordered'], true)) self::redirect('history', 'This order is already closed.', false, $order_id);
-        if (!Store::update_order_status($order_id, 'cancelled')) self::redirect('history', 'Could not cancel the order. Refresh and try again.', false, $order_id);
-        Store::log('order_cancelled', 'success', 'Order #' . $order_id . ' cancelled for ' . $order['vendor'] . '.');
+        try { $saved = Store::update_order_status($order_id, 'cancelled'); }
+        catch (\Throwable $e) { $saved = false; }
+        if (!$saved) self::redirect('history', 'Could not cancel the order. Refresh and try again.', false, $order_id);
+        if (!Store::log('order_cancelled', 'success', 'Order #' . $order_id . ' cancelled for ' . $order['vendor'] . '.')) {
+            self::redirect('history', 'Order #' . $order_id . ' was cancelled, but the activity log could not be saved. Do not repeat this action.', false, $order_id);
+        }
         self::redirect('history', 'Order cancelled and vendor unlocked.', true, $order_id);
     }
     private static function decision_url(int $order_id, string $decision): string {
@@ -337,8 +399,12 @@ class Admin {
             wp_die($html, 'Confirm order status', ['response'=>200]);
         }
         check_admin_referer($nonce_action);
-        if (!Store::update_order_status($order_id, $decision)) wp_die('Could not update this order. It may already have been marked.');
-        Store::log('order_decision', 'success', 'Order #' . $order_id . ' marked ' . $decision . ' for ' . $found['vendor'] . '.');
+        try { $saved = Store::update_order_status($order_id, $decision); }
+        catch (\Throwable $e) { $saved = false; }
+        if (!$saved) wp_die('Could not update this order. It may already have been marked.');
+        if (!Store::log('order_decision', 'success', 'Order #' . $order_id . ' marked ' . $decision . ' for ' . $found['vendor'] . '.')) {
+            self::redirect('history', 'Order #' . $order_id . ' was marked ' . $decision . ', but the activity log could not be saved. Do not repeat this action.', false, $order_id);
+        }
         $message = $decision === 'ordered' ? 'Order marked as Ordered.' : 'Order marked as Rejected.';
         wp_safe_redirect(add_query_arg(['tab'=>'history','message'=>$message,'ok'=>'1'], self::url('history')));
         exit;

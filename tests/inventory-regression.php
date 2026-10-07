@@ -50,6 +50,9 @@ namespace {
         public $prefix = 'test_';
         public $products = [];
         public $orders = [];
+        public $fail_log = false;
+        public $runs = [];
+        private $saved;
         public function prepare($sql, ...$args) {
             if (count($args) === 1 && is_array($args[0])) $args = $args[0];
             foreach ($args as $arg) $sql = preg_replace('/%[sdf]/', is_numeric($arg) ? (string) $arg : "'" . $arg . "'", $sql, 1);
@@ -65,8 +68,17 @@ namespace {
         }
         public function get_results($sql, $format) { return []; }
         public function get_var($sql) { return 1; }
-        public function query($sql) { $GLOBALS['test_queries'][] = $sql; return 0; }
+        public function query($sql) {
+            $GLOBALS['test_queries'][] = $sql;
+            if ($sql === 'START TRANSACTION') $this->saved = [$this->products, $this->orders, $this->runs];
+            if ($sql === 'ROLLBACK') [$this->products, $this->orders, $this->runs] = $this->saved;
+            return 0;
+        }
         public function insert($table, $data) {
+            if (strpos($table, 'runs') !== false) {
+                if ($this->fail_log) return false;
+                $this->runs[] = $data;
+            }
             if (strpos($table, 'products') !== false) $this->products[$data['square_variation_id']] = $data + ['id' => 1];
             return 1;
         }
@@ -121,6 +133,16 @@ namespace {
     catch (\RuntimeException $e) { check($e->getMessage() !== 'Failed page was accepted', 'Pull fails on API error'); }
     check($wpdb->products['variation']['on_hand'] === 42, 'Failed later page preserves saved stock');
     \RoxyInventory\Scheduler::run();
+    $GLOBALS['fail_page2'] = false;
+    $wpdb->fail_log = true;
+    $before = [$wpdb->products, $wpdb->orders, $wpdb->runs];
+    $failed = false;
+    try { \RoxyInventory\Square::pull(); } catch (\RuntimeException $e) { $failed = true; }
+    check($failed && [$wpdb->products, $wpdb->orders, $wpdb->runs] === $before, 'Failed pull activity rolls back stock and order changes');
+    check(\RoxyInventory\Store::log('approval_email', 'success', 'Fixture') === false, 'Post-email logging failure returns false without throwing');
+    $wpdb->fail_log = false;
+    \RoxyInventory\Square::pull();
+    check($wpdb->products['variation']['on_hand'] === 7.0 && end($wpdb->runs)['status'] === 'success', 'Retry commits stock with matching activity');
     check(!method_exists(\RoxyInventory\Admin::class, 'email_ready_drafts'), 'Automatic order email routine removed');
     $vendor = ['name' => 'Tripp', 'order_method' => 'email', 'email' => 'vendor@example.test'];
     $lines = [['product' => 'Beer - Goose IPA', 'quantity' => 24, 'pack_size' => 12]];
@@ -141,6 +163,8 @@ namespace {
     check(\RoxyInventory\Store::update_order_status(1, 'ordered'), 'Direct email marks order Ordered');
     check(\RoxyInventory\Settings::get('direct_vendor_sending_enabled') === '0', 'Approval remains enabled by default');
     check(\RoxyInventory\Settings::sanitize(['direct_vendor_sending_enabled' => '1'])['direct_vendor_sending_enabled'] === '1', 'Direct setting can be saved');
+    foreach (['24:00','23:60','99:99','23:00junk'] as $time) check(\RoxyInventory\Settings::sanitize(['schedule_time'=>$time])['schedule_time']==='23:00','Invalid schedule time safely defaults');
+    check(\RoxyInventory\Settings::sanitize(['schedule_time'=>'22:45'])['schedule_time']==='22:45','Valid editable schedule time preserved');
     $seed = new \ReflectionMethod(\RoxyInventory\Store::class, 'seed_vendors');
     $seed->setAccessible(true);
     $GLOBALS['test_queries'] = [];
@@ -151,4 +175,5 @@ namespace {
     }
     echo "PASS: order statuses, cancellation, pagination, stock-state filtering, zero initial costs, preserved costs, failed-page preservation, silent nightly failure.\n";
     echo "PASS: Tripp/Odom instructions, forwarding addresses, manager and direct recipients, no forwarded decision tokens, direct status and settings.\n";
+    echo "PASS: activity failure rolls back pull, post-email logging is nonthrowing, retry commits activity and stock.\n";
 }

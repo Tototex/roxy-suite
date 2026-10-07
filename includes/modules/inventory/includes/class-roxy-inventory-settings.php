@@ -44,7 +44,7 @@ class Settings {
             'admin_alert_email' => sanitize_email((string) ($input['admin_alert_email'] ?? self::get('admin_alert_email'))),
             'timezone' => $tz,
             'schedule_enabled' => empty($input['schedule_enabled']) ? '0' : '1',
-            'schedule_time' => preg_match('/^\d{2}:\d{2}$/', (string) ($input['schedule_time'] ?? '')) ? (string) $input['schedule_time'] : '23:00',
+            'schedule_time' => preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/D', (string) ($input['schedule_time'] ?? '')) ? (string) $input['schedule_time'] : '23:00',
             'direct_vendor_sending_enabled' => empty($input['direct_vendor_sending_enabled']) ? '0' : '1',
             'tripp_order_instructions' => sanitize_textarea_field((string) ($input['tripp_order_instructions'] ?? self::get('tripp_order_instructions'))),
             'odom_order_instructions' => sanitize_textarea_field((string) ($input['odom_order_instructions'] ?? self::get('odom_order_instructions'))),

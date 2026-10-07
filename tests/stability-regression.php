@@ -21,8 +21,8 @@ function wp_remote_retrieve_body($response) { return $response['body']; }
 function get_option($key, $default = false) { return $GLOBALS['options'][$key] ?? []; }
 function wp_get_scheduled_event($hook) { return $GLOBALS['event'] ?? false; }
 function wp_next_scheduled($hook) { return isset($GLOBALS['event']) ? $GLOBALS['event']->timestamp : false; }
-function wp_unschedule_event($timestamp, $hook) { unset($GLOBALS['event']); }
-function wp_schedule_single_event($timestamp, $hook) { $GLOBALS['event'] = (object) ['timestamp'=>$timestamp,'schedule'=>'']; }
+function wp_unschedule_event($timestamp, $hook) { if(!empty($GLOBALS['fail_unschedule'])) return false; if(!empty($GLOBALS['noop_unschedule'])) return true; unset($GLOBALS['event']); return true; }
+function wp_schedule_single_event($timestamp, $hook) { if(!empty($GLOBALS['fail_schedule'])) return false; if(!empty($GLOBALS['noop_schedule'])) return true; $GLOBALS['event'] = (object) ['timestamp'=>$timestamp,'schedule'=>'']; return true; }
 function wp_parse_args($values, $defaults) { return array_merge($defaults, $values); }
 function admin_url($path) { return 'https://example.test/' . $path; }
 
@@ -73,6 +73,20 @@ check($scheduled === $GLOBALS['event']->timestamp, 'I5: existing single event no
 $GLOBALS['options'][\RoxyInventory\Settings::OPTION_KEY] = ['schedule_enabled'=>'0'];
 \RoxyInventory\Scheduler::ensure_schedule();
 check(!isset($GLOBALS['event']), 'I5: disabled schedule remains disabled');
+$GLOBALS['options'][\RoxyInventory\Settings::OPTION_KEY] = ['schedule_enabled'=>'1'];
+foreach (['fail_unschedule','noop_unschedule','fail_schedule','noop_schedule'] as $fault) {
+    unset($GLOBALS['event']);
+    if (strpos($fault,'unschedule')!==false) $GLOBALS['event']=(object)['timestamp'=>123,'schedule'=>'daily'];
+    $GLOBALS[$fault]=true; $failed=false;
+    try { \RoxyInventory\Scheduler::sync_schedule(); } catch (\RuntimeException $e) { $failed=true; }
+    check($failed,'I9: scheduler reports ' . $fault . ' instead of looping or claiming success');
+    \RoxyInventory\Scheduler::ensure_schedule();
+    check(true,'I9: failed automatic schedule repair does not break page bootstrap');
+    $GLOBALS[$fault]=false;
+}
+unset($GLOBALS['event']);
+\RoxyInventory\Scheduler::sync_schedule();
+check(isset($GLOBALS['event']) && $GLOBALS['event']->schedule==='','I9: schedule retry succeeds after fault removal');
 
 $config = new \ReflectionProperty(\RoxySuite\Updater::class, 'config'); $config->setAccessible(true); $config->setValue(null, ['github_repo'=>'test/test','slug'=>'test']);
 $release = new \ReflectionProperty(\RoxySuite\Updater::class, 'release'); $release->setAccessible(true);
