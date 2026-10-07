@@ -48,6 +48,38 @@ function roxy_rs_repo_subscriber_entitlement(int $user_id) {
 
 function roxy_rs_repo_insert_backing(array $data) {
     global $wpdb;
+    $lease = null;
+    try {
+        $request_id = (int) ($data['request_id'] ?? 0);
+        if ($request_id <= 0 || !class_exists('\\RoxyRS\\ConversionClaims')) throw new \RuntimeException('Request safety checks are unavailable.');
+        $lease = \RoxyRS\ConversionClaims::lease('request:' . $request_id);
+        wp_cache_delete($request_id, 'post_meta');
+        $request = get_post($request_id);
+        if (!$request || $request->post_type !== \RoxyRS\CPT::POST_TYPE
+            || !in_array(\RoxyRS\CPT::get_status($request_id), ['active', 'threshold_met'], true)
+            || get_post_meta($request_id, '_roxy_rs_creation_showing', true) !== ''
+            || !\RoxyRS\Frontend::backing_window_open((string) get_post_meta($request_id, \RoxyRS\CPT::META_DEADLINE_AT, true))) {
+            return new WP_Error('backing_window_closed', 'This request is not currently accepting backers.');
+        }
+        $lease->assert_owner();
+        $wpdb->last_error = '';
+        $connection = (string) $wpdb->get_var('SELECT CONNECTION_ID()');
+        if ($wpdb->last_error !== '' || !preg_match('/^[1-9][0-9]*$/D', $connection)) throw new \RuntimeException('Request connection could not be verified.');
+        $name = 'roxy_scope_' . substr(hash('sha256', $wpdb->prefix . ':requested-conversion:request:' . $request_id), 0, 48);
+        $lease->assert_owner();
+        $guard = $wpdb->prepare('CONNECTION_ID()=%s AND IS_USED_LOCK(%s)=CONNECTION_ID()', $connection, $name);
+        $result = roxy_rs_repo_insert_backing_owned($data, $guard);
+        $lease->assert_owner();
+        return $result;
+    } catch (\Throwable $error) {
+        return new WP_Error('backing_request_busy', 'This request is being updated or could not be verified. Please refresh before retrying.');
+    } finally {
+        if ($lease !== null) $lease->release_lease();
+    }
+}
+
+function roxy_rs_repo_insert_backing_owned(array $data, string $request_guard) {
+    global $wpdb;
     $table = roxy_rs_table_backings();
     $now = roxy_rs_now_mysql();
 
@@ -141,7 +173,7 @@ function roxy_rs_repo_insert_backing(array $data) {
             $parameters[] = (string) $claim['connection'];
             $parameters[] = (string) $claim['name'];
             $insert_sql = 'INSERT INTO ' . $table . ' (' . implode(', ', $columns) . ') SELECT ' . implode(', ', $expressions)
-                . ' WHERE CONNECTION_ID() = %s AND IS_USED_LOCK(%s) = CONNECTION_ID()';
+                . ' WHERE CONNECTION_ID() = %s AND IS_USED_LOCK(%s) = CONNECTION_ID() AND ' . $request_guard;
             if (!roxy_rs_repo_subscriber_lock_owned($claim)) return new WP_Error('subscriber_pledge_lock_lost', 'Subscriber reservations could not be safely locked. Please retry.');
             $wpdb->last_error = '';
             $inserted = $wpdb->query($wpdb->prepare($insert_sql, $parameters));
@@ -149,8 +181,17 @@ function roxy_rs_repo_insert_backing(array $data) {
             return (int) $wpdb->insert_id > 0 ? (int) $wpdb->insert_id : new WP_Error('db_insert_failed', 'Could not verify the saved backing.');
         }
 
-        $ok = $wpdb->insert($table, $row);
-        if (!$ok) return new WP_Error('db_insert_failed', $wpdb->last_error ?: 'Could not save backing.');
+        $columns = []; $expressions = []; $parameters = [];
+        foreach ($row as $column => $value) {
+            if (!preg_match('/^[a-z_]+$/D', (string) $column) || (!is_scalar($value) && $value !== null)) return new WP_Error('invalid_backing_data', 'Backing data could not be safely saved.');
+            $columns[] = '`' . $column . '`';
+            if ($value === null) $expressions[] = 'NULL';
+            else { $expressions[] = '%s'; $parameters[] = (string) $value; }
+        }
+        $sql = 'INSERT INTO ' . $table . ' (' . implode(',', $columns) . ') SELECT ' . implode(',', $expressions) . ' WHERE ' . $request_guard;
+        $wpdb->last_error = '';
+        $ok = $wpdb->query($wpdb->prepare($sql, $parameters));
+        if ($wpdb->last_error !== '' || $ok !== 1) return new WP_Error('db_insert_failed', 'Backing could not be saved under the verified request lease.');
         return (int) $wpdb->insert_id > 0 ? (int) $wpdb->insert_id : new WP_Error('db_insert_failed', 'Could not verify the saved backing.');
     } catch (\Throwable $error) {
         return new WP_Error(
@@ -179,16 +220,19 @@ function roxy_rs_repo_update_backing(int $id, array $data) {
 function roxy_rs_repo_get_backing(int $id): ?array {
     global $wpdb;
     $table = roxy_rs_table_backings();
+    $wpdb->last_error = '';
     $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table WHERE id = %d", $id), ARRAY_A);
-    return $row ?: null;
+    return $wpdb->last_error === '' && is_array($row) ? $row : null;
 }
 
 function roxy_rs_repo_list_backings_for_request(int $request_id, array $statuses = []): array {
     global $wpdb;
     $table = roxy_rs_table_backings();
+    $wpdb->last_error = '';
     if (!$statuses) {
         $rows = $wpdb->get_results($wpdb->prepare("SELECT * FROM $table WHERE request_id = %d ORDER BY id ASC", $request_id), ARRAY_A);
-        return $rows ?: [];
+        if ($wpdb->last_error !== '' || !is_array($rows)) throw new \RuntimeException('Request backings could not be read.');
+        return $rows;
     }
 
     $placeholders = implode(',', array_fill(0, count($statuses), '%s'));
@@ -197,7 +241,8 @@ function roxy_rs_repo_list_backings_for_request(int $request_id, array $statuses
         array_merge([$request_id], array_values($statuses))
     );
     $rows = $wpdb->get_results($sql, ARRAY_A);
-    return $rows ?: [];
+    if ($wpdb->last_error !== '' || !is_array($rows)) throw new \RuntimeException('Request backings could not be read.');
+    return $rows;
 }
 
 function roxy_rs_repo_list_backings_for_user(int $user_id): array {

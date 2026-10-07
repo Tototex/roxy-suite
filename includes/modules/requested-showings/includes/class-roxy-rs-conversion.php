@@ -135,6 +135,21 @@ class Conversion {
     }
 
     public static function approve_request(int $request_id) {
+        $lease = null;
+        try {
+            if ($request_id <= 0 || !class_exists(ConversionClaims::class)) throw new \RuntimeException('Conversion safety checks are unavailable.');
+            $lease = ConversionClaims::lease('request:' . $request_id);
+            wp_cache_delete($request_id, 'post_meta');
+            return self::approve_request_owned($request_id, $lease);
+        } catch (\Throwable $error) {
+            return new \WP_Error('conversion_review_required', 'Conversion is busy or could not be verified. Review saved showing, order and payment records before retrying.');
+        } finally {
+            if ($lease !== null) $lease->release_lease();
+        }
+    }
+
+    private static function approve_request_owned(int $request_id, \RoxyST\Issuance $lease) {
+        $lease->assert_owner();
         $post = get_post($request_id);
         if (!$post || $post->post_type !== CPT::POST_TYPE) {
             return new \WP_Error('missing_request', 'Requested showing not found.');
@@ -149,8 +164,19 @@ class Conversion {
             return new \WP_Error('missing_target', 'Set the target showtime before approval.');
         }
 
+        // Close pledging under the same lease held by repository INSERTs.
+        update_post_meta($request_id, CPT::META_STATUS, 'conversion_review');
+        wp_cache_delete($request_id, 'post_meta');
+        if (get_post_meta($request_id, CPT::META_STATUS, true) !== 'conversion_review') {
+            return new \WP_Error('request_close_failed', 'The request could not be closed for conversion. No new showing or payment was attempted.');
+        }
+        $lease->assert_owner();
         $showing_id = (int) get_post_meta($request_id, CPT::META_APPROVED_SHOWING_ID, true);
         if ($showing_id <= 0 || get_post_type($showing_id) !== \RoxyST\CPT::POST_TYPE) {
+            // A missing prior showing must not be silently replaced.
+            if ($showing_id > 0) return new \WP_Error('showing_review_required', 'The linked showing is missing. Reconcile it before creating another.');
+            ConversionClaims::begin_creation($request_id, 'showing');
+            $lease->assert_owner();
             $showing_id = wp_insert_post([
                 'post_type' => \RoxyST\CPT::POST_TYPE,
                 'post_status' => 'publish',
@@ -161,7 +187,12 @@ class Conversion {
             if (is_wp_error($showing_id)) {
                 return $showing_id;
             }
+            $lease->assert_owner();
             update_post_meta($request_id, CPT::META_APPROVED_SHOWING_ID, $showing_id);
+            wp_cache_delete($request_id, 'post_meta');
+            if ((int) get_post_meta($request_id, CPT::META_APPROVED_SHOWING_ID, true) !== (int) $showing_id) {
+                return new \WP_Error('showing_link_failed', 'The showing link could not be verified. Review it before retrying.');
+            }
             update_post_meta($showing_id, '_roxy_rs_request_id', $request_id);
             $thumbnail_id = get_post_thumbnail_id($request_id);
             if ($thumbnail_id) {
@@ -176,9 +207,12 @@ class Conversion {
         \RoxyST\Products::ensure_products_for_showing($showing_id);
 
         $backings = roxy_rs_repo_list_backings_for_request($request_id, ['pending', 'threshold_met', 'approved']);
+        $needs_review = false;
         foreach ($backings as $backing) {
+            $lease->assert_owner();
             $result = self::convert_backing_to_order($request_id, $showing_id, $backing);
             if (is_wp_error($result)) {
+                $needs_review = true;
                 roxy_rs_repo_update_backing((int) $backing['id'], [
                     'status' => 'approved',
                     'approved_showing_id' => $showing_id,
@@ -192,6 +226,8 @@ class Conversion {
             }
         }
 
+        $lease->assert_owner();
+        if ($needs_review) return new \WP_Error('backing_review_required', 'The showing exists, but one or more backings require review. Customer payment confirmation was not sent.');
         update_post_meta($request_id, CPT::META_STATUS, 'approved');
         wp_update_post([
             'ID' => $request_id,
@@ -311,6 +347,27 @@ class Conversion {
     }
 
     private static function convert_backing_to_order(int $request_id, int $showing_id, array $backing) {
+        $lease = null;
+        try {
+            $id = (int) ($backing['id'] ?? 0);
+            if ($id <= 0 || !class_exists(ConversionClaims::class)) throw new \RuntimeException('Backing conversion identity is unavailable.');
+            $lease = ConversionClaims::lease('backing:' . $id);
+            $fresh = roxy_rs_repo_get_backing($id);
+            if (!$fresh || (int) ($fresh['request_id'] ?? 0) !== $request_id
+                || !in_array($fresh['status'] ?? '', ['pending', 'threshold_met', 'approved'], true)) {
+                return new \WP_Error('backing_review_required', 'The saved backing changed or could not be verified. Review it before retrying.');
+            }
+            $lease->assert_owner();
+            return self::convert_backing_owned($request_id, $showing_id, $fresh, $lease);
+        } catch (\Throwable $error) {
+            return new \WP_Error('backing_review_required', 'Backing conversion is busy or requires reconciliation. Review saved orders and payments before retrying.');
+        } finally {
+            if ($lease !== null) $lease->release_lease();
+        }
+    }
+
+    private static function convert_backing_owned(int $request_id, int $showing_id, array $backing, \RoxyST\Issuance $lease) {
+        $lease->assert_owner();
         $backing_id = (int) ($backing['id'] ?? 0);
         if ($backing_id <= 0) {
             return new \WP_Error('missing_backing', 'Backing record missing.');
@@ -387,6 +444,8 @@ class Conversion {
         }
 
         if (!$order) {
+            ConversionClaims::begin_creation($request_id, 'order', $backing_id);
+            $lease->assert_owner();
             $order = wc_create_order(['customer_id' => $user_id]);
             if (is_wp_error($order)) {
                 return $order;
@@ -439,6 +498,7 @@ class Conversion {
             $order->add_meta_data('_roxy_rs_backing_id', $backing_id, true);
             $order->calculate_totals();
             $order->save();
+            $lease->assert_owner();
             if ((int) $order->get_id() <= 0 || (int) $order->get_customer_id() !== $user_id
                 || (int) $order->get_meta('_roxy_rs_request_id', true) !== $request_id
                 || (int) $order->get_meta('_roxy_rs_backing_id', true) !== $backing_id) {
@@ -457,6 +517,7 @@ class Conversion {
             }
         }
 
+        $lease->assert_owner();
         $ticket_items = method_exists($order, 'get_items') ? $order->get_items('line_item') : [];
         if (!is_array($ticket_items) || ($expected_ticket_qty > 0 && !$ticket_items) || ($expected_ticket_qty === 0 && $ticket_items)) {
             return new \WP_Error('ticket_order_unverified', 'The saved ticket lines do not match the backing. No payment was attempted.');
@@ -499,6 +560,7 @@ class Conversion {
         }
 
         $charge_total = (int) ($backing['charge_total'] ?? 0);
+        $lease->assert_owner();
         if ($charge_total > 0) {
             $token_id = (int) ($backing['payment_token_id'] ?? 0);
             $charge = self::charge_order_with_saved_token($order, $user_id, $token_id);
@@ -509,7 +571,8 @@ class Conversion {
                 $order->update_status('on-hold', 'Requested showing payment requires manager review: ' . $charge->get_error_message());
                 return $charge;
             }
-            roxy_rs_repo_update_backing($backing_id, [
+            $lease->assert_owner();
+            $recorded = roxy_rs_repo_update_backing($backing_id, [
                 'status' => 'charged',
                 'approved_showing_id' => $showing_id,
                 'woo_order_id' => $order->get_id(),
@@ -520,7 +583,8 @@ class Conversion {
             $order->set_payment_method_title('No charge');
             $order->save();
             $order->payment_complete('roxy-rs-nocharge-' . $backing_id);
-            roxy_rs_repo_update_backing($backing_id, [
+            $lease->assert_owner();
+            $recorded = roxy_rs_repo_update_backing($backing_id, [
                 'status' => 'charged',
                 'approved_showing_id' => $showing_id,
                 'woo_order_id' => $order->get_id(),
@@ -528,6 +592,16 @@ class Conversion {
             ]);
         }
 
+        $lease->assert_owner();
+        if (is_wp_error($recorded)) return new \WP_Error('backing_result_unrecorded', 'Payment or no-charge completion occurred, but the backing record needs reconciliation. Do not charge it again.');
+        $completed_backing = roxy_rs_repo_get_backing($backing_id);
+        $expected_intent = $charge_total > 0 ? (string) ($charge['intent_id'] ?? '') : 'no-charge';
+        if (!$completed_backing || ($completed_backing['status'] ?? '') !== 'charged'
+            || (int) ($completed_backing['woo_order_id'] ?? 0) !== (int) $order->get_id()
+            || (int) ($completed_backing['approved_showing_id'] ?? 0) !== $showing_id
+            || (string) ($completed_backing['charge_intent_id'] ?? '') !== $expected_intent) {
+            return new \WP_Error('backing_result_unverified', 'Payment or no-charge completion occurred, but its backing link could not be verified. Do not charge it again.');
+        }
         if (class_exists('\\RoxyST\\Tickets')) {
             \RoxyST\Tickets::sync_order_tickets($order->get_id());
         }

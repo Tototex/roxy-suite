@@ -2,7 +2,9 @@
 // Isolated payment-attempt marker tests. Run: php tests/requested-payment-attempt-regression.php [repo-root]
 namespace RoxyST {
     final class Issuance {
-        public function __construct(private int $order_id) {}
+        public function __construct(private int|array $order_id, string|array $scope = '') {}
+        public function acquire_lease(): void { $this->assert_owner(); }
+        public function release_lease(): void {}
         public function assert_owner(): void {
             if ($GLOBALS['payment_fixture']['connection'] !== 41) throw new \RuntimeException('fixture connection lost');
         }
@@ -39,6 +41,8 @@ namespace RoxyST {
         }
     }
 }
+
+namespace RoxyRS { final class CPT { public const POST_TYPE = 'roxy_req_showing'; } }
 
 namespace {
     if (!defined('ABSPATH')) define('ABSPATH', __DIR__ . '/');
@@ -82,6 +86,7 @@ namespace {
     $GLOBALS['wpdb'] = new FixtureWpdb();
     $root = $argv[1] ?? dirname(__DIR__);
     require $root . '/includes/modules/requested-showings/includes/class-roxy-rs-payment-attempts.php';
+    require $root . '/includes/modules/requested-showings/includes/class-roxy-rs-conversion-claims.php';
 
     function payment_reset(string $status = 'wc-pending', bool $paid = false): WC_Order {
         $GLOBALS['payment_fixture'] = [
@@ -185,5 +190,20 @@ namespace {
     $GLOBALS['payment_fixture']['meta'][123]['_roxy_rs_payment_attempt'][0] = '{broken';
     payment_check(!\RoxyRS\PaymentAttempts::verify($order, $claim), 'corrupt marker fails closed at pre-provider verification');
 
-    echo 'OK: ' . $GLOBALS['payment_checks'] . " requested payment-attempt checks\n";
+    payment_reset(); $GLOBALS['payment_fixture']['post_type'] = 'roxy_req_showing';
+    \RoxyRS\ConversionClaims::begin_creation(123, 'showing');
+    payment_check($GLOBALS['payment_fixture']['commits'] === 1, 'creation marker commits before entity creation');
+    payment_check(payment_throws(static fn()=>\RoxyRS\ConversionClaims::begin_creation(123, 'showing')), 'started showing cannot be recreated after a missing link');
+    \RoxyRS\ConversionClaims::begin_creation(123, 'order', 20);
+    payment_check(payment_throws(static fn()=>\RoxyRS\ConversionClaims::begin_creation(123, 'order', 20)), 'same backing order cannot be recreated after a missing link');
+    \RoxyRS\ConversionClaims::begin_creation(123, 'order', 21);
+    payment_check(isset($GLOBALS['payment_fixture']['meta'][123]['_roxy_rs_creation_order_21']), 'different backing receives separate creation evidence');
+    foreach (['fail_write','fail_commit','lose_connection_on_write'] as $failure) {
+        payment_reset(); $GLOBALS['payment_fixture']['post_type'] = 'roxy_req_showing'; $GLOBALS['payment_fixture'][$failure] = true;
+        payment_check(payment_throws(static fn()=>\RoxyRS\ConversionClaims::begin_creation(123, 'showing')), 'creation fails closed for ' . $failure);
+    }
+    payment_reset();
+    payment_check(payment_throws(static fn()=>\RoxyRS\ConversionClaims::begin_creation(123, 'showing')), 'creation on wrong request post type denied');
+    payment_check(payment_throws(static fn()=>\RoxyRS\ConversionClaims::begin_creation(123, 'order', 0)), 'creation with missing backing identity denied');
+    echo 'OK: ' . $GLOBALS['payment_checks'] . " requested payment/creation checks\n";
 }

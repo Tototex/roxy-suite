@@ -104,6 +104,7 @@ class CPT {
             'active' => 'Active',
             'threshold_met' => 'Goal Hit / Awaiting Approval',
             'approved' => 'Approved / Converted',
+            'conversion_review' => 'Conversion / Manager Review',
             'failed' => 'Failed',
             'cancelled' => 'Cancelled',
         ];

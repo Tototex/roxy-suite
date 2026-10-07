@@ -1,6 +1,16 @@
 <?php
 // Isolated Requested Showings subscriber-entitlement checks. Run with: php tests/requested-entitlement-regression.php [repo-root]
 namespace RoxyST {
+    final class CPT { public const POST_TYPE = 'roxy_showing'; }
+    final class Products { public static function ensure_products_for_showing($id): void {} }
+    final class Tickets { public static function sync_order_tickets($id): void {} }
+    final class Issuance {
+        public static bool $busy = false;
+        public static int $released = 0;
+        public static bool $lost = false;
+        public function assert_owner(): void { if (self::$lost) throw new \RuntimeException('Fixture lease lost'); }
+        public function release_lease(): void { self::$released++; }
+    }
     final class Reservations {
         public static $used = 0;
         public static function quantity_for_showing(int $showing_id, int $exclude_order_id = 0, int $subscriber_user_id = 0): int { return self::$used; }
@@ -17,7 +27,23 @@ namespace RoxyST {
     }
 }
 
+namespace RoxyRS {
+    final class ConversionClaims {
+        public static array $started = [];
+        public static function lease($scope): \RoxyST\Issuance {
+            if (\RoxyST\Issuance::$busy) throw new \RuntimeException('Fixture lease busy');
+            return new \RoxyST\Issuance();
+        }
+        public static function begin_creation($request, $kind, $backing = 0): void {
+            $key = $request . ':' . $kind . ':' . $backing;
+            if (isset(self::$started[$key])) throw new \RuntimeException('Fixture existing creation');
+            self::$started[$key] = true;
+        }
+    }
+}
+
 namespace {
+    final class WooCommerce {}
     if (!defined('ABSPATH')) define('ABSPATH', __DIR__ . '/');
     if (!defined('ARRAY_A')) define('ARRAY_A', 'ARRAY_A');
     if (!defined('MINUTE_IN_SECONDS')) define('MINUTE_IN_SECONDS', 60);
@@ -73,6 +99,8 @@ namespace {
         public $prefix = 'wp_'; public $last_error = ''; public $insert_id = 0;
         public $outstanding = 0; public $rows = []; public $lock_busy = false; public $read_error = false; public $throw_read = false; public $lose_lock_after_read = false;
         public $connection_error = false; public $owner_mismatch = false; public $release_count = 0; public $guarded_insert_sql = '';
+        public bool $list_error = false;
+        public bool $final_update_error = false;
         private $locked = false; private $connection = 51;
         public function prepare($sql, ...$args) {
             if (count($args) === 1 && is_array($args[0])) $args = $args[0];
@@ -104,7 +132,7 @@ namespace {
             $this->guarded_insert_sql = $sql;
             if (strpos($sql, 'INSERT INTO wp_roxy_requested_showing_backings') !== 0
                 || strpos($sql, 'CONNECTION_ID()') === false || strpos($sql, 'IS_USED_LOCK(') === false
-                || !$this->locked || $this->owner_mismatch) return 0;
+                || (strpos($sql, 'roxy-rs-ent-') !== false && (!$this->locked || $this->owner_mismatch))) return 0;
             preg_match('/\((.*?)\) SELECT (.*?) WHERE CONNECTION_ID\(\)/s', $sql, $m);
             if (!$m) return 0;
             $columns = array_map(static fn($v) => trim($v, " `"), explode(',', $m[1]));
@@ -119,7 +147,8 @@ namespace {
             return 1;
         }
         public function insert($table, $data) { $this->insert_id++; $data['id']=$this->insert_id; $this->rows[$this->insert_id] = $data; $this->outstanding += (int) $data['subscriber_qty']; return 1; }
-        public function update($table, $data, $where) { $id=(int)($where['id']??0); if(isset($this->rows[$id]))$this->rows[$id]=array_merge($this->rows[$id],$data); return 1; }
+        public function get_results($sql, $output = null) { if ($this->list_error) { $this->last_error = 'Fixture list read failed'; return null; } return array_values($this->rows); }
+        public function update($table, $data, $where) { if ($this->final_update_error && ($data['status'] ?? '') === 'charged') { $this->last_error = 'Fixture final result write failure'; return false; } $id=(int)($where['id']??0); if(isset($this->rows[$id]))$this->rows[$id]=array_merge($this->rows[$id],$data); return 1; }
         public function is_locked() { return $this->locked; }
     }
 
@@ -153,7 +182,14 @@ namespace {
     function is_user_logged_in() { return true; }
     function get_current_user_id() { return $GLOBALS['fixture_user']; }
     function get_post($id) { return (object) ['ID'=>$id,'post_type'=>'roxy_req_showing','post_title'=>'Fixture request','post_content'=>'']; }
+    function get_post_type($id) { return $id === 801 ? 'roxy_showing' : 'roxy_req_showing'; }
+    function wp_update_post($data) { return $data['ID']; }
+    function get_the_title($id) { return 'Fixture request'; }
+    function admin_url($path) { return 'https://fixture.invalid/admin/' . $path; }
+    function sanitize_email($value) { return (string) $value; }
+    function wp_mail($to, $subject, $body) { $GLOBALS['fixture_mails'][] = $subject; return true; }
     function get_post_meta($id, $key, $single = false) { return $GLOBALS['fixture_meta'][$id][$key] ?? ''; }
+    function wp_cache_delete($id, $group) {}
     function get_option($key, $default = false) { return $GLOBALS['fixture_options'][$key] ?? $default; }
     function update_post_meta($id, $key, $value) { $GLOBALS['fixture_meta'][$id][$key] = $value; return true; }
     function wp_unslash($value) { return $value; }
@@ -178,7 +214,10 @@ namespace {
         global $wpdb;
         $wpdb = new FixtureWpdb(); $GLOBALS['wpdb'] = $wpdb;
         \RoxyST\Reservations::$used = 0; \RoxyST\Holds::$allow = true; \RoxyST\Holds::$calls = 0;
+        \RoxyST\Issuance::$busy = false; \RoxyST\Issuance::$lost = false; \RoxyST\Issuance::$released = 0;
+        \RoxyRS\ConversionClaims::$started = [];
         $GLOBALS['fixture_subscriptions'] = $subscriptions;
+        $GLOBALS['fixture_mails'] = [];
         $GLOBALS['fixture_subscription_error'] = $entitlement_error;
         $GLOBALS['fixture_meta'] = [501 => [
             \RoxyRS\CPT::META_STATUS => 'active',
@@ -233,7 +272,7 @@ namespace {
     check_fixture(is_wp_error($result) && count($wpdb->rows) === 0, 'repository rejects money beyond signed schema range');
     reset_fixture([]);
     $result = roxy_rs_repo_insert_backing(['request_id'=>501,'user_id'=>77,'general_qty'=>'4294967295','support_qty'=>'4294967295']);
-    check_fixture(!is_wp_error($result) && $wpdb->rows[1]['general_qty'] === 4294967295, 'maximum unsigned ticket quantity remains representable');
+    check_fixture(!is_wp_error($result) && (int) $wpdb->rows[1]['general_qty'] === 4294967295, 'maximum unsigned ticket quantity remains representable');
     reset_fixture([new FixtureSubscription('active', 2)]);
     $_POST['subscriber_qty'] = ['2'];
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'array POST quantity is rejected');
@@ -267,7 +306,7 @@ namespace {
     check_fixture($wpdb->release_count === 0 && !$wpdb->is_locked(), 'lost lease is not released by non-owner');
     reset_fixture([new FixtureSubscription('active', 2)]); $wpdb->connection_error = true;
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'connection identity read failure fails closed');
-    check_fixture($wpdb->release_count === 1 && !$wpdb->is_locked(), 'connection read error releases only after ownership is reverified');
+    check_fixture($wpdb->release_count === 0 && !$wpdb->is_locked(), 'request connection read error occurs before subscriber lease acquisition');
     reset_fixture([new FixtureSubscription('active', 2)]); $wpdb->owner_mismatch = true;
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'mismatched lock owner fails closed');
     check_fixture($wpdb->release_count === 0, 'foreign lock owner is never released');
@@ -305,5 +344,33 @@ namespace {
     $result = $convert->invoke(null, 501, 801, ['id'=>1,'request_id'=>501,'user_id'=>77,'woo_order_id'=>7002,'subscriber_qty'=>1,'charge_total'=>0]);
     check_fixture(is_wp_error($result) && \RoxyST\Holds::$calls === 0, 'mismatched existing order owner is never reused or claimed');
 
-    echo "OK: {$checks} requested entitlement checks\n";
+    reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing(); \RoxyST\Issuance::$busy = true;
+    check_fixture(is_wp_error($convert->invoke(null, 501, 801, ['id'=>1])) && $GLOBALS['fixture_order_creates'] === 0, 'busy backing lease blocks order creation');
+    check_fixture(\RoxyST\Issuance::$released === 0, 'unacquired backing lease is not released');
+    reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing(); $wpdb->rows[1]['status'] = 'charged';
+    check_fixture(is_wp_error($convert->invoke(null, 501, 801, ['id'=>1,'status'=>'approved'])) && $GLOBALS['fixture_order_creates'] === 0, 'fresh charged backing defeats stale approval snapshot');
+    check_fixture(\RoxyST\Issuance::$released === 1, 'fresh backing denial releases its lease');
+    reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing(); \RoxyRS\ConversionClaims::$started['501:order:1'] = true;
+    check_fixture(is_wp_error($convert->invoke(null, 501, 801, ['id'=>1])) && $GLOBALS['fixture_order_creates'] === 0, 'missing-link creation evidence blocks another order');
+    reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing(); \RoxyST\Issuance::$lost = true;
+    check_fixture(is_wp_error($convert->invoke(null, 501, 801, ['id'=>1])) && $GLOBALS['fixture_order_creates'] === 0, 'lost backing lease blocks order creation');
+    reset_fixture([]); $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] = 'conversion_review';
+    check_fixture(is_wp_error(roxy_rs_repo_insert_backing(['request_id'=>501,'user_id'=>77])) && !$wpdb->rows, 'repository rejects a request closed after stale form validation');
+    reset_fixture([]); $GLOBALS['fixture_meta'][501]['_roxy_rs_creation_showing'] = 'started';
+    check_fixture(is_wp_error(roxy_rs_repo_insert_backing(['request_id'=>501,'user_id'=>77])) && !$wpdb->rows, 'started conversion rejects new pledges even if status is reopened');
+    reset_fixture([]); $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_DEADLINE_AT] = '2000-01-01 00:00';
+    check_fixture(is_wp_error(roxy_rs_repo_insert_backing(['request_id'=>501,'user_id'=>77])) && !$wpdb->rows, 'repository rechecks deadline at serialized insertion');
+    reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing(); \RoxyST\Holds::$allow = false;
+    $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_TARGET_AT] = '2026-10-30 19:00';
+    $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_APPROVED_SHOWING_ID] = 801;
+    check_fixture(is_wp_error(\RoxyRS\Conversion::approve_request(501)) && $GLOBALS['fixture_order']->completed === 0, 'partial approval returns review rather than successful confirmation');
+    check_fixture($GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'conversion_review'
+        && $GLOBALS['fixture_mails'] === ['Requested showing approval needs attention: Fixture request'], 'partial approval closes pledging and sends only manager review notice');
+    reset_fixture([]); $wpdb->list_error = true;
+    $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_TARGET_AT] = '2026-10-30 19:00';
+    $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_APPROVED_SHOWING_ID] = 801;
+    check_fixture(is_wp_error(\RoxyRS\Conversion::approve_request(501)) && !$GLOBALS['fixture_mails'], 'failed backing list never becomes successful empty approval');
+    reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing(); $wpdb->final_update_error = true;
+    check_fixture(is_wp_error($convert->invoke(null, 501, 801, ['id'=>1])) && $GLOBALS['fixture_order']->completed === 1, 'final backing write failure after no-charge completion requires reconciliation');
+    echo "OK: {$checks} requested entitlement/conversion checks\n";
 }
