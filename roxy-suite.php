@@ -14,11 +14,12 @@ define('ROXY_SUITE_VERSION', '1.0.61');
 define('ROXY_SUITE_PATH', plugin_dir_path(__FILE__));
 define('ROXY_SUITE_URL', plugin_dir_url(__FILE__));
 
+require_once ROXY_SUITE_PATH . 'includes/class-roxy-suite-governance.php';
 require_once ROXY_SUITE_PATH . 'includes/class-roxy-suite-compatibility.php';
 \RoxySuite\Compatibility::init();
 
 function roxy_suite_admin_capability(): string {
-    return 'roxy_suite_access';
+    return \RoxySuite\Governance::admin_capability();
 }
 
 function roxy_suite_user_can_access_admin(): bool {
@@ -26,15 +27,9 @@ function roxy_suite_user_can_access_admin(): bool {
 }
 
 function roxy_suite_grant_capabilities(): void {
-    foreach (['administrator', 'shop_manager'] as $role_name) {
-        $role = get_role($role_name);
-        if ($role && !$role->has_cap(roxy_suite_admin_capability())) {
-            $role->add_cap(roxy_suite_admin_capability());
-        }
-    }
+    \RoxySuite\Governance::grant_capabilities();
 }
 
-add_action('init', 'roxy_suite_grant_capabilities');
 add_filter('option_page_capability_roxy_st_settings', fn() => roxy_suite_admin_capability());
 add_filter('option_page_capability_roxy_grosses_settings', fn() => roxy_suite_admin_capability());
 
@@ -115,14 +110,13 @@ add_action('wp_ajax_roxy_suite_toggle_module', function () {
     }
     $module  = sanitize_key((string) ($_POST['module'] ?? ''));
     $enabled = isset($_POST['enabled']) && $_POST['enabled'] !== '0' && $_POST['enabled'] !== '';
-    $allowed = ['arcade', 'sub_check', 'will_call', 'show_tickets', 'requested_showings', 'event_booking', 'grosses', 'inventory', 'social_publisher'];
+    $allowed = \RoxySuite\Governance::module_ids();
     if (!in_array($module, $allowed, true)) {
         wp_send_json_error('Unknown module', 400);
     }
-    $modules = get_option('roxy_suite_modules', []);
-    if (!is_array($modules)) $modules = [];
-    $modules[$module] = $enabled;
-    update_option('roxy_suite_modules', $modules);
+    if (!\RoxySuite\Governance::set_module_enabled($module, $enabled)) {
+        wp_send_json_error('The module setting could not be verified, so the requested change was not confirmed. Ask an administrator to check the saved Roxy Suite module settings and database.', 409);
+    }
     wp_send_json_success(['module' => $module, 'enabled' => $enabled]);
 });
 
@@ -190,10 +184,17 @@ function roxy_suite_dashboard_page() {
 
 // ── Module enable/disable helper ───────────────────────────────────────────────
 function roxy_suite_module_enabled(string $key): bool {
-    $modules = get_option('roxy_suite_modules', []);
-    if (!is_array($modules)) return true;
-    return ($modules[$key] ?? true) === true;
+    return \RoxySuite\Governance::module_enabled($key);
 }
+
+add_action('admin_notices', function (): void {
+    if (!is_admin() || !roxy_suite_user_can_access_admin()) return;
+    if (\RoxySuite\Governance::module_settings_are_valid()) return;
+
+    echo '<div class="notice notice-error"><p>'
+        . esc_html('Roxy Suite module settings could not be validated safely. Suite modules are disabled for this request. Corrupt saved data is left untouched; if this followed a failed save or database issue, resolve it and reload after the option can be verified.')
+        . '</p></div>';
+});
 
 // ── Legacy NFC redirect (was roxy-legacy-api-redirect) ────────────────────────
 // Redirects /?sub=123 → /member-check/?sub=123 for old NFC stickers.
