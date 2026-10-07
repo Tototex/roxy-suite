@@ -20,6 +20,7 @@ final class Admin {
         add_action('admin_post_roxy_social_create_manual', [__CLASS__, 'create_manual']);
         add_action('admin_post_roxy_social_remove_media', [__CLASS__, 'remove_media']);
         add_action('admin_post_roxy_social_auto_approve', [__CLASS__, 'save_auto_approve']);
+        add_action('admin_post_roxy_social_retry_ai', [__CLASS__, 'retry_ai']);
         add_action('wp_ajax_roxy_social_hangar_search', [__CLASS__, 'ajax_hangar_search']);
         add_action('wp_ajax_roxy_social_hangar_assign', [__CLASS__, 'ajax_hangar_assign']);
         add_action('wp_ajax_roxy_social_hangar_import_featured', [__CLASS__, 'ajax_hangar_import_featured']);
@@ -111,8 +112,12 @@ final class Admin {
             }
             $facebook_state = !empty($row['facebook_post_id']) ? 'Posted' : (($status === 'publishing') ? 'Publishing' : (($status === 'approved') ? 'Scheduled' : (($status === 'failed' && strpos((string) $row['last_error'], 'Facebook:') !== false) ? 'Failed' : 'Not posted')));
             $instagram_state = !empty($row['instagram_media_id']) ? 'Posted' : (($status === 'publishing') ? 'Publishing' : (($status === 'approved') ? 'Scheduled' : (($status === 'failed' && stripos((string) $row['last_error'], 'Instagram video is still processing') !== false) ? 'Processing' : (($status === 'failed' && strpos((string) $row['last_error'], 'Instagram:') !== false) ? 'Failed' : 'Not posted'))));
-            echo '</td><td><strong>' . esc_html(ucwords(str_replace('_', ' ', $status))) . '</strong><br><span class="description">Facebook: ' . esc_html($facebook_state) . '<br>Instagram: ' . esc_html($instagram_state) . '</span></td><td><form id="roxy-social-draft-' . (int) $row['id'] . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_update_draft"><input type="hidden" name="return_status" value="' . esc_attr($filter) . '"><input type="hidden" name="id" value="' . (int) $row['id'] . '"><input type="hidden" name="media_url" value="' . esc_attr((string) $row['media_url']) . '"><input type="hidden" name="media_type" value="' . esc_attr((string) $row['media_type']) . '"><input type="hidden" name="media_changed" value="0"><input type="hidden" name="draft_revision" value="' . esc_attr(Store::draft_revision($row)) . '">' . wp_nonce_field('roxy_social_update_draft_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit" hidden' . ((!in_array($status, ['draft', 'approved', 'needs_review', 'failed'], true) || !empty($row['facebook_post_id']) || !empty($row['instagram_media_id']) || !empty($row['instagram_container_id'])) ? ' disabled' : '') . '>Save</button></form>';
+            echo '</td><td><strong>' . esc_html(ucwords(str_replace('_', ' ', $status))) . '</strong><br><span class="description">Facebook: ' . esc_html($facebook_state) . '<br>Instagram: ' . esc_html($instagram_state) . '</span></td><td><form id="roxy-social-draft-' . (int) $row['id'] . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_update_draft"><input type="hidden" name="return_status" value="' . esc_attr($filter) . '"><input type="hidden" name="id" value="' . (int) $row['id'] . '"><input type="hidden" name="media_url" value="' . esc_attr((string) $row['media_url']) . '"><input type="hidden" name="media_type" value="' . esc_attr((string) $row['media_type']) . '"><input type="hidden" name="media_changed" value="0"><input type="hidden" name="draft_revision" value="' . esc_attr(Store::draft_revision($row)) . '">' . wp_nonce_field('roxy_social_update_draft_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit" hidden style="display:none!important"' . ((!in_array($status, ['draft', 'approved', 'needs_review', 'failed'], true) || !empty($row['facebook_post_id']) || !empty($row['instagram_media_id']) || !empty($row['instagram_container_id'])) ? ' disabled' : '') . '>Save</button></form>';
             $has_published_ids = !empty($row['facebook_post_id']) || !empty($row['instagram_media_id']);
+            if ($status === 'needs_review' && ($row['ai_status'] ?? '') === 'pending' && !$has_published_ids && empty($row['instagram_container_id'])) {
+                $retry_url = wp_nonce_url(add_query_arg(['action' => 'roxy_social_retry_ai', 'id' => (int) $row['id'], 'draft_revision' => Store::draft_revision($row)], admin_url('admin-post.php')), 'roxy_social_retry_ai_' . (int) $row['id']);
+                echo '<a class="button" href="' . esc_url($retry_url) . '">Retry AI</a> ';
+            }
             if (in_array($status, ['draft', 'needs_review', 'failed'], true) && !($status === 'failed' && $has_published_ids)) self::action_link((int) $row['id'], 'approved', $status === 'needs_review' ? 'Approve after remote review' : 'Approve', $status === 'needs_review', Store::draft_revision($row));
             if ($status === 'approved') self::action_link((int) $row['id'], 'draft', 'Un-approve', false, Store::draft_revision($row));
             if ($status === 'approved') {
@@ -178,6 +183,23 @@ final class Admin {
     private static function list_filter(string $filter): string {
         $filter = sanitize_key($filter);
         return in_array($filter, ['draft', 'approved', 'publishing', 'posted', 'needs_review', 'failed', 'all'], true) ? $filter : 'draft';
+    }
+
+    public static function retry_ai(): void {
+        if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
+        $id = (int) ($_GET['id'] ?? 0);
+        check_admin_referer('roxy_social_retry_ai_' . $id);
+        $row = Store::find($id);
+        if ($row && AI::enabled() && hash_equals(Store::draft_revision($row), (string) ($_GET['draft_revision'] ?? ''))) {
+            $args = [$id, (string) $row['campaign_key']];
+            if (Store::retry_ai_snapshot($row)) {
+                if (!wp_next_scheduled('roxy_social_generate_ai_text', $args) && !wp_schedule_single_event(time() + 1, 'roxy_social_generate_ai_text', $args)) {
+                    Store::review_snapshot(Store::find($id), 'AI retry could not be queued. Please try again.');
+                }
+            }
+        }
+        wp_safe_redirect(self::drafts_url());
+        exit;
     }
 
     private static function drafts_url(array $args = []): string {

@@ -23,11 +23,12 @@ function assert(ok, message) { if (!ok) throw new Error(message); }
             }
             if (url.includes('draft-bulk-editor.js')) return route.fulfill({contentType:'application/javascript',body:fs.readFileSync(path.join(root,'includes/modules/social-publisher/assets/draft-bulk-editor.js'),'utf8')});
             if (url.includes('draft-media-picker.js')) return route.fulfill({contentType:'application/javascript',body:fs.readFileSync(path.join(root,'includes/modules/social-publisher/assets/draft-media-picker.js'),'utf8')});
-            return route.fulfill({contentType:'text/html',body:html.stdout});
+            return route.fulfill({contentType:'text/html',body:'<style>.button { display:inline-block; }</style>'+html.stdout});
         });
         await page.goto('https://example.test/wp-admin/admin.php?page=roxy-social-posts&status=approved');
         assert(await page.locator('.roxy-social-save-all').count()===2,'Top/bottom controls missing');
         assert(await page.locator('form[id^="roxy-social-draft-"]').count()===3,'Invalid row forms');
+        assert(await page.locator('form[id^="roxy-social-draft-"] button[type="submit"]:visible').count()===0,'WordPress styles expose row Save buttons');
         await page.locator('[form="roxy-social-draft-1"][name="post_text"]').fill("We're changed one");
         await page.locator('[form="roxy-social-draft-2"][name="post_text"]').fill('Changed two');
         await page.locator('.roxy-social-save-all').first().click();

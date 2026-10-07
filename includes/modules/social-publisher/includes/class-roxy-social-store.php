@@ -316,6 +316,11 @@ final class Store {
         return self::save_draft_snapshot($expected, ['post_text' => sanitize_textarea_field($text), 'ai_status' => 'ready', 'last_error' => null]);
     }
 
+    public static function retry_ai_snapshot(array $expected): bool {
+        if (($expected['status'] ?? '') !== 'needs_review' || ($expected['ai_status'] ?? '') !== 'pending') return false;
+        return self::save_draft_snapshot($expected, ['status' => 'draft', 'ai_status' => 'pending', 'last_error' => null]);
+    }
+
     public static function acquire_publish_lock(int $id): ?array {
         global $wpdb;
         if ($id <= 0) return null;
