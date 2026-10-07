@@ -407,9 +407,35 @@ class Health {
         if (!self::module_enabled('social_publisher')) return [];
         global $wpdb;
         $table = $wpdb->prefix . 'roxy_social_posts';
-        if (!self::table_exists($table)) return [];
-        $failed = (int) $wpdb->get_var("SELECT COUNT(*) FROM $table WHERE status='failed'");
-        $overdue = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $table WHERE status IN ('approved','publishing') AND scheduled_for < %s", wp_date('Y-m-d H:i:s', time() - HOUR_IN_SECONDS)));
+        try {
+            $wpdb->last_error = '';
+            $table_exists = self::table_exists($table);
+            if ($wpdb->last_error !== '') {
+                return [self::item('Social job checks', 'Unavailable', self::WARN, 'Could not verify the Social Publisher table because the database read failed.')];
+            }
+            // Structural health reports a missing table as an error; do not duplicate it here.
+            if (!$table_exists) return [];
+
+            $read_count = static function (string $sql) use ($wpdb): ?int {
+                $wpdb->last_error = '';
+                $value = $wpdb->get_var($sql);
+                if ($wpdb->last_error !== '') return null;
+                if (is_int($value)) return $value >= 0 ? $value : null;
+                if (!is_string($value) || !preg_match('/^(?:0|[1-9][0-9]*)$/D', $value)) return null;
+                $count = filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+                return $count === false ? null : $count;
+            };
+
+            $failed = $read_count("SELECT COUNT(*) FROM $table WHERE status='failed'");
+            if ($failed === null) throw new \RuntimeException('Failed-job count was not readable.');
+            $overdue = $read_count($wpdb->prepare("SELECT COUNT(*) FROM $table WHERE status IN ('approved','publishing') AND scheduled_for < %s", wp_date('Y-m-d H:i:s', time() - HOUR_IN_SECONDS)));
+            if ($overdue === null) throw new \RuntimeException('Overdue-job count was not readable.');
+        } catch (\Throwable $error) {
+            return [
+                self::item('Failed social jobs', 'Unavailable', self::WARN, 'The Social Publisher count could not be verified because a database read failed or returned an invalid count.'),
+                self::item('Social jobs overdue by over an hour', 'Unavailable', self::WARN, 'The Social Publisher count could not be verified because a database read failed or returned an invalid count.'),
+            ];
+        }
         return [
             self::item('Failed social jobs', (string) $failed, $failed ? self::WARN : self::PASS, $failed ? 'Review failed drafts; do not blindly republish an ambiguous provider result.' : ''),
             self::item('Social jobs overdue by over an hour', (string) $overdue, $overdue ? self::WARN : self::PASS),

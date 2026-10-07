@@ -27,6 +27,12 @@ namespace {
     public bool $table_read_fails = false;
     public bool $success_read_fails = false;
     public string $success_at = '';
+    public bool $social_table_read_fails = false;
+    public bool $social_table_missing = false;
+    public bool $social_failed_read_fails = false;
+    public bool $social_overdue_read_fails = false;
+    public $social_failed_count = '0';
+    public $social_overdue_count = '0';
     public function prepare(string $sql, ...$args): string {
       foreach ($args as $arg) $sql = preg_replace('/%[sd]/', "'" . addslashes((string) $arg) . "'", $sql, 1);
       return $sql;
@@ -34,6 +40,10 @@ namespace {
     public function get_var(string $sql) {
       $this->last_error = '';
       if (stripos($sql, 'SHOW TABLES LIKE') === 0) {
+        if (strpos($sql, 'roxy_social_posts') !== false) {
+          if ($this->social_table_read_fails) { $this->last_error = 'simulated Social table lookup failure'; return null; }
+          return $this->social_table_missing ? null : 'wp_roxy_social_posts';
+        }
         if ($this->table_read_fails) { $this->last_error = 'simulated table lookup failure'; return null; }
         preg_match("/'((?:\\\\.|[^'])*)'/", $sql, $match);
         $table = stripslashes($match[1] ?? '');
@@ -42,6 +52,14 @@ namespace {
       if (stripos($sql, 'SELECT created_at FROM wp_roxy_inventory_runs') === 0) {
         if ($this->success_read_fails) { $this->last_error = 'simulated success query failure'; return null; }
         return $this->success_at !== '' ? $this->success_at : null;
+      }
+      if (stripos($sql, "SELECT COUNT(*) FROM wp_roxy_social_posts WHERE status='failed'") === 0) {
+        if ($this->social_failed_read_fails) { $this->last_error = 'simulated failed-job count error'; return null; }
+        return $this->social_failed_count;
+      }
+      if (stripos($sql, 'SELECT COUNT(*) FROM wp_roxy_social_posts WHERE status IN') === 0) {
+        if ($this->social_overdue_read_fails) { $this->last_error = 'simulated overdue-job count error'; return null; }
+        return $this->social_overdue_count;
       }
       throw new \RuntimeException('Unexpected Health SQL: ' . $sql);
     }
@@ -57,10 +75,14 @@ namespace {
   }
   function admin_url(string $path = ''): string { return 'https://fixture.invalid/' . $path; }
   function wp_next_scheduled(string $hook) { return time() + 300; }
+  function post_type_exists(string $type): bool { return true; }
   function wp_schedule_event(...$args) { $GLOBALS['health_freshness_side_effects']['scheduled']++; return true; }
   function wp_remote_get(...$args) { $GLOBALS['health_freshness_side_effects']['http']++; throw new \RuntimeException('HTTP forbidden in Health fixture.'); }
   function wp_mail(...$args) { $GLOBALS['health_freshness_side_effects']['mail']++; throw new \RuntimeException('Mail forbidden in Health fixture.'); }
   function wp_timezone(): \DateTimeZone { return new \DateTimeZone('UTC'); }
+  function wp_date(string $format, ?int $timestamp = null, ?\DateTimeZone $timezone = null): string {
+    return (new \DateTimeImmutable('@' . ($timestamp ?? time())))->setTimezone($timezone ?? wp_timezone())->format($format);
+  }
   function get_post($id) { return null; }
   function roxy_eb_get_settings(): array { return ['sling_mode'=>'disabled','booking_product_id'=>0]; }
   function roxy_eb_daily_health_check(): void { $GLOBALS['health_freshness_side_effects']['jobs']++; }
@@ -86,6 +108,8 @@ namespace {
     throw new \RuntimeException('Event Booking freshness item missing.');
   };
   $inventory_items = static fn(): array => $private('functional_inventory')->invoke(null);
+  $social_items = static fn(): array => $private('functional_social')->invoke(null);
+  $social_structural = static fn(): array => $private('module_social_structural')->invoke(null);
   $inventory_item = static function (array $items, string $label): array {
     foreach ($items as $item) if ($item['label'] === $label) return $item;
     throw new \RuntimeException('Inventory freshness item missing: ' . $label);
@@ -138,6 +162,49 @@ namespace {
   $wpdb->success_at = $stamp(-1800);
   \RoxyInventory\Store::$latest = ['status'=>'success'];
   $check($inventory_item($inventory_items(), 'Last inventory pull')['detail'] === 'Run history unavailable', 'incomplete latest-run record cannot appear healthy');
+
+  $wpdb->social_table_read_fails = false;
+  $wpdb->social_table_missing = false;
+  $wpdb->social_failed_read_fails = false;
+  $wpdb->social_overdue_read_fails = false;
+  $wpdb->social_failed_count = '0';
+  $wpdb->social_overdue_count = '0';
+  $social = $social_items();
+  $check($inventory_item($social, 'Failed social jobs')['status'] === 'pass'
+    && $inventory_item($social, 'Social jobs overdue by over an hour')['status'] === 'pass', 'valid zero Social counts remain healthy');
+  $wpdb->social_failed_count = '2';
+  $wpdb->social_overdue_count = 1;
+  $social = $social_items();
+  $check($inventory_item($social, 'Failed social jobs')['status'] === 'warn'
+    && $inventory_item($social, 'Social jobs overdue by over an hour')['status'] === 'warn', 'real failed and overdue Social counts retain warning semantics');
+  $wpdb->social_table_read_fails = true;
+  $social = $social_items();
+  $check(count($social) === 1 && $social[0]['label'] === 'Social job checks'
+    && $social[0]['detail'] === 'Unavailable' && $social[0]['status'] === 'warn', 'Social table-existence SQL error is unavailable, not missing or healthy');
+  $wpdb->social_table_read_fails = false;
+  $wpdb->social_table_missing = true;
+  $check($social_items() === [], 'missing Social table remains delegated to structural error');
+  $structural = $social_structural();
+  $table_item = null;
+  foreach ($structural['items'] as $item) if ($item['label'] === 'wp_roxy_social_posts') $table_item = $item;
+  $check(is_array($table_item) && $table_item['status'] === 'fail', 'missing Social table remains a structural error');
+  $wpdb->social_table_missing = false;
+  $wpdb->social_failed_read_fails = true;
+  $social = $social_items();
+  $check(count($social) === 2 && $inventory_item($social, 'Failed social jobs')['detail'] === 'Unavailable'
+    && $inventory_item($social, 'Social jobs overdue by over an hour')['detail'] === 'Unavailable', 'failed-job count SQL error makes both Social counts unavailable');
+  $wpdb->social_failed_read_fails = false;
+  $wpdb->social_overdue_read_fails = true;
+  $social = $social_items();
+  $check(count($social) === 2 && $inventory_item($social, 'Failed social jobs')['status'] === 'warn'
+    && $inventory_item($social, 'Social jobs overdue by over an hour')['detail'] === 'Unavailable', 'overdue count SQL error is not coerced to zero');
+  $wpdb->social_overdue_read_fails = false;
+  foreach ([null, '0junk', '-1', 1.5, '999999999999999999999999999'] as $invalid_count) {
+    $wpdb->social_failed_count = $invalid_count;
+    $social = $social_items();
+    $check($inventory_item($social, 'Failed social jobs')['detail'] === 'Unavailable'
+      && $inventory_item($social, 'Social jobs overdue by over an hour')['detail'] === 'Unavailable', 'malformed or incomplete Social count is unavailable');
+  }
 
   $side_effects = $GLOBALS['health_freshness_side_effects'];
   $check($side_effects === ['http'=>0,'mail'=>0,'scheduled'=>0,'jobs'=>0], 'Health checks neither call HTTP/mail nor schedule or execute jobs');
