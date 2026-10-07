@@ -621,7 +621,7 @@ class Store {
   }
 
   /** Refund refresh changes ticket columns only: never allocations/metadata/locks. */
-  public static function nominal_ticket_prices_for_showing(string $date, int $showing_id, array $fallback, bool $require_baseline = false): array {
+  public static function nominal_ticket_prices_for_showing(string $date, int $showing_id, array $fallback, bool $require_baseline = false, array $required_categories = []): array {
     global $wpdb;
     $cursor = PHP_INT_MAX;
     do {
@@ -646,14 +646,34 @@ class Store {
             if (!is_numeric($qty) || !is_finite((float) $qty) || (float) $qty < 0 || (float) $qty !== (float) (int) $qty) throw new \RuntimeException('Invalid original studio ticket quantities.');
             $quantity += (int) $qty;
           }
-          if ($quantity > 0) return self::prices_from_nominal_baseline($row, $fallback);
+          if ($quantity > 0) {
+            $prices = self::prices_from_nominal_baseline($row, $fallback);
+            if ($require_baseline && !self::has_required_nominal_categories($row, $required_categories)) continue;
+            return $prices;
+          }
         }
       }
     } while (count($reports) === 50);
     if (!$require_baseline) return $fallback;
     $rows = $wpdb->get_results($wpdb->prepare('SELECT general_qty, discount_qty, group_qty, live_qty, gross_total FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND showing_id = %d LIMIT 2', $date, $showing_id), ARRAY_A);
     if ($wpdb->last_error || !is_array($rows) || count($rows) !== 1) throw new \RuntimeException('No unique original nominal-price evidence exists for this past refund. Review the sale day manually.');
-    return self::prices_from_nominal_baseline($rows[0], $fallback);
+    $prices = self::prices_from_nominal_baseline($rows[0], $fallback);
+    if (!self::has_required_nominal_categories($rows[0], $required_categories)) throw new \RuntimeException('Original nominal price evidence is missing for a remaining ticket category. Review the sale day manually.');
+    return $prices;
+  }
+
+  private static function has_required_nominal_categories(array $row, array $required_categories): bool {
+    $allowed = ['general', 'discount', 'group', 'live'];
+    $seen = [];
+    foreach ($required_categories as $category) {
+      if (!is_string($category) || !in_array($category, $allowed, true)) throw new \RuntimeException('A remaining ticket category is invalid; original nominal prices need review.');
+      if (isset($seen[$category])) continue;
+      $seen[$category] = true;
+      $quantity = $row[$category . '_qty'] ?? 0;
+      if (!is_numeric($quantity) || !is_finite((float) $quantity) || (float) $quantity < 0 || (float) $quantity !== (float) (int) $quantity) throw new \RuntimeException('Invalid original studio ticket quantities.');
+      if ((int) $quantity <= 0) return false;
+    }
+    return true;
   }
 
   private static function prices_from_nominal_baseline(array $row, array $fallback): array {

@@ -86,9 +86,9 @@ $snapshot_hash = static function () use ($wpdb, $report_q, $entries_q): string {
     $wpdb->get_results("SELECT * FROM {$entries_q} ORDER BY id", ARRAY_A),
   ]));
 };
-$lookup = static function (string $date, int $showing_id, bool $strict = true) use ($store, $fallback, $snapshot_hash): array {
+$lookup = static function (string $date, int $showing_id, bool $strict = true, array $required_categories = []) use ($store, $fallback, $snapshot_hash): array {
   $before = $snapshot_hash();
-  $prices = $store::nominal_ticket_prices_for_showing($date, $showing_id, $fallback, $strict);
+  $prices = $store::nominal_ticket_prices_for_showing($date, $showing_id, $fallback, $strict, $required_categories);
   if ($snapshot_hash() !== $before) throw new RuntimeException('Price lookup mutated its private report/entry fixtures.');
   return $prices;
 };
@@ -146,8 +146,27 @@ try {
   // Explicit per-category totals retain distinct original general and discount prices.
   $seed_report($date, [$snapshot(['general_qty' => 2, 'discount_qty' => 1, 'general_gross' => 24.00,
     'discount_gross' => 6.00, 'gross_total' => 30.00])]);
-  $prices = $lookup($date, $showing);
+  $prices = $lookup($date, $showing, true, ['general', 'discount']);
   $check(($prices['general'] ?? null) === 12.0 && ($prices['discount'] ?? null) === 6.0, 'mixed categories infer prices from their own saved gross amounts');
+  $clear();
+
+  // Strict historical pricing must not borrow today's discount price when only
+  // general tickets were evidenced in the saved sale-day snapshot.
+  $seed_report($date, [$snapshot(['general_qty' => 3, 'discount_qty' => 0, 'general_gross' => 36.00,
+    'discount_gross' => 0.00, 'gross_total' => 36.00])]);
+  $throws(static fn() => $lookup($date, $showing, true, ['general', 'discount']), 'strict lookup rejects a missing baseline for a remaining category');
+  $prices = $lookup($date, $showing, true);
+  $check(($prices['discount'] ?? null) === 10.0, 'empty required-category list preserves backward-compatible fallback behavior');
+  $clear();
+
+  // An incomplete newer corrected snapshot does not hide an older complete
+  // original snapshot for categories that still have tickets.
+  $seed_report($date, [$snapshot(['general_qty' => 3, 'discount_qty' => 1, 'general_gross' => 36.00,
+    'discount_gross' => 6.00, 'gross_total' => 42.00])]);
+  $seed_report($date, [$snapshot(['general_qty' => 3, 'discount_qty' => 0, 'general_gross' => 45.00,
+    'discount_gross' => 0.00, 'gross_total' => 45.00])]);
+  $prices = $lookup($date, $showing, true, ['general', 'discount']);
+  $check(($prices['general'] ?? null) === 12.0 && ($prices['discount'] ?? null) === 6.0, 'strict lookup uses older complete original category evidence instead of current fallback');
   $clear();
 
   // Legacy single-category reports may use the saved total when a category amount is absent.

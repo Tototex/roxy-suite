@@ -406,7 +406,7 @@ class Reporter {
     try {
       $reports = self::build_reports($report_date);
       $summary = self::summarize_reports($reports);
-      if ((int) ($summary['total_tickets'] ?? 0) <= 0) {
+      if ((int) ($summary['total_tickets'] ?? 0) <= 0 && !self::contains_refund_correction($reports)) {
         throw new \RuntimeException('No matching Square ticket sales were found for that date.');
       }
 
@@ -1272,13 +1272,20 @@ class Reporter {
         $id = $candidates[0];
         $reports[$id]['refund_adjusted'] = true;
         if (!isset($showing_prices[$id])) {
-          $remaining_tickets = false;
+          $remaining_categories = [];
           foreach ($orders as $remaining_order) {
             $remaining_closed = self::order_closed_at($remaining_order);
             if (!$remaining_closed || self::matching_showing_id_for_order_time($remaining_closed, $showings) !== $id) continue;
-            foreach (($remaining_order['line_items'] ?? []) as $remaining_line) if (self::classify_ticket_variation($remaining_line) !== '' && (float) ($remaining_line['quantity'] ?? 0) > 0) $remaining_tickets = true;
+            foreach (($remaining_order['line_items'] ?? []) as $remaining_line) {
+              $category = self::classify_ticket_variation($remaining_line);
+              if ($category !== '' && (float) ($remaining_line['quantity'] ?? 0) > 0) $remaining_categories[$category] = true;
+            }
           }
-          $showing_prices[$id] = $remaining_tickets ? Store::nominal_ticket_prices_for_showing($report_date, $id, $prices, $require_nominal_baseline) : $prices;
+          if ($remaining_categories) {
+            $today = wp_date('Y-m-d', null, new \DateTimeZone(Settings::get_report_timezone()));
+            $strict = $require_nominal_baseline || $report_date < $today;
+            $showing_prices[$id] = Store::nominal_ticket_prices_for_showing($report_date, $id, $prices, $strict, array_keys($remaining_categories));
+          } else $showing_prices[$id] = $prices;
         }
       }
     }

@@ -3,6 +3,7 @@ namespace RoxyGrosses {
 
 /** In-memory collaborators for the actual Reporter class. */
 final class Settings {
+  public static function get_report_timezone(): string { return 'America/Los_Angeles'; }
   public static array $values = ['general_price' => '12', 'discount_price' => '8', 'group_price' => '6', 'theater_name' => 'Fixture Theater'];
   public static function get(string $key, $default = '') { return self::$values[$key] ?? $default; }
 }
@@ -20,7 +21,12 @@ final class Store {
   public static array $saved_report = [];
   public static int $writes = 0;
   public static array $original_prices = [];
-  public static function nominal_ticket_prices_for_showing(string $date, int $id, array $fallback, bool $strict = false): array { return array_replace($fallback, self::$original_prices); }
+  public static array $price_calls = [];
+  public static function nominal_ticket_prices_for_showing(string $date, int $id, array $fallback, bool $strict = false, array $required = []): array {
+    self::$price_calls[] = [$date, $id, $strict, $required];
+    if ($strict) foreach ($required as $category) if (!array_key_exists($category, self::$original_prices)) throw new \RuntimeException('Missing original category price evidence.');
+    return array_replace($fallback, self::$original_prices);
+  }
   public static function flag_emailed_refund_changes(string $date, array $rows): array { self::$flag_calls[] = [$date, $rows]; return [101]; }
   public static function get_report(int $id): ?array { return self::$saved_report ?: null; }
   public static function mark_emailed(int $id): bool { self::$writes++; return true; }
@@ -46,6 +52,8 @@ namespace {
   require_once $candidate;
 
   $GLOBALS['roxy_fixture_mail_calls'] = 0;
+  $GLOBALS['refund_fixture_today'] = '2039-04-07';
+  function wp_date($format, $timestamp = null, $timezone = null) { return $GLOBALS['refund_fixture_today']; }
   function wp_mail(...$args): bool { $GLOBALS['roxy_fixture_mail_calls']++; return true; }
 
   $checks = 0;
@@ -114,14 +122,39 @@ namespace {
   $assert($by_id[502]['gross_total'] === 24.0, 'historical price does not leak into another showing');
   \RoxyGrosses\Store::$original_prices = [];
 
+  // Every remaining category in a past corrected showing needs original evidence.
+  $discount_sale = $ticket_order('sale-discount', '2039-04-07T19:00:00-07:00', 'discount-line', 1, 800);
+  $discount_sale['line_items'][0]['name'] = 'Discount';
+  $past_raw = [$returned_sale, $discount_sale];
+  $past_adjusted = [$adjusted_orders[0], $discount_sale];
+  $GLOBALS['refund_fixture_today'] = '2039-04-08';
+  \RoxyGrosses\Store::$original_prices = ['general'=>10, 'discount'=>6];
+  $reconcile($past_raw, $past_adjusted, [$adjustment('sale-returned', 'line-returned', 1)]);
+  $past_rows = $invoke($date, [$showings[0]], new \RoxyGrosses\RefundSnapshot());
+  $assert($past_rows[0]['general_gross']===20.0 && $past_rows[0]['discount_gross']===6.0 && $past_rows[0]['gross_total']===26.0, 'past correction preserves original prices for returned and unaffected remaining categories');
+  $price_call = end(\RoxyGrosses\Store::$price_calls);
+  $assert($price_call[2]===true && $price_call[3]===['general','discount'], 'past original-sale-day builder requires evidence for each remaining category');
+  \RoxyGrosses\Store::$original_prices = ['general'=>10];
+  $reconcile($past_raw, $past_adjusted, [$adjustment('sale-returned', 'line-returned', 1)]);
+  $throws(static fn() => $invoke($date, [$showings[0]], new \RoxyGrosses\RefundSnapshot()), 'missing historical discount evidence cannot use current discount price');
+  $assert(\RoxyGrosses\Store::$flag_calls===[] && $GLOBALS['roxy_fixture_mail_calls']===0, 'missing price evidence aborts before flagging or email');
+  $GLOBALS['refund_fixture_today'] = $date;
+  \RoxyGrosses\Store::$original_prices = [];
+  $reconcile($past_raw, $past_adjusted, [$adjustment('sale-returned', 'line-returned', 1)]);
+  $same_day_rows = $invoke($date, [$showings[0]], new \RoxyGrosses\RefundSnapshot());
+  $assert($same_day_rows[0]['gross_total']===32.0 && end(\RoxyGrosses\Store::$price_calls)[2]===false, 'same-day first pull can use current nominal prices without historical baseline');
+
   // A full refund leaves a zero-quantity showing row present and marked for review.
   $full_sale = $ticket_order('sale-full', '2039-04-07T19:00:00-07:00', 'line-full', 1, 1200);
   $full_adjusted = $full_sale;
   $full_adjusted['line_items'][0]['quantity'] = '0';
+  $GLOBALS['refund_fixture_today'] = '2039-04-08';
+  $price_calls_before = count(\RoxyGrosses\Store::$price_calls);
   $reconcile([$full_sale], [$full_adjusted], [$adjustment('sale-full', 'line-full', 1)]);
   $full_rows = $invoke($date, [$showings[0]], new \RoxyGrosses\RefundSnapshot());
   $assert(count($full_rows) === 1 && $full_rows[0]['general_qty'] === 0 && $full_rows[0]['gross_total'] === 0.0, 'full-refund zero-quantity row remains in builder output');
   $assert(!empty($full_rows[0]['refund_adjusted']), 'full-refund zero row retains refund-adjusted marker');
+  $assert(count(\RoxyGrosses\Store::$price_calls)===$price_calls_before, 'historical full refund requires no price evidence for zero remaining tickets');
 
   // The identical sale data for another day is not adjusted unless that date is reconciled.
   $next_date = '2039-04-08';

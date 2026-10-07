@@ -29,13 +29,14 @@ namespace RoxyGrosses {
     public static function is_in_store_purchase_item(string $id, array $map = []): bool { return $id === 'snack'; }
   }
   final class Store {
+    public static array $entry_calls = [];
     public static array $movie = [];
     public static array $live = [];
     public static array $rental = [];
     public static array $updates = [];
     public static bool $fail_update = false;
     public static int $report_id = 100;
-    public static function upsert_entries(array $rows, string $mode): array { return ['created'=>count($rows),'updated'=>0,'skipped'=>0]; }
+    public static function upsert_entries(array $rows, string $mode): array { self::$entry_calls[] = $rows; return ['created'=>count($rows),'updated'=>0,'skipped'=>0]; }
     public static function upsert_live_entries(array $rows, string $mode): array { return ['created'=>count($rows),'updated'=>0,'skipped'=>0]; }
     public static function upsert_history_rows(...$args): array { return []; }
     public static function insert_log(...$args): int { return 1; }
@@ -58,15 +59,20 @@ namespace RoxyGrosses {
   }
   final class RefundSnapshot {}
   final class Fixture {
+    public static bool $zero_refund = false;
+    public static bool $no_sales = false;
     public static function movie_rows(string $date): array {
       Square::fetch_orders_for_date($date);
       Square::fetch_orders_for_date($date);
       $prior = (new \DateTimeImmutable($date, new \DateTimeZone('America/Los_Angeles')))->modify('-1 day')->format('Y-m-d');
       Square::fetch_orders_for_date($prior);
-      return [
+      $rows = [
         ['report_date'=>$prior,'film_title'=>'Prior','show_time'=>'7:00 PM','showing_id'=>1,'general_qty'=>1,'total_tickets'=>1,'gross_total'=>12.0],
         ['report_date'=>$date,'film_title'=>'Requested','show_time'=>'7:00 PM','showing_id'=>2,'general_qty'=>1,'total_tickets'=>1,'gross_total'=>12.0],
       ];
+      if (self::$no_sales) return [];
+      if (self::$zero_refund) foreach ($rows as &$row) { $row['general_qty']=0; $row['total_tickets']=0; $row['gross_total']=0.0; $row['refund_adjusted']=true; }
+      return $rows;
     }
     public static function live_rows(string $date): array {
       Square::fetch_orders_for_date($date);
@@ -80,6 +86,8 @@ namespace {
   if (!defined('ABSPATH')) define('ABSPATH', __DIR__ . DIRECTORY_SEPARATOR);
   function wp_date($format, $timestamp = null, $timezone = null) { return (new DateTimeImmutable('@' . ($timestamp ?? time())))->setTimezone($timezone ?: new DateTimeZone('UTC'))->format($format); }
   function sanitize_text_field($value) { return trim((string) $value); }
+  function get_option($key, $default = false) { return ''; }
+  function sanitize_email($value) { return (string)$value; }
   function post_type_exists($type) { return false; }
   function wp_mail(...$args) { throw new RuntimeException('Network/mail is forbidden in this fixture.'); }
 
@@ -118,6 +126,17 @@ namespace {
   \RoxyGrosses\Square::$calls = [];
   \RoxyGrosses\Reporter::reconciliation_rows('2038-05-01', '2038-05-02');
   $check(\RoxyGrosses\Square::$depth === 0 && \RoxyGrosses\Square::$cache === [] && \RoxyGrosses\Square::$calls === ['2038-05-01','2038-05-02'], 'reconciliation range shares one scope across dates and clears afterward');
+
+  \RoxyGrosses\Fixture::$zero_refund = true;
+  $zero = \RoxyGrosses\Reporter::pull_into_database('2038-05-02');
+  $saved_zero = end(\RoxyGrosses\Store::$entry_calls);
+  $check(!empty($zero['success']) && count($saved_zero)===2 && $saved_zero[0]['total_tickets']===0, 'manual full-refund pull persists zero-ticket corrected rows');
+  \RoxyGrosses\Fixture::$zero_refund = false;
+  \RoxyGrosses\Fixture::$no_sales = true;
+  $entries_before = count(\RoxyGrosses\Store::$entry_calls);
+  $empty = \RoxyGrosses\Reporter::pull_into_database('2038-05-02');
+  $check(empty($empty['success']) && count(\RoxyGrosses\Store::$entry_calls)===$entries_before, 'empty non-refund pull still fails before entry writes');
+  \RoxyGrosses\Fixture::$no_sales = false;
 
   // Exercise the real allocator over movie, live, and rental rows on both the
   // requested and lookback dates. Each dated Square total must be conserved to cents.
