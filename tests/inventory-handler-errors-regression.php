@@ -34,7 +34,7 @@ if (($argv[1] ?? '') === '--worker') {
     }
     final class Settings {
       public const OPTION_KEY="fixture_inventory_settings";
-      public static function sanitize(array $input):array { return ["fixture"=>"normalized"]; }
+      public static function sanitize(array $input):array { return ["schedule_enabled"=>empty($input["schedule_enabled"])?"0":"1","direct_vendor_sending_enabled"=>empty($input["direct_vendor_sending_enabled"])?"0":"1"]; }
       public static function get(string $key,$default="") { return $key==="jason_email"?"manager@example.invalid":($key==="direct_vendor_sending_enabled"?"0":$default); }
     }
     final class Scheduler { public static function sync_schedule():void { $GLOBALS["inventory_worker_schedule_calls"]++; if($GLOBALS["inventory_worker_case"]==="settings_schedule_failure") throw new \\RuntimeException("schedule failure"); } }
@@ -68,6 +68,7 @@ if (($argv[1] ?? '') === '--worker') {
   eval('?>'.$source);
   $admin='\\'.$namespace.'\\Admin';
   $_POST=[]; $_SERVER['REQUEST_METHOD']='POST';
+  $settings_post=static fn()=>['inventory_settings_complete'=>'1','jason_email'=>'manager@example.test','timezone'=>'America/Los_Angeles','schedule_time'=>'23:00','tripp_order_instructions'=>'Bottle instructions','odom_order_instructions'=>'Wine instructions'];
   switch($case) {
     case 'product_fail': case 'product_missing': case 'product_fraction': case 'product_bad_cost': case 'product_bad_vendor': case 'product_bad_id': case 'product_bad_status': case 'product_success': case 'product_untracked':
       $_POST=['id'=>9,'vendor'=>'Fixture Vendor','pack_size'=>'12','reorder_point'=>'20','target_stock'=>'60','unit_cost'=>'1.50','override_qty'=>''];
@@ -86,9 +87,21 @@ if (($argv[1] ?? '') === '--worker') {
       if($case==='vendor_bad_email')$_POST['email']='invalid';
       if($case==='vendor_bad_minimum')$_POST['minimum_amount']='-1';
       $call=static fn()=>$admin::save_vendor();break;
-    case 'settings_unchanged': $GLOBALS['inventory_worker_update_option']=false; $GLOBALS['inventory_worker_option']=['fixture'=>'normalized']; $_POST=[]; $call=static fn()=>$admin::save_settings(); break;
-    case 'settings_not_saved': $GLOBALS['inventory_worker_update_option']=false; $GLOBALS['inventory_worker_option']=['fixture'=>'old']; $_POST=[]; $call=static fn()=>$admin::save_settings(); break;
-    case 'settings_schedule_failure': $_POST=[]; $call=static fn()=>$admin::save_settings(); break;
+    case 'settings_unchanged': $GLOBALS['inventory_worker_update_option']=false; $GLOBALS['inventory_worker_option']=['schedule_enabled'=>'0','direct_vendor_sending_enabled'=>'0']; $_POST=$settings_post(); $call=static fn()=>$admin::save_settings(); break;
+    case 'settings_not_saved': $GLOBALS['inventory_worker_update_option']=false; $GLOBALS['inventory_worker_option']=['fixture'=>'old']; $_POST=$settings_post(); $call=static fn()=>$admin::save_settings(); break;
+    case 'settings_schedule_failure': $_POST=$settings_post(); $call=static fn()=>$admin::save_settings(); break;
+    case 'settings_missing_tail': $_POST=$settings_post(); unset($_POST['odom_order_instructions']); $call=static fn()=>$admin::save_settings(); break;
+    case 'settings_missing_marker': $_POST=$settings_post(); unset($_POST['inventory_settings_complete']); $call=static fn()=>$admin::save_settings(); break;
+    case 'settings_array_required': $_POST=$settings_post(); $_POST['timezone']=['America/Los_Angeles']; $call=static fn()=>$admin::save_settings(); break;
+    case 'settings_array_alert': $_POST=$settings_post(); $_POST['admin_alert_email']=['alerts@example.test']; $call=static fn()=>$admin::save_settings(); break;
+    case 'settings_array_checkbox': $_POST=$settings_post(); $_POST['schedule_enabled']=['1']; $call=static fn()=>$admin::save_settings(); break;
+    case 'settings_bad_email': $_POST=$settings_post(); $_POST['jason_email']='invalid'; $call=static fn()=>$admin::save_settings(); break;
+    case 'settings_bad_alert_email': $_POST=$settings_post(); $_POST['admin_alert_email']='invalid'; $call=static fn()=>$admin::save_settings(); break;
+    case 'settings_bad_timezone': $_POST=$settings_post(); $_POST['timezone']='Not/A_Timezone'; $call=static fn()=>$admin::save_settings(); break;
+    case 'settings_timezone_offset': $_POST=$settings_post(); $_POST['timezone']='+05:00'; $call=static fn()=>$admin::save_settings(); break;
+    case 'settings_bad_time': $_POST=$settings_post(); $_POST['schedule_time']='25:90'; $call=static fn()=>$admin::save_settings(); break;
+    case 'settings_checkboxes_absent': $_POST=$settings_post(); $call=static fn()=>$admin::save_settings(); break;
+    case 'settings_checkboxes_on': $_POST=$settings_post(); $_POST['schedule_enabled']='1'; $_POST['direct_vendor_sending_enabled']='1'; $call=static fn()=>$admin::save_settings(); break;
     case 'send_log_failure':
     case 'sent_status_failure':
     case 'unsent_status_failure':
@@ -110,7 +123,7 @@ if (($argv[1] ?? '') === '--worker') {
   exit;
 }
 
-$cases=['product_fail','vendor_fail','settings_unchanged','settings_not_saved','settings_schedule_failure','send_log_failure','cancel_log_failure','decision_log_failure'];
+$cases=['product_fail','vendor_fail','settings_unchanged','settings_not_saved','settings_schedule_failure','settings_missing_tail','settings_missing_marker','settings_array_required','settings_array_alert','settings_array_checkbox','settings_bad_email','settings_bad_alert_email','settings_bad_timezone','settings_timezone_offset','settings_bad_time','settings_checkboxes_absent','settings_checkboxes_on','send_log_failure','cancel_log_failure','decision_log_failure'];
 $checks=0;
 $check=static function(bool $ok,string $label)use(&$checks):void{if(!$ok)throw new RuntimeException('FAIL: '.$label);echo 'PASS: '.$label."\n";$checks++;};
 $run=static function(string $case)use($candidate):array{
@@ -136,6 +149,14 @@ $check(($q['ok']??'')==='0'&&str_contains(rawurldecode($q['message']??''),'not s
 $schedule=$run('settings_schedule_failure');$q=$url_args($schedule);$message=rawurldecode($q['message']??'');
 $check(($q['ok']??'')==='0'&&str_contains($message,'settings were saved')&&str_contains($message,'schedule synchronization failed'), 'schedule exception reports saved settings and distinct scheduling failure');
 $check(array_slice($schedule['events'],0,2)===['guard','nonce:roxy_inventory_save_settings'],'settings guard and nonce remain before option mutation');
+foreach(['settings_missing_tail','settings_missing_marker','settings_array_required','settings_array_alert','settings_array_checkbox','settings_bad_email','settings_bad_alert_email','settings_bad_timezone','settings_timezone_offset','settings_bad_time'] as $case) {
+  $result=$run($case); $q=$url_args($result);
+  $check(($q['ok']??'')==='0' && !in_array('option-write',$result['events'],true) && $result['schedule_calls']===0,$case.' rejects malformed settings before option write and schedule sync');
+}
+foreach(['settings_checkboxes_absent'=>['0','0'],'settings_checkboxes_on'=>['1','1']] as $case=>$expected) {
+  $result=$run($case); $q=$url_args($result);
+  $check(($q['ok']??'')==='1' && $result['schedule_calls']===1 && [$result['option']['schedule_enabled'],$result['option']['direct_vendor_sending_enabled']] === $expected,$case.' preserves absent/off or explicit/on checkbox semantics');
+}
 foreach(['send_log_failure','cancel_log_failure','decision_log_failure'] as $case){
   $result=$run($case);$q=$url_args($result);$message=rawurldecode($q['message']??'');
   $check(($q['ok']??'')==='0'&&str_contains($message,'activity log could not be saved')&&str_contains($message,$case==='send_log_failure'?'Do not submit':'Do not repeat')&&($q['order_id']??'')==='73',$case.' warns action completed, prevents duplicate retry, and preserves order ID');

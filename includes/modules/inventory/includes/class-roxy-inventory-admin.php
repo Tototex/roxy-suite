@@ -144,7 +144,7 @@ class Admin {
             $field = $key . '_order_instructions';
             echo '<tr><th>' . esc_html($label) . ' email instructions</th><td><textarea class="large-text" rows="3" name="' . esc_attr($field) . '">' . esc_textarea($s[$field]) . '</textarea><p class="description">Shown above the item list in manager and direct vendor emails.</p></td></tr>';
         }
-        echo '</table>' . get_submit_button('Save Inventory Settings') . '</form>';
+        echo '</table><input type="hidden" name="inventory_settings_complete" value="1">' . get_submit_button('Save Inventory Settings') . '</form>';
     }
     public static function pull(): void { self::guard(); check_admin_referer('roxy_inventory_pull'); try { $n=count(Square::pull()); self::redirect('dashboard','Pulled '.$n.' products from Square.',true); } catch(\Throwable $e){ Store::log('pull','failed',$e->getMessage()); self::redirect('dashboard',$e->getMessage(),false); } }
     public static function save_product(): void {
@@ -214,6 +214,22 @@ class Admin {
         self::guard();
         check_admin_referer('roxy_inventory_save_settings');
         try {
+            foreach (['jason_email','timezone','schedule_time','tripp_order_instructions','odom_order_instructions'] as $field) {
+                if (!array_key_exists($field, $_POST) || !is_string($_POST[$field])) throw new \RuntimeException('Settings form was incomplete or malformed. Nothing was saved; reload and try again.');
+            }
+            if (($_POST['inventory_settings_complete'] ?? null) !== '1') throw new \RuntimeException('Settings form was incomplete. Nothing was saved; reload and try again.');
+            foreach (['schedule_enabled','direct_vendor_sending_enabled'] as $field) {
+                if (array_key_exists($field, $_POST) && $_POST[$field] !== '1') throw new \RuntimeException('Settings form was malformed. Nothing was saved; reload and try again.');
+            }
+            foreach (['jason_email','timezone','schedule_time','tripp_order_instructions','odom_order_instructions','admin_alert_email'] as $field) {
+                if (array_key_exists($field, $_POST) && !is_string($_POST[$field])) throw new \RuntimeException('Settings form was malformed. Nothing was saved; reload and try again.');
+            }
+            $manager_email = sanitize_email(wp_unslash($_POST['jason_email']));
+            if (!is_email($manager_email)) throw new \RuntimeException('Enter a valid manager approval email address. Nothing was saved.');
+            $timezone = sanitize_text_field(wp_unslash($_POST['timezone']));
+            if (!in_array($timezone, \DateTimeZone::listIdentifiers(\DateTimeZone::ALL_WITH_BC), true)) throw new \RuntimeException('Choose a recognized timezone. Nothing was saved.');
+            if (!preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/D', $_POST['schedule_time'])) throw new \RuntimeException('Enter a valid schedule time in HH:MM format. Nothing was saved.');
+            if (isset($_POST['admin_alert_email']) && trim($_POST['admin_alert_email']) !== '' && !is_email(sanitize_email(wp_unslash($_POST['admin_alert_email'])))) throw new \RuntimeException('Enter a valid alert email address or leave it blank. Nothing was saved.');
             $sanitized = Settings::sanitize($_POST);
             $updated = update_option(Settings::OPTION_KEY, $sanitized);
             $saved = $updated || get_option(Settings::OPTION_KEY, null) === $sanitized;
