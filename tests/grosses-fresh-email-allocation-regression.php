@@ -143,5 +143,13 @@ namespace {
   $check(count($GLOBALS['fresh_email_mail_calls'])===$before_empty_mail, 'empty result sends no email');
   $check($store::$protected_financial_rows===$before_empty_financial && $protected_concessions()===10.0, 'empty result leaves protected financial rows and $5/$5 concessions unchanged');
   $check(count($store::$logs)===4 && $store::$logs[0][4]===true && $store::$logs[1][4]===true && $store::$logs[2][4]===false && $store::$logs[3][4]===false, 'email/draft successes and both failure outcomes are recorded through allowed logs');
+  $GLOBALS['fresh_email_fixture_rows'] = [['report_date'=>'2038-05-12','show_time'=>'19:00','theater_name'=>'Fixture Theater','film_title'=>'Fixture Movie','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'total_tickets'=>1,'gross_total'=>10.00,'concessions_total'=>0.00,'source_type'=>'square_auto']];
+  $GLOBALS['fresh_email_mail_result'] = true;
+  $provisional = $reporter::send_report('2038-05-12', 'scheduled-provisional');
+  $provisional_mail = $GLOBALS['fresh_email_mail_calls'][array_key_last($GLOBALS['fresh_email_mail_calls'])] ?? [];
+  $provisional_saved = $store::$reports[$provisional['report_id'] ?? 0] ?? null;
+  $check(!empty($provisional['success']) && str_starts_with((string) ($provisional_mail['subject'] ?? ''), '[PROVISIONAL — CLOSED-DAY REFRESH PENDING]')
+    && str_contains((string) ($provisional_mail['message'] ?? ''), 'no corrected report is sent automatically')
+    && ($provisional_saved['mode'] ?? '') === 'scheduled-provisional', 'provisional email is labeled truthfully and saved with a durable provisional mode');
   echo "Passed fresh email/draft allocation orchestration checks; builders replaced only at guarded method boundaries.\n";
 }

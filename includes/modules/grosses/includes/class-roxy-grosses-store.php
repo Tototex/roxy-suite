@@ -530,7 +530,24 @@ class Store {
 
   /** Immutable emailed snapshots are flagged separately, never rewritten/resent. */
   public static function flag_emailed_refund_changes(string $date, array $new_rows): array {
-    return self::with_refund_review_lock(static fn() => self::flag_emailed_refund_changes_locked($date, $new_rows, self::refund_review_lock_name()));
+    return self::with_refund_review_lock(static fn() => self::flag_emailed_report_changes_locked($date, $new_rows, self::refund_review_lock_name(), false));
+  }
+
+  /** Closed-day reconciliation is scoped to the provisional report for that exact sale date. */
+  public static function flag_emailed_closed_day_changes(string $date, array $new_rows): array {
+    return self::with_refund_review_lock(static fn() => self::flag_emailed_report_changes_locked($date, $new_rows, self::refund_review_lock_name(), true));
+  }
+
+  /** Read the post-upsert row state, including protected manual values and rebalanced allocations. */
+  public static function closed_day_report_rows(string $date): array {
+    global $wpdb;
+    $rows = $wpdb->get_results($wpdb->prepare(
+      'SELECT report_date, movie_title AS film_title, show_time, showing_id, theater_name, general_qty, discount_qty, group_qty, live_qty, total_tickets, gross_total, concessions_total
+       FROM ' . self::entries_table_name() . ' WHERE report_date = %s ORDER BY id ASC',
+      $date
+    ), ARRAY_A);
+    if ($wpdb->last_error !== '' || !is_array($rows)) throw new \RuntimeException('Could not read final closed-day Grosses rows for manager review.');
+    return $rows;
   }
 
   private static function refund_review_lock_name(): string {
@@ -558,27 +575,28 @@ class Store {
     if (self::$refund_review_lock_depth < 1 || (int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', self::refund_review_lock_name())) !== 1) throw new \RuntimeException('Reporting lost its refund-review lock. No further email dispatch is permitted.');
   }
 
-  private static function flag_emailed_refund_changes_locked(string $date, array $new_rows, string $lock): array {
+  private static function flag_emailed_report_changes_locked(string $date, array $new_rows, string $lock, bool $closed_day_only): array {
     global $wpdb;
-    $after = self::studio_refund_projection($date, $new_rows);
+    $after = self::studio_report_projection($date, $new_rows);
     $flagged = [];
     $cursor = 0;
+    $date_filter = $closed_day_only ? 'report_end_date = %s' : 'report_end_date >= %s';
     do {
-      $reports = $wpdb->get_results($wpdb->prepare('SELECT id, payload_json FROM ' . self::table_name() . " WHERE status = 'emailed' AND report_end_date >= %s AND id > %d ORDER BY id ASC LIMIT 50", $date, $cursor), ARRAY_A);
-      if ($wpdb->last_error || !is_array($reports)) throw new \RuntimeException('Could not check emailed reports for refund corrections.');
+      $reports = $wpdb->get_results($wpdb->prepare('SELECT id, payload_json FROM ' . self::table_name() . " WHERE status = 'emailed' AND {$date_filter} AND id > %d ORDER BY id ASC LIMIT 50", $date, $cursor), ARRAY_A);
+      if ($wpdb->last_error || !is_array($reports)) throw new \RuntimeException('Could not check emailed reports for changes.');
       foreach ($reports as $report) {
         $cursor = (int) $report['id'];
         $payload = json_decode($report['payload_json'], true);
-        if (!is_array($payload) || !is_array($payload['rows'] ?? null) || !self::is_list($payload['rows'])) throw new \RuntimeException('A saved report snapshot is unreadable; refund review requires attention.');
-        $before = self::studio_refund_projection($date, $payload['rows']);
-        if (!$before || $before === $after) continue;
+        if (!is_array($payload) || !is_array($payload['rows'] ?? null) || !self::is_list($payload['rows'])) throw new \RuntimeException('A saved report snapshot is unreadable; manager review requires attention.');
+        $before = self::studio_report_projection($date, $payload['rows']);
+        if ($before === $after || (!$closed_day_only && !$before)) continue;
         self::ensure_refund_review_schema();
         $table = $wpdb->prefix . self::REFUND_REVIEW_TABLE;
         $existing = $wpdb->get_var($wpdb->prepare("SELECT changes_json FROM $table WHERE report_id = %d", $cursor));
         if ($wpdb->last_error) throw new \RuntimeException('Could not read refund review evidence.');
         $changes = $existing === null ? [] : json_decode($existing, true);
         if (!is_array($changes)) throw new \RuntimeException('Existing refund review evidence is unreadable.');
-        $changes[$date] = ['before' => $before, 'after' => $after];
+        $changes[$date] = ['reason' => $closed_day_only ? 'closed_day_refresh' : 'refund_correction', 'before' => $before, 'after' => $after];
         ksort($changes);
         $json = wp_json_encode($changes);
         if (!is_string($json)) throw new \RuntimeException('Could not encode refund review evidence.');
@@ -609,12 +627,14 @@ class Store {
     return $reviews;
   }
 
-  private static function studio_refund_projection(string $date, array $rows): array {
+  private static function studio_report_projection(string $date, array $rows): array {
     $projection = [];
     foreach ($rows as $row) {
       if (!is_array($row)) throw new \RuntimeException('A saved studio report row is unreadable.');
       if (($row['report_date'] ?? '') !== $date) continue;
-      $projection[] = [(int) ($row['showing_id'] ?? 0), (string) ($row['show_time'] ?? ''), (string) ($row['film_title'] ?? ''), (int) ($row['general_qty'] ?? 0), (int) ($row['discount_qty'] ?? 0), (int) ($row['group_qty'] ?? 0), (int) ($row['live_qty'] ?? 0), (int) ($row['total_tickets'] ?? 0), number_format((float) ($row['gross_total'] ?? 0), 2, '.', '')];
+      $tickets = (int) ($row['general_qty'] ?? 0) + (int) ($row['discount_qty'] ?? 0) + (int) ($row['group_qty'] ?? 0) + (int) ($row['live_qty'] ?? 0);
+      if ($tickets <= 0) continue;
+      $projection[] = [(int) ($row['showing_id'] ?? 0), (string) ($row['show_time'] ?? ''), (string) ($row['film_title'] ?? $row['movie_title'] ?? ''), (int) ($row['general_qty'] ?? 0), (int) ($row['discount_qty'] ?? 0), (int) ($row['group_qty'] ?? 0), (int) ($row['live_qty'] ?? 0), (int) ($row['total_tickets'] ?? 0), number_format((float) ($row['gross_total'] ?? 0), 2, '.', ''), number_format((float) ($row['concessions_total'] ?? 0), 2, '.', '')];
     }
     sort($projection);
     return $projection;

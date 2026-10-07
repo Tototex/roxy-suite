@@ -303,8 +303,21 @@ class Health {
         $advertiser_enabled = ($settings['advertiser_schedule_enabled'] ?? '0') === '1';
         $report_hook = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::report_hook() : 'roxy_grosses_scheduled_send';
         $advertiser_hook = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::advertiser_hook() : 'roxy_grosses_monthly_advertiser_send';
-        $report_cron = wp_next_scheduled($report_hook);
+        $report_cron = class_exists('\\RoxyGrosses\\Scheduler')
+            ? (bool) \RoxyGrosses\Scheduler::scheduled_time_local($report_hook)
+            : wp_next_scheduled($report_hook);
         $advertiser_cron = wp_next_scheduled($advertiser_hook);
+        $closed_day = class_exists('\\RoxyGrosses\\Scheduler')
+            ? \RoxyGrosses\Scheduler::closed_day_refresh_health()
+            : ['status' => 'idle', 'date' => '', 'attempt' => 0];
+        $closed_day_status = (string) ($closed_day['status'] ?? 'idle');
+        $closed_day_label = $closed_day_status === 'idle' ? 'No refresh pending' : ucfirst($closed_day_status) . ' — ' . (string) ($closed_day['date'] ?? 'unknown date');
+        $closed_day_health = self::item(
+            'Closed-day refresh',
+            $closed_day_label,
+            $closed_day_status === 'failed' ? self::WARN : ($closed_day_status === 'unscheduled' ? self::FAIL : self::PASS),
+            $closed_day_status === 'failed' ? (string) ($closed_day['message'] ?? 'Bounded retries exhausted; manager attention is required.') : ($closed_day_status === 'unscheduled' ? 'A durable refresh is pending but no dated cron event is registered.' : '')
+        );
 
         return self::module('Grosses', admin_url('admin.php?page=roxy-grosses'), [
             self::item($t_reports, $t_r_ok ? 'Exists' : 'Missing',
@@ -325,6 +338,7 @@ class Health {
             self::item('Monthly advertiser cron', $advertiser_cron ? 'Scheduled' : ($advertiser_enabled ? 'Missing' : 'Not needed'),
                 $advertiser_cron ? self::PASS : ($advertiser_enabled ? self::FAIL : self::PASS),
                 $advertiser_cron ? '' : ($advertiser_enabled ? 'Monthly advertiser sends are enabled, but the cron hook is not registered.' : '')),
+            $closed_day_health,
             self::advertiser_monthly_freshness($settings, get_option('roxy_grosses_last_advertiser_month', ''), null),
         ], 'grosses');
     }

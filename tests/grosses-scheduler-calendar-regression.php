@@ -11,8 +11,15 @@ namespace RoxyGrosses {
     public static function insert_log(...$args): void { self::$logs[] = $args; }
   }
   final class Reporter {
-    public static function sync_automatic_tables(...$args): array { return ['success' => true, 'movie_paid_rows' => 0, 'movie_rows' => 0, 'live_rows' => 0]; }
-    public static function send_report(...$args): array { return ['success' => true]; }
+    public static array $sync_calls = [];
+    public static array $closed_day_calls = [];
+    public static array $send_modes = [];
+    public static int $send_calls = 0;
+    public static int $paid_rows = 0;
+    public static array $refresh_results = [];
+    public static function sync_automatic_tables(...$args): array { self::$sync_calls[] = $args; return ['success' => true, 'movie_paid_rows' => self::$paid_rows, 'movie_rows' => 0, 'live_rows' => 0]; }
+    public static function refresh_closed_day(...$args): array { self::$closed_day_calls[] = $args; return self::$refresh_results ? array_shift(self::$refresh_results) : ['success' => true, 'message' => 'reviewed']; }
+    public static function send_report(...$args): array { self::$send_calls++; self::$send_modes[] = $args; return ['success' => true]; }
   }
   final class Workbook {
     public static function send_advertiser_summary(...$args): array { return ['success' => true]; }
@@ -21,45 +28,78 @@ namespace RoxyGrosses {
 
 namespace {
   class WP_Error {}
+  final class SchedulerFixtureWpdb {
+    public string $last_error = '';
+    public bool $lock_held = false;
+    public function prepare(string $query, ...$args): string { return json_encode(['sql'=>$query,'args'=>$args]); }
+    public function get_var(string $query) {
+      $parts=json_decode($query,true); $sql=(string)($parts['sql']??$query);
+      if (str_contains($sql,'GET_LOCK')) {
+        if (($GLOBALS['queue_lock_mode']??'')==='busy') return 0;
+        $this->lock_held=true; return 1;
+      }
+      if (str_contains($sql,'IS_USED_LOCK')) return $this->lock_held && ($GLOBALS['queue_lock_mode']??'')!=='lost' ? 1 : 0;
+      if (str_contains($sql,'RELEASE_LOCK')) { $this->lock_held=false; return 1; }
+      return null;
+    }
+  }
   define('ABSPATH', __DIR__ . DIRECTORY_SEPARATOR);
   function add_action(...$args): void {}
   function wp_installing(): bool { return false; }
   function is_wp_error($value): bool { return $value instanceof WP_Error; }
-  function wp_schedule_single_event(int $timestamp, string $hook) {
+  function wp_schedule_single_event(int $timestamp, string $hook, array $args = []) {
     if (($GLOBALS['schedule_failure'] ?? false) === 'error') return new WP_Error();
+    if (($GLOBALS['schedule_failure'] ?? false) === 'noop') return true;
     if (!empty($GLOBALS['schedule_failure'])) return false;
     foreach ($GLOBALS['cron_events'] as $event) {
-      if ($event['timestamp'] === $timestamp && $event['hook'] === $hook) return false;
+      if ($event['timestamp'] === $timestamp && $event['hook'] === $hook && ($event['args'] ?? []) === $args) return false;
     }
-    $GLOBALS['cron_events'][] = ['timestamp' => $timestamp, 'hook' => $hook, 'schedule' => false];
+    $GLOBALS['cron_events'][] = ['timestamp' => $timestamp, 'hook' => $hook, 'schedule' => false, 'args' => $args];
     return true;
   }
-  function wp_schedule_event(int $timestamp, string $schedule, string $hook): bool {
-    $GLOBALS['cron_events'][] = ['timestamp' => $timestamp, 'hook' => $hook, 'schedule' => $schedule];
+  function wp_schedule_event(int $timestamp, string $schedule, string $hook, array $args = []): bool {
+    $GLOBALS['cron_events'][] = ['timestamp' => $timestamp, 'hook' => $hook, 'schedule' => $schedule, 'args' => $args];
     return true;
   }
-  function wp_next_scheduled(string $hook) {
-    $matches = array_values(array_filter($GLOBALS['cron_events'], static fn(array $event): bool => $event['hook'] === $hook));
+  function wp_next_scheduled(string $hook, array $args = []) {
+    $matches = array_values(array_filter($GLOBALS['cron_events'], static fn(array $event): bool => $event['hook'] === $hook && ($event['args'] ?? []) === $args));
     if (!$matches) return false;
     usort($matches, static fn(array $a, array $b): int => $a['timestamp'] <=> $b['timestamp']);
     return $matches[0]['timestamp'];
   }
-  function wp_get_scheduled_event(string $hook) {
-    $timestamp = wp_next_scheduled($hook);
+  function wp_get_scheduled_event(string $hook, array $args = []) {
+    $timestamp = wp_next_scheduled($hook, $args);
     if (!$timestamp) return false;
     foreach ($GLOBALS['cron_events'] as $event) {
-      if ($event['hook'] === $hook && $event['timestamp'] === $timestamp) return (object) $event;
+      if ($event['hook'] === $hook && $event['timestamp'] === $timestamp && ($event['args'] ?? []) === $args) return (object) $event;
     }
     return false;
   }
-  function wp_unschedule_event(int $timestamp, string $hook) {
+  function wp_unschedule_event(int $timestamp, string $hook, array $args = []) {
     if (($GLOBALS['unschedule_failure'] ?? false) === 'error') return new WP_Error();
+    if (($GLOBALS['unschedule_failure'] ?? false) === 'noop') return true;
     if (!empty($GLOBALS['unschedule_failure'])) return false;
-    $GLOBALS['cron_events'] = array_values(array_filter($GLOBALS['cron_events'], static fn(array $event): bool => !($event['hook'] === $hook && $event['timestamp'] === $timestamp)));
+    $GLOBALS['cron_events'] = array_values(array_filter($GLOBALS['cron_events'], static fn(array $event): bool => !($event['hook'] === $hook && $event['timestamp'] === $timestamp && ($event['args'] ?? []) === $args)));
     return true;
   }
+  function _get_cron_array(): array {
+    $cron = [];
+    foreach ($GLOBALS['cron_events'] as $event) {
+      $args = $event['args'] ?? [];
+      $cron[$event['timestamp']][$event['hook']][md5(serialize($args))] = ['schedule' => $event['schedule'] ?? false, 'args' => $args];
+    }
+    return $cron;
+  }
   function get_option(string $key, $default = false) { return $GLOBALS['fixture_options'][$key] ?? $default; }
-  function update_option(string $key, $value): bool { $GLOBALS['fixture_options'][$key] = $value; return true; }
+  function update_option(string $key, $value, bool $autoload = true): bool {
+    if (($GLOBALS['queue_write_mode']??'')==='fail') return false;
+    if (($GLOBALS['queue_write_mode']??'')!=='noop') $GLOBALS['fixture_options'][$key] = $value;
+    return true;
+  }
+  function wp_date(string $format, ?int $timestamp = null, ?DateTimeZone $timezone = null): string {
+    $date = new DateTimeImmutable('@' . ($timestamp ?? time()));
+    return $date->setTimezone($timezone ?? new DateTimeZone('UTC'))->format($format);
+  }
   function current_time(string $type, bool $gmt = false): string { return '2026-10-07 08:00:00'; }
 
   $root = $argv[1] ?? dirname(__DIR__);
@@ -116,6 +156,9 @@ namespace {
   ];
   \RoxyGrosses\Settings::$values = $settings;
   $GLOBALS['cron_events'] = [];
+  $GLOBALS['wpdb'] = new SchedulerFixtureWpdb();
+  $GLOBALS['queue_lock_mode'] = '';
+  $GLOBALS['queue_write_mode'] = '';
   $GLOBALS['schedule_failure'] = false;
   $GLOBALS['unschedule_failure'] = false;
   \RoxyGrosses\Store::$logs = [];
@@ -125,8 +168,13 @@ namespace {
   $advertiser_hook = \RoxyGrosses\Scheduler::advertiser_hook();
   scheduler_calendar_assert(
     count(scheduler_events($report_hook)) === 1 && count(scheduler_events($advertiser_hook)) === 1
-      && scheduler_events($report_hook)[0]['schedule'] === false && scheduler_events($advertiser_hook)[0]['schedule'] === false,
-    'sync registers one single event per enabled daily/monthly callback'
+      && scheduler_events($report_hook)[0]['schedule'] === false && scheduler_events($report_hook)[0]['args'] === ['2025-06-10']
+      && scheduler_events($advertiser_hook)[0]['schedule'] === false,
+    'sync registers a date-keyed report event and one monthly advertiser event'
+  );
+  scheduler_calendar_assert(
+    !wp_next_scheduled($report_hook) && \RoxyGrosses\Scheduler::scheduled_time_local($report_hook) !== '',
+    'argument-aware scheduler discovery finds dated hooks that wp_next_scheduled default args miss'
   );
 
   $GLOBALS['cron_events'] = [];
@@ -142,6 +190,22 @@ namespace {
   scheduler_calendar_assert(
     count(scheduler_events($report_hook)) === 1 && scheduler_events($report_hook)[0]['schedule'] === false,
     'ensure migrates legacy recurring event to one configured-time single event'
+  );
+
+  $legacy_timestamp = (new DateTimeImmutable('2025-06-12 20:00:00', new DateTimeZone('America/Los_Angeles')))->getTimestamp();
+  $GLOBALS['cron_events'] = [['timestamp' => $legacy_timestamp, 'hook' => $report_hook, 'schedule' => false, 'args' => []]];
+  \RoxyGrosses\Scheduler::ensure_schedule($settings, $fixed_now);
+  scheduler_calendar_assert(
+    count(scheduler_events($report_hook)) === 1 && scheduler_events($report_hook)[0]['timestamp'] === $legacy_timestamp
+      && scheduler_events($report_hook)[0]['args'] === ['2025-06-12'],
+    'ensure migrates a legacy zero-argument single using its intended local scheduled date'
+  );
+  $GLOBALS['fixture_options'] = [];
+  \RoxyGrosses\Scheduler::run_scheduled_send();
+  scheduler_calendar_assert(
+    ($GLOBALS['fixture_options']['roxy_grosses_last_scheduled_sync_result']['status'] ?? '') === 'failed'
+      && \RoxyGrosses\Reporter::$send_calls === 0,
+    'unmigrated zero-argument callback fails safe instead of inventing the current report date'
   );
 
   \RoxyGrosses\Scheduler::ensure_schedule($settings, $fixed_now);
@@ -177,6 +241,7 @@ namespace {
     'timestamp' => (new DateTimeImmutable('2025-06-09 20:00:00', new DateTimeZone('America/Los_Angeles')))->getTimestamp(),
     'hook' => $report_hook,
     'schedule' => false,
+    'args' => ['2025-06-09'],
   ]];
   $log_count = count(\RoxyGrosses\Store::$logs);
   \RoxyGrosses\Scheduler::ensure_schedule(array_merge($settings, ['advertiser_schedule_enabled' => '0']), $fixed_now);
@@ -196,6 +261,16 @@ namespace {
     'failed event registration is logged as failure and does not claim successful repair'
   );
 
+  $GLOBALS['cron_events'] = [];
+  $GLOBALS['schedule_failure'] = 'noop';
+  \RoxyGrosses\Scheduler::ensure_schedule($settings, $fixed_now);
+  $GLOBALS['schedule_failure'] = false;
+  $last_log = end(\RoxyGrosses\Store::$logs);
+  scheduler_calendar_assert(
+    !scheduler_events($report_hook) && $last_log[4] === false && isset($last_log[6]['failures']['report']),
+    'true-without-registration is rejected by the cron postcondition check'
+  );
+
   $GLOBALS['cron_events'] = [[
     'timestamp' => $fixed_now->setTime(19, 0)->getTimestamp(),
     'hook' => $report_hook,
@@ -210,7 +285,97 @@ namespace {
     'failed stale-event removal is logged as failure without scheduling a replacement or fatal error'
   );
 
+  $GLOBALS['cron_events'] = [[
+    'timestamp' => $fixed_now->setTime(19, 0)->getTimestamp(),
+    'hook' => $report_hook,
+    'schedule' => false,
+    'args' => ['2025-06-10'],
+  ]];
+  $GLOBALS['unschedule_failure'] = 'noop';
+  \RoxyGrosses\Scheduler::ensure_schedule($settings, $fixed_now);
+  $GLOBALS['unschedule_failure'] = false;
+  $last_log = end(\RoxyGrosses\Store::$logs);
+  scheduler_calendar_assert(
+    count(scheduler_events($report_hook)) === 1 && $last_log[4] === false && isset($last_log[6]['failures']['report']),
+    'true-without-removal is rejected and does not claim schedule repair'
+  );
+
   $GLOBALS['fixture_options'] = [];
+  \RoxyGrosses\Settings::$values = $settings;
+  \RoxyGrosses\Reporter::$paid_rows = 1;
+  \RoxyGrosses\Scheduler::run_scheduled_send('2000-01-02');
+  scheduler_calendar_assert(
+    \RoxyGrosses\Reporter::$send_calls === 1 && end(\RoxyGrosses\Reporter::$send_modes) === ['2000-01-02', 'scheduled-provisional'],
+    'dated scheduled report runs once for its intended date and is marked provisional'
+  );
+  scheduler_calendar_assert(
+    count(scheduler_events(\RoxyGrosses\Scheduler::report_hook())) === 1
+      && count(array_filter($GLOBALS['cron_events'], static fn(array $event): bool => $event['hook'] === 'roxy_grosses_closed_day_refresh' && ($event['args'] ?? []) === ['2000-01-02', 0])) === 1,
+    'delayed report event retains its date and queues a date-keyed after-midnight refresh'
+  );
+  $send_count = \RoxyGrosses\Reporter::$send_calls;
+  $save_pending = new ReflectionMethod(\RoxyGrosses\Scheduler::class, 'save_closed_day_pending');
+  $clear_pending = new ReflectionMethod(\RoxyGrosses\Scheduler::class, 'clear_pending_closed_day_refresh');
+  $queue_key = 'roxy_grosses_closed_day_refresh_queue';
+  $GLOBALS['fixture_options'][$queue_key] = ['2000-01-01'=>['attempt'=>1,'status'=>'pending','message'=>'other worker date','retry_at'=>123]];
+  scheduler_calendar_assert($save_pending->invoke(null,'2000-01-02',0,'pending','',456)
+    && count($GLOBALS['fixture_options'][$queue_key])===2 && isset($GLOBALS['fixture_options'][$queue_key]['2000-01-01']),
+    'serialized queue update preserves a different date already queued');
+  $queue_before = $GLOBALS['fixture_options'][$queue_key];
+  $GLOBALS['queue_lock_mode'] = 'busy';
+  scheduler_calendar_assert(!$save_pending->invoke(null,'2000-01-03',0,'pending','',789)
+    && $GLOBALS['fixture_options'][$queue_key]===$queue_before,
+    'busy shared queue lock fails closed without losing another date');
+  $GLOBALS['queue_lock_mode'] = 'lost';
+  scheduler_calendar_assert(!$clear_pending->invoke(null,'2000-01-01')
+    && $GLOBALS['fixture_options'][$queue_key]===$queue_before,
+    'lost queue-lock ownership prevents a clear write');
+  $GLOBALS['queue_lock_mode'] = '';
+  $GLOBALS['fixture_options'][$queue_key] = 'unreadable queue evidence';
+  scheduler_calendar_assert(!$save_pending->invoke(null,'2000-01-04',0,'pending','',999)
+    && $GLOBALS['fixture_options'][$queue_key]==='unreadable queue evidence',
+    'malformed queue evidence is preserved and not silently reset');
+  $GLOBALS['fixture_options'][$queue_key] = $queue_before;
+  $GLOBALS['queue_write_mode'] = 'fail';
+  scheduler_calendar_assert(!$save_pending->invoke(null,'2000-01-05',0,'pending','',999)
+    && $GLOBALS['fixture_options'][$queue_key]===$queue_before && !$GLOBALS['wpdb']->lock_held,
+    'failed option write is reported and the shared queue lock is released');
+  $GLOBALS['queue_write_mode'] = 'noop';
+  scheduler_calendar_assert(!$save_pending->invoke(null,'2000-01-06',0,'pending','',999)
+    && $GLOBALS['fixture_options'][$queue_key]===$queue_before && !$GLOBALS['wpdb']->lock_held,
+    'successful-but-no-op queue write fails verification and preserves existing dates');
+  $GLOBALS['queue_write_mode'] = '';
+  $GLOBALS['fixture_options'][$queue_key] = [];
+  \RoxyGrosses\Reporter::$refresh_results = [['success' => false, 'message' => 'temporary failure'], ['success' => true, 'message' => 'reviewed']];
+  $GLOBALS['cron_events'] = array_values(array_filter($GLOBALS['cron_events'], static fn(array $event): bool => !($event['hook'] === 'roxy_grosses_closed_day_refresh' && ($event['args'] ?? []) === ['2000-01-02', 0])));
+  \RoxyGrosses\Scheduler::run_closed_day_refresh('2000-01-02');
+  scheduler_calendar_assert(
+    \RoxyGrosses\Reporter::$closed_day_calls === [['2000-01-02']] && \RoxyGrosses\Reporter::$send_calls === $send_count
+      && \RoxyGrosses\Scheduler::closed_day_refresh_health()['status'] === 'scheduled'
+      && \RoxyGrosses\Scheduler::closed_day_refresh_health()['attempt'] === 1,
+    'closed-day failure is durably queued for a bounded retry without sending email'
+  );
+  $GLOBALS['cron_events'] = array_values(array_filter($GLOBALS['cron_events'], static fn(array $event): bool => !($event['hook'] === 'roxy_grosses_closed_day_refresh' && ($event['args'] ?? []) === ['2000-01-02', 1])));
+  \RoxyGrosses\Scheduler::run_closed_day_refresh('2000-01-02', 1);
+  scheduler_calendar_assert(
+    \RoxyGrosses\Reporter::$closed_day_calls === [['2000-01-02'], ['2000-01-02']] && \RoxyGrosses\Reporter::$send_calls === $send_count
+      && \RoxyGrosses\Scheduler::closed_day_refresh_health()['status'] === 'idle',
+    'successful retry clears pending status and still never sends an automatic correction'
+  );
+  $schedule_closed = new ReflectionMethod(\RoxyGrosses\Scheduler::class, 'schedule_closed_day_refresh');
+  $GLOBALS['schedule_failure'] = 'noop';
+  $scheduled = $schedule_closed->invoke(null, '2000-01-03', new DateTimeZone('America/Los_Angeles'), new DateTimeImmutable('2000-01-03 02:00:00', new DateTimeZone('America/Los_Angeles')));
+  $GLOBALS['schedule_failure'] = false;
+  scheduler_calendar_assert(!$scheduled && \RoxyGrosses\Scheduler::closed_day_refresh_health()['status'] === 'unscheduled', 'failed cron registration leaves a durable health-visible queue item');
+  \RoxyGrosses\Scheduler::ensure_schedule($settings, $fixed_now);
+  scheduler_calendar_assert(\RoxyGrosses\Scheduler::closed_day_refresh_health()['status'] === 'scheduled', 'scheduler repair restores an unscheduled durable closed-day refresh');
+  \RoxyGrosses\Reporter::$refresh_results = array_fill(0, 4, ['success' => false, 'message' => 'persistent failure']);
+  foreach ([0, 1, 2, 3] as $attempt) {
+    $GLOBALS['cron_events'] = array_values(array_filter($GLOBALS['cron_events'], static fn(array $event): bool => !($event['hook'] === 'roxy_grosses_closed_day_refresh' && ($event['args'] ?? []) === ['2000-01-03', $attempt])));
+    \RoxyGrosses\Scheduler::run_closed_day_refresh('2000-01-03', $attempt);
+  }
+  scheduler_calendar_assert(\RoxyGrosses\Scheduler::closed_day_refresh_health()['status'] === 'failed', 'closed-day retry budget terminates visibly instead of looping forever');
+  $GLOBALS['fixture_options']['roxy_grosses_closed_day_refresh_queue'] = [];
   \RoxyGrosses\Settings::$values = array_merge($settings, ['schedule_enabled' => '0', 'advertiser_schedule_enabled' => '0']);
   \RoxyGrosses\Scheduler::run_scheduled_send();
   scheduler_calendar_assert(

@@ -328,7 +328,7 @@ class Reporter {
   private static function send_report_locked(string $report_date, string $mode): array {
     try {
       $reports = self::build_reports($report_date);
-      if ($mode === 'scheduled') {
+      if (in_array($mode, ['scheduled', 'scheduled-provisional'], true)) {
         foreach ($reports as $row) {
           if (isset(self::$refund_review_dates[$row['report_date'] ?? ''])) throw new \RuntimeException('A later Square refund changed an already-emailed sale day. Review a fresh draft; it was not automatically resent.');
         }
@@ -503,6 +503,11 @@ class Reporter {
     return Square::with_sale_snapshot(static fn() => self::sync_automatic_tables_snapshot($report_date, $mode, $now));
   }
 
+  /** Refresh a closed sale day and flag changed emailed snapshots; never sends a report. */
+  public static function refresh_closed_day(string $report_date): array {
+    return self::sync_automatic_tables($report_date, 'closed-day-refresh');
+  }
+
   private static function sync_automatic_tables_snapshot(string $report_date, string $mode, ?\DateTimeImmutable $now): array {
     global $wpdb;
     $lock = 'roxy_grosses_refund_sync_' . substr(hash('sha256', Store::entries_table_name()), 0, 24);
@@ -574,6 +579,9 @@ class Reporter {
       }
       self::rebalance_concessions_for_report_dates($movie_rows, $report_date);
       if ((int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', $lock)) !== 1) throw new \RuntimeException('Grosses refund refresh lost its database lock.');
+      $closed_day_reports_flagged = $mode === 'closed-day-refresh'
+        ? Store::with_refund_review_lock(static fn() => Store::flag_emailed_closed_day_changes($report_date, Store::closed_day_report_rows($report_date)))
+        : [];
       $scan_date = $cutoff->format('Y-m-d');
       $pending_dates = $snapshot->pending_source_dates();
       $pending_date = (string) ($pending_dates[0] ?? '');
@@ -610,6 +618,7 @@ class Reporter {
         'live_updated' => (int) ($live_result['updated'] ?? 0),
         'refund_movie_rows_updated' => $refund_updated,
         'refund_movie_rows_protected' => $refund_protected,
+        'closed_day_reports_flagged' => count($closed_day_reports_flagged),
         'pending_refund_source_days' => count($pending_dates),
       ]);
       self::log_sync_anomalies($report_date, $mode, $movie_rows, $live_rows);
@@ -624,10 +633,11 @@ class Reporter {
         'live_result' => $live_result,
         'refund_movie_rows_updated' => $refund_updated,
         'refund_movie_rows_protected' => $refund_protected,
+        'closed_day_reports_flagged' => count($closed_day_reports_flagged),
       ];
     } catch (\Throwable $e) {
       Store::insert_log('sync_tables', $mode, null, $report_date, false, $e->getMessage());
-      self::notify_admin_failure('Grosses automatic sync failed', $report_date, $mode, $e->getMessage());
+      if ($mode !== 'closed-day-refresh') self::notify_admin_failure('Grosses automatic sync failed', $report_date, $mode, $e->getMessage());
       return [
         'success' => false,
         'message' => $e->getMessage(),
@@ -1982,6 +1992,7 @@ class Reporter {
     $attachment = self::write_csv($reports);
     try {
       $is_test_send = $mode === 'manual-test';
+      $is_provisional = $mode === 'scheduled-provisional';
       $to = $is_test_send ? self::test_email_list() : Settings::email_list();
       if (!$to) {
         return [
@@ -1993,10 +2004,12 @@ class Reporter {
       }
 
       $subject = self::expand_tokens((string) Settings::get('email_subject', ''), $summary);
+      if ($is_provisional) $subject = '[PROVISIONAL — CLOSED-DAY REFRESH PENDING] ' . $subject;
       if ($is_test_send) {
         $subject = '[TEST] ' . $subject;
       }
       $body = self::expand_tokens((string) Settings::get('email_body', ''), $summary);
+      if ($is_provisional) $body = "PROVISIONAL GROSSES: this is the initial scheduled snapshot for the reporting day. A date-based after-midnight refresh will check for later Square sales and flag changes for manager review; no corrected report is sent automatically.\n\n" . $body;
       if ($is_test_send) {
         $body = "This is a test grosses email sent only to the configured admin alert address.\n\n" . $body;
       }
