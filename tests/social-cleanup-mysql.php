@@ -15,6 +15,7 @@ function get_post($id){return !empty($GLOBALS["cleanup53_exists"])?(object)["ID"
 function get_post_meta($id,$key,$single=true){return $key==="_roxy_social_temporary"?($GLOBALS["cleanup53_owner"]?"1":"0"):($key==="_roxy_hangar_asset_id"?"888":null);}
 function wp_get_attachment_url($id){return "https://fixture.example.invalid/cleanup53-".$id.".mp4";}
 function wp_delete_attachment($id,$force=false){$GLOBALS["cleanup53_delete_calls"]++;if($GLOBALS["cleanup53_delete_fail"])return false;$GLOBALS["cleanup53_exists"]=false;return (object)["ID"=>$id];}
+function wp_schedule_single_event($timestamp,$hook,$args=[]){$GLOBALS["cleanup53_scheduled"][]=[$timestamp,$hook,$args];return true;}
 ');
 $checks=0;$assert=static function($ok,$label)use(&$checks){if(!$ok)throw new RuntimeException($label);$checks++;echo 'PASS: '.$label.PHP_EOL;};
 $block=static function($sql)use($table){if(preg_match('/^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i',$sql)&&strpos($sql,$table)===false)throw new RuntimeException('Non-private cleanup SQL mutation.');return $sql;};
@@ -42,6 +43,10 @@ try {
     $reset();$wpdb->update($table,['cleanup_after'=>'2099-01-01 12:00:00'],['id'=>1]);
     $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0,'future local deadline remains untouched');
     $assert(hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)))===$before,'all production Social rows unchanged');
+    $row=$reset();$GLOBALS['cleanup53_exists']=true;$GLOBALS['cleanup53_scheduled']=[];
+    for($id=2;$id<=101;$id++){$later=$row;$later['id']=$id;$later['post_key']='PRIVATE-cleanup-'.$id;$later['temporary_attachment_id']=2147482000+$id;$later['media_url']='https://fixture.example.invalid/cleanup53-'.$later['temporary_attachment_id'].'.mp4';if($wpdb->insert($table,$later)!==1)throw new RuntimeException('Private pagination row failed.');}
+    $assert($store::cleanup_expired()===1&&($GLOBALS['cleanup53_scheduled'][0][1]??'')==='roxy_social_cleanup_page'&&($GLOBALS['cleanup53_scheduled'][0][2]??[])===[100,101],'actual private-table cleanup schedules exactly the remaining bounded high-water page');
+    $assert(hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)))===$before,'pagination leaves production Social rows unchanged');
 } finally {
     if($created&&$wpdb->query('DROP TEMPORARY TABLE '.$table)===false)throw new RuntimeException('Private cleanup schema removal failed.');
     remove_filter('query',$block,PHP_INT_MAX);remove_filter('pre_wp_mail',$mail,PHP_INT_MAX);remove_filter('pre_http_request',$http,PHP_INT_MAX);$wpdb->suppress_errors($old);

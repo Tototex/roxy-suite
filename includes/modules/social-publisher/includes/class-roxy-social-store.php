@@ -56,64 +56,80 @@ final class Store {
         ]);
     }
 
-    public static function cleanup_expired(): int {
+    public static function cleanup_expired(?int $after_id = null, ?int $upper_id = null): int {
         global $wpdb;
         $table = self::table_name();
         $cutoff = current_time('mysql');
-        $wpdb->last_error = '';
-        $rows = $wpdb->get_results($wpdb->prepare('SELECT id, temporary_attachment_id, cleanup_after FROM ' . $table . ' WHERE cleanup_after IS NOT NULL AND cleanup_after <= %s AND status IN ("posted", "skipped") AND temporary_attachment_id IS NOT NULL ORDER BY cleanup_after ASC, id ASC LIMIT 100', $cutoff), ARRAY_A);
-        if ($wpdb->last_error !== '' || !is_array($rows)) return 0;
+        $cursor = max(0, $after_id ?? 0);
+        if ($upper_id === null) {
+            $wpdb->last_error = '';
+            $upper_id = $wpdb->get_var($wpdb->prepare('SELECT COALESCE(MAX(id), 0) FROM ' . $table . ' WHERE cleanup_after IS NOT NULL AND cleanup_after <= %s AND status IN ("posted", "skipped") AND temporary_attachment_id IS NOT NULL', $cutoff));
+            if ($wpdb->last_error !== '' || !is_numeric($upper_id)) return 0;
+        }
+        $upper_id = max(0, $upper_id);
+        if ($upper_id <= $cursor) return 0;
         $deleted = 0;
+        $wpdb->last_error = '';
+        $rows = $wpdb->get_results($wpdb->prepare('SELECT id, temporary_attachment_id, cleanup_after FROM ' . $table . ' WHERE cleanup_after IS NOT NULL AND cleanup_after <= %s AND status IN ("posted", "skipped") AND temporary_attachment_id IS NOT NULL AND id > %d AND id <= %d ORDER BY id ASC LIMIT 100', $cutoff, $cursor, $upper_id), ARRAY_A);
+        if ($wpdb->last_error !== '' || !is_array($rows) || !$rows) return 0;
+        $ids = array_map(static fn($row): int => is_array($row) ? (int) ($row['id'] ?? 0) : 0, $rows);
+        $next_cursor = max($ids);
+        if ($next_cursor <= $cursor) return 0;
+        $cursor = $next_cursor;
         foreach ($rows as $row) {
-            $id = (int) ($row['id'] ?? 0);
-            $attachment_id = (int) ($row['temporary_attachment_id'] ?? 0);
-            if ($id <= 0 || $attachment_id <= 0) continue;
-            $claim = self::acquire_publish_lock($id);
-            if (!$claim) continue;
-            try {
-                $fresh = self::find($id);
-                if (!$fresh || !in_array((string) ($fresh['status'] ?? ''), ['posted', 'skipped'], true)
-                    || (int) ($fresh['temporary_attachment_id'] ?? 0) !== $attachment_id
-                    || (string) ($fresh['cleanup_after'] ?? '') !== (string) ($row['cleanup_after'] ?? '')
-                    || (string) ($fresh['cleanup_after'] ?? '') === '' || (string) $fresh['cleanup_after'] > $cutoff) continue;
+                $id = (int) ($row['id'] ?? 0);
+                $attachment_id = (int) ($row['temporary_attachment_id'] ?? 0);
+                if ($id <= 0 || $attachment_id <= 0) continue;
+                $claim = self::acquire_publish_lock($id);
+                if (!$claim) continue;
+                try {
+                    $fresh = self::find($id);
+                    if (!$fresh || !in_array((string) ($fresh['status'] ?? ''), ['posted', 'skipped'], true)
+                        || (int) ($fresh['temporary_attachment_id'] ?? 0) !== $attachment_id
+                        || (string) ($fresh['cleanup_after'] ?? '') !== (string) ($row['cleanup_after'] ?? '')
+                        || (string) ($fresh['cleanup_after'] ?? '') === '' || (string) $fresh['cleanup_after'] > $cutoff) continue;
 
-                $wpdb->last_error = '';
-                $attachment = get_post($attachment_id);
-                if ($wpdb->last_error !== '') continue;
-                if (!$attachment) {
-                    if (self::owns_publish_lock($claim)) self::save_publish_values($id, ['temporary_attachment_id' => null, 'cleanup_after' => null, 'updated_at' => current_time('mysql')], $claim);
-                    continue;
+                    $wpdb->last_error = '';
+                    $attachment = get_post($attachment_id);
+                    if ($wpdb->last_error !== '') continue;
+                    if (!$attachment) {
+                        if (self::owns_publish_lock($claim)) self::save_publish_values($id, ['temporary_attachment_id' => null, 'cleanup_after' => null, 'updated_at' => current_time('mysql')], $claim);
+                        continue;
+                    }
+                    if (($attachment->post_type ?? '') !== 'attachment'
+                        || (string) get_post_meta($attachment_id, '_roxy_social_temporary', true) !== '1'
+                        || (int) get_post_meta($attachment_id, '_roxy_hangar_asset_id', true) <= 0) continue;
+
+                    $url = wp_get_attachment_url($attachment_id);
+                    if (!is_string($url) || $url === '' || !self::owns_publish_lock($claim)) continue;
+                    $wpdb->last_error = '';
+                    $shared = $wpdb->get_var($wpdb->prepare('SELECT id FROM ' . $table . ' WHERE id <> %d AND (temporary_attachment_id = %d OR media_url = %s) LIMIT 1', $id, $attachment_id, $url));
+                    if ($wpdb->last_error !== '' || $shared !== null) continue;
+
+                    $posts = $wpdb->posts;
+                    $wpdb->last_error = '';
+                    $post_ref = $wpdb->get_var($wpdb->prepare('SELECT ID FROM ' . $posts . ' WHERE ID <> %d AND (post_content LIKE %s OR post_content LIKE %s) LIMIT 1', $attachment_id, '%' . $wpdb->esc_like($url) . '%', '%' . $wpdb->esc_like('wp-image-' . $attachment_id) . '%'));
+                    if ($wpdb->last_error !== '' || $post_ref !== null) continue;
+
+                    $postmeta = $wpdb->postmeta;
+                    $wpdb->last_error = '';
+                    $meta_ref = $wpdb->get_var($wpdb->prepare('SELECT meta_id FROM ' . $postmeta . ' WHERE meta_value = %s OR meta_value LIKE %s LIMIT 1', (string) $attachment_id, '%' . $wpdb->esc_like($url) . '%'));
+                    if ($wpdb->last_error !== '' || $meta_ref !== null || !self::owns_publish_lock($claim)) continue;
+
+                    if (!wp_delete_attachment($attachment_id, true)) continue;
+                    $deleted++;
+                    if (!self::owns_publish_lock($claim)) continue;
+                    self::save_publish_values($id, ['temporary_attachment_id' => null, 'cleanup_after' => null, 'updated_at' => current_time('mysql')], $claim);
+                } catch (\Throwable $error) {
+                    // Keep the row pointer for later review/retry after uncertain cleanup.
+                    error_log('Roxy Social cleanup could not complete for row #' . $id . '. Tracking was retained for review.');
+                } finally {
+                    self::release_publish_lock($claim);
                 }
-                if (($attachment->post_type ?? '') !== 'attachment'
-                    || (string) get_post_meta($attachment_id, '_roxy_social_temporary', true) !== '1'
-                    || (int) get_post_meta($attachment_id, '_roxy_hangar_asset_id', true) <= 0) continue;
-
-                $url = wp_get_attachment_url($attachment_id);
-                if (!is_string($url) || $url === '' || !self::owns_publish_lock($claim)) continue;
-                $wpdb->last_error = '';
-                $shared = $wpdb->get_var($wpdb->prepare('SELECT id FROM ' . $table . ' WHERE id <> %d AND (temporary_attachment_id = %d OR media_url = %s) LIMIT 1', $id, $attachment_id, $url));
-                if ($wpdb->last_error !== '' || $shared !== null) continue;
-
-                $posts = $wpdb->posts;
-                $wpdb->last_error = '';
-                $post_ref = $wpdb->get_var($wpdb->prepare('SELECT ID FROM ' . $posts . ' WHERE ID <> %d AND (post_content LIKE %s OR post_content LIKE %s) LIMIT 1', $attachment_id, '%' . $wpdb->esc_like($url) . '%', '%' . $wpdb->esc_like('wp-image-' . $attachment_id) . '%'));
-                if ($wpdb->last_error !== '' || $post_ref !== null) continue;
-
-                $postmeta = $wpdb->postmeta;
-                $wpdb->last_error = '';
-                $meta_ref = $wpdb->get_var($wpdb->prepare('SELECT meta_id FROM ' . $postmeta . ' WHERE meta_value = %s OR meta_value LIKE %s LIMIT 1', (string) $attachment_id, '%' . $wpdb->esc_like($url) . '%'));
-                if ($wpdb->last_error !== '' || $meta_ref !== null || !self::owns_publish_lock($claim)) continue;
-
-                if (!wp_delete_attachment($attachment_id, true)) continue;
-                $deleted++;
-                if (!self::owns_publish_lock($claim)) continue;
-                self::save_publish_values($id, ['temporary_attachment_id' => null, 'cleanup_after' => null, 'updated_at' => current_time('mysql')], $claim);
-            } catch (\Throwable $error) {
-                // Keep the row pointer for later review/retry after uncertain cleanup.
-                error_log('Roxy Social cleanup could not complete for row #' . $id . '. Tracking was retained for review.');
-            } finally {
-                self::release_publish_lock($claim);
-            }
+        }
+        if (count($rows) === 100 && $cursor < $upper_id) {
+            $scheduled = wp_schedule_single_event(time() + 60, 'roxy_social_cleanup_page', [$cursor, $upper_id]);
+            if (!$scheduled) error_log('Roxy Social cleanup could not schedule its next bounded page. The next regular cleanup run will retry.');
         }
         return $deleted;
     }

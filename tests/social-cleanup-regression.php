@@ -17,11 +17,13 @@ final class CleanupWpdb {
     public bool $initial_query_error = false;
     public bool $reference_query_error = false;
     public bool $lock_busy = false;
+    public array $busy_lock_names = [];
     public bool $delete_fails = false;
     public bool $delete_throws = false;
     public bool $post_read_error = false;
     public bool $clear_fails = false;
     public bool $stale_on_reload = false;
+    public bool $fail_later_candidate_query = false;
     public array $queries = [];
     private bool $locked = false;
     private int $connection = 81;
@@ -39,15 +41,21 @@ final class CleanupWpdb {
         $this->queries[] = $query;
         if ($this->initial_query_error) { $this->last_error = 'fixture query error'; return []; }
         preg_match('/LIMIT\s+(\d+)/i', $query, $limit);
+        preg_match('/id > (\d+)/i', $query, $cursor);
+        $after_id = (int) ($cursor[1] ?? 0);
+        if ($this->fail_later_candidate_query && $after_id > 0) { $this->last_error = 'fixture later-page query error'; return []; }
+        preg_match('/id <= (\d+)/i', $query, $ceiling);
+        $upper_id = (int) ($ceiling[1] ?? PHP_INT_MAX);
         preg_match('/cleanup_after <= \'([^\']+)\'/i', $query, $cutoff);
         $local_cutoff = stripslashes($cutoff[1] ?? '');
         $rows = [];
         foreach ($this->rows as $row) {
-            if (!empty($row['cleanup_after']) && $row['cleanup_after'] <= $local_cutoff
+            if ((int) ($row['id'] ?? 0) > $after_id && (int) ($row['id'] ?? 0) <= $upper_id && !empty($row['cleanup_after']) && $row['cleanup_after'] <= $local_cutoff
                 && in_array($row['status'], ['posted', 'skipped'], true) && !empty($row['temporary_attachment_id'])) {
                 $rows[] = ['id' => $row['id'], 'temporary_attachment_id' => $row['temporary_attachment_id'], 'cleanup_after' => $row['cleanup_after']];
             }
         }
+        usort($rows, static fn(array $a, array $b): int => (int) $a['id'] <=> (int) $b['id']);
         return array_slice($rows, 0, (int) ($limit[1] ?? 100));
     }
     public function get_row(string $query, $format = null) {
@@ -58,7 +66,18 @@ final class CleanupWpdb {
     }
     public function get_var(string $query) {
         $this->queries[] = $query;
-        if (strpos($query, 'GET_LOCK(') !== false) { if ($this->lock_busy) return 0; $this->locked = true; return 1; }
+        if (strpos($query, 'COALESCE(MAX(id), 0)') !== false) {
+            preg_match('/cleanup_after <= \'([^\']+)\'/i', $query, $cutoff);
+            $local_cutoff = stripslashes($cutoff[1] ?? '');
+            $ids = [];
+            foreach ($this->rows as $row) if (!empty($row['cleanup_after']) && $row['cleanup_after'] <= $local_cutoff && in_array($row['status'], ['posted', 'skipped'], true) && !empty($row['temporary_attachment_id'])) $ids[] = (int) $row['id'];
+            return $ids ? max($ids) : 0;
+        }
+        if (strpos($query, 'GET_LOCK(') !== false) {
+            preg_match("/GET_LOCK\\('([^']+)'/", $query, $lock);
+            if ($this->lock_busy || in_array($lock[1] ?? '', $this->busy_lock_names, true)) return 0;
+            $this->locked = true; return 1;
+        }
         if (strpos($query, 'CONNECTION_ID()') !== false && strpos($query, 'IS_USED_LOCK') === false) return (string) $this->connection;
         if (strpos($query, 'IS_USED_LOCK(') !== false) return $this->locked ? (string) $this->connection : null;
         if (strpos($query, 'RELEASE_LOCK(') !== false) { $this->locked = false; return 1; }
@@ -95,6 +114,7 @@ final class CleanupWpdb {
 }
 
 function current_time(string $type): string { return '2026-10-06 12:00:00'; }
+function wp_schedule_single_event(int $timestamp, string $hook, array $args = []): bool { $GLOBALS['cleanup_scheduled'][] = [$timestamp, $hook, $args]; return true; }
 function get_post(int $id) { global $wpdb; if($wpdb->post_read_error){$wpdb->last_error='fixture read failed';return null;}return $wpdb->attachments[$id] ?? null; }
 function get_post_meta(int $id, string $key, bool $single = false) { global $wpdb; return $wpdb->meta[$id][$key] ?? ''; }
 function wp_get_attachment_url(int $id) { return "https://fixture.invalid/uploads/{$id}.mp4"; }
@@ -106,6 +126,7 @@ $checks = 0;
 function check_cleanup(bool $ok, string $label): void { global $checks; if (!$ok) { fwrite(STDERR, "FAIL: {$label}\n"); exit(1); } $checks++; }
 function fixture(array $overrides = []): void {
     global $wpdb;
+    $GLOBALS['cleanup_scheduled'] = [];
     $wpdb = new CleanupWpdb();
     $wpdb->rows[1] = array_merge(['id' => 1, 'status' => 'posted', 'temporary_attachment_id' => 42, 'cleanup_after' => '2026-10-06 11:59:00', 'media_url' => ''], $overrides);
     $wpdb->attachments[42] = (object) ['ID' => 42, 'post_type' => 'attachment'];
@@ -121,7 +142,8 @@ $wpdb->attachments[44] = (object) ['ID'=>44, 'post_type'=>'attachment'];
 $wpdb->meta[44] = ['_roxy_social_temporary'=>'1', '_roxy_hangar_asset_id'=>'902'];
 check_cleanup(\RoxySocial\Store::cleanup_expired() === 1, 'owned expired attachment is deleted');
 check_cleanup(!isset($wpdb->attachments[42]) && $wpdb->rows[1]['temporary_attachment_id'] === null && isset($wpdb->attachments[43]) && isset($wpdb->attachments[44]), 'successful delete clears pointer and future/failed rows stay');
-check_cleanup(strpos($wpdb->queries[0], "'2026-10-06 12:00:00'") !== false && strpos($wpdb->queries[0], 'LIMIT 100') !== false, 'query uses local cutoff and bounded batch');
+$initial_candidate_query = $wpdb->queries[1] ?? '';
+check_cleanup(strpos($initial_candidate_query, "'2026-10-06 12:00:00'") !== false && strpos($initial_candidate_query, 'LIMIT 100') !== false, 'candidate query uses local cutoff and bounded batch');
 
 foreach ([
     ['shared social row', static function () { $GLOBALS['wpdb']->rows[2] = ['id'=>2,'temporary_attachment_id'=>42,'media_url'=>'']; }],
@@ -160,5 +182,35 @@ fixture(); $wpdb->post_read_error=true;
 check_cleanup(\RoxySocial\Store::cleanup_expired()===0 && $wpdb->rows[1]['temporary_attachment_id']===42,'attachment read error cannot clear retry tracking');
 fixture(); $wpdb->delete_throws=true;
 check_cleanup(\RoxySocial\Store::cleanup_expired()===0 && $wpdb->rows[1]['temporary_attachment_id']===42,'thrown deletion retains tracking without crashing cron');
+
+fixture();
+for ($id = 2; $id <= 101; $id++) {
+    $attachment_id = 1000 + $id;
+    $wpdb->rows[$id] = ['id'=>$id,'status'=>'posted','temporary_attachment_id'=>$attachment_id,'cleanup_after'=>'2026-10-06 11:00:00','media_url'=>''];
+    $wpdb->attachments[$attachment_id] = (object) ['ID'=>$attachment_id,'post_type'=>'attachment'];
+    $wpdb->meta[$attachment_id] = ['_roxy_social_temporary'=>'1','_roxy_hangar_asset_id'=>(string) (900 + $id)];
+}
+$wpdb->busy_lock_names = ['roxy-social-' . substr(hash('sha256', DB_NAME . ':wp_roxy_social_posts:1'), 0, 48)];
+$first_busy_cleanup = \RoxySocial\Store::cleanup_expired();
+$scheduled_page = $GLOBALS['cleanup_scheduled'][0] ?? null;
+check_cleanup($first_busy_cleanup === 99 && isset($scheduled_page[1], $scheduled_page[2])
+    && $scheduled_page[1] === 'roxy_social_cleanup_page' && $scheduled_page[2] === [100, 101]
+    && isset($wpdb->attachments[42]) && isset($wpdb->attachments[1101]),
+    'one bounded page handles busy and available locks, then schedules the remaining fixed snapshot');
+check_cleanup(\RoxySocial\Store::cleanup_expired(...$scheduled_page[2]) === 1 && !isset($wpdb->attachments[1101]), 'scheduled continuation revisits the previously busy row beyond the first hundred');
+
+fixture();
+for ($id = 2; $id <= 101; $id++) {
+    $attachment_id = 1000 + $id;
+    $wpdb->rows[$id] = ['id'=>$id,'status'=>'posted','temporary_attachment_id'=>$attachment_id,'cleanup_after'=>'2026-10-06 11:00:00','media_url'=>''];
+    $wpdb->attachments[$attachment_id] = (object) ['ID'=>$attachment_id,'post_type'=>'attachment'];
+    $wpdb->meta[$attachment_id] = ['_roxy_social_temporary'=>'1','_roxy_hangar_asset_id'=>(string) (900 + $id)];
+}
+check_cleanup(\RoxySocial\Store::cleanup_expired() === 100, 'first cleanup page may finish before a later-page storage error');
+$scheduled_page = $GLOBALS['cleanup_scheduled'][0] ?? null;
+$wpdb->fail_later_candidate_query = true;
+check_cleanup(\RoxySocial\Store::cleanup_expired(...$scheduled_page[2]) === 0 && isset($wpdb->attachments[1101]), 'later-page database failure leaves its candidates and references untouched');
+$wpdb->fail_later_candidate_query = false;
+check_cleanup(\RoxySocial\Store::cleanup_expired(...$scheduled_page[2]) === 1 && !isset($wpdb->attachments[1101]), 'failed continuation can be retried without affecting earlier deletions');
 
 echo "OK: {$checks} social cleanup checks\n";
