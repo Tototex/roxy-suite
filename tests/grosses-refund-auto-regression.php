@@ -91,6 +91,7 @@ namespace RoxyGrosses {
     public static function list_entries(array $filters = [], int $limit = 1000, int $offset = 0): array { return []; }
     public static function list_live_entries(array $filters = [], int $limit = 1000, int $offset = 0): array { return []; }
     public static function list_rental_entries(array $filters = [], int $limit = 1000, int $offset = 0): array { return []; }
+    public static function list_all_entries_for_rebalance(string $dataset, string $date): array { return []; }
     public static function insert_log(...$args): int { self::$logs[] = $args; return count(self::$logs); }
   }
 }
