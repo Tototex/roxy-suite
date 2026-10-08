@@ -32,26 +32,23 @@ try {
     $rules_path = $private_dir . DIRECTORY_SEPARATOR . '.htaccess';
     $rules = file_get_contents($rules_path);
     $check(is_file($index) && is_readable($index), 'private directory creates a readable index file');
-    $check(is_string($rules) && preg_match('/^\\s*Require\\s+all\\s+denied\\s*$/mi', $rules)
-        && preg_match('/^\\s*Deny\\s+from\\s+all\\s*$/mi', $rules), 'fresh directory receives both Apache deny directives');
+    $canonical_rules = "<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n";
+    $check($rules === $canonical_rules, 'fresh directory receives version-compatible deny-only rules');
 
     if (file_put_contents($rules_path, "Require all denied\n") === false) throw new RuntimeException('Could not create partial rules fixture.');
     $root_method->invoke(null);
     $partial = file_get_contents($rules_path);
-    $check(is_string($partial) && substr_count($partial, 'Require all denied') === 1
-        && substr_count($partial, 'Deny from all') === 1, 'partial rules are completed without duplicating existing directives');
+    $check($partial === $canonical_rules, 'partial rules are replaced with the canonical deny-only policy');
 
-    if (file_put_contents($rules_path, "Options +Indexes\n") === false) throw new RuntimeException('Could not weaken fixture rules.');
+    if (file_put_contents($rules_path, "Options +Indexes\nRequire all granted\n") === false) throw new RuntimeException('Could not weaken fixture rules.');
     $root_method->invoke(null);
     $repaired = file_get_contents($rules_path);
-    $check(is_string($repaired) && strpos($repaired, 'Options +Indexes') !== false
-        && preg_match('/^\\s*Require\\s+all\\s+denied\\s*$/mi', $repaired)
-        && preg_match('/^\\s*Deny\\s+from\\s+all\\s*$/mi', $repaired), 'existing weakened rules are preserved and deny directives restored');
+    $check($repaired === $canonical_rules && strpos($repaired, 'Require all granted') === false
+        && strpos($repaired, 'Options +Indexes') === false, 'weakened or conflicting rules are replaced by deny-only policy');
 
     $root_method->invoke(null);
     $rechecked = file_get_contents($rules_path);
-    $check(is_string($rechecked) && substr_count($rechecked, 'Require all denied') === 1
-        && substr_count($rechecked, 'Deny from all') === 1, 'repeated verification does not duplicate access rules');
+    $check($rechecked === $canonical_rules, 'repeated verification leaves the canonical policy unchanged');
 } finally {
     $iterator = new RecursiveIteratorIterator(
         new RecursiveDirectoryIterator($fixture_root, FilesystemIterator::SKIP_DOTS),

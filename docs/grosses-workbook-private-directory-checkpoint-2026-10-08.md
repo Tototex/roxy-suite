@@ -3,9 +3,10 @@
 `Workbook::protect_directory()` previously wrote `index.html` and `.htaccess`
 without checking write/read results or correcting an existing access file whose
 deny rules had been removed. It now fails closed if the index or access rules
-cannot be verified, restores missing Apache `Require all denied` and
-`Deny from all` directives while retaining existing contents, and avoids
-duplicating directives on repeated checks.
+cannot be verified, and replaces missing, weakened, or conflicting access
+files with one canonical deny-only policy. The policy uses Apache 2.4's
+`Require all denied` when `mod_authz_core` is present and falls back to Apache
+2.2's `Deny from all` otherwise. Repeated checks leave the file unchanged.
 
 Four isolated filesystem checks cover a fresh directory, partial-rule repair,
 weakened-rule repair, and idempotent repeated verification. The PHP 8.3 hosted
