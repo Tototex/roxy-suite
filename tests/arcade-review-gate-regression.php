@@ -8,6 +8,7 @@ function wp_next_scheduled($hook) { return false; }
 function wp_schedule_single_event(...$args) { $GLOBALS['scheduled'][]=$args; return true; }
 function get_option($key,$default=false) { return $GLOBALS['options'][$key]??$default; }
 function update_option($key,$value,...$args) { $GLOBALS['options'][$key]=$value; return true; }
+function add_option($key,$value,...$args) { if(array_key_exists($key,$GLOBALS['options']))return false; $GLOBALS['options'][$key]=$value; return true; }
 function get_user_by(...$args) { return (object)['ID'=>9,'display_name'=>'Fixture Player','user_login'=>'fixture']; }
 function get_user_meta(...$args) { return ''; }
 function sanitize_email($value) { return $value; }
@@ -16,7 +17,7 @@ function esc_url($value) { return $value; }
 function esc_html($value) { return $value; }
 function wp_login_url($value) { return $value; }
 function get_permalink() { return 'https://example.test/arcade/'; }
-function wp_mail(...$args) { $GLOBALS['mail'][]=$args; return true; }
+function wp_mail(...$args) { $GLOBALS['mail'][]=$args; return $GLOBALS['mail_result']??true; }
 function wcs_create_subscription(...$args) { throw new RuntimeException('Monthly worker must never create a subscription.'); }
 final class ReviewGateDatabase {
     public string $prefix='fixture_';
@@ -35,6 +36,18 @@ foreach ([0,1] as $legacy_auto) {
     $check(!isset($GLOBALS['options']['roxy_arcade_last_awarded_month']),'worker does not mark unverified score awarded');
     $check(count($GLOBALS['mail'])===1 && str_contains($GLOBALS['mail'][0][2],'not verified gameplay'),'review email explains unverified scores');
 }
+$GLOBALS['options']=['roxy_arcade_rewards_enabled'=>1,'admin_email'=>'fixture@example.test'];
+$GLOBALS['mail']=[]; $GLOBALS['mail_result']=true; $GLOBALS['leaders']=[['user_id'=>9,'name'=>'Fixture Player','total'=>1234]];
+Roxy_Arcade::award_monthly_winner_snapshot();
+Roxy_Arcade::award_monthly_winner_snapshot();
+$notice_key='roxy_arcade_review_mail_'.hash('sha256',wp_date('Y-m').':9:1234');
+$check(count($GLOBALS['mail'])===1 && ($GLOBALS['options'][$notice_key]['state']??'')==='sent','repeated worker run sends one review notice for the same candidate');
+$GLOBALS['mail']=[]; $GLOBALS['mail_result']=false; $GLOBALS['leaders']=[['user_id'=>9,'name'=>'Fixture Player','total'=>1235]];
+Roxy_Arcade::award_monthly_winner_snapshot();
+$uncertain_key='roxy_arcade_review_mail_'.hash('sha256',wp_date('Y-m').':9:1235');
+Roxy_Arcade::award_monthly_winner_snapshot();
+$check(count($GLOBALS['mail'])===1 && ($GLOBALS['options'][$uncertain_key]['state']??'')==='uncertain','uncertain review mail outcome is recorded and not retried');
+$GLOBALS['mail_result']=true;
 $GLOBALS['options']['roxy_arcade_rewards_enabled']=0; $GLOBALS['mail']=[];
 Roxy_Arcade::award_monthly_winner_snapshot();
 $check(!$GLOBALS['mail'],'disabled rewards remain silent');
