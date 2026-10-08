@@ -16,6 +16,8 @@ The Show Tickets admin weekend anchor now uses the same strict validator, preven
 
 `tests/schedule-child-status-regression.php` covers impossible single and price-change dates preserving prior metadata, valid leap-day persistence, invalid batch rejection without partial child creation, seven-day price-date shifts across both Los Angeles DST transitions, the actual duplicate action writing shifted dates to the generated showing, and admin weekend-anchor validation. `tests/will-call-regression.php` covers strict local date parsing for leap day, impossible dates, DST gaps, and ambiguous fall-back time. Social schedule tests also reject impossible dates. Fixture transients are reset between cases. Additional scalar guards prevent malformed arrays from generating string-cast warnings.
 
+The installed WordPress duplicate fixture (`tests/ticket-weekend-duplicate-wordpress.php`) was updated to expect the shifted scheduled price dates for both DST scenarios. It requires the private WP-CLI fixture environment and was not executed in this local hosted-CI pass.
+
 ## Verification boundary
 
 `git diff --check` passes. Hosted run 37737723692 passes all tracked-PHP syntax checks on PHP 8.0–8.4 and the complete 71-program isolated regression suite on PHP 8.3, including the actual duplicate action writing the shifted price dates, malformed source-date and admin weekend-anchor rejection, Will Call strict parsing, and existing Social invalid-date checks. The earlier date-validation attempt exposed a missing fixture stub, which was added and verified in successful run 37736678490. This is branch-only; no production deployment or live data change was made.

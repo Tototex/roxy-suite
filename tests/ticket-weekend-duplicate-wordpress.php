@@ -93,7 +93,10 @@ try {
         foreach ($pid_meta as $key) $check(get_post_meta($child_id, $key, true) === '', 'child omits stale canonical ticket ID ' . $key);
         $check(get_post_meta($child_id, '_roxy_legacy_product_ids', true) === '', 'child omits source legacy product ID list');
         foreach (['_roxy_live_label_1','_roxy_live_price_1','_roxy_live_future_price_1','_roxy_live_change_at_1','_roxy_live_label_2','_roxy_live_price_2','_roxy_live_future_price_2','_roxy_live_change_at_2'] as $key) {
-            $check(get_post_meta($child_id, $key, true) === $source_meta[$key], 'scheduled live-tier metadata is copied unchanged: ' . $key);
+            $expected = $source_meta[$key];
+            if ($key === '_roxy_live_change_at_1') $expected = $index === 0 ? '2026-11-08T00:30' : '2026-03-15T00:30';
+            if ($key === '_roxy_live_change_at_2') $expected = $index === 0 ? '2026-11-09T00:15' : '2026-03-16T00:15';
+            $check(get_post_meta($child_id, $key, true) === $expected, 'scheduled live-tier metadata preserved or date-shifted for next weekend: ' . $key);
         }
         $check((int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->posts} WHERE ID=%d AND post_type=%s AND post_status='draft'", $child_id, \RoxyST\CPT::POST_TYPE)) === 1, 'child database row is not publicly published');
         $check((int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_title LIKE %s AND post_status='publish'", $marker . '%')) === 0, 'no public post was created for the fixture marker');
@@ -101,7 +104,7 @@ try {
         $source_id = 0;
     }
     $check($mail_calls === 0 && $http_calls === 0, 'fixture invoked no mail or external HTTP');
-    echo "Passed {$checks} installed weekend-duplicate checks. Scheduled change timestamps are asserted copied unchanged, matching current behavior; this does not endorse that pricing policy.\n";
+    echo "Passed {$checks} installed weekend-duplicate checks. Scheduled live-price change dates advance seven local calendar days with the duplicate.\n";
 } finally {
     $cleanup_failed=[];
     foreach (array_keys($created_ids) as $id) {
