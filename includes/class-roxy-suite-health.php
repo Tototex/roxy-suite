@@ -780,8 +780,8 @@ class Health {
                         || $last_auto->format('Y-m-d') !== $last_auto_date) {
                         throw new \RuntimeException('Automatic Grosses date is invalid.');
                     }
-                    $schedule_time = (string) ($settings['schedule_time'] ?? '22:00');
-                    if (!preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/D', $schedule_time)) {
+                    $schedule_time = $settings['schedule_time'] ?? '22:00';
+                    if (!is_string($schedule_time) || !preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/D', $schedule_time)) {
                         throw new \RuntimeException('Automatic Grosses schedule time is invalid.');
                     }
                     $now = ($now ?? new \DateTimeImmutable('now', $timezone))->setTimezone($timezone);

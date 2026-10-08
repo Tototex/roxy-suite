@@ -154,6 +154,10 @@ $GLOBALS['health_options']['roxy_grosses_settings']['schedule_time'] = 'invalid'
 $grosses_items = $call('functional_grosses', $before_report_time);
 foreach ($grosses_items as $item) if ($item['label'] === 'Last automatic run') $auto_item = $item;
 $check(is_array($auto_item) && $auto_item['status'] === 'warn' && str_contains($auto_item['note'], 'Could not interpret'), 'invalid scheduled time is unavailable rather than incorrectly fresh');
+$GLOBALS['health_options']['roxy_grosses_settings']['schedule_time'] = ['23:00'];
+$grosses_items = $call('functional_grosses', $before_report_time);
+foreach ($grosses_items as $item) if ($item['label'] === 'Last automatic run') $auto_item = $item;
+$check(is_array($auto_item) && $auto_item['status'] === 'warn', 'non-string scheduled time warns without coercion');
 $GLOBALS['health_options']['roxy_grosses_settings']['schedule_time'] = '23:00';
 $GLOBALS['health_options']['roxy_grosses_last_auto_date'] = '2026-02-30';
 $grosses_items = $call('functional_grosses');
