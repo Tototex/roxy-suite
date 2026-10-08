@@ -122,6 +122,9 @@ jobs:
       - name: Run Grosses backfill date-read regression
         run: php tests/grosses-backfill-date-read-regression.php
 
+      - name: Run Grosses metadata-backfill read regression
+        run: php tests/grosses-metadata-backfill-read-regression.php
+
       - name: Run Grosses import writer regression
         run: php tests/grosses-import-write-regression.php
 

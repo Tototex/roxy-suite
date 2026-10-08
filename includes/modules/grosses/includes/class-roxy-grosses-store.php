@@ -2455,14 +2455,18 @@ class Store {
     $limit = max(1, min(5000, $limit));
     $where = $force ? '1=1' : "(studio = '' OR genre = '' OR studio IS NULL OR genre IS NULL)";
     $where = 'is_locked = 0 AND (' . $where . ')';
+    $wpdb->last_error = '';
     $rows = $wpdb->get_results($wpdb->prepare(
       'SELECT id, report_date, movie_title, studio, genre FROM ' . self::entries_table_name() . ' WHERE ' . $where . ' ORDER BY report_date DESC, id DESC LIMIT %d',
       $limit
     ), ARRAY_A);
+    if ($wpdb->last_error !== '' || !is_array($rows)) {
+      throw new \RuntimeException('Movie metadata backfill could not read candidate rows. No metadata lookups or row updates were attempted.');
+    }
 
     $updated = 0;
     $skipped = 0;
-    foreach ((array) $rows as $row) {
+    foreach ($rows as $row) {
       $enriched = Metadata::enrich_movie_row($row, $force);
       $studio = sanitize_text_field((string) ($enriched['studio'] ?? ''));
       $genre = sanitize_text_field((string) ($enriched['genre'] ?? ''));
