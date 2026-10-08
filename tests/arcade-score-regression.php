@@ -8,7 +8,7 @@ function get_transient($key){return [];}function set_transient(...$args){}functi
 class WP_REST_Request {function __construct(private $score=10,private $game='marquee',private $nonce='fixture'){}function get_header($key){return $this->nonce;}function get_param($key){return $key==='game'?$this->game:$this->score;}}
 class WP_REST_Response {function __construct(public $data,public $status){}}
 class ScoreDatabase {
-    public $prefix='fixture_';public $queries=[];public $result=1;
+    public $prefix='fixture_';public $queries=[];public $result=1;public $values=[];
     function prepare($sql,...$args){$this->values=$args;return $sql;}
     function query($sql){$this->queries[]=$sql;return $this->result;}
     function get_results(...$args){return [];}
