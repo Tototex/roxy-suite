@@ -375,6 +375,12 @@ class CPT {
     if (self::$is_generating_schedule) return;
     if (!isset($_POST['roxy_showing_nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash((string) $_POST['roxy_showing_nonce'])), 'roxy_showing_save')) return;
     if (!current_user_can('edit_post', $post_id)) return;
+    foreach (['roxy_live_change_at_1', 'roxy_live_change_at_2'] as $change_field) {
+      if (isset($_POST[$change_field]) && !is_scalar($_POST[$change_field])) {
+        set_transient('roxy_st_invalid_start_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+        return;
+      }
+    }
 
     $capacity = isset($_POST['roxy_capacity']) ? (int) $_POST['roxy_capacity'] : Settings::get_default_capacity();
     $default_profile = isset($_POST['roxy_pricing_profile']) ? sanitize_key($_POST['roxy_pricing_profile']) : 'movie_evening';
@@ -386,9 +392,9 @@ class CPT {
       '_roxy_live_label_2' => sanitize_text_field($_POST['roxy_live_label_2'] ?? 'VIP'),
       '_roxy_live_price_2' => sanitize_text_field($_POST['roxy_live_price_2'] ?? ''),
       '_roxy_live_future_price_1' => sanitize_text_field($_POST['roxy_live_future_price_1'] ?? ''),
-      '_roxy_live_change_at_1' => sanitize_text_field($_POST['roxy_live_change_at_1'] ?? ''),
+      '_roxy_live_change_at_1' => isset($_POST['roxy_live_change_at_1']) && is_scalar($_POST['roxy_live_change_at_1']) ? sanitize_text_field(wp_unslash((string) $_POST['roxy_live_change_at_1'])) : '',
       '_roxy_live_future_price_2' => sanitize_text_field($_POST['roxy_live_future_price_2'] ?? ''),
-      '_roxy_live_change_at_2' => sanitize_text_field($_POST['roxy_live_change_at_2'] ?? ''),
+      '_roxy_live_change_at_2' => isset($_POST['roxy_live_change_at_2']) && is_scalar($_POST['roxy_live_change_at_2']) ? sanitize_text_field(wp_unslash((string) $_POST['roxy_live_change_at_2'])) : '',
       '_roxy_trailer_url' => esc_url_raw($_POST['roxy_trailer_url'] ?? ''),
     ];
 
@@ -417,6 +423,14 @@ class CPT {
     $use_schedule_builder = !empty($_POST['roxy_use_schedule_builder']);
     $schedule_rows = null;
     $start = '';
+    foreach (['_roxy_live_change_at_1', '_roxy_live_change_at_2'] as $change_key) {
+      if ($shared_meta[$change_key] === '') continue;
+      $shared_meta[$change_key] = self::validated_local_datetime($shared_meta[$change_key]);
+      if ($shared_meta[$change_key] === null) {
+        set_transient('roxy_st_invalid_start_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+        return;
+      }
+    }
     if ($use_schedule_builder) {
       $schedule_rows = self::sanitize_schedule_rows($_POST, $default_profile);
       if ($schedule_rows === false) {
@@ -724,6 +738,17 @@ class CPT {
     return $value;
   }
 
+  private static function shift_local_datetime_days(string $value, int $days): ?string {
+    $value = self::validated_local_datetime($value);
+    if ($value === null || $days < 0 || $days > 3660) return null;
+    try {
+      $shifted = (new \DateTimeImmutable($value, wp_timezone()))->modify('+' . $days . ' days');
+    } catch (\Throwable $error) {
+      return null;
+    }
+    return self::validated_local_datetime($shifted->format('Y-m-d\\TH:i'));
+  }
+
   private static function create_additional_showings_from_schedule(int $source_post_id, $post, array $schedule_rows, array $shared_meta) {
     if (empty($schedule_rows)) {
       return true;
@@ -853,6 +878,17 @@ class CPT {
       return 0;
     }
     $new_start = $start_dt->modify('+7 days')->format('Y-m-d\TH:i');
+    $shifted_change_dates = [];
+    foreach (['_roxy_live_change_at_1', '_roxy_live_change_at_2'] as $change_key) {
+      $change_at = get_post_meta($source_post_id, $change_key, true);
+      if ($change_at === '' || $change_at === null) {
+        $shifted_change_dates[$change_key] = '';
+        continue;
+      }
+      if (!is_string($change_at)) return 0;
+      $shifted_change_dates[$change_key] = self::shift_local_datetime_days($change_at, 7);
+      if ($shifted_change_dates[$change_key] === null) return 0;
+    }
 
     $new_post_id = wp_insert_post([
       'post_type' => self::POST_TYPE,
@@ -877,6 +913,7 @@ class CPT {
       if (in_array($meta_key, $excluded, true)) {
         continue;
       }
+      if (array_key_exists($meta_key, $shifted_change_dates)) continue;
       delete_post_meta($new_post_id, $meta_key);
       foreach ((array) $values as $value) {
         add_post_meta($new_post_id, $meta_key, maybe_unserialize($value));
@@ -884,6 +921,9 @@ class CPT {
     }
 
     update_post_meta($new_post_id, '_roxy_start', $new_start);
+    foreach ($shifted_change_dates as $change_key => $change_at) {
+      if ($change_at !== '') update_post_meta($new_post_id, $change_key, $change_at);
+    }
 
     $taxonomy_terms = wp_get_object_terms($source_post_id, 'roxy_show_type', ['fields' => 'ids']);
     if (!empty($taxonomy_terms) && !is_wp_error($taxonomy_terms)) {

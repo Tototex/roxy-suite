@@ -141,5 +141,23 @@ namespace {
     check_schedule(!isset($GLOBALS['schedule_meta'][$source->ID]['_roxy_schedule_generated']),'invalid batch remains retryable after correction');
   });
 
+  schedule_test('scheduled ticket price change dates shift seven local days across DST', function() {
+    $shift=new \ReflectionMethod(\RoxyST\CPT::class,'shift_local_datetime_days'); $shift->setAccessible(true);
+    check_schedule($shift->invoke(null,'2026-03-01T19:30',7)==='2026-03-08T19:30','spring DST transition preserves local price-change time');
+    check_schedule($shift->invoke(null,'2026-10-25T19:30',7)==='2026-11-01T19:30','fall DST transition preserves local price-change time');
+    check_schedule($shift->invoke(null,'2026-02-30T19:30',7)===null,'invalid saved price-change date refuses to create a shifted value');
+  });
+
+  schedule_test('invalid scheduled price-change date preserves prior values and shared settings', function() {
+    $source=reset_schedule_fixture('draft',false);
+    unset($_POST['roxy_use_schedule_builder']);
+    $_POST['roxy_start']='2031-06-01T18:00';
+    $_POST['roxy_live_change_at_1']='2026-02-30T19:30';
+    $GLOBALS['schedule_meta'][$source->ID]=['_roxy_start'=>'2031-06-01T18:00','_roxy_capacity'=>'60','_roxy_live_change_at_1'=>'2026-02-28T19:30'];
+    \RoxyST\CPT::save($source->ID,$source);
+    check_schedule($GLOBALS['schedule_meta'][$source->ID]['_roxy_live_change_at_1']==='2026-02-28T19:30','impossible price change date leaves old date intact');
+    check_schedule($GLOBALS['schedule_meta'][$source->ID]['_roxy_capacity']==='60','invalid price date rejects unrelated settings in the submission');
+  });
+
   echo "All schedule child status regressions passed.\n";
 }
