@@ -98,7 +98,7 @@ final class Store {
             $upper_id = $wpdb->get_var($wpdb->prepare('SELECT COALESCE(MAX(attachment_id), 0) FROM ' . $table . ' WHERE cleanup_after <= %s', $cutoff));
             if ($wpdb->last_error !== '' || !is_numeric($upper_id)) return 0;
         }
-        $upper_id = max(0, $upper_id);
+        $upper_id = max(0, (int) $upper_id);
         if ($upper_id <= $cursor) return 0;
         $wpdb->last_error = '';
         $rows = $wpdb->get_results($wpdb->prepare('SELECT attachment_id, social_post_id, cleanup_after FROM ' . $table . ' WHERE cleanup_after <= %s AND attachment_id > %d AND attachment_id <= %d ORDER BY attachment_id ASC LIMIT 100', $cutoff, $cursor, $upper_id), ARRAY_A);
@@ -195,7 +195,7 @@ final class Store {
             $upper_id = $wpdb->get_var($wpdb->prepare('SELECT COALESCE(MAX(id), 0) FROM ' . $table . ' WHERE cleanup_after IS NOT NULL AND cleanup_after <= %s AND status IN ("posted", "skipped") AND temporary_attachment_id IS NOT NULL', $cutoff));
             if ($wpdb->last_error !== '' || !is_numeric($upper_id)) return $detached_deleted;
         }
-        $upper_id = max(0, $upper_id);
+        $upper_id = max(0, (int) $upper_id);
         if ($upper_id <= $cursor) return $detached_deleted;
         $deleted = 0;
         $wpdb->last_error = '';
@@ -274,7 +274,10 @@ final class Store {
             '%i:' . $attachment_id . ';%',
             '%"' . $attachment_id . '"%',
         ];
-        $numeric_id_pattern = '(^|[:,][[:space:]]*|\\[[[:space:]]*)' . $attachment_id . '([[:space:]]*[,}]|\\][[:space:]]*|$)';
+        // Match integer-like tokens without matching decimals or IDs embedded
+        // in names such as "asset-42-extra". Punctuation/quotes/brackets are
+        // valid JSON/serialized boundaries, so no bracket escaping is needed.
+        $numeric_id_pattern = '(^|[^0-9A-Za-z_.-])' . $attachment_id . '([^0-9A-Za-z_.-]|$)';
         $stores = [
             [$wpdb->postmeta, 'meta_value', 'meta_id'],
             [$wpdb->usermeta, 'meta_value', 'umeta_id'],
