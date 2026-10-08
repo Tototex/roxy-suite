@@ -6,6 +6,23 @@ final class Settings {
   public static string $timezone = 'America/Los_Angeles';
   public static function get_report_timezone(): string { return self::$timezone; }
 }
+final class FakeWooRefund {
+  private $amount;
+  public function __construct(
+    private int $id,
+    private int $order_id,
+    private bool $payment_api,
+    private string $currency,
+    $amount,
+    private ?\DateTimeInterface $created
+  ) { $this->amount = $amount; }
+  public function get_id(): int { return $this->id; }
+  public function get_parent_id(): int { return $this->order_id; }
+  public function get_refunded_payment(): bool { return $this->payment_api; }
+  public function get_currency(): string { return $this->currency; }
+  public function get_amount() { return $this->amount; }
+  public function get_date_created(): ?\DateTimeInterface { return $this->created; }
+}
 final class Square {
   public static array $orders = [];
   public static array $refunds = [];
@@ -152,6 +169,15 @@ namespace {
   $expect_throw(static fn() => $snapshot_class::from_financial_refund_feed([array_replace($unlinked_refund, ['payment_id' => ''])])->completed_financial_refunds(), 'completed refund without a payment identity fails closed');
   $expect_throw(static fn() => $snapshot_class::from_financial_refund_feed([array_replace($unlinked_refund, ['amount_money' => ['amount' => '250', 'currency' => 'USD']])])->completed_financial_refunds(), 'non-integer refund cents fail closed');
   $expect_throw(static fn() => $snapshot_class::from_financial_refund_feed([array_replace($unlinked_refund, ['updated_at' => '2026-02-30T07:30:00Z'])])->completed_financial_refunds(), 'invalid unlinked refund timestamp fails closed');
+  $woo_events = \RoxyGrosses\WooRefundEvents::from_order_refunds([
+    new \RoxyGrosses\FakeWooRefund(11, 101, true, 'USD', '-12.34', new \DateTimeImmutable('2026-08-14T07:30:00Z')),
+    new \RoxyGrosses\FakeWooRefund(12, 102, false, 'USD', '8.00', new \DateTimeImmutable('2026-08-14T08:30:00Z')),
+  ]);
+  $assert(count($woo_events) === 1 && $woo_events[0]['refund_id'] === 11 && $woo_events[0]['order_id'] === 101, 'Woo financial projection includes only gateway-processed refunds with stable IDs');
+  $assert($woo_events[0]['amount_cents'] === 1234 && $woo_events[0]['refund_date'] === '2026-08-14' && $woo_events[0]['payment_api_processed'] === true, 'Woo refund preserves exact cents and converts created timestamp into the Pacific refund day');
+  $expect_throw(static fn() => \RoxyGrosses\WooRefundEvents::from_order_refunds([new \RoxyGrosses\FakeWooRefund(11, 101, true, 'USD', '1.001', new \DateTimeImmutable('2026-08-14T07:30:00Z'))]), 'Woo refund fractional cents fail closed');
+  $expect_throw(static fn() => \RoxyGrosses\WooRefundEvents::from_order_refunds([new \RoxyGrosses\FakeWooRefund(11, 101, true, 'CAD', '1.00', new \DateTimeImmutable('2026-08-14T07:30:00Z'))]), 'Woo refund non-USD currency fails closed');
+  $expect_throw(static fn() => \RoxyGrosses\WooRefundEvents::from_order_refunds([new \RoxyGrosses\FakeWooRefund(11, 101, true, 'USD', '1.00', null)]), 'Woo refund without creation timestamp fails closed');
   \RoxyGrosses\Square::$refunds['payment-financial_refund-financial']['updated_at'] = '2026-02-30T06:30:00Z';
   $expect_throw(static fn() => $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z'))->completed_return_financial_refunds(), 'invalid completed refund date must fail closed');
   \RoxyGrosses\Square::$refunds['payment-financial_refund-financial']['updated_at'] = '2026-08-14T06:30:00Z';

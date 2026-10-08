@@ -248,3 +248,66 @@ final class RefundSnapshot {
     return $timestamp;
   }
 }
+
+/** Read-only normalization for WooCommerce refunds processed through a payment API. */
+final class WooRefundEvents {
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
+
+  private static function amount_cents($amount): int {
+    if (!is_string($amount) && !is_int($amount)) throw new \RuntimeException('WooCommerce refund amount has an unsupported representation.');
+    $value = (string) $amount;
+    if (!preg_match('/^-?(?:0|[1-9]\d*)(?:\.\d{1,2})?$/D', $value)) throw new \RuntimeException('WooCommerce refund amount is invalid or has fractional cents.');
+    $negative = isset($value[0]) && $value[0] === '-';
+    if ($negative) $value = substr($value, 1);
+    $parts = explode('.', $value, 2);
+    $whole = (int) $parts[0];
+    $fraction = isset($parts[1]) ? (int) str_pad($parts[1], 2, '0') : 0;
+    if ($whole > intdiv(PHP_INT_MAX - $fraction, 100)) throw new \RuntimeException('WooCommerce refund exceeds the supported amount range.');
+    $cents = ($whole * 100) + $fraction;
+    return $negative ? -$cents : $cents;
+  }
+
+  /** API-confirmed refund events; manual refund records are deliberately excluded. */
+  public static function from_order_refunds(array $refunds): array {
+    if (!self::is_list($refunds)) throw new \RuntimeException('WooCommerce returned an invalid refund list.');
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $events = [];
+    $seen = [];
+    foreach ($refunds as $refund) {
+      if (!is_object($refund)
+        || !method_exists($refund, 'get_id') || !method_exists($refund, 'get_parent_id')
+        || !method_exists($refund, 'get_refunded_payment') || !method_exists($refund, 'get_currency')
+        || !method_exists($refund, 'get_amount') || !method_exists($refund, 'get_date_created')) {
+        throw new \RuntimeException('WooCommerce returned a refund without the required financial fields.');
+      }
+      $id = $refund->get_id();
+      $order_id = $refund->get_parent_id();
+      if (!is_int($id) || $id <= 0 || isset($seen[$id]) || !is_int($order_id) || $order_id <= 0) {
+        throw new \RuntimeException('WooCommerce returned a duplicate or invalid refund identity.');
+      }
+      $seen[$id] = true;
+      if ($refund->get_refunded_payment() !== true) continue;
+      if ($refund->get_currency() !== 'USD') throw new \RuntimeException('WooCommerce refund uses an unsupported currency.');
+      $amount_cents = abs(self::amount_cents($refund->get_amount()));
+      $created = $refund->get_date_created();
+      if (!$created instanceof \DateTimeInterface) throw new \RuntimeException('WooCommerce refund has no valid creation timestamp.');
+      $timestamp = \DateTimeImmutable::createFromInterface($created)->setTimezone(new \DateTimeZone('UTC'));
+      $events[] = [
+        'source' => 'woocommerce',
+        'refund_id' => $id,
+        'order_id' => $order_id,
+        'amount_cents' => $amount_cents,
+        'currency' => 'USD',
+        'refund_created_at' => $timestamp->format('Y-m-d H:i:s'),
+        'refund_date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
+        'payment_api_processed' => true,
+      ];
+    }
+    usort($events, static fn(array $a, array $b): int => [$a['refund_created_at'], $a['refund_id']] <=> [$b['refund_created_at'], $b['refund_id']]);
+    return $events;
+  }
+}
