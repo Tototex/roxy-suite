@@ -35,3 +35,5 @@ Commit `64086df` adds `CashflowProjection::daily_totals()` as a pure, non-persis
 Hosted workflow [37744106699](https://github.com/Tototex/roxy-suite/actions/runs/37744106699) passed PHP 8.0–8.4 syntax jobs and the PHP 8.3 isolated cross-module regression suite, including the expanded refund snapshot regression. Local PHP is unavailable; `git diff --check` passed before commit. This remains an unintegrated projection: no database writes, dashboard changes, historical backfill, or live deployment.
 
 The follow-up typed-identity regression (numeric text versus integer IDs) passed in hosted workflow [37744537626](https://github.com/Tototex/roxy-suite/actions/runs/37744537626), again with all five syntax jobs and the PHP 8.3 isolated suite successful.
+
+The next audit pass makes timestamp provenance explicit on each projected refund: Square uses `square_updated_at_proxy`; WooCommerce uses `woocommerce_refund_creation_proxy`. Neither field is an authoritative processor-completion timestamp. The cashflow projection remains unused by reports/dashboards until actual refund-date evidence and durable event provenance are resolved.

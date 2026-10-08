@@ -157,14 +157,17 @@ final class RefundSnapshot {
       if (!is_array($money) || !is_int($money['amount'] ?? null) || $money['amount'] < 0 || ($money['currency'] ?? null) !== 'USD') {
         throw new \RuntimeException('A completed Square refund has an invalid amount or unsupported currency.');
       }
-      $completed_at = $refund['updated_at'] ?? null;
-      if (!is_string($completed_at) || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/', $completed_at)) {
-        throw new \RuntimeException('A completed Square refund has no valid completion timestamp.');
+      // Square exposes updated_at on PaymentRefund, not a dedicated completed_at.
+      // Keep the source semantics explicit: this is a date proxy, never an
+      // authoritative cash-return timestamp.
+      $updated_at = $refund['updated_at'] ?? null;
+      if (!is_string($updated_at) || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/', $updated_at)) {
+        throw new \RuntimeException('A completed Square refund has no valid update timestamp.');
       }
-      try { $timestamp = new \DateTimeImmutable($completed_at); }
-      catch (\Throwable $error) { throw new \RuntimeException('A completed Square refund has an invalid completion timestamp.'); }
+      try { $timestamp = new \DateTimeImmutable($updated_at); }
+      catch (\Throwable $error) { throw new \RuntimeException('A completed Square refund has an invalid update timestamp.'); }
       $errors = \DateTimeImmutable::getLastErrors();
-      if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('A completed Square refund has an invalid completion calendar date.');
+      if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('A completed Square refund has an invalid update calendar date.');
       $events[] = [
         'refund_id' => $refund_id,
         'payment_id' => $refund['payment_id'],
@@ -174,6 +177,7 @@ final class RefundSnapshot {
         'currency' => 'USD',
         'refund_updated_at' => $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
         'refund_date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
+        'refund_date_basis' => 'square_updated_at_proxy',
       ];
     }
     usort($events, static fn(array $a, array $b): int => [$a['refund_updated_at'], $a['refund_id']] <=> [$b['refund_updated_at'], $b['refund_id']]);
@@ -304,6 +308,7 @@ final class WooRefundEvents {
         'currency' => 'USD',
         'refund_created_at' => $timestamp->format('Y-m-d H:i:s'),
         'refund_date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
+        'refund_date_basis' => 'woocommerce_refund_creation_proxy',
         'payment_api_processed' => true,
       ];
     }
