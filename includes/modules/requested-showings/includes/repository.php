@@ -72,7 +72,7 @@ function roxy_rs_repo_insert_backing(array $data) {
         $lease->assert_owner();
         return $result;
     } catch (\Throwable $error) {
-        return new WP_Error('backing_request_busy', 'This request is busy or a prior pledge save needs review. If saving was uncertain, contact the theater before submitting another pledge.');
+        return new WP_Error('backing_request_busy', 'This request is busy or a prior backing save needs review. If saving was uncertain, contact the theater before submitting another backing.');
     } finally {
         if ($lease !== null) $lease->release_lease();
     }
