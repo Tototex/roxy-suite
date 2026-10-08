@@ -2,11 +2,11 @@
 
 ## Change
 
-Showing capacity is now saved under the same showing-scoped seat lock used by checkout, seat reservations, and walk-up admission. While holding that lock, the save path reads fresh Woo reservations and member walk-up admissions. A new limit below committed occupancy is rejected; unavailable lock/storage/readback also fails closed. The whole showing form submission is withheld on failure, so unrelated metadata from that submission is not partially saved. Capacity equal to occupancy remains valid, and zero continues to mean no seats when configured.
+Showing capacity is now saved under the same showing-scoped seat lock used by checkout, seat reservations, and walk-up admission. While holding that lock, the save path reads fresh Woo reservations and member walk-up admissions. A new limit below committed occupancy is rejected; malformed/non-whole input and unavailable lock/storage/readback also fail closed. The whole showing form submission is withheld on failure, so unrelated metadata from that submission is not partially saved. Capacity equal to occupancy remains valid, and zero continues to mean no seats when configured. An omitted field preserves the current saved capacity (or uses the configured default for a new showing).
 
 ## Verification
 
-- The ticket-publication regression adds checks for shared-lock use, capacity reduction below paid/held plus walk-up occupancy, acceptance at exact occupancy, and lock failure; all pass.
+- The ticket-publication regression adds checks for shared-lock use, capacity reduction below paid/held plus walk-up occupancy, acceptance at exact occupancy, malformed numeric/array input, lock failure, and no partial form save; all pass.
 - The existing ticket-publication regression group passes, including duration, publication, product identity, stale-cart, and bounded cleanup checks.
 - No live showing, capacity, order, or admission was changed.
 

@@ -382,11 +382,22 @@ class CPT {
       }
     }
 
-    $capacity = isset($_POST['roxy_capacity']) ? (int) $_POST['roxy_capacity'] : Settings::get_default_capacity();
+    $capacity_raw = array_key_exists('roxy_capacity', $_POST)
+      ? wp_unslash($_POST['roxy_capacity'])
+      : get_post_meta($post_id, '_roxy_capacity', true);
+    if ($capacity_raw === '' || $capacity_raw === null) $capacity_raw = Settings::get_default_capacity();
+    $capacity_text = is_scalar($capacity_raw) ? trim((string) $capacity_raw) : '';
+    $capacity = preg_match('/^(?:0|[1-9][0-9]*)$/D', $capacity_text)
+      ? filter_var($capacity_text, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]])
+      : false;
+    if ($capacity === false) {
+      set_transient('roxy_st_capacity_conflict_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+      return;
+    }
     $default_profile = isset($_POST['roxy_pricing_profile']) ? sanitize_key($_POST['roxy_pricing_profile']) : 'movie_evening';
 
     $shared_meta = [
-      '_roxy_capacity' => max(0, $capacity),
+      '_roxy_capacity' => $capacity,
       '_roxy_live_label_1' => sanitize_text_field($_POST['roxy_live_label_1'] ?? 'General Admission'),
       '_roxy_live_price_1' => sanitize_text_field($_POST['roxy_live_price_1'] ?? ''),
       '_roxy_live_label_2' => sanitize_text_field($_POST['roxy_live_label_2'] ?? 'VIP'),

@@ -114,6 +114,12 @@ $_POST['roxy_capacity']='2'; $_POST['roxy_live_label_1']='Must not partially sav
 check((string)$GLOBALS['meta'][1]['_roxy_capacity']==='100' && ($GLOBALS['meta'][1]['_roxy_live_label_1']??'')!=='Must not partially save' && isset($GLOBALS['transients']['roxy_st_capacity_conflict_7']),'capacity below sold seats plus walk-ups rejects the entire showing edit');
 $_POST['roxy_capacity']='3'; \RoxyST\CPT::save(1,null);
 check((string)$GLOBALS['meta'][1]['_roxy_capacity']==='3','capacity equal to current committed occupancy is accepted');
+foreach(['2.5','-1',['4']] as $invalid_capacity){
+    $_POST['roxy_capacity']=$invalid_capacity; $_POST['roxy_live_label_1']='Must not save with invalid capacity';
+    \RoxyST\CPT::save(1,null);
+    check((string)$GLOBALS['meta'][1]['_roxy_capacity']==='3' && ($GLOBALS['meta'][1]['_roxy_live_label_1']??'')!=='Must not save with invalid capacity','malformed/non-whole capacity rejects all submitted showing settings');
+}
+$_POST['roxy_capacity']='3';
 \RoxyST\Issuance::$fail=true; $_POST['roxy_capacity']='4'; \RoxyST\CPT::save(1,null); \RoxyST\Issuance::$fail=false;
 check((string)$GLOBALS['meta'][1]['_roxy_capacity']==='3','unavailable seat lock rejects capacity writes');
 \RoxyST\Reservations::$committed=0; \RoxyST\Issuance::$walkups=0; unset($GLOBALS['transients']['roxy_st_capacity_conflict_7']); $_POST['roxy_capacity']='100';
