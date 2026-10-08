@@ -91,15 +91,21 @@ function roxy_will_call_showing_label(int $showing_id): string {
 }
 
 function roxy_will_call_parse_showing_start(string $start): ?DateTimeImmutable {
-  if ($start === '') {
-    return null;
+  if ($start === '') return null;
+  $timezone = wp_timezone();
+  foreach ([
+    ['!Y-m-d\\TH:i', 'Y-m-d\\TH:i'],
+    ['!Y-m-d\\TH:i:s', 'Y-m-d\\TH:i:s'],
+    ['!Y-m-d H:i', 'Y-m-d H:i'],
+    ['!Y-m-d H:i:s', 'Y-m-d H:i:s'],
+  ] as [$format, $expected]) {
+    try { $parsed = DateTimeImmutable::createFromFormat($format, $start, $timezone); }
+    catch (Throwable $error) { return null; }
+    $errors = DateTimeImmutable::getLastErrors();
+    if ($parsed && ($errors === false || ($errors['warning_count'] === 0 && $errors['error_count'] === 0))
+      && $parsed->format($expected) === $start) return $parsed;
   }
-
-  try {
-    return new DateTimeImmutable($start, wp_timezone());
-  } catch (Exception $e) {
-    return null;
-  }
+  return null;
 }
 
 function roxy_will_call_showing_is_archived(int $showing_id): bool {

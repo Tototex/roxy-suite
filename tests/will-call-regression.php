@@ -5,6 +5,7 @@ function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS
 function add_action($name,$callback,...$args){$GLOBALS['actions'][$name]=$callback;}
 function add_filter(...$args){} function register_activation_hook(...$args){}
 function get_post_meta($id,$key,$single=true){return $GLOBALS['meta'][$id][$key]??'';}
+function wp_timezone(){return new DateTimeZone('America/Los_Angeles');}
 function update_post_meta($id,$key,$value){$GLOBALS['meta'][$id][$key]=$value;return true;}
 function delete_post_meta($id,$key){unset($GLOBALS['meta'][$id][$key]);return true;}
 function get_post_type($id){return isset($GLOBALS['meta'][$id])?'roxy_ticket':'';}
@@ -77,6 +78,10 @@ $root=$argv[1]??dirname(__DIR__);
 require __DIR__.'/ticket-atomic-test-double.php';
 require $root.'/includes/modules/show-tickets/includes/class-roxy-st-tickets.php';
 require $root.'/includes/modules/will-call/roxy-will-call.php';
+check(roxy_will_call_parse_showing_start('2028-02-29T19:30') instanceof DateTimeImmutable,'valid local leap-day showing parses');
+check(roxy_will_call_parse_showing_start('2026-02-30T19:30')===null,'impossible showing date is rejected without normalization');
+check(roxy_will_call_parse_showing_start('2026-03-08T02:30')===null,'nonexistent spring DST local time is rejected');
+check(roxy_will_call_parse_showing_start('2026-11-01 01:30:00') instanceof DateTimeImmutable,'valid fall DST ambiguous local time remains accepted');
 $GLOBALS['orders']=[1=>new WC_Order];
 foreach([101,102,103] as $id)$GLOBALS['meta'][$id]=['_roxy_ticket_order_id'=>1,'_roxy_ticket_order_item_id'=>10,'_roxy_ticket_state'=>'valid','_roxy_ticket_customer_name'=>'Test Buyer','_roxy_ticket_customer_email'=>'buyer@example.test'];
 $GLOBALS['meta'][102]['_roxy_ticket_refunded']=1;$GLOBALS['meta'][102]['_roxy_ticket_state']='refunded';
