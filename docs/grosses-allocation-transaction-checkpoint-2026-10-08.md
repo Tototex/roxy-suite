@@ -14,7 +14,7 @@ A qualifying Square concession line that has no matching report row within the s
 - The private-MySQL regression now injects a failure after the first allocation row has been updated and verifies the entire fixture returns to its pre-transaction values.
 - The reporter's multi-row failure fixture verifies the earlier update is restored when a later write fails.
 - Actual Store and Reporter fixtures cover queue insert/upsert/list/resolve/reopen, schema-upgrade retry, queue-write failure, and no allocation when a concession cannot be matched.
-- Hosted validation for the durable queue addition is pending.
+- Hosted PHP compatibility run [37770876887](https://github.com/Tototex/roxy-suite/actions/runs/37770876887) passes PHP 8.0–8.4 syntax and the complete PHP 8.3 isolated suite (79 cross-module regressions), including queue storage, admin action, zero-report-row, reopen, and queue-failure cases.
 
 ## Remaining
 
