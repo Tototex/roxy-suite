@@ -33,7 +33,7 @@ eval('namespace ' . $namespace . ';
     public function get_total_refunded_for_item(int $id) { return $this->refund_total[$id] ?? 0; }
     public function get_date_created() { return null; }
   }
-  function wc_get_orders(array $args): array { $GLOBALS["sales_fixture_query"] = $args; return array_keys(array_filter($GLOBALS["sales_fixture_orders"] ?? [], static fn($order) => in_array($order->get_status(), $args["status"] ?? [], true))); }
+  function wc_get_orders(array $args) { $GLOBALS["sales_fixture_query"] = $args; if (!empty($GLOBALS["sales_fixture_query_failure"]) && (empty($GLOBALS["sales_fixture_legacy_failure_only"]) || !isset($args["meta_query"]))) return false; return array_keys(array_filter($GLOBALS["sales_fixture_orders"] ?? [], static fn($order) => in_array($order->get_status(), $args["status"] ?? [], true))); }
   function wc_get_order($id) { return $GLOBALS["sales_fixture_orders"][(int)$id] ?? null; }
   function get_post_meta($id, $key, $single=false) { return $GLOBALS["sales_fixture_meta"][(int)$id][$key] ?? ""; }
   function update_post_meta($id, $key, $value) { $GLOBALS["sales_fixture_meta"][(int)$id][$key]=$value; return true; }
@@ -122,5 +122,26 @@ $check(is_array($hook) && ltrim($hook[0][0], '\\')===ltrim($sales, '\\') && $hoo
 $sales::on_refund_deleted(902,42);
 $after_delete = $sales::get_showing_stats($showing_id);
 $check($after_delete['sold_qty']===3 && $after_delete['refunded_revenue']===0.0 && $after_delete['gross_revenue']===30.0, 'refund deletion clears cached stats and restores original item quantity/revenue');
+
+// A failed legacy read must not complete the scan or replace good cached totals.
+$GLOBALS['sales_fixture_orders'] = [];
+$GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats'] = [
+  'cache_version'=>3, 'sold_qty'=>7, 'paid_qty'=>7, 'gross_revenue'=>70.0,
+  'refunded_revenue'=>0.0, 'net_revenue'=>70.0, 'order_count'=>2,
+];
+$GLOBALS['sales_fixture_query_failure'] = true;
+$GLOBALS['sales_fixture_legacy_failure_only'] = true;
+$failed_refresh = $sales::refresh_showing_stats($showing_id);
+$check(!empty($failed_refresh['read_error']) && $failed_refresh['sold_qty']===7
+  && $GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats']['sold_qty']===7,
+  'failed legacy order query preserves last-known-good totals and marks the read unavailable');
+$check(!isset($GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete'])
+  && $sales::sold_qty_for_showing($showing_id)===PHP_INT_MAX,
+  'failed legacy order query cannot mark its scan complete or let capacity treat unreadable sales as zero');
+unset($GLOBALS['sales_fixture_query_failure'], $GLOBALS['sales_fixture_legacy_failure_only']);
+$recovered = $sales::refresh_showing_stats($showing_id);
+$check(empty($recovered['read_error']) && $recovered['sold_qty']===0
+  && $GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete']==='1',
+  'successful retry completes the legacy scan and clears the temporary unavailable state');
 
 echo "Passed {$checks} isolated Sales payment/refund checks. No provider or database access.\n";

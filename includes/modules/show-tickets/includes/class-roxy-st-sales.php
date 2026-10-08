@@ -5,6 +5,7 @@ if (!defined('ABSPATH')) exit;
 
 class Sales {
   private static array $stats_cache = [];
+  private static array $stats_read_errors = [];
   private const META_KEY = '_roxy_sales_stats';
   private const LEGACY_SCAN_COMPLETE_KEY = '_roxy_legacy_sales_scan_complete';
   private const CACHE_VERSION = 3;
@@ -18,14 +19,12 @@ class Sales {
   }
 
   public static function on_showing_saved(int $showing_id): void {
-    self::clear_showing_cache($showing_id);
     self::refresh_showing_stats($showing_id);
   }
 
   public static function on_order_changed(int $order_id): void {
     self::mark_order_showings($order_id);
     foreach (self::showing_ids_for_order($order_id) as $showing_id) {
-      self::clear_showing_cache($showing_id);
       self::refresh_showing_stats($showing_id);
     }
   }
@@ -46,6 +45,14 @@ class Sales {
     if ($showing_id <= 0) {
       return self::empty_stats();
     }
+    if (isset(self::$stats_read_errors[$showing_id])) {
+      $cached = get_post_meta($showing_id, self::META_KEY, true);
+      if (is_array($cached) && (int) ($cached['cache_version'] ?? 0) === self::CACHE_VERSION) {
+        unset($cached['cache_version'], $cached['generated_at']);
+        return array_merge(self::empty_stats(), $cached, ['read_error' => true]);
+      }
+      return array_merge(self::empty_stats(), ['read_error' => true]);
+    }
     if (isset(self::$stats_cache[$showing_id])) {
       return self::$stats_cache[$showing_id];
     }
@@ -65,7 +72,24 @@ class Sales {
       return self::empty_stats();
     }
 
-    $stats = self::calculate_showing_stats($showing_id);
+    try {
+      $stats = self::calculate_showing_stats($showing_id);
+    } catch (\Throwable $e) {
+      self::$stats_read_errors[$showing_id] = true;
+      if (function_exists('error_log')) {
+        error_log('[Roxy Suite Sales] Showing ' . $showing_id . ' totals refresh failed: ' . $e->getMessage());
+      }
+      // Keep the last known-good persistent and request-local totals. An
+      // unavailable marker makes capacity checks fail closed instead of
+      // interpreting a failed read as zero sold.
+      $previous = get_post_meta($showing_id, self::META_KEY, true);
+      if (is_array($previous) && (int) ($previous['cache_version'] ?? 0) === self::CACHE_VERSION) {
+        unset($previous['cache_version'], $previous['generated_at']);
+        return array_merge(self::empty_stats(), $previous, ['read_error' => true]);
+      }
+      return array_merge(self::empty_stats(), ['read_error' => true]);
+    }
+    unset(self::$stats_read_errors[$showing_id]);
     self::$stats_cache[$showing_id] = $stats;
 
     $stored = $stats;
@@ -79,6 +103,7 @@ class Sales {
   public static function clear_showing_cache(int $showing_id): void {
     $showing_id = (int) $showing_id;
     unset(self::$stats_cache[$showing_id]);
+    unset(self::$stats_read_errors[$showing_id]);
     if ($showing_id > 0) {
       delete_post_meta($showing_id, self::META_KEY);
     }
@@ -86,6 +111,7 @@ class Sales {
 
   public static function sold_qty_for_showing(int $showing_id): int {
     $stats = self::get_showing_stats($showing_id);
+    if (!empty($stats['read_error'])) return PHP_INT_MAX;
     return (int) ($stats['sold_qty'] ?? 0);
   }
 
@@ -120,13 +146,21 @@ class Sales {
       ]],
     ]);
 
+    self::assert_order_ids_readable($order_ids, 'showing sales');
+
     if (!$order_ids && !self::legacy_scan_complete($showing_id)) {
       $order_ids = self::find_and_tag_legacy_orders_for_showing($showing_id, $ticket_type_by_product);
     }
 
     foreach ($order_ids as $oid) {
       $order = wc_get_order($oid);
-      if (!$order) continue;
+      if (!$order || !method_exists($order, 'get_items')) {
+        throw new \RuntimeException('A showing sales order could not be read completely.');
+      }
+      $items = $order->get_items();
+      if (!is_array($items) || (function_exists('is_wp_error') && is_wp_error($items))) {
+        throw new \RuntimeException('A showing sales order returned incomplete line items.');
+      }
 
       $status = method_exists($order, 'get_status') ? strtolower((string) $order->get_status()) : '';
       if (in_array($status, ['cancelled', 'canceled', 'refunded'], true)) continue;
@@ -137,7 +171,11 @@ class Sales {
       $order_date = self::order_date($order);
       $is_presale_order = $showing_date !== '' && $order_date !== '' && $order_date < $showing_date;
       $matched_order = false;
-      foreach ($order->get_items() as $item) {
+      foreach ($items as $item) {
+        if (!is_object($item) || !method_exists($item, 'get_product_id') || !method_exists($item, 'get_quantity')
+          || !method_exists($item, 'get_total')) {
+          throw new \RuntimeException('A showing sales order returned malformed line items.');
+        }
         $pid = (int) $item->get_product_id();
         if (!isset($ticket_type_by_product[$pid])) continue;
 
@@ -184,6 +222,11 @@ class Sales {
       }
     }
 
+    global $wpdb;
+    if (isset($wpdb->last_error) && (string) $wpdb->last_error !== '') {
+      throw new \RuntimeException('The showing sales query did not complete cleanly.');
+    }
+
     $stats['paid_qty'] = max(0, $stats['sold_qty'] - $stats['subscriber_qty']);
     $stats['gross_revenue'] = round((float) $stats['gross_revenue'], 2);
     $stats['refunded_revenue'] = round((float) $stats['refunded_revenue'], 2);
@@ -210,12 +253,22 @@ class Sales {
     }
 
     $order_ids = wc_get_orders($query_args);
+    self::assert_order_ids_readable($order_ids, 'legacy showing sales');
 
     $matched = [];
     foreach ($order_ids as $order_id) {
       $order = wc_get_order($order_id);
-      if (!$order) continue;
-      foreach ($order->get_items() as $item) {
+      if (!$order || !method_exists($order, 'get_items')) {
+        throw new \RuntimeException('A legacy order could not be read completely.');
+      }
+      $items = $order->get_items();
+      if (!is_array($items) || (function_exists('is_wp_error') && is_wp_error($items))) {
+        throw new \RuntimeException('A legacy order returned incomplete line items.');
+      }
+      foreach ($items as $item) {
+        if (!is_object($item) || !method_exists($item, 'get_product_id')) {
+          throw new \RuntimeException('A legacy order returned malformed line items.');
+        }
         $pid = (int) $item->get_product_id();
         if (isset($ticket_type_by_product[$pid])) {
           update_post_meta((int) $order_id, '_roxy_contains_showing_' . $showing_id, '1');
@@ -228,6 +281,20 @@ class Sales {
     update_post_meta($showing_id, self::LEGACY_SCAN_COMPLETE_KEY, '1');
 
     return $matched;
+  }
+
+  private static function assert_order_ids_readable($order_ids, string $context): void {
+    global $wpdb;
+    if ((function_exists('is_wp_error') && is_wp_error($order_ids))
+      || !is_array($order_ids)
+      || (isset($wpdb->last_error) && (string) $wpdb->last_error !== '')) {
+      throw new \RuntimeException('Could not read ' . $context . ' order identities.');
+    }
+    foreach ($order_ids as $order_id) {
+      if (!is_numeric($order_id) || (float) $order_id <= 0 || (float) $order_id !== (float) (int) $order_id) {
+        throw new \RuntimeException('The ' . $context . ' order query returned an invalid identity.');
+      }
+    }
   }
 
   private static function legacy_scan_complete(int $showing_id): bool {
