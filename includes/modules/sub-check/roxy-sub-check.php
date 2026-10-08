@@ -795,8 +795,9 @@ class Roxy_Sub_Check {
     global $wpdb;
     $table = self::table_name();
 
-    $maximum=(int)$wpdb->get_var("SELECT COALESCE(MAX(id),0) FROM {$table}");
-    if ($wpdb->last_error) wp_die('Could not read scan log for export.');
+    $maximum_raw=$wpdb->get_var("SELECT COALESCE(MAX(id),0) FROM {$table}");
+    if ($wpdb->last_error || (!is_int($maximum_raw) && !is_string($maximum_raw)) || !preg_match('/^(?:0|[1-9]\d*)$/D',(string)$maximum_raw)) wp_die('Could not read scan log for export.');
+    $maximum=(int)$maximum_raw;
 
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename=roxy-scan-log.csv');
@@ -804,20 +805,25 @@ class Roxy_Sub_Check {
     header('X-Content-Type-Options: nosniff');
 
     $out = fopen('php://output', 'w');
+    if (!$out) wp_die('Could not start scan log export.');
     $columns=['scanned_at','subscription_id','is_active','status','user_id','ip','user_agent','showing_id','source','quantity'];
-    fputcsv($out,$columns,',','"','');
+    if (fputcsv($out,$columns,',','"','') === false) { fclose($out); wp_die('Could not write scan log export.'); }
     $last=0;
     while($last<$maximum) {
       $sql="SELECT id," . implode(',',$columns) . " FROM {$table} WHERE id>%d AND id<=%d";
       $params=[$last,$maximum];
       if($filter_sub){$sql.=' AND subscription_id=%d';$params[]=$filter_sub;}
       $rows=$wpdb->get_results($wpdb->prepare($sql.' ORDER BY id ASC LIMIT 500',...$params),ARRAY_A);
-      if($wpdb->last_error || !is_array($rows)){fputcsv($out,['EXPORT_INCOMPLETE','Database read failed; retry export.'],',','"','');break;}
+      if($wpdb->last_error || !is_array($rows)){
+        if(fputcsv($out,['EXPORT_INCOMPLETE','Database read failed; retry export.'],',','"','') === false){fclose($out);wp_die('Scan log export failed before completion.');}
+        break;
+      }
       if(!$rows)break;
       foreach($rows as $r){
         $values=[];
         foreach($columns as $column){$value=(string)($r[$column]??'');$values[]=preg_match('/^[=+@\-\t\r]/',$value)?"'".$value:$value;}
-        fputcsv($out,$values,',','"','');$last=(int)$r['id'];
+        if(fputcsv($out,$values,',','"','') === false){fclose($out);wp_die('Scan log export failed before completion.');}
+        $last=(int)$r['id'];
       }
     }
 
