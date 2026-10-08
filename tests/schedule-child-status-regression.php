@@ -2,6 +2,7 @@
 /** Standalone schedule-child status tests. Run with: php tests/schedule-child-status-regression.php */
 namespace {
   define('ABSPATH', __DIR__ . '/');
+  define('MINUTE_IN_SECONDS', 60);
   $GLOBALS['schedule_meta'] = [];
   $GLOBALS['schedule_insert_args'] = [];
   $GLOBALS['schedule_fail_at'] = 0;
@@ -10,6 +11,7 @@ namespace {
   $GLOBALS['schedule_deleted'] = [];
   $GLOBALS['schedule_nested_save_calls'] = 0;
   $GLOBALS['schedule_next_id'] = 8000;
+  $GLOBALS['schedule_transients'] = [];
 
   class WP_Error {
     private $code; private $message;
@@ -31,6 +33,9 @@ namespace {
   function sanitize_text_field($value) { return trim((string)$value); }
   function sanitize_key($value) { return preg_replace('/[^a-z0-9_-]/', '', strtolower((string)$value)); }
   function wp_unslash($value) { return $value; }
+  function wp_timezone() { return new DateTimeZone('America/Los_Angeles'); }
+  function get_current_user_id() { return 42; }
+  function set_transient($key, $value, $expiration) { $GLOBALS['schedule_transients'][$key] = $value; return true; }
   function esc_url_raw($value) { return (string)$value; }
   function get_post_meta($post_id, $key, $single = true) { return $GLOBALS['schedule_meta'][$post_id][$key] ?? ''; }
   function update_post_meta($post_id, $key, $value) { $GLOBALS['schedule_meta'][$post_id][$key]=$value; return true; }
@@ -53,7 +58,7 @@ namespace {
   function reset_schedule_fixture($status, $can_publish, $fail_at = 0, $return_false = false) {
     $GLOBALS['schedule_meta']=[]; $GLOBALS['schedule_insert_args']=[]; $GLOBALS['schedule_fail_at']=$fail_at;
     $GLOBALS['schedule_fail_false']=$return_false; $GLOBALS['schedule_publish_allowed']=$can_publish;
-    $GLOBALS['schedule_deleted']=[]; $GLOBALS['schedule_nested_save_calls']=0; $_POST=[
+    $GLOBALS['schedule_deleted']=[]; $GLOBALS['schedule_nested_save_calls']=0; $GLOBALS['schedule_transients']=[]; $_POST=[
       'roxy_showing_nonce'=>'valid', 'roxy_use_schedule_builder'=>'1',
       'roxy_capacity'=>'100', 'roxy_pricing_profile'=>'movie_evening',
       'roxy_schedule_date'=>['2031-06-01','2031-06-02','2031-06-03'],
@@ -102,6 +107,37 @@ namespace {
       check_schedule(count($GLOBALS['schedule_deleted'])===1,'earlier child from a failed batch should be removed');
       check_schedule($GLOBALS['schedule_nested_save_calls']===1,'recursion guard should prevent child save from generating descendants');
     }
+  });
+
+  schedule_test('invalid single showing date preserves previous date and all module settings', function() {
+    $source=reset_schedule_fixture('draft',false);
+    unset($_POST['roxy_use_schedule_builder']);
+    $_POST['roxy_start']='2026-02-30T18:00';
+    $GLOBALS['schedule_meta'][$source->ID]=['_roxy_start'=>'2031-06-01T18:00','_roxy_capacity'=>'60'];
+    \RoxyST\CPT::save($source->ID,$source);
+    check_schedule($GLOBALS['schedule_meta'][$source->ID]['_roxy_start']==='2031-06-01T18:00','impossible calendar date does not replace last valid showing date');
+    check_schedule($GLOBALS['schedule_meta'][$source->ID]['_roxy_capacity']==='60','invalid date rejects unrelated module settings in the same submission');
+    check_schedule(isset($GLOBALS['schedule_transients']['roxy_st_invalid_start_42']),'invalid date requests a visible admin notice');
+    check_schedule($GLOBALS['schedule_insert_args']===[],'invalid single date creates no scheduled child');
+  });
+
+  schedule_test('valid leap-day local start saves in site timezone', function() {
+    $source=reset_schedule_fixture('draft',false);
+    unset($_POST['roxy_use_schedule_builder']);
+    $_POST['roxy_start']='2032-02-29T18:30';
+    \RoxyST\CPT::save($source->ID,$source);
+    check_schedule(($GLOBALS['schedule_meta'][$source->ID]['_roxy_start']??'')==='2032-02-29T18:30','valid leap-day showing time is retained exactly as local wall time');
+  });
+
+  schedule_test('one invalid schedule row rejects the entire schedule batch', function() {
+    $source=reset_schedule_fixture('draft',false);
+    $_POST['roxy_schedule_date'][1]='2026-02-30';
+    $GLOBALS['schedule_meta'][$source->ID]=['_roxy_start'=>'2031-06-01T18:00','_roxy_capacity'=>'60'];
+    \RoxyST\CPT::save($source->ID,$source);
+    check_schedule($GLOBALS['schedule_insert_args']===[],'invalid row prevents partial schedule creation');
+    check_schedule($GLOBALS['schedule_meta'][$source->ID]['_roxy_start']==='2031-06-01T18:00','invalid batch preserves original start date');
+    check_schedule($GLOBALS['schedule_meta'][$source->ID]['_roxy_capacity']==='60','invalid batch preserves shared settings');
+    check_schedule(!isset($GLOBALS['schedule_meta'][$source->ID]['_roxy_schedule_generated']),'invalid batch remains retryable after correction');
   });
 
   echo "All schedule child status regressions passed.\n";

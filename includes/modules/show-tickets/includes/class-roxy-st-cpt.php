@@ -414,13 +414,31 @@ class CPT {
       }
     }
 
+    $use_schedule_builder = !empty($_POST['roxy_use_schedule_builder']);
+    $schedule_rows = null;
+    $start = '';
+    if ($use_schedule_builder) {
+      $schedule_rows = self::sanitize_schedule_rows($_POST, $default_profile);
+      if ($schedule_rows === false) {
+        set_transient('roxy_st_invalid_start_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+        return;
+      }
+    } else {
+      $start = isset($_POST['roxy_start']) ? sanitize_text_field(wp_unslash($_POST['roxy_start'])) : '';
+      if ($start !== '') {
+        $start = self::validated_local_datetime($start);
+        if ($start === null) {
+          set_transient('roxy_st_invalid_start_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+          return;
+        }
+      }
+    }
+
     foreach ($shared_meta as $meta_key => $meta_value) {
       update_post_meta($post_id, $meta_key, $meta_value);
     }
 
-    $use_schedule_builder = !empty($_POST['roxy_use_schedule_builder']);
     if ($use_schedule_builder) {
-      $schedule_rows = self::sanitize_schedule_rows($_POST, $default_profile);
       if (!empty($schedule_rows)) {
         $first = array_shift($schedule_rows);
         update_post_meta($post_id, '_roxy_start', $first['start']);
@@ -436,7 +454,6 @@ class CPT {
     }
 
     delete_post_meta($post_id, '_roxy_schedule_generated');
-    $start = isset($_POST['roxy_start']) ? sanitize_text_field($_POST['roxy_start']) : '';
     update_post_meta($post_id, '_roxy_start', $start);
     update_post_meta($post_id, '_roxy_pricing_profile', $default_profile);
   }
@@ -558,9 +575,16 @@ class CPT {
 
   public static function duration_input_notice(): void {
     $user_id = get_current_user_id();
-    if ($user_id <= 0 || !get_transient('roxy_st_invalid_duration_' . $user_id)) return;
-    delete_transient('roxy_st_invalid_duration_' . $user_id);
-    echo '<div class="notice notice-error"><p>Duration must be a whole number from 1 to 10,080 minutes. The submitted value was rejected; any previously saved duration was preserved.</p></div>';
+    if ($user_id <= 0) return;
+    $duration_invalid = (bool) get_transient('roxy_st_invalid_duration_' . $user_id);
+    $start_invalid = (bool) get_transient('roxy_st_invalid_start_' . $user_id);
+    if (!$duration_invalid && !$start_invalid) return;
+    if ($duration_invalid) delete_transient('roxy_st_invalid_duration_' . $user_id);
+    if ($start_invalid) delete_transient('roxy_st_invalid_start_' . $user_id);
+    echo '<div class="notice notice-error"><p>';
+    if ($duration_invalid) echo 'Duration must be a whole number from 1 to 10,080 minutes. The submitted value was rejected; any previously saved duration was preserved. ';
+    if ($start_invalid) echo 'Each showing must use a valid local calendar date and 24-hour time. The schedule was not saved; previously saved showing dates and shared settings were preserved.';
+    echo '</p></div>';
   }
 
   public static function admin_columns(array $columns): array {
@@ -655,7 +679,7 @@ class CPT {
     return $html;
   }
 
-  private static function sanitize_schedule_rows(array $source, string $fallback_profile): array {
+  private static function sanitize_schedule_rows(array $source, string $fallback_profile): array|false {
     $dates = isset($source['roxy_schedule_date']) && is_array($source['roxy_schedule_date']) ? $source['roxy_schedule_date'] : [];
     $times = isset($source['roxy_schedule_time']) && is_array($source['roxy_schedule_time']) ? $source['roxy_schedule_time'] : [];
     $profiles = isset($source['roxy_schedule_profile']) && is_array($source['roxy_schedule_profile']) ? $source['roxy_schedule_profile'] : [];
@@ -663,16 +687,19 @@ class CPT {
     $rows = [];
     $count = max(count($dates), count($times), count($profiles));
     for ($i = 0; $i < $count; $i++) {
+      if (isset($dates[$i]) && !is_scalar($dates[$i])) return false;
+      if (isset($times[$i]) && !is_scalar($times[$i])) return false;
+      if (isset($profiles[$i]) && !is_scalar($profiles[$i])) return false;
       $date = sanitize_text_field((string) ($dates[$i] ?? ''));
       $time = sanitize_text_field((string) ($times[$i] ?? ''));
       $profile = sanitize_key((string) ($profiles[$i] ?? $fallback_profile));
-      if ($date === '' || $time === '') {
+      if ($date === '' && $time === '') {
         continue;
       }
-      $start = $date . 'T' . $time;
-      if (!strtotime($start)) {
-        continue;
-      }
+      if ($date === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/D', $date)
+        || !preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/D', $time)) return false;
+      $start = self::validated_local_datetime($date . 'T' . $time);
+      if ($start === null) return false;
       if (!in_array($profile, ['movie_evening', 'movie_matinee', 'live_event', 'free_event'], true)) {
         $profile = $fallback_profile;
       }
@@ -685,6 +712,16 @@ class CPT {
     }
 
     return $rows;
+  }
+
+  private static function validated_local_datetime(string $value): ?string {
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d$/D', $value)) return null;
+    try { $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d\\TH:i', $value, wp_timezone()); }
+    catch (\Throwable $error) { return null; }
+    $errors = \DateTimeImmutable::getLastErrors();
+    if (!$parsed || ($errors && ($errors['warning_count'] || $errors['error_count']))
+      || $parsed->format('Y-m-d\\TH:i') !== $value) return null;
+    return $value;
   }
 
   private static function create_additional_showings_from_schedule(int $source_post_id, $post, array $schedule_rows, array $shared_meta) {
