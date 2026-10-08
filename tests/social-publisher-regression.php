@@ -69,7 +69,7 @@ namespace {
         $GLOBALS['calls']=[];$GLOBALS['responses']=[];$GLOBALS['scheduled_events']=[];
         $GLOBALS['lose_lock']=false;$GLOBALS['schedule_ok']=true;$GLOBALS['schedule_state']=null;
     }
-    function check($ok,$label){if(!$ok)throw new \RuntimeException($label);echo "PASS: $label\n";}
+    function check($ok,$label){if(!$ok){fwrite(STDERR,"::error title=Social publisher regression failed::".$label."\n");throw new \RuntimeException($label);}echo "PASS: $label\n";}
     require ($argv[1]??dirname(__DIR__)).'/includes/modules/social-publisher/includes/class-roxy-social-publisher.php';
     reset_fixture();\RoxySocial\Campaigns::$verified=false;
     check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='needs_review'&&!$GLOBALS['calls'],'stale caption schedule stops before any provider call');
