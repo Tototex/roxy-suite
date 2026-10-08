@@ -39,6 +39,7 @@ namespace {
   function esc_url_raw($value) { return (string)$value; }
   function get_post_meta($post_id, $key, $single = true) { return $GLOBALS['schedule_meta'][$post_id][$key] ?? ''; }
   function update_post_meta($post_id, $key, $value) { $GLOBALS['schedule_meta'][$post_id][$key]=$value; return true; }
+  function delete_post_meta($post_id, $key) { unset($GLOBALS['schedule_meta'][$post_id][$key]); return true; }
   function wp_set_object_terms(...$args) { return true; }
   function set_post_thumbnail(...$args) { return true; }
   function wp_delete_post($post_id, $force = false) { $GLOBALS['schedule_deleted'][]=(int)$post_id; unset($GLOBALS['schedule_meta'][$post_id]); return (object)['ID'=>(int)$post_id]; }
