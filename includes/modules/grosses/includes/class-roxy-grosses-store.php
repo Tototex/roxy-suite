@@ -14,6 +14,7 @@ class Store {
   public const IMPORT_BATCH_TABLE = 'roxy_grosses_import_batches';
   public const IMPORT_FILE_TABLE = 'roxy_grosses_import_files';
   public const SCHEMA_OPTION = 'roxy_grosses_schema_version';
+  public const SCHEMA_VERSION = 'verified-1';
   public const HISTORY_BACKFILL_OPTION = 'roxy_grosses_history_backfilled';
   public const ENTRY_MIGRATION_OPTION = 'roxy_grosses_entries_migrated';
   public const ROW_LOCK_SCHEMA_OPTION = 'roxy_grosses_row_lock_schema';
@@ -73,10 +74,10 @@ class Store {
     return $wpdb->prefix . self::IMPORT_FILE_TABLE;
   }
 
-  public static function install_schema(): void {
+  public static function install_schema(): bool {
     global $wpdb;
 
-    require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+    if (!function_exists('dbDelta')) require_once ABSPATH . 'wp-admin/includes/upgrade.php';
     $charset = $wpdb->get_charset_collate();
 
     dbDelta("CREATE TABLE " . self::table_name() . " (
@@ -291,15 +292,59 @@ class Store {
       KEY status (status)
     ) {$charset};");
 
-    update_option(self::SCHEMA_OPTION, ROXY_GROSSES_VER);
+    if (!self::required_schema_is_present()) {
+      error_log('Roxy Grosses schema installation did not produce the required tables and columns; retry pending.');
+      return false;
+    }
+    update_option(self::SCHEMA_OPTION, self::SCHEMA_VERSION);
+    return (string) get_option(self::SCHEMA_OPTION, '') === self::SCHEMA_VERSION;
   }
 
-  public static function maybe_upgrade_schema(): void {
-    if (get_option(self::SCHEMA_OPTION) !== ROXY_GROSSES_VER) {
-      self::install_schema();
+  /** Verify core table/column presence before recording the schema version. */
+  private static function required_schema_is_present(): bool {
+    global $wpdb;
+    $required = [
+      self::table_name() => ['id', 'report_end_date', 'payload_json'],
+      self::log_table_name() => ['id', 'created_at', 'event_type', 'success'],
+      self::history_table_name() => ['id', 'report_date', 'showing_id'],
+      self::entries_table_name() => ['id', 'report_date', 'normalized_title'],
+      self::live_entries_table_name() => ['id', 'report_date', 'presale_qty'],
+      self::rental_entries_table_name() => ['id', 'report_date', 'rental_title'],
+      self::legacy_weekly_table_name() => ['id', 'week_start_date'],
+      self::import_batch_table_name() => ['id', 'created_at', 'status'],
+      self::import_file_table_name() => ['id', 'batch_id', 'status'],
+    ];
+    foreach ($required as $table => $columns) {
+      $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table));
+      if ((string) $exists !== (string) $table || $wpdb->last_error !== '') return false;
+      foreach ($columns as $column) {
+        if (!$wpdb->get_var("SHOW COLUMNS FROM `{$table}` LIKE '" . esc_sql($column) . "'") || $wpdb->last_error !== '') return false;
+      }
     }
-    self::ensure_live_presale_column();
-    self::ensure_row_lock_columns();
+    return true;
+  }
+
+  private static function report_schema_upgrade_failure(string $message): void {
+    error_log('Roxy Grosses schema upgrade incomplete; retry pending.');
+    add_action('admin_notices', static function () use ($message): void {
+      if (current_user_can('manage_options')) echo '<div class="notice notice-error"><p>' . esc_html($message) . '</p></div>';
+    });
+  }
+
+  public static function maybe_upgrade_schema(): bool {
+    if (get_option(self::SCHEMA_OPTION) !== self::SCHEMA_VERSION) {
+      if (!self::install_schema()) {
+        self::report_schema_upgrade_failure('Grosses database tables could not be verified. Reporting may be incomplete; the upgrade will retry automatically. Check database/storage health.');
+        return false;
+      }
+    }
+    $presale_ready = self::ensure_live_presale_column();
+    $row_locks_ready = self::ensure_row_lock_columns();
+    if (!$presale_ready || !$row_locks_ready) {
+      self::report_schema_upgrade_failure('Grosses database columns could not be upgraded. Reporting may be incomplete; the upgrade will retry automatically. Check database/storage health.');
+      return false;
+    }
+    return true;
   }
 
   public static function ensure_row_lock_columns(): bool {
@@ -333,15 +378,14 @@ class Store {
     return true;
   }
 
-  private static function ensure_live_presale_column(): void {
+  private static function ensure_live_presale_column(): bool {
     global $wpdb;
     $table = self::live_entries_table_name();
     $column = $wpdb->get_var("SHOW COLUMNS FROM {$table} LIKE 'presale_qty'");
-    if ($column) {
-      return;
-    }
-
-    $wpdb->query("ALTER TABLE {$table} ADD presale_qty INT UNSIGNED NOT NULL DEFAULT 0 AFTER theater_name");
+    if ($column && $wpdb->last_error === '') return true;
+    if ($wpdb->last_error !== '') return false;
+    if ($wpdb->query("ALTER TABLE {$table} ADD presale_qty INT UNSIGNED NOT NULL DEFAULT 0 AFTER theater_name") === false) return false;
+    return (bool) $wpdb->get_var("SHOW COLUMNS FROM {$table} LIKE 'presale_qty'") && $wpdb->last_error === '';
   }
 
   public static function maybe_backfill_history(): void {

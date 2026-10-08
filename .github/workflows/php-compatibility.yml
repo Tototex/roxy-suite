@@ -45,6 +45,9 @@ jobs:
       - name: Run Grosses log-result regression
         run: php tests/grosses-log-result-regression.php
 
+      - name: Run Grosses schema bootstrap regression
+        run: php tests/grosses-schema-bootstrap-regression.php
+
       - name: Run advertiser email attachment regression
         run: php tests/grosses-advertiser-email-outbox-regression.php
 
