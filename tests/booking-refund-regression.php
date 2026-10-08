@@ -90,6 +90,7 @@ function wc_create_refund($args) {
     foreach ($args['line_items'] as $id=>$line) $items[$id]=new FakeRefundItem(-$line['qty'],-$line['refund_total'],-array_sum($line['refund_tax']),[],array_map(static function($v){return -$v;},$line['refund_tax']));
     $refund = new WC_Order_Refund((float)$args['amount'], $items);
     if (isset($GLOBALS['orders'][$args['order_id']])) $GLOBALS['orders'][$args['order_id']]->refunds[]=$refund;
+    if (isset($GLOBALS['during_refund'])) { $callback=$GLOBALS['during_refund']; unset($GLOBALS['during_refund']); $callback(); }
     return $refund;
 }
 function check($condition, $message) { if (!$condition) throw new RuntimeException($message); }
@@ -237,7 +238,10 @@ function wp_timezone() { return new DateTimeZone('America/Los_Angeles'); }
 function roxy_eb_get_settings() { return ['cancel_free_days'=>7]; }
 function roxy_eb_mysql_to_dt($value) { return new DateTimeImmutable($value, wp_timezone()); }
 function roxy_eb_booking_adjustment_order_ids($booking) { return $booking['woo_adjustment_order_ids'] ?? []; }
+function roxy_eb_booking_revision(array $booking) { return (string)($booking['fixture_revision']??'fixture-revision'); }
 function roxy_eb_repo_update_booking($id, $data) {
+    $expected=$data['_roxy_expected_revision']??null; unset($data['_roxy_expected_revision']);
+    if ($expected!==null && !hash_equals(roxy_eb_booking_revision($GLOBALS['bookings'][$id]),(string)$expected)) return new WP_Error('booking_stale','fixture revision changed');
     if (!empty($GLOBALS['booking_save_error'])) return new WP_Error('save_failed','fixture write failure');
     $GLOBALS['bookings'][$id]=array_merge($GLOBALS['bookings'][$id],$data); return true;
 }
@@ -246,7 +250,7 @@ function roxy_eb_clear_pizza_reminders($id) { $GLOBALS['cleared_reminders'][]=$i
 function roxy_eb_sling_enqueue_cancel($id) { $GLOBALS['queued_cancellations'][]=$id; }
 require dirname($helper) . '/my-account.php';
 function make_booking($id, $order_id, array $adjustments = []) {
-    $GLOBALS['bookings'][$id]=['id'=>$id,'status'=>'confirmed','payment_method'=>'card','invoice_status'=>'not_needed','woo_order_id'=>$order_id,'woo_adjustment_order_ids'=>$adjustments,'doors_open_at'=>(new DateTimeImmutable('+30 days',wp_timezone()))->format('Y-m-d H:i:s')];
+    $GLOBALS['bookings'][$id]=['id'=>$id,'status'=>'confirmed','payment_method'=>'card','invoice_status'=>'not_needed','woo_order_id'=>$order_id,'woo_adjustment_order_ids'=>$adjustments,'fixture_revision'=>'r1','doors_open_at'=>(new DateTimeImmutable('+30 days',wp_timezone()))->format('Y-m-d H:i:s')];
     $GLOBALS['booking_save_error']=false; $GLOBALS['cleared_reminders']=[]; $GLOBALS['queued_cancellations']=[];
 }
 run_test('actual cancellation caller preserves unrelated items and refunds linked adjustment only', function() {
@@ -274,5 +278,13 @@ run_test('actual cancellation caller reports failed booking save after successfu
     check(count($GLOBALS['wc_refund_calls'])===1 && !$GLOBALS['cleared_reminders'] && !$GLOBALS['queued_cancellations'],'no follow-on cancellation work after failed save');
     $GLOBALS['booking_save_error']=false;
     check(roxy_eb_cancel_booking(83,'admin')===true && count($GLOBALS['wc_refund_calls'])===1,'retry finishes cancellation without second gateway request');
+});
+run_test('cancellation does not overwrite a booking edit made during provider refund', function() {
+    reset_gateway(); make_booking(84,184); register_order(new WC_Order(184,50,[1=>make_item(84,null,50)]));
+    $GLOBALS['during_refund']=static function() { $GLOBALS['bookings'][84]['guest_count']=9; $GLOBALS['bookings'][84]['fixture_revision']='r2'; };
+    $result=roxy_eb_cancel_booking(84,'admin');
+    check(is_wp_error($result) && $GLOBALS['bookings'][84]['status']==='confirmed' && $GLOBALS['bookings'][84]['guest_count']===9,
+      'stale cancellation is rejected without overwriting the concurrent booking edit');
+    check(count($GLOBALS['wc_refund_calls'])===1 && !$GLOBALS['queued_cancellations'],'stale cancellation performs no duplicate provider call or follow-on work');
 });
 echo "All booking refund regressions passed.\n";

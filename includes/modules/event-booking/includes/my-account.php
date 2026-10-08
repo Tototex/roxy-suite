@@ -504,6 +504,9 @@ function roxy_eb_cancel_booking($booking_id, $by = 'customer') {
         $saved = roxy_eb_repo_update_booking($booking_id, [
             'status' => 'cancelled',
             'invoice_status' => ($booking['payment_method'] ?? '') === 'invoice' ? 'void' : ($booking['invoice_status'] ?? 'not_needed'),
+            // Refunds happen outside the reservation transaction by design.
+            // Do not cancel a row that was edited while the provider call ran.
+            '_roxy_expected_revision' => roxy_eb_booking_revision($booking),
         ]);
         if (is_wp_error($saved)) return new WP_Error('cancel_save_failed', 'Payment processing finished, but cancellation could not be saved. Please contact us before retrying.');
 
