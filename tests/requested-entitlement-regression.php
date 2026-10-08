@@ -205,7 +205,7 @@ namespace {
     $GLOBALS['fixture_order_creates'] = 0;
     $GLOBALS['fixture_order'] = null;
     $GLOBALS['fixture_payment_calls'] = 0;
-    $GLOBALS['fixture_options'] = ['roxy_rs_settings'=>[], 'roxy_st_settings'=>['general_price'=>'12','discount_price'=>'8','matinee_price'=>'8']];
+    $GLOBALS['fixture_options'] = ['admin_email'=>'admin@example.invalid', 'roxy_rs_settings'=>[], 'roxy_st_settings'=>['general_price'=>'12','discount_price'=>'8','matinee_price'=>'8']];
 
     function wcs_get_users_subscriptions($user_id) {
         if ($GLOBALS['fixture_subscription_error']) throw new \RuntimeException('fixture WCS unavailable');
@@ -214,17 +214,35 @@ namespace {
     function check_admin_referer($action) {}
     function is_user_logged_in() { return true; }
     function get_current_user_id() { return $GLOBALS['fixture_user']; }
-    function get_post($id) { return (object) ['ID'=>$id,'post_type'=>'roxy_req_showing','post_title'=>'Fixture request','post_content'=>'']; }
+    function get_post($id) {
+        $post_status = $GLOBALS['fixture_post_status'][$id] ?? 'draft';
+        if (!empty($GLOBALS['fixture_stale_publish_readback']) && $id === 501) $post_status = 'draft';
+        return (object) ['ID'=>$id,'post_type'=>'roxy_req_showing','post_title'=>'Fixture request','post_content'=>'','post_excerpt'=>'','post_author'=>0,'post_status'=>$post_status];
+    }
     function get_post_type($id) { return $id === 801 ? 'roxy_showing' : 'roxy_req_showing'; }
-    function wp_update_post($data) { return $data['ID']; }
+    function wp_update_post($data, $wp_error = false) {
+        if (($data['post_status'] ?? '') === 'publish' && !empty($GLOBALS['fixture_publish_write_error'])) return $wp_error ? new WP_Error('fixture_publish_failed', 'fixture publish failure') : 0;
+        if (($data['post_status'] ?? '') === 'publish' && !empty($GLOBALS['fixture_stale_publish_readback'])) return (int) $data['ID'];
+        $GLOBALS['fixture_post_status'][(int) $data['ID']] = (string) ($data['post_status'] ?? 'draft');
+        return (int) $data['ID'];
+    }
     function get_the_title($id) { return 'Fixture request'; }
     function admin_url($path) { return 'https://fixture.invalid/admin/' . $path; }
     function sanitize_email($value) { return (string) $value; }
-    function wp_mail($to, $subject, $body) { $GLOBALS['fixture_mails'][] = $subject; return true; }
-    function get_post_meta($id, $key, $single = false) { return $GLOBALS['fixture_meta'][$id][$key] ?? ''; }
+    function wp_mail($to, $subject, $body) { $GLOBALS['fixture_mails'][] = ['to'=>$to,'subject'=>$subject]; return true; }
+    function get_post_meta($id, $key, $single = false) {
+        if ($id === 501 && $key === \RoxyRS\CPT::META_STATUS && !empty($GLOBALS['fixture_approval_status_read_error'])) throw new \RuntimeException('fixture status read failure');
+        if ($id === 501 && $key === \RoxyRS\CPT::META_STATUS && !empty($GLOBALS['fixture_stale_approval_readback'])) return 'conversion_review';
+        return $GLOBALS['fixture_meta'][$id][$key] ?? '';
+    }
     function wp_cache_delete($id, $group) {}
     function get_option($key, $default = false) { return $GLOBALS['fixture_options'][$key] ?? $default; }
-    function update_post_meta($id, $key, $value) { $GLOBALS['fixture_meta'][$id][$key] = $value; return true; }
+    function update_post_meta($id, $key, $value) {
+        if ($id === 501 && $key === \RoxyRS\CPT::META_STATUS && $value === 'approved' && !empty($GLOBALS['fixture_approval_status_write_error'])) return false;
+        $GLOBALS['fixture_meta'][$id][$key] = $value;
+        return true;
+    }
+    function clean_post_cache($id) {}
     function wp_unslash($value) { return $value; }
     function sanitize_text_field($value) { return is_scalar($value) ? (string) $value : ''; }
     function current_time($type) { return '2026-10-06 12:00:00'; }
@@ -256,6 +274,12 @@ namespace {
         \RoxyRS\PledgeAttempts::$pending = []; \RoxyRS\PledgeAttempts::$receipts = [];
         $GLOBALS['fixture_subscriptions'] = $subscriptions;
         $GLOBALS['fixture_mails'] = [];
+        $GLOBALS['fixture_post_status'] = [501=>'draft'];
+        $GLOBALS['fixture_approval_status_write_error'] = false;
+        $GLOBALS['fixture_publish_write_error'] = false;
+        $GLOBALS['fixture_stale_approval_readback'] = false;
+        $GLOBALS['fixture_stale_publish_readback'] = false;
+        $GLOBALS['fixture_approval_status_read_error'] = false;
         $GLOBALS['fixture_subscription_error'] = $entitlement_error;
         $GLOBALS['fixture_meta'] = [501 => [
             \RoxyRS\CPT::META_STATUS => 'active',
@@ -266,6 +290,7 @@ namespace {
             \RoxyRS\CPT::META_SPONSOR_AMOUNT => '999999',
             \RoxyRS\CPT::META_FUNDING_UNIT_VERSION => \RoxyRS\CPT::FUNDING_UNIT_CENTS_V1,
             \RoxyRS\CPT::META_PRICING_PROFILE => 'movie_evening',
+            \RoxyRS\CPT::META_REQUESTER_EMAIL => 'customer@example.invalid',
         ], 801 => ['_roxy_pid_adult'=>901, '_roxy_pid_discount'=>902, '_roxy_pid_subscriber'=>903],
             901 => [ROXY_ST_META_SHOWING_ID=>801], 902 => [ROXY_ST_META_SHOWING_ID=>801], 903 => [ROXY_ST_META_SHOWING_ID=>801]];
         $GLOBALS['fixture_transients'] = []; $GLOBALS['fixture_redirects'] = [];
@@ -416,7 +441,49 @@ namespace {
     $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_APPROVED_SHOWING_ID] = 801;
     check_fixture(is_wp_error(\RoxyRS\Conversion::approve_request(501)) && $GLOBALS['fixture_order']->completed === 0, 'partial approval returns review rather than successful confirmation');
     check_fixture($GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'conversion_review'
-        && $GLOBALS['fixture_mails'] === ['Requested showing approval needs attention: Fixture request'], 'partial approval closes pledging and sends only manager review notice');
+        && $GLOBALS['fixture_mails'] === [['to'=>'admin@example.invalid','subject'=>'Requested showing approval needs attention: Fixture request']], 'partial approval closes pledging and sends only manager review notice');
+
+    $approval_write_faults = [
+        'failed status write' => 'fixture_approval_status_write_error',
+        'failed publication write' => 'fixture_publish_write_error',
+        'stale status readback' => 'fixture_stale_approval_readback',
+        'stale publication readback' => 'fixture_stale_publish_readback',
+        'failed status readback' => 'fixture_approval_status_read_error',
+    ];
+    foreach ($approval_write_faults as $fault_label => $fault_flag) {
+        reset_fixture([]);
+        $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_TARGET_AT] = '2026-10-30 19:00';
+        $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_APPROVED_SHOWING_ID] = 801;
+        $GLOBALS[$fault_flag] = true;
+        $approval_result = \RoxyRS\Conversion::approve_request(501);
+        check_fixture(is_wp_error($approval_result), $fault_label . ' returns review-required error');
+        check_fixture($GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'conversion_review', $fault_label . ' leaves request closed for review');
+        check_fixture(($GLOBALS['fixture_post_status'][501] ?? '') !== 'publish', $fault_label . ' does not claim request is published');
+        check_fixture($GLOBALS['fixture_mails'] === [], $fault_label . ' withholds all customer confirmation email');
+        check_fixture($GLOBALS['fixture_order_creates'] === 0 && !$wpdb->rows, $fault_label . ' does not falsely claim a backing/order was completed');
+    }
+
+    reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing();
+    $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_TARGET_AT] = '2026-10-30 19:00';
+    $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_APPROVED_SHOWING_ID] = 801;
+    $GLOBALS['fixture_approval_status_write_error'] = true;
+    $post_order_failure = \RoxyRS\Conversion::approve_request(501);
+    check_fixture(is_wp_error($post_order_failure) && $GLOBALS['fixture_order']->completed === 1
+        && (int) ($wpdb->rows[1]['woo_order_id'] ?? 0) === 7001 && ($wpdb->rows[1]['status'] ?? '') === 'charged',
+        'final approval persistence failure retains the completed no-charge order and backing for manager reconciliation');
+    check_fixture($GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'conversion_review'
+        && $GLOBALS['fixture_post_status'][501] === 'draft' && $GLOBALS['fixture_mails'] === [],
+        'post-order finalization failure keeps request in review and sends no customer confirmation');
+
+    reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing();
+    $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_TARGET_AT] = '2026-10-30 19:00';
+    $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_APPROVED_SHOWING_ID] = 801;
+    $approved_result = \RoxyRS\Conversion::approve_request(501);
+    check_fixture($approved_result === 801 && $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'approved'
+        && $GLOBALS['fixture_post_status'][501] === 'publish', 'verified final approval persists approved and publish states');
+    check_fixture(count($GLOBALS['fixture_mails']) === 1 && $GLOBALS['fixture_mails'][0]['to'] === 'customer@example.invalid'
+        && strpos($GLOBALS['fixture_mails'][0]['subject'], 'Requested showing confirmed:') === 0, 'customer confirmation is sent only after verified final request state');
+
     reset_fixture([]); $wpdb->list_error = true;
     $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_TARGET_AT] = '2026-10-30 19:00';
     $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_APPROVED_SHOWING_ID] = 801;

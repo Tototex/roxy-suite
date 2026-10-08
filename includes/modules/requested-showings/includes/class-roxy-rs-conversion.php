@@ -392,11 +392,45 @@ class Conversion {
 
         $lease->assert_owner();
         if ($needs_review) return new \WP_Error('backing_review_required', 'The showing exists, but one or more backings require review. Customer payment confirmation was not sent.');
-        update_post_meta($request_id, CPT::META_STATUS, 'approved');
-        wp_update_post([
-            'ID' => $request_id,
-            'post_status' => 'publish',
-        ]);
+        try {
+            // update_post_meta() can return false both for a failed write and
+            // when the stored value is already unchanged; the uncached readback
+            // is the authoritative test of final state.
+            update_post_meta($request_id, CPT::META_STATUS, 'approved');
+            wp_cache_delete($request_id, 'post_meta');
+            if (get_post_meta($request_id, CPT::META_STATUS, true) !== 'approved') {
+                self::restore_conversion_review_status($request_id);
+                return new \WP_Error('approval_state_review_required', 'The request approval status could not be saved. Review the request, showing and backing/order records before retrying. Customer confirmation was not sent.');
+            }
+
+            $publish_write = wp_update_post([
+                'ID' => $request_id,
+                'post_status' => 'publish',
+            ], true);
+            if (is_wp_error($publish_write) || (int) $publish_write !== $request_id) {
+                self::restore_conversion_review_status($request_id, true);
+                return new \WP_Error('approval_state_review_required', 'The request could not be published. Review the request, showing and backing/order records before retrying. Customer confirmation was not sent.');
+            }
+
+            // Read from WordPress again after invalidating both caches. A successful
+            // write return value alone does not prove that the final request state
+            // persisted, so never send customer confirmation until both values match.
+            wp_cache_delete($request_id, 'post_meta');
+            if (function_exists('clean_post_cache')) {
+                clean_post_cache($request_id);
+            } else {
+                wp_cache_delete($request_id, 'posts');
+            }
+            $saved_status = get_post_meta($request_id, CPT::META_STATUS, true);
+            $saved_post = get_post($request_id);
+            if ($saved_status !== 'approved' || !$saved_post || $saved_post->post_status !== 'publish') {
+                self::restore_conversion_review_status($request_id, true);
+                return new \WP_Error('approval_state_review_required', 'The final request approval state could not be verified. Review the request, showing and backing/order records before retrying. Customer confirmation was not sent.');
+            }
+        } catch (\Throwable $error) {
+            self::restore_conversion_review_status($request_id, true);
+            return new \WP_Error('approval_state_review_required', 'The final request approval state could not be saved or verified. Review the request, showing and backing/order records before retrying. Customer confirmation was not sent.');
+        }
 
         $emails = self::request_recipient_emails($request_id, $backings);
         if ($emails) {
@@ -410,6 +444,24 @@ class Conversion {
         }
 
         return $showing_id;
+    }
+
+    /** Best-effort fail-safe when final approval persistence cannot be proven. */
+    private static function restore_conversion_review_status(int $request_id, bool $unpublish = false): void {
+        try {
+            update_post_meta($request_id, CPT::META_STATUS, 'conversion_review');
+            wp_cache_delete($request_id, 'post_meta');
+            if ($unpublish) {
+                wp_update_post(['ID' => $request_id, 'post_status' => 'draft'], true);
+                if (function_exists('clean_post_cache')) {
+                    clean_post_cache($request_id);
+                } else {
+                    wp_cache_delete($request_id, 'posts');
+                }
+            }
+        } catch (\Throwable $error) {
+            // Keep the original review-required failure; reconciliation is manual.
+        }
     }
 
     public static function run_daily_review(): void {

@@ -3,10 +3,12 @@
  * Read-only live probe for the candidate Square payments feed.
  *
  * Usage (from the WordPress installation):
- *   wp --skip-plugins --skip-themes eval-file /path/to/grosses-square-payments-live-readonly.php /path/to/candidate/class-roxy-grosses-square.php
+ *   wp --skip-plugins --skip-themes eval-file /path/to/grosses-square-payments-live-readonly.php /path/to/candidate/class-roxy-grosses-square.php [YYYY-MM-DD] [/path/to/candidate/class-roxy-grosses-refund-snapshot.php]
  *
- * Uses the already-loaded production Settings class. The only permitted network
- * request is HTTPS GET to connect.squareup.com/v2/payments. All wpdb writes and
+ * Optional second argument is one past Pacific calendar date (YYYY-MM-DD);
+ * omitted means yesterday. Uses the already-loaded production Settings class.
+ * The only permitted network request is HTTPS GET to
+ * connect.squareup.com/v2/payments. All wpdb writes and
  * wp_mail are blocked for the duration of the probe. Output contains aggregates
  * only; provider payloads, payment identifiers, amounts and credentials are
  * never printed.
@@ -18,6 +20,10 @@ if (!defined('WP_CLI') || !WP_CLI) {
 $candidate = $args[0] ?? '';
 if (!is_string($candidate) || $candidate === '' || !is_file($candidate) || !is_readable($candidate)) {
   throw new RuntimeException('Candidate Square source file is missing or unreadable.');
+}
+$candidate_events = $args[2] ?? dirname($candidate) . '/class-roxy-grosses-refund-snapshot.php';
+if (!is_string($candidate_events) || !is_file($candidate_events) || !is_readable($candidate_events)) {
+  throw new RuntimeException('Candidate Square payment-normalization source file is missing or unreadable.');
 }
 $http_requests = 0;
 $http_rejections = 0;
@@ -122,16 +128,41 @@ try {
   eval(substr($source, 5));
   $probe_class = 'RoxyGrosses\\' . $probe_class;
 
+  if (class_exists('RoxyGrosses\\SquarePaymentEvents', false)) {
+    throw new RuntimeException('A Square payment-normalization class was already loaded; refusing to test a different source.');
+  }
+  require_once $candidate_events;
+  if (!class_exists('RoxyGrosses\\SquarePaymentEvents', false)) {
+    throw new RuntimeException('Candidate Square payment-normalization source did not load.');
+  }
+
   $pacific = new DateTimeZone('America/Los_Angeles');
   $today = new DateTimeImmutable('today', $pacific);
-  $start = $today->modify('-1 day');
-  $end = $today;
+  $probe_date = $args[1] ?? '';
+  if ($probe_date === '') {
+    $start = $today->modify('-1 day');
+  } else {
+    if (!is_string($probe_date) || !preg_match('/^\d{4}-\d{2}-\d{2}$/D', $probe_date)) {
+      throw new RuntimeException('Optional probe date must be one Pacific calendar date in YYYY-MM-DD form.');
+    }
+    $start = DateTimeImmutable::createFromFormat('!Y-m-d', $probe_date, $pacific);
+    $date_errors = DateTimeImmutable::getLastErrors();
+    if (!$start || ($date_errors !== false && ($date_errors['warning_count'] > 0 || $date_errors['error_count'] > 0))
+        || $start->format('Y-m-d') !== $probe_date || $start >= $today) {
+      throw new RuntimeException('Optional probe date must be a real past Pacific calendar date.');
+    }
+  }
+  $end = $start->modify('+1 day');
   $allowed_locations = $locations;
   $expected_begin = $start->format('c');
   $expected_end = $end->modify('-1 microsecond')->format('Y-m-d\\TH:i:s.uP');
   $payments = $probe_class::list_payments_created_between($start->format('c'), $end->format('c'));
   if (!is_array($payments)) {
     throw new RuntimeException('Candidate returned a non-array result.');
+  }
+  $collection_events = \RoxyGrosses\SquarePaymentEvents::from_payments($payments);
+  if (!is_array($collection_events)) {
+    throw new RuntimeException('Candidate payment normalization returned a non-array result.');
   }
 
   $statuses = [];
@@ -157,6 +188,7 @@ try {
   echo 'SQUARE_PAYMENTS_READONLY_PASS ' . wp_json_encode([
     'pacific_date' => $start->format('Y-m-d'),
     'records' => count($payments),
+    'completed_collection_events' => count($collection_events),
     'status_counts' => $statuses,
     'permitted_square_gets' => $http_requests,
     'blocked_external_requests' => $http_rejections,
