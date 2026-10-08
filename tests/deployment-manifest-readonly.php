@@ -29,7 +29,9 @@ $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, 
 foreach ($iterator as $entry) {
     if ($entry->isLink()) throw new RuntimeException('Unexpected deployed symlink needs review');
     if (!$entry->isFile()) continue;
-    $path = substr($entry->getPathname(), strlen($root) + 1);
+    // Manifest paths are portable Git paths (forward slashes); normalize the
+    // filesystem path returned by DirectoryIterator on Windows before lookup.
+    $path = str_replace('\\', '/', substr($entry->getPathname(), strlen($root) + 1));
     if (preg_match('#^(?:\.git|\.github|build|tests|docs|tools)(?:/|$)#', $path) || in_array($path, ['RoxyEdit.md', '.gitignore'], true) || basename($path) === '.DS_Store') continue;
     if (!isset($seen[$path])) $extra[] = $path;
 }
