@@ -1653,10 +1653,11 @@ class Tickets {
     $showing_id=isset($_POST['showing_id'])?absint($_POST['showing_id']):0;
     try {
       $audit=self::undo_member_walkup(isset($_POST['visit_id'])?absint($_POST['visit_id']):0,isset($_POST['subscription_id'])?absint($_POST['subscription_id']):0,$showing_id);
-      wp_send_json_success(['audit'=>$audit,'attendance'=>self::door_stats_payload($showing_id)]);
     } catch(\Throwable $error) {
       wp_send_json_error(['message'=>'Member walk-up was not undone. Refresh and review the admission list.'],409);
+      return;
     }
+    wp_send_json_success(['audit'=>$audit,'attendance'=>self::door_stats_payload($showing_id)]);
   }
 
   public static function handle_manual_member_admit(): void {
