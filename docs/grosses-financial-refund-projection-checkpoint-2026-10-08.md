@@ -15,4 +15,4 @@
 
 ## Remaining
 
-This is still a normalization seam only. No refund ledger is persisted and no financial dashboard consumes it. WooCommerce refund events, verified completion timestamps, sale/collection event attribution, historical backfill, provenance, and custom/exchange/manual review remain open under G2.
+The on-demand Cashflow tab now consumes this refund projection, and a matched Square `refund.updated` event takes precedence over the update-time proxy. This remains a read-only branch feature; no financial ledger or studio-gross report is written from it. Verified bank-posted timestamps, historical backfill, provenance, custom/exchange/manual review, live Square permissions/webhook setup, and provider-day reconciliation remain open under G2.
