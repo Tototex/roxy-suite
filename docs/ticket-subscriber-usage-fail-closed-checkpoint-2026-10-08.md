@@ -12,7 +12,7 @@ The subscriber allowance calculator treated WooCommerce's paid-order query as an
 
 ## Verification
 
-`tests/capacity-walkup-regression.php` adds fault cases for a failed and throwing paid-order query, a missing and throwing order read, and a malformed line-item result. Hosted PHP syntax matrix and the complete PHP 8.3 isolated suite are pending on this commit. No live ticket cart/order was changed.
+`tests/capacity-walkup-regression.php` adds fault cases for a failed and throwing paid-order query, a missing and throwing order read, and a malformed line-item result. Hosted run [37749869635](https://github.com/Tototex/roxy-suite/actions/runs/37749869635) passed the PHP 8.0–8.4 syntax matrix and the complete PHP 8.3 isolated suite. No live ticket cart/order was changed.
 
 ## Remaining
 
