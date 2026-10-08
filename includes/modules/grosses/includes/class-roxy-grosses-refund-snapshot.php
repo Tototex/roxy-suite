@@ -277,7 +277,6 @@ final class WooRefundEvents {
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $events = [];
     $seen = [];
-    $seen_payment_ids = [];
     foreach ($refunds as $refund) {
       if (!is_object($refund)
         || !method_exists($refund, 'get_id') || !method_exists($refund, 'get_parent_id')
@@ -406,6 +405,7 @@ final class SquareCollectionEvents {
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $events = [];
     $seen = [];
+    $seen_payment_ids = [];
     foreach ($orders as $order) {
       if (!is_array($order) || !is_string($order['state'] ?? null)) throw new \RuntimeException('Square returned a malformed collection order.');
       if ($order['state'] !== 'COMPLETED') continue;
