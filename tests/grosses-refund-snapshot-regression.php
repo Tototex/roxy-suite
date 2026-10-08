@@ -318,6 +318,22 @@ namespace {
   $assert($snapshot->original_sale_dates() === [], 'proven failed historical refunds need no source correction');
   $expect_throw(static fn() => $snapshot_class::load_from_refund_feed('2026-02-30', new \DateTimeImmutable('2026-08-20T12:00:00Z')), 'invalid historical feed calendar date fails before discovery');
 
+  $daily = \RoxyGrosses\CashflowProjection::daily_totals(
+    [['source'=>'square','order_id'=>'sq-1','collection_date'=>'2026-10-02','amount_cents'=>120000,'currency'=>'USD']],
+    [['source'=>'woocommerce','order_id'=>21,'collection_date'=>'2026-10-03','amount_cents'=>300,'currency'=>'USD']],
+    [['source'=>'square','refund_id'=>'sqr-1','refund_date'=>'2026-10-03','amount_cents'=>100,'currency'=>'USD']],
+    [['source'=>'woocommerce','refund_id'=>22,'refund_date'=>'2026-10-02','amount_cents'=>50,'currency'=>'USD']]
+  );
+  $assert($daily['2026-10-02']['total_collected_cents'] === 120000 && $daily['2026-10-02']['total_refunded_cents'] === 50 && $daily['2026-10-02']['net_cents'] === 119950, 'cashflow records refunds on their own date');
+  $assert($daily['2026-10-03']['total_collected_cents'] === 300 && $daily['2026-10-03']['total_refunded_cents'] === 100 && $daily['2026-10-03']['net_cents'] === 200, 'cashflow keeps refund-day financial reporting separate from collection day');
+  $expect_throw(static fn() => \RoxyGrosses\CashflowProjection::daily_totals([['source'=>'square','order_id'=>'dup','collection_date'=>'2026-10-02','amount_cents'=>1,'currency'=>'USD'],['source'=>'square','order_id'=>'dup','collection_date'=>'2026-10-02','amount_cents'=>1,'currency'=>'USD']], [], [], []), 'duplicate cashflow event identity fails closed');
+  $expect_throw(static fn() => \RoxyGrosses\CashflowProjection::daily_totals([['source'=>'square','order_id'=>'bad-date','collection_date'=>'2026-02-30','amount_cents'=>1,'currency'=>'USD']], [], [], []), 'invalid cashflow date fails closed');
+  $expect_throw(static fn() => \RoxyGrosses\CashflowProjection::daily_totals([['source'=>'square','order_id'=>'bad-currency','collection_date'=>'2026-10-02','amount_cents'=>1,'currency'=>'CAD']], [], [], []), 'unsupported cashflow currency fails closed');
+  $expect_throw(static fn() => \RoxyGrosses\CashflowProjection::daily_totals([['source'=>'square','order_id'=>'bad-cents','collection_date'=>'2026-10-02','amount_cents'=>'1','currency'=>'USD']], [], [], []), 'non-integer cashflow cents fail closed');
+  $expect_throw(static fn() => \RoxyGrosses\CashflowProjection::daily_totals([['source'=>'square','order_id'=>'overflow-a','collection_date'=>'2026-10-02','amount_cents'=>PHP_INT_MAX,'currency'=>'USD'],['source'=>'square','order_id'=>'overflow-b','collection_date'=>'2026-10-02','amount_cents'=>1,'currency'=>'USD']], [], [], []), 'cashflow aggregate overflow fails closed');
+  $expect_throw(static fn() => \RoxyGrosses\CashflowProjection::daily_totals([['source'=>'square','order_id'=>'cross-overflow','collection_date'=>'2026-10-02','amount_cents'=>PHP_INT_MAX,'currency'=>'USD']], [['source'=>'woocommerce','order_id'=>23,'collection_date'=>'2026-10-02','amount_cents'=>1,'currency'=>'USD']], [], []), 'combined cashflow source overflow fails closed');
+  $expect_throw(static fn() => \RoxyGrosses\CashflowProjection::daily_totals([4=>['source'=>'square','order_id'=>'sparse','collection_date'=>'2026-10-02','amount_cents'=>1,'currency'=>'USD']], [], [], []), 'non-indexed cashflow feed fails closed');
+
   if ($failures) {
     foreach ($failures as $failure) fwrite(STDERR, "FAIL: {$failure}\n");
     fwrite(STDERR, sprintf("%d checks, %d failures\n", $checks, count($failures)));

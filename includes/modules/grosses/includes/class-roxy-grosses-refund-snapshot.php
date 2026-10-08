@@ -463,3 +463,70 @@ final class SquareCollectionEvents {
     return $events;
   }
 }
+
+/** Pure daily aggregation of separately sourced collection and refund projections. */
+final class CashflowProjection {
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
+
+  private static function add_event(array &$days, array &$seen, $event, string $source, string $id_field, string $date_field, string $amount_field, string $currency_field, string $total_field): void {
+    if (!is_array($event) || ($event['source'] ?? null) !== $source) throw new \RuntimeException('Cashflow event has an invalid source or structure.');
+    $id = $event[$id_field] ?? null;
+    if ((!is_string($id) && !is_int($id)) || (is_string($id) && ($id === '' || strlen($id) > 255)) || (is_int($id) && $id <= 0)) {
+      throw new \RuntimeException('Cashflow event has an invalid identity.');
+    }
+    $identity = gettype($id) . ':' . (string) $id;
+    if (isset($seen[$identity])) throw new \RuntimeException('Cashflow feed repeats an event identity.');
+    $seen[$identity] = true;
+    $date = $event[$date_field] ?? null;
+    if (!is_string($date) || !preg_match('/^\d{4}-\d{2}-\d{2}$/D', $date)) throw new \RuntimeException('Cashflow event has an invalid date.');
+    $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date, new \DateTimeZone('UTC'));
+    $errors = \DateTimeImmutable::getLastErrors();
+    if (!$parsed || $parsed->format('Y-m-d') !== $date || ($errors && ($errors['warning_count'] || $errors['error_count']))) throw new \RuntimeException('Cashflow event has an invalid calendar date.');
+    if (($event[$currency_field] ?? null) !== 'USD' || !is_int($event[$amount_field] ?? null) || $event[$amount_field] < 0) {
+      throw new \RuntimeException('Cashflow event has invalid USD cents.');
+    }
+    if (!isset($days[$date])) $days[$date] = [
+      'square_collected_cents' => 0, 'woocommerce_collected_cents' => 0,
+      'square_refunded_cents' => 0, 'woocommerce_refunded_cents' => 0,
+      'total_collected_cents' => 0, 'total_refunded_cents' => 0, 'net_cents' => 0,
+    ];
+    $current = $days[$date][$total_field];
+    if ($event[$amount_field] > PHP_INT_MAX - $current) throw new \RuntimeException('Daily cashflow total exceeds the supported amount range.');
+    $days[$date][$total_field] += $event[$amount_field];
+  }
+
+  /**
+   * @return array<string,array<string,int>> One row per Pacific calendar date.
+   */
+  public static function daily_totals(array $square_collections, array $woo_collections, array $square_refunds, array $woo_refunds): array {
+    foreach ([$square_collections, $woo_collections, $square_refunds, $woo_refunds] as $events) {
+      if (!self::is_list($events)) throw new \RuntimeException('Cashflow event feeds must be indexed lists.');
+    }
+    $days = [];
+    $feed_specs = [
+      [$square_collections, 'square', 'order_id', 'collection_date', 'amount_cents', 'currency', 'square_collected_cents'],
+      [$woo_collections, 'woocommerce', 'order_id', 'collection_date', 'amount_cents', 'currency', 'woocommerce_collected_cents'],
+      [$square_refunds, 'square', 'refund_id', 'refund_date', 'amount_cents', 'currency', 'square_refunded_cents'],
+      [$woo_refunds, 'woocommerce', 'refund_id', 'refund_date', 'amount_cents', 'currency', 'woocommerce_refunded_cents'],
+    ];
+    foreach ($feed_specs as [$events, $source, $id_field, $date_field, $amount_field, $currency_field, $total_field]) {
+      $seen = [];
+      foreach ($events as $event) self::add_event($days, $seen, $event, $source, $id_field, $date_field, $amount_field, $currency_field, $total_field);
+    }
+    ksort($days, SORT_STRING);
+    foreach ($days as &$day) {
+      if ($day['woocommerce_collected_cents'] > PHP_INT_MAX - $day['square_collected_cents'] || $day['woocommerce_refunded_cents'] > PHP_INT_MAX - $day['square_refunded_cents']) {
+        throw new \RuntimeException('Combined daily cashflow total exceeds the supported amount range.');
+      }
+      $day['total_collected_cents'] = $day['square_collected_cents'] + $day['woocommerce_collected_cents'];
+      $day['total_refunded_cents'] = $day['square_refunded_cents'] + $day['woocommerce_refunded_cents'];
+      $day['net_cents'] = $day['total_collected_cents'] - $day['total_refunded_cents'];
+    }
+    unset($day);
+    return $days;
+  }
+}
