@@ -9,7 +9,12 @@ namespace RoxyGrosses {
     public static function line_list(string $value): array { return array_values(array_filter(array_map('trim', preg_split('/[\r\n,]+/', $value) ?: []), 'strlen')); }
   }
   final class Store {
-    public static function refund_completion_event(array $refund, string $updated): ?array { return null; }
+    public static ?array $completion_event = null;
+    public static bool $fail_completion_event_read = false;
+    public static function refund_completion_event(array $refund, string $updated): ?array {
+      if (self::$fail_completion_event_read) throw new \RuntimeException('Injected completion-evidence read failure.');
+      return self::$completion_event;
+    }
   }
   final class Square {
     public static array $orders = [];
@@ -99,14 +104,23 @@ namespace {
   $assert($GLOBALS['wc_queries'][0]['date_paid'] === '1790924400...1791010799' && $GLOBALS['wc_queries'][1]['date_created'] === '1790924400...1791010799', 'WooCommerce queries use exact UTC bounds for the report timezone day');
   $assert(\RoxyGrosses\Square::$calls[0] === ['payments', '2026-10-02T07:00:00Z', '2026-10-03T07:00:00Z'], 'Square payment read uses exact UTC boundaries for the selected report-timezone day');
 
+  \RoxyGrosses\Store::$completion_event = ['event_id' => 'refund-event-1', 'event_created_at' => '2026-10-03 03:15:00'];
+  $event_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $assert($event_report['totals']['square_refunded_cents'] === 200 && $event_report['refund_date_bases']['square'] === ['square_refund_completed_event'], 'combined cashflow uses a matched Square refund.updated completion event as its dated refund evidence');
+  \RoxyGrosses\Store::$fail_completion_event_read = true;
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'combined cashflow fails closed when matched Square completion evidence cannot be read');
+  \RoxyGrosses\Store::$fail_completion_event_read = false;
+  \RoxyGrosses\Store::$completion_event = null;
+
+  $provider_call_count_before_invalid_configuration = count(\RoxyGrosses\Square::$calls);
   \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = '';
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'combined report refuses to silently omit WooCommerce collections when gateway allow-list is empty');
   \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = 'stripe';
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-02-30'), 'invalid calendar date fails before provider reads');
-  $assert(count(\RoxyGrosses\Square::$calls) === 2, 'invalid date and missing gateway configuration cause no additional provider reads');
+  $assert(count(\RoxyGrosses\Square::$calls) === $provider_call_count_before_invalid_configuration, 'invalid date and missing gateway configuration cause no additional provider reads');
   \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = 'square_credit_card';
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'Square-backed Woo gateway cannot be added to separately reported Square collections');
-  $assert(count(\RoxyGrosses\Square::$calls) === 2, 'overlapping Square gateway configuration fails before provider reads');
+  $assert(count(\RoxyGrosses\Square::$calls) === $provider_call_count_before_invalid_configuration, 'overlapping Square gateway configuration fails before provider reads');
   \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = 'stripe';
 
   $GLOBALS['wc_queries'] = [];
