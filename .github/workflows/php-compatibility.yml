@@ -54,6 +54,9 @@ jobs:
       - name: Run Grosses import writer regression
         run: php tests/grosses-import-write-regression.php
 
+      - name: Run ticket-sales health regression
+        run: php tests/health-ticket-sales-regression.php
+
       - name: Run advertiser email attachment regression
         run: php tests/grosses-advertiser-email-outbox-regression.php
 
@@ -118,6 +121,7 @@ jobs:
             health-freshness-regression.php
             health-record-read-regression.php
             health-scheduler-outcome-regression.php
+            health-ticket-sales-regression.php
             inventory-decision-regression.php
             inventory-cost-schema-regression.php
             inventory-handler-errors-regression.php

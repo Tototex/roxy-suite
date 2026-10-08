@@ -558,7 +558,16 @@ class Health {
             );
 
             if ($has_product && class_exists('\RoxyST\Sales')) {
-                $sold    = \RoxyST\Sales::sold_qty_for_showing($next_id);
+                try {
+                    $sold = \RoxyST\Sales::sold_qty_for_showing($next_id);
+                    if (!is_int($sold) || $sold < 0 || $sold === PHP_INT_MAX) {
+                        throw new \RuntimeException('Ticket sales count could not be verified.');
+                    }
+                } catch (\Throwable $error) {
+                    $items[] = self::item('Tickets sold (next show)', 'Unavailable', self::WARN,
+                        'The ticket sales query could not be verified; this is not a ticket count.');
+                    return $items;
+                }
                 $items[] = self::item(
                     'Tickets sold (next show)',
                     "$sold sold — $next_title",
