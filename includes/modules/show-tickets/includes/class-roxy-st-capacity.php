@@ -217,17 +217,21 @@ class Capacity {
       return self::$subscriber_usage_cache[$cache_key];
     }
 
-    $orders = wc_get_orders([
-      'customer_id' => $user_id,
-      'status'      => ['wc-processing', 'wc-completed'],
-      'limit'       => -1,
-      'return'      => 'ids',
-      'type'        => 'shop_order',
-      'meta_query'  => [[
-        'key'   => '_roxy_contains_showing_' . $showing_id,
-        'value' => '1',
-      ]],
-    ]);
+    try {
+      $orders = wc_get_orders([
+        'customer_id' => $user_id,
+        'status'      => ['wc-processing', 'wc-completed'],
+        'limit'       => -1,
+        'return'      => 'ids',
+        'type'        => 'shop_order',
+        'meta_query'  => [[
+          'key'   => '_roxy_contains_showing_' . $showing_id,
+          'value' => '1',
+        ]],
+      ]);
+    } catch (\Throwable $error) {
+      return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+    }
 
     // This query controls paid entitlement consumption. Treat an unreadable or
     // malformed result as unknown usage, never as an empty purchase history.
@@ -236,30 +240,34 @@ class Capacity {
     }
 
     $used = 0;
-    foreach ($orders as $order) {
-      $order = wc_get_order($order);
-      if (!is_object($order) || !method_exists($order, 'get_items')) {
-        return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
-      }
-      $items = $order->get_items('line_item');
-      if (!is_array($items) || (function_exists('is_wp_error') && is_wp_error($items))) {
-        return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
-      }
-      foreach ($items as $item) {
-        if (!is_object($item) || !method_exists($item, 'get_product_id') || !method_exists($item, 'get_quantity')) {
+    try {
+      foreach ($orders as $order) {
+        $order = wc_get_order($order);
+        if (!is_object($order) || !method_exists($order, 'get_items')) {
           return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
         }
-        $product_id = (int) $item->get_product_id();
-        if ($product_id <= 0) return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
-        if ((int) get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true) !== $showing_id) continue;
-        if ((string) get_post_meta($product_id, ROXY_ST_META_TICKET_TYPE, true) !== 'subscriber') continue;
-        $quantity = $item->get_quantity();
-        if (!is_numeric($quantity) || !is_finite((float) $quantity) || (float) $quantity < 0
-          || floor((float) $quantity) !== (float) $quantity || (float) $quantity > PHP_INT_MAX - $used) {
+        $items = $order->get_items('line_item');
+        if (!is_array($items) || (function_exists('is_wp_error') && is_wp_error($items))) {
           return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
         }
-        $used += (int) $quantity;
+        foreach ($items as $item) {
+          if (!is_object($item) || !method_exists($item, 'get_product_id') || !method_exists($item, 'get_quantity')) {
+            return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+          }
+          $product_id = (int) $item->get_product_id();
+          if ($product_id <= 0) return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+          if ((int) get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true) !== $showing_id) continue;
+          if ((string) get_post_meta($product_id, ROXY_ST_META_TICKET_TYPE, true) !== 'subscriber') continue;
+          $quantity = $item->get_quantity();
+          if (!is_numeric($quantity) || !is_finite((float) $quantity) || (float) $quantity < 0
+            || floor((float) $quantity) !== (float) $quantity || (float) $quantity > PHP_INT_MAX - $used) {
+            return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+          }
+          $used += (int) $quantity;
+        }
       }
+    } catch (\Throwable $error) {
+      return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
     }
 
     return self::$subscriber_usage_cache[$cache_key] = max(0, (int) $used);
