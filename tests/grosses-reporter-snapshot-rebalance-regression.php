@@ -35,7 +35,14 @@ namespace RoxyGrosses {
     public static array $rental = [];
     public static array $updates = [];
     public static bool $fail_update = false;
+    public static int $fail_update_number = 0;
     public static int $report_id = 100;
+    public static function with_concession_allocation_lock(string $date, callable $operation) { return $operation(); }
+    public static function with_concession_allocation_transaction(callable $operation) {
+      $snapshot = [self::$movie,self::$live,self::$rental];
+      try { return $operation(); }
+      catch (\Throwable $error) { [self::$movie,self::$live,self::$rental] = $snapshot; throw $error; }
+    }
     public static function upsert_entries(array $rows, string $mode): array { self::$entry_calls[] = $rows; return ['created'=>count($rows),'updated'=>0,'skipped'=>0]; }
     public static function upsert_live_entries(array $rows, string $mode): array { return ['created'=>count($rows),'updated'=>0,'skipped'=>0]; }
     public static function upsert_history_rows(...$args): array { return []; }
@@ -57,7 +64,7 @@ namespace RoxyGrosses {
     }
     private static function save(string $kind, int $id, array $data): bool {
       self::$updates[] = [$kind, $id, $data];
-      if (self::$fail_update) return false;
+      if (self::$fail_update || (self::$fail_update_number > 0 && count(self::$updates) === self::$fail_update_number)) return false;
       if ($kind === 'movie') foreach (self::$movie as &$rows) foreach ($rows as &$row) if ((int) ($row['id'] ?? 0) === $id) $row = array_merge($row, $data);
       if ($kind === 'live') foreach (self::$live as &$rows) foreach ($rows as &$row) if ((int) ($row['id'] ?? 0) === $id) $row = array_merge($row, $data);
       if ($kind === 'rental') foreach (self::$rental as &$rows) foreach ($rows as &$row) if ((int) ($row['id'] ?? 0) === $id) $row = array_merge($row, $data);
@@ -189,12 +196,13 @@ namespace {
 
   // A storage failure on an unlocked row must abort the allocation explicitly;
   // a locked row remains protected and is skipped rather than treated as failure.
-  \RoxyGrosses\Store::$fail_update = true;
+  $state_before_rollback = [\RoxyGrosses\Store::$movie,\RoxyGrosses\Store::$live,\RoxyGrosses\Store::$rental];
+  \RoxyGrosses\Store::$fail_update_number = count(\RoxyGrosses\Store::$updates) + 2;
   $failed = false;
   try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', ['2038-05-01'])); }
   catch (Throwable $error) { $failed = str_contains($error->getMessage(), 'Could not save the concessions allocation'); }
-  $check($failed, 'unlocked Store update failure is explicit');
-  \RoxyGrosses\Store::$fail_update = false;
+  \RoxyGrosses\Store::$fail_update_number = 0;
+  $check($failed && [\RoxyGrosses\Store::$movie,\RoxyGrosses\Store::$live,\RoxyGrosses\Store::$rental] === $state_before_rollback, 'a later unlocked Store update failure rolls back earlier row mutations in the allocation');
   \RoxyGrosses\Store::$movie['2038-05-01'][0]['is_locked'] = 1;
   $locked_cents = (int) round((float) \RoxyGrosses\Store::$movie['2038-05-01'][0]['concessions_total'] * 100);
   $locked = \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', ['2038-05-01']));

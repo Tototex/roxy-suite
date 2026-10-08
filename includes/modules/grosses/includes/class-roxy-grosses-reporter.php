@@ -1700,7 +1700,10 @@ class Reporter {
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date)) {
       return ['rows' => 0, 'updated' => 0, 'concessions_total' => 0.0];
     }
+    return Store::with_concession_allocation_lock($report_date, static fn(): array => self::rebalance_concessions_for_date_locked($report_date));
+  }
 
+  private static function rebalance_concessions_for_date_locked(string $report_date): array {
     $reports = [];
     foreach (Store::list_all_entries_for_rebalance('movie', $report_date) as $row) {
       $entry_id = (int) ($row['id'] ?? 0);
@@ -1760,35 +1763,29 @@ class Reporter {
 
     self::apply_concessions_to_reports($reports, $report_date, self::showings_for_date($report_date, 'live'));
 
-    $updated = 0;
-    $concessions_total = 0.0;
-    foreach ($reports as $report) {
-      $entry_id = (int) ($report['_entry_id'] ?? 0);
-      $kind = (string) ($report['_entry_kind'] ?? '');
-      $concessions = round((float) ($report['concessions_total'] ?? 0), 2);
-      if ($entry_id <= 0) {
-        continue;
-      }
-
-      if (!empty($report['_is_locked'])) {
+    return Store::with_concession_allocation_transaction(static function () use ($reports, $report_date): array {
+      $updated = 0;
+      $concessions_total = 0.0;
+      foreach ($reports as $report) {
+        $entry_id = (int) ($report['_entry_id'] ?? 0);
+        $kind = (string) ($report['_entry_kind'] ?? '');
+        $concessions = round((float) ($report['concessions_total'] ?? 0), 2);
+        if ($entry_id <= 0) continue;
+        if (!empty($report['_is_locked'])) {
+          $concessions_total += $concessions;
+          continue;
+        }
+        $saved = $kind === 'movie'
+          ? Store::update_entry($entry_id, ['concessions_total' => $concessions])
+          : ($kind === 'live'
+            ? Store::update_live_entry($entry_id, ['concessions_total' => $concessions])
+            : Store::update_rental_entry($entry_id, ['concessions_total' => $concessions]));
+        if (!$saved) throw new \RuntimeException('Could not save the concessions allocation for ' . $report_date . '. The report refresh was not completed.');
+        $updated++;
         $concessions_total += $concessions;
-        continue;
       }
-      $saved = $kind === 'movie'
-        ? Store::update_entry($entry_id, ['concessions_total' => $concessions])
-        : ($kind === 'live'
-          ? Store::update_live_entry($entry_id, ['concessions_total' => $concessions])
-          : Store::update_rental_entry($entry_id, ['concessions_total' => $concessions]));
-      if (!$saved) throw new \RuntimeException('Could not save the concessions allocation for ' . $report_date . '. The report refresh was not completed.');
-      $updated++;
-      $concessions_total += $concessions;
-    }
-
-    return [
-      'rows' => count($reports),
-      'updated' => $updated,
-      'concessions_total' => round($concessions_total, 2),
-    ];
+      return ['rows' => count($reports), 'updated' => $updated, 'concessions_total' => round($concessions_total, 2)];
+    });
   }
 
   private static function apply_concessions_to_reports(array &$reports, string $report_date, array $showings = []): void {

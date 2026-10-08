@@ -4,6 +4,8 @@ namespace RoxyGrosses;
 if (!defined('ABSPATH')) exit;
 
 class Store {
+  private static ?string $concession_allocation_lock = null;
+  private static int $concession_allocation_owner = 0;
   public const TABLE = 'roxy_grosses_reports';
   public const LOG_TABLE = 'roxy_grosses_logs';
   public const HISTORY_TABLE = 'roxy_grosses_history';
@@ -431,6 +433,78 @@ class Store {
       if ($wpdb->last_error !== '' || !$row || (!$manual && !empty($row['is_locked']))) return false;
     }
     return true;
+  }
+
+  /** Serialize allocation reads/writes by date so competing pulls use one source snapshot. */
+  public static function with_concession_allocation_lock(string $report_date, callable $operation) {
+    global $wpdb;
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/D', $report_date)) throw new \InvalidArgumentException('Invalid concessions allocation date.');
+    if (self::$concession_allocation_lock !== null) throw new \RuntimeException('A concessions allocation is already active on this connection.');
+    $lock = 'roxy_grosses_alloc_' . substr(hash('sha256', self::entries_table_name() . '|' . $report_date), 0, 24);
+    $owner = (int) $wpdb->get_var('SELECT CONNECTION_ID()');
+    if ($owner <= 0 || $wpdb->last_error !== '') throw new \RuntimeException('Could not establish the concessions allocation database connection.');
+    $claimed = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $lock));
+    if ($wpdb->last_error !== '' || (string) $claimed !== '1') throw new \RuntimeException('A concessions allocation for this date is already running or its lock is unavailable.');
+    self::$concession_allocation_lock = $lock;
+    self::$concession_allocation_owner = $owner;
+    try {
+      self::assert_concession_allocation_owner();
+      return $operation();
+    } finally {
+      if ((int) $wpdb->get_var('SELECT CONNECTION_ID()') === $owner
+        && (int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', $lock)) === $owner) {
+        $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock));
+      }
+      self::$concession_allocation_lock = null;
+      self::$concession_allocation_owner = 0;
+    }
+  }
+
+  /** Run all daily allocation writes atomically, only on verified InnoDB tables. */
+  public static function with_concession_allocation_transaction(callable $operation) {
+    global $wpdb;
+    self::assert_concession_allocation_owner();
+    $tables = [self::entries_table_name(), self::live_entries_table_name(), self::rental_entries_table_name()];
+    foreach ($tables as $table) {
+      $status = $wpdb->get_row($wpdb->prepare('SHOW TABLE STATUS WHERE Name = %s', $table), ARRAY_A);
+      if ($wpdb->last_error !== '' || !is_array($status) || strcasecmp((string) ($status['Engine'] ?? ''), 'InnoDB') !== 0) {
+        throw new \RuntimeException('Concessions allocation requires verified InnoDB report tables; no rows were changed.');
+      }
+    }
+    $in_transaction = $wpdb->get_var('SELECT @@in_transaction');
+    if ($wpdb->last_error !== '' || !in_array((string) $in_transaction, ['0', '1'], true) || (string) $in_transaction !== '0') {
+      throw new \RuntimeException('The database transaction state is unavailable or already active; no concessions rows were changed.');
+    }
+    $owner = self::$concession_allocation_owner;
+    if ($wpdb->query('START TRANSACTION') === false) throw new \RuntimeException('Could not start the concessions allocation transaction.');
+    $started = true;
+    try {
+      self::assert_concession_allocation_owner();
+      if ((string) $wpdb->get_var('SELECT @@in_transaction') !== '1' || $wpdb->last_error !== '') throw new \RuntimeException('The concessions transaction could not be verified.');
+      $result = $operation();
+      self::assert_concession_allocation_owner();
+      if ($wpdb->query('COMMIT') === false) throw new \RuntimeException('The concessions allocation commit could not be confirmed.');
+      $started = false;
+      self::assert_concession_allocation_owner();
+      if ((string) $wpdb->get_var('SELECT @@in_transaction') !== '0' || $wpdb->last_error !== '') throw new \RuntimeException('The concessions allocation commit state could not be verified.');
+      return $result;
+    } catch (\Throwable $error) {
+      if ($started && (int) $wpdb->get_var('SELECT CONNECTION_ID()') === $owner) {
+        $rollback = $wpdb->query('ROLLBACK');
+        if ($rollback === false) throw new \RuntimeException('Concessions allocation failed and rollback could not be confirmed; inspect this date before retrying.');
+      }
+      throw $error;
+    }
+  }
+
+  private static function assert_concession_allocation_owner(): void {
+    global $wpdb;
+    if (self::$concession_allocation_lock === null || self::$concession_allocation_owner <= 0
+      || (int) $wpdb->get_var('SELECT CONNECTION_ID()') !== self::$concession_allocation_owner
+      || (int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', self::$concession_allocation_lock)) !== self::$concession_allocation_owner
+      || $wpdb->last_error !== '') {
+      throw new \RuntimeException('The concessions allocation lost its database owner; no further rows were changed.');
+    }
   }
 
   private static function ensure_live_presale_column(): bool {

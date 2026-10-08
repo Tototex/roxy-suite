@@ -114,14 +114,29 @@ try {
   $check($result::$calls === $dates, 'unique sorted target/lookback dates served the actual allocation');
   $method = new ReflectionMethod($reporter, 'rebalance_concessions_for_date');
   $method->setAccessible(true);
+  $fixture_concession_totals = static function () use ($wpdb, $store, $date): array {
+    $totals = [];
+    foreach ([$store::entries_table_name(), $store::live_entries_table_name(), $store::rental_entries_table_name()] as $table) {
+      $rows = $wpdb->get_results($wpdb->prepare("SELECT id,concessions_total FROM `{$table}` WHERE report_date=%s ORDER BY id", $date), ARRAY_A);
+      if ($wpdb->last_error !== '' || !is_array($rows)) throw new RuntimeException('Could not read private allocation rollback snapshot.');
+      $totals[] = $rows;
+    }
+    return $totals;
+  };
+  $before_failed_allocation = $fixture_concession_totals();
 
-  // Force the next private-table UPDATE to fail. The actual Reporter must throw,
-  // and the SQL guard leaves the already-persisted amounts unchanged.
-  $failed_once = false;
-  $fault = static function (string $sql) use (&$failed_once, $store): string {
-    if (!$failed_once && stripos(ltrim($sql), 'UPDATE ') === 0 && strpos($sql, $store::entries_table_name()) !== false) {
-      $failed_once = true;
-      return 'UPDATE `' . $store::entries_table_name() . '` SET';
+  // Fail the second update after the first table has been changed in the open
+  // transaction. The actual Reporter must roll the entire day back.
+  $updates_seen = 0;
+  $fault = static function (string $sql) use (&$updates_seen, $store): string {
+    if (stripos(ltrim($sql), 'UPDATE ') === 0) {
+      foreach ([$store::entries_table_name(), $store::live_entries_table_name(), $store::rental_entries_table_name()] as $table) {
+        if (strpos($sql, $table) !== false) {
+          $updates_seen++;
+          if ($updates_seen === 2) return 'UPDATE `' . $table . '` SET';
+          break;
+        }
+      }
     }
     return $sql;
   };
@@ -130,12 +145,14 @@ try {
   try { $result::with_sale_snapshot(static fn() => $method->invoke(null, $date)); }
   catch (Throwable $error) { $thrown = strpos($error->getMessage(), 'Could not save the concessions allocation') !== false; }
   finally { remove_filter('query', $fault); }
-  $check($failed_once && $thrown, 'real Store update failure aborts the actual rebalance explicitly');
+  $check($updates_seen === 2 && $thrown && $fixture_concession_totals() === $before_failed_allocation, 'later real Store update failure rolls back an earlier private-table allocation write');
   $movie_table = $store::entries_table_name();
   if ($wpdb->query($wpdb->prepare("UPDATE `{$movie_table}` SET is_locked=1, concessions_total=99.33 WHERE report_date=%s", $date)) === false) throw new RuntimeException('Cannot set private protection fixture.');
-  $result::with_sale_snapshot(static fn() => $method->invoke(null, $date));
+  $protected_refresh_failed = false;
+  try { $result::with_sale_snapshot(static fn() => $method->invoke(null, $date)); }
+  catch (Throwable $error) { $protected_refresh_failed = strpos($error->getMessage(), 'Locked concessions exceed') !== false; }
   $protected = $wpdb->get_var($wpdb->prepare("SELECT concessions_total FROM `{$movie_table}` WHERE report_date=%s", $date));
-  $check($wpdb->last_error === '' && (string)$protected === '99.33', 'actual manager-protected movie allocation remains unchanged');
+  $check($protected_refresh_failed && $wpdb->last_error === '' && (string)$protected === '99.33', 'actual protected amount above the source total is reported and preserved');
   $check($before === $digest(), 'all original movie/live/rental records remain unchanged');
   echo "Passed {$count} actual private MySQL allocation checks; production tables were read only.\n";
 } finally {
