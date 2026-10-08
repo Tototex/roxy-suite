@@ -39,3 +39,6 @@ jobs:
 
       - name: Run Will Call regression
         run: php tests/will-call-regression.php "$GITHUB_WORKSPACE"
+
+      - name: Run Grosses log-result regression
+        run: php tests/grosses-log-result-regression.php
