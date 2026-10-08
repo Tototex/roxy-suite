@@ -14,6 +14,8 @@ The Show Tickets admin weekend anchor now uses the same strict validator, preven
 
 The Show Tickets admin list date column now uses that validator as well; invalid historical metadata renders as unavailable rather than displaying a normalized date.
 
+Ticket-product synchronization and generated product labels now require the same validated showing timestamp. Customer-facing showing cards, the single-show date label, and the SEO title also use that timestamp and wp_date() so invalid legacy dates are omitted and valid timestamps are rendered once in the site timezone.
+
 ## Regression coverage
 
 `tests/schedule-child-status-regression.php` covers impossible single and price-change dates preserving prior metadata, valid leap-day persistence, invalid batch rejection without partial child creation, seven-day price-date shifts across both Los Angeles DST transitions, the actual duplicate action writing shifted dates to the generated showing, admin weekend-anchor validation, and safe date-column rendering. `tests/will-call-regression.php` covers strict local date parsing for leap day, impossible dates, DST gaps, and ambiguous fall-back time. Social schedule tests also reject impossible dates. Fixture transients are reset between cases. Additional scalar guards prevent malformed arrays from generating string-cast warnings.
@@ -21,5 +23,7 @@ The Show Tickets admin list date column now uses that validator as well; invalid
 The installed WordPress duplicate fixture (`tests/ticket-weekend-duplicate-wordpress.php`) was updated to expect the shifted scheduled price dates for both DST scenarios. It requires the private WP-CLI fixture environment and was not executed in this local hosted-CI pass.
 
 ## Verification boundary
+
+Follow-up verification: hosted run 37738638386 passes tracked PHP lint on PHP 8.0–8.4 and the full isolated regression suite on PHP 8.3. This run includes the new malformed-date product synchronization and SEO-title assertions and the strict site-timezone public date rendering changes.
 
 `git diff --check` passes. Hosted run 37738150983 passes all tracked-PHP syntax checks on PHP 8.0–8.4 and the complete 71-program isolated regression suite on PHP 8.3, including the actual duplicate action writing the shifted price dates, malformed source-date and admin weekend-anchor rejection, safe admin date rendering, Will Call strict parsing, and existing Social invalid-date checks. The installed WordPress fixture was syntax-checked but not executed in the hosted isolated environment; no production deployment or live data change was made. The earlier date-validation attempt exposed a missing fixture stub, which was added and verified in successful run 37736678490.

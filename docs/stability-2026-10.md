@@ -90,6 +90,8 @@ Refund attribution confirmed 2026-10-06: later Square ticket refunds correct ori
 | S9 | Resolved | Social and Grosses authenticated versioned encryption; crypto outage preserves existing settings, corrupted/key-rotated credentials fail closed with reconnect notices. Legacy CBC/old plaintext migrated using actual SQL compare-and-swap; 15 Social/7 Grosses crypto checks, disabled-crypto fixtures, 7 Social/8 Grosses MySQL checks pass. Live decoded credentials preserved, other Grosses settings unchanged, Square locations read succeeds; no credentials printed. |
 | S10 | In progress | Checkpoint 62 closes the reviewed Hangar thumbnail-origin/content boundary and disables credential-login redirects; 37 isolated actual-class checks, 49 broader programs and installed read-only provider thumbnail compatibility pass. Background video work, repeated login optimization and other transport paths remain open; see Hangar-thumbnail checkpoint. |
 
+T16 follow-up (2026-10-08): Product synchronization and public showing labels now use strict validated timestamps. Hosted run 37738638386 passes the complete PHP 8.0–8.4 lint matrix and PHP 8.3 isolated regression suite, including malformed-date sync/SEO checks. Installed private WP-CLI duplicate fixture and public/admin browser routes remain unverified; this branch is not deployed.
+
 ## Deferred opportunities
 
 - Advertising contracts/tracking on the website, monthly reporting, renewal management, and permission-based outreach: explicitly requested for follow-up after stability. Automatic renewal terms and payment authorization require a separate design review.
