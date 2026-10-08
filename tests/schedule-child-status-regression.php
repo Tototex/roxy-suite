@@ -148,6 +148,13 @@ namespace {
     check_schedule(($GLOBALS['schedule_meta'][$source->ID]['_roxy_start']??'')==='2032-02-29T18:30','valid leap-day showing time is retained exactly as local wall time');
   });
 
+  schedule_test('weekend admin selection rejects impossible and DST-gap local dates', function() {
+    $anchor=new \ReflectionMethod(\RoxyST\CPT::class,'weekend_anchor_from_start'); $anchor->setAccessible(true);
+    check_schedule($anchor->invoke(null,'2026-02-30T19:30')===null,'impossible saved date has no weekend anchor');
+    check_schedule($anchor->invoke(null,'2026-03-08T02:30')===null,'nonexistent spring DST time has no weekend anchor');
+    check_schedule($anchor->invoke(null,'2026-03-06T19:30') instanceof \DateTimeImmutable,'valid Friday retains local weekend anchor');
+  });
+
   schedule_test('one invalid schedule row rejects the entire schedule batch', function() {
     $source=reset_schedule_fixture('draft',false);
     $_POST['roxy_schedule_date'][1]='2026-02-30';

@@ -817,9 +817,8 @@ class CPT {
 
 
   private static function weekend_anchor_from_start(string $start): ?\DateTimeImmutable {
-    if ($start === '') {
-      return null;
-    }
+    $start = self::validated_local_datetime($start);
+    if ($start === null) return null;
     try {
       $dt = (new \DateTimeImmutable($start, wp_timezone()))->setTimezone(wp_timezone())->setTime(0, 0);
     } catch (\Exception $e) {
