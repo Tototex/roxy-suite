@@ -10,7 +10,7 @@ permissions:
 jobs:
   social-database-fixtures:
     name: Social lifecycle private-MySQL fixtures
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       mysql:
         image: mysql:8.0
@@ -26,7 +26,7 @@ jobs:
           --health-retries=20
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -79,7 +79,7 @@ jobs:
 
   lint:
     name: PHP ${{ matrix.php }} syntax
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -87,7 +87,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
