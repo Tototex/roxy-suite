@@ -26,6 +26,8 @@ The initial guarded Cashflow probe verified `PAYMENTS_READ` access on October 7 
 
 Read-only ticket-list smoke (2026-10-08): the live `/tickets/` page rendered upcoming movie and live-show listings through November 1, with ticket tiers, scheduled times, member ticket controls, and the scheduled-price notice. All quantities remained zero; no cart, checkout, or order was created. This verifies rendering only, not purchase/seat-race behavior.
 
+Cross-module JavaScript follow-up (2026-10-08): Node 24 syntax-checked all 18 tracked `.js`/`.cjs` files. Six self-contained test programs passed for Will Call queue/labels/admission controls, Social media picker rendering, Member Door Mode admission/Undo interactions, Event Booking asset/pricing helpers, release-manifest guards, and read-only deployment-manifest generation. Browser-launch tests and PHP-rendered browser tests were not included in this local run; no live site, payment, order, or production record was touched.
+
 Social media-import follow-up (2026-10-08): Hangar featured-image import now requires the Hangar asset reference and featured-image assignment to read back successfully before reporting success. A failed assignment preserves the prior image and removes only the newly imported unattached file. Hangar social-asset imports verify both temporary-cleanup and asset-identity markers before linking the file to a draft. Eight isolated persistence checks and the full PHP 8.0–8.4 syntax/PHP 8.3 cross-module workflow pass in [run 37808741768](https://github.com/Tototex/roxy-suite/actions/runs/37808741768). These changes are branch-only and do not verify the broader attachment replacement/cleanup lifecycle in S7.
 
 | ID | State | Evidence / remaining verification |
