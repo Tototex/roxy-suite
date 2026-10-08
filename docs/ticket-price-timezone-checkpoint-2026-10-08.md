@@ -1,0 +1,9 @@
+# Scheduled ticket price timezone checkpoint — 2026-10-08
+
+Scheduled live-tier price activation and its customer countdown previously parsed saved local date/time strings with PHP's process timezone. On a host running UTC while the WordPress site uses America/Los_Angeles, that could move the effective price boundary and show an inaccurate countdown.
+
+`Products` now parses supported local timestamp formats strictly in the WordPress site timezone, honors explicit legacy timezone suffixes, and rejects invalid or normalized wall times (including a daylight-saving gap). Active-price selection and the frontend countdown use the same parsed boundary and the site-local current time. This changes only the interpretation of scheduled price timestamps; it does not change stored prices, scheduled times, ticket orders, or checkout records.
+
+Verification: ticket cart-pricing regressions pass, including an explicit UTC PHP process with a Pacific site-time boundary, exact boundary activation, consistent display flags, and rejection of a nonexistent DST wall time. All 77 isolated cross-module regressions and syntax checks for 259 tracked PHP files pass locally under PHP 8.3.35. Hosted PHP 8.0–8.4 syntax and PHP 8.3 full-suite verification are pending on the pushed commit. No production change was made.
+
+Remaining: verify the timestamp rendering on the deployed ticket page and exercise the admin schedule form across DST in a WordPress fixture/live-safe environment. This checkpoint does not certify PHP runtime behavior across all supported versions or third-party price filters.

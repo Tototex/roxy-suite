@@ -16,6 +16,8 @@ namespace {
   function get_post_type($post_id) { return $GLOBALS['ticket_test_post_types'][$post_id] ?? false; }
   function current_time($type) { return $type === 'timestamp' ? $GLOBALS['ticket_test_now'] : gmdate('Y-m-d H:i:s', $GLOBALS['ticket_test_now']); }
   function get_option($key, $default = false) { return $GLOBALS['ticket_test_options'][$key] ?? $default; }
+  function wp_timezone() { return new \DateTimeZone((string) get_option('timezone_string', 'UTC') ?: 'UTC'); }
+  function current_datetime() { return (new \DateTimeImmutable('@' . $GLOBALS['ticket_test_now']))->setTimezone(wp_timezone()); }
   function wp_parse_args($args, $defaults = []) { return array_merge($defaults, is_array($args) ? $args : []); }
   function wc_get_price_decimals() { return 2; }
   function wc_price($price) { return '$' . number_format((float)$price, 2, '.', ''); }
@@ -94,6 +96,22 @@ namespace {
     ticket_check($product->get_price()===30.0 && count(notices())===2,'later distinct transition should notify once');
     ticket_check(strpos(notices()[1][0],'$25.00')!==false && strpos(notices()[1][0],'$30.00')!==false,'later notice should use previous accepted baseline');
     clear_notices();
+  });
+
+  ticket_test('scheduled live prices use site-local wall time independent of PHP timezone', function() {
+    date_default_timezone_set('UTC');
+    $GLOBALS['ticket_test_options']['timezone_string']='America/Los_Angeles';
+    $sid=508;
+    $GLOBALS['ticket_test_meta'][$sid]['_roxy_live_price_1']='20';
+    $GLOBALS['ticket_test_meta'][$sid]['_roxy_live_future_price_1']='25';
+    $GLOBALS['ticket_test_meta'][$sid]['_roxy_live_change_at_1']='2030-04-05T18:00';
+    set_test_time('2030-04-06 00:59:59 UTC');
+    ticket_check(\RoxyST\Products::get_live_tier_active_price($sid,1)===20.0,'UTC process time before the local price boundary keeps the base price');
+    set_test_time('2030-04-06 01:00:00 UTC');
+    ticket_check(\RoxyST\Products::get_live_tier_active_price($sid,1)===25.0,'site-local price boundary activates at the matching UTC instant');
+    $display=\RoxyST\Products::get_live_tier_display_price($sid,1);
+    ticket_check(!empty($display['is_scheduled']) && !empty($display['is_future_active']),'display flags use the same validated site-local boundary');
+    ticket_check(\RoxyST\Products::parse_live_price_change_at('2026-03-08T02:30')===null,'nonexistent daylight-saving wall time is rejected rather than normalized');
   });
 
   ticket_test('applies current movie settings prices and subscriber remains free', function() {

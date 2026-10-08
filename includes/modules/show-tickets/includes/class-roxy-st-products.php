@@ -222,12 +222,42 @@ class Products {
       return (float) $base;
     }
 
-    $change_ts = strtotime($change_at);
-    if (!$change_ts) {
+    $change_at_local = self::parse_live_price_change_at($change_at);
+    if (!$change_at_local) {
       return (float) $base;
     }
 
-    return current_time('timestamp') >= $change_ts ? (float) $future : (float) $base;
+    $now = function_exists('current_datetime') ? current_datetime() : new \DateTimeImmutable('now', self::site_timezone());
+    return $now >= $change_at_local ? (float) $future : (float) $base;
+  }
+
+  /** Parse saved wall-clock prices in the WordPress site timezone, not the PHP process timezone. */
+  public static function parse_live_price_change_at(string $raw): ?\DateTimeImmutable {
+    $raw = trim($raw);
+    if ($raw === '') return null;
+    $timezone = self::site_timezone();
+    foreach ([['!Y-m-d\\TH:i', 'Y-m-d\\TH:i'], ['!Y-m-d H:i:s', 'Y-m-d H:i:s'], ['!Y-m-d H:i', 'Y-m-d H:i']] as [$format, $round_trip]) {
+      $value = \DateTimeImmutable::createFromFormat($format, $raw, $timezone);
+      $errors = \DateTimeImmutable::getLastErrors();
+      if ($value && (!$errors || (!$errors['warning_count'] && !$errors['error_count'])) && $value->format($round_trip) === $raw) return $value;
+    }
+    // Legacy records can contain an explicit timezone suffix. Honor it instead of
+    // reinterpreting those values as site-local wall time.
+    if (!preg_match('/(?:Z|UTC|[+-]\d{2}:?\d{2})$/i', $raw)) return null;
+    try {
+      $value = new \DateTimeImmutable($raw);
+      $errors = \DateTimeImmutable::getLastErrors();
+      return (!$errors || (!$errors['warning_count'] && !$errors['error_count'])) ? $value : null;
+    } catch (\Throwable $error) {
+      return null;
+    }
+  }
+
+  private static function site_timezone(): \DateTimeZone {
+    if (function_exists('wp_timezone')) return wp_timezone();
+    $name = (string) get_option('timezone_string');
+    try { return new \DateTimeZone($name !== '' ? $name : 'UTC'); }
+    catch (\Throwable $error) { return new \DateTimeZone('UTC'); }
   }
 
   public static function get_live_tier_display_price(int $showing_id, int $tier): array {
@@ -235,14 +265,17 @@ class Products {
     $future = (float) get_post_meta($showing_id, '_roxy_live_future_price_' . $tier, true);
     $change_at = (string) get_post_meta($showing_id, '_roxy_live_change_at_' . $tier, true);
     $active = self::get_live_tier_active_price($showing_id, $tier);
+    $change_datetime = self::parse_live_price_change_at($change_at);
+    $now = function_exists('current_datetime') ? current_datetime() : new \DateTimeImmutable('now', self::site_timezone());
+    $has_future_price = $future_raw = get_post_meta($showing_id, '_roxy_live_future_price_' . $tier, true);
 
     return [
       'active' => $active,
       'base' => $base,
       'future' => $future,
       'change_at' => $change_at,
-      'is_scheduled' => (($future_raw = get_post_meta($showing_id, '_roxy_live_future_price_' . $tier, true)) !== '' && $change_at !== '' && strtotime($change_at)),
-      'is_future_active' => (($future_raw = get_post_meta($showing_id, '_roxy_live_future_price_' . $tier, true)) !== '' && (float) $active === (float) $future && $change_at !== '' && current_time('timestamp') >= strtotime($change_at)),
+      'is_scheduled' => ($has_future_price !== '' && $change_datetime instanceof \DateTimeImmutable),
+      'is_future_active' => ($has_future_price !== '' && $change_datetime instanceof \DateTimeImmutable && $now >= $change_datetime),
     ];
   }
 

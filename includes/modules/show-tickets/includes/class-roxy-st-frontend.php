@@ -373,10 +373,11 @@ class Frontend {
       return '';
     }
 
-    $change_ts = strtotime($change_at);
-    if (!$change_ts) return '';
+    $change_datetime = Products::parse_live_price_change_at($change_at);
+    if (!$change_datetime) return '';
 
-    $delta = max(0, $change_ts - current_time('timestamp'));
+    $now = function_exists('current_datetime') ? current_datetime() : new \DateTimeImmutable('now', function_exists('wp_timezone') ? wp_timezone() : new \DateTimeZone('UTC'));
+    $delta = max(0, $change_datetime->getTimestamp() - $now->getTimestamp());
     if ($delta <= 0) return '';
 
     if ($delta >= DAY_IN_SECONDS) {
