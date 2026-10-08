@@ -4,6 +4,7 @@ namespace RoxyST {
     final class CPT { public const POST_TYPE = 'roxy_showing'; }
     final class Products { public static function ensure_products_for_showing($id): void {} }
     final class Tickets { public static function sync_order_tickets($id): void {} }
+    final class Settings { public static function get_price(string $key, float $fallback): float { return (float) $fallback; } }
     final class Issuance {
         public static bool $busy = false;
         public static int $released = 0;
@@ -77,23 +78,42 @@ namespace {
         public function get_token() { return 'not-a-real-token'; }
     }
     final class WC_Payment_Tokens { public static function get_customer_tokens($user_id) { return [new FixtureToken()]; } }
-    final class FixtureProduct { public $id; public function __construct($id) { $this->id = $id; } }
+    final class FixtureProduct { public $id; public function __construct($id) { $this->id = $id; } public function get_tax_class() { return ''; } public function get_tax_status() { return 'none'; } }
     final class FixtureOrderItem {
-        private $product; private $qty;
+        private $product; private $qty; private $subtotal = 0; private $total = 0; private $taxes = [];
         public function __construct($product, $qty) { $this->product = $product; $this->qty = $qty; }
         public function get_product_id() { return $this->product; }
+        public function get_product() { return new FixtureProduct($this->product); }
         public function get_quantity() { return $this->qty; }
+        public function set_subtotal($value) { $this->subtotal = $value; }
+        public function set_total($value) { $this->total = $value; }
+        public function set_taxes($value) { $this->taxes = ['subtotal'=>[], 'total'=>[]]; }
+        public function get_subtotal() { return $this->subtotal; }
+        public function get_total() { return $this->total; }
+        public function get_taxes() { return $this->taxes; }
+        public function get_total_tax() { return 0; }
+        public function get_subtotal_tax() { return 0; }
+        public function save() {}
     }
     class WC_Order {
-        public $id = 7001; public $customer_id = 77; public $saved = false; public $events = []; public $lines = []; public $completed = 0; public $meta = []; public $paid = false;
+        public $id = 7001; public $customer_id = 77; public $saved = false; public $events = []; public $lines = []; public $completed = 0; public $meta = []; public $paid = false; public $currency = 'USD';
         public function add_product($product, $qty) { $this->lines[] = new FixtureOrderItem($product->id, $qty); return count($this->lines); }
-        public function get_items($type = 'line_item') { return $this->lines; }
+        public function get_items($type = 'line_item') { return $type === 'line_item' ? $this->lines : []; }
         public function get_item($id) { return $this->lines[$id - 1] ?? null; }
         public function add_meta_data($key, $value, $unique = false) { $this->meta[$key] = $value; }
         public function get_meta($key, $single = true) { return $this->meta[$key] ?? ''; }
         public function get_customer_id() { return $this->customer_id; }
+        public function set_currency($value) { $this->currency = $value; }
+        public function get_currency() { return $this->currency; }
+        public function get_total() { return 0; }
+        public function get_total_tax() { return 0; }
+        public function get_discount_total() { return 0; }
+        public function get_discount_tax() { return 0; }
+        public function get_shipping_total() { return 0; }
+        public function get_shipping_tax() { return 0; }
         public function is_paid() { return $this->paid; }
         public function calculate_totals() { $this->events[] = 'calculate'; }
+        public function update_taxes() { $this->events[] = 'update_taxes'; }
         public function save() { $this->saved = true; $this->events[] = 'save'; }
         public function set_created_via($value) {}
         public function set_payment_method($value) {}
@@ -109,6 +129,7 @@ namespace {
         public bool $list_error = false;
         public bool $final_update_error = false;
         public bool $lose_insert_response = false;
+        public array $update_calls = [];
         private $locked = false; private $connection = 51;
         public function prepare($sql, ...$args) {
             if (count($args) === 1 && is_array($args[0])) $args = $args[0];
@@ -157,7 +178,7 @@ namespace {
         }
         public function insert($table, $data) { $this->insert_id++; $data['id']=$this->insert_id; $this->rows[$this->insert_id] = $data; $this->outstanding += (int) $data['subscriber_qty']; return 1; }
         public function get_results($sql, $output = null) { if ($this->list_error) { $this->last_error = 'Fixture list read failed'; return null; } return array_values($this->rows); }
-        public function update($table, $data, $where) { if ($this->final_update_error && ($data['status'] ?? '') === 'charged') { $this->last_error = 'Fixture final result write failure'; return false; } $id=(int)($where['id']??0); if(isset($this->rows[$id]))$this->rows[$id]=array_merge($this->rows[$id],$data); return 1; }
+        public function update($table, $data, $where) { $this->update_calls[] = [$table,$data,$where]; if ($this->final_update_error && ($data['status'] ?? '') === 'charged') { $this->last_error = 'Fixture final result write failure'; return false; } $id=(int)($where['id']??0); if(isset($this->rows[$id]))$this->rows[$id]=array_merge($this->rows[$id],$data); return 1; }
         public function is_locked() { return $this->locked; }
     }
 
@@ -166,6 +187,7 @@ namespace {
     require $root . '/includes/modules/requested-showings/includes/repository.php';
     require $root . '/includes/modules/requested-showings/includes/class-roxy-rs-cpt.php';
     require $root . '/includes/modules/requested-showings/includes/class-roxy-rs-settings.php';
+    require $root . '/includes/modules/requested-showings/includes/class-roxy-rs-agreement.php';
     require $root . '/includes/modules/show-tickets/includes/class-roxy-st-capacity.php';
     require $root . '/includes/modules/requested-showings/includes/class-roxy-rs-conversion.php';
     require $root . '/includes/modules/requested-showings/includes/class-roxy-rs-frontend.php';
@@ -181,7 +203,7 @@ namespace {
     $GLOBALS['fixture_order_creates'] = 0;
     $GLOBALS['fixture_order'] = null;
     $GLOBALS['fixture_payment_calls'] = 0;
-    $GLOBALS['fixture_options'] = ['roxy_rs_settings'=>[]];
+    $GLOBALS['fixture_options'] = ['roxy_rs_settings'=>[], 'roxy_st_settings'=>['general_price'=>'12','discount_price'=>'8','matinee_price'=>'8']];
 
     function wcs_get_users_subscriptions($user_id) {
         if ($GLOBALS['fixture_subscription_error']) throw new \RuntimeException('fixture WCS unavailable');
@@ -208,6 +230,8 @@ namespace {
     function get_transient($key) { return $GLOBALS['fixture_transients'][$key] ?? false; }
     function set_transient($key, $value, $ttl) { $GLOBALS['fixture_transients'][$key] = $value; return true; }
     function wp_json_encode($value) { return json_encode($value); }
+    function wc_format_decimal($value, $dp = false, $trim_zeros = false) { return number_format((float) $value, is_numeric($dp) ? (int) $dp : 2, '.', ''); }
+    function wp_parse_args($args, $defaults = []) { return array_merge((array) $defaults, (array) $args); }
     function get_permalink($id = 0) { return 'https://fixture.invalid/request/' . $id; }
     function home_url($path = '/') { return 'https://fixture.invalid' . $path; }
     function add_query_arg($args, $url) { return $url . '?' . http_build_query($args); }
@@ -216,6 +240,8 @@ namespace {
     function wc_create_order($args = []) { $GLOBALS['fixture_order_creates']++; $GLOBALS['fixture_order'] = new WC_Order(); $GLOBALS['fixture_order']->customer_id=(int)($args['customer_id']??0); return $GLOBALS['fixture_order']; }
     function wc_get_order($id) { return $GLOBALS['fixture_order']; }
     function get_user_by($field, $value) { return false; }
+    function get_woocommerce_currency() { return 'USD'; }
+    function wc_tax_enabled() { return false; }
 
     $checks = 0;
     function check_fixture($condition, $label) { global $checks; if (!$condition) throw new \RuntimeException('FAIL: ' . $label); $checks++; }
@@ -233,6 +259,7 @@ namespace {
             \RoxyRS\CPT::META_STATUS => 'active',
             \RoxyRS\CPT::META_GENERAL_PRICE => '12',
             \RoxyRS\CPT::META_DISCOUNT_PRICE => '8',
+            \RoxyRS\CPT::META_MATINEE_PRICE => '8',
             \RoxyRS\CPT::META_FUNDING_GOAL => '999999',
             \RoxyRS\CPT::META_SPONSOR_AMOUNT => '999999',
             \RoxyRS\CPT::META_FUNDING_UNIT_VERSION => \RoxyRS\CPT::FUNDING_UNIT_CENTS_V1,
@@ -245,7 +272,10 @@ namespace {
     }
     function seed_conversion_backing($order_id = 0) {
         global $wpdb;
-        $wpdb->rows[1] = ['id'=>1,'request_id'=>501,'user_id'=>77,'woo_order_id'=>$order_id ?: null,'subscriber_qty'=>1,'status'=>'approved'];
+        $backing = ['id'=>1,'request_id'=>501,'user_id'=>77,'woo_order_id'=>$order_id ?: null,'subscriber_qty'=>1,'status'=>'approved','charge_total'=>0,'general_qty'=>0,'discount_qty'=>0,'support_qty'=>0,'sponsor_amount'=>0,'sponsor_ticket_qty'=>0];
+        $quote = \RoxyRS\Agreement::quote(501, 'movie_evening', ['general'=>1200,'discount'=>800,'matinee'=>800], 'USD', false);
+        $backing['agreement_json'] = \RoxyRS\Agreement::build($quote, $backing);
+        $wpdb->rows[1] = $backing;
         $wpdb->insert_id = 1;
     }
     function invoke_backing() {
@@ -294,7 +324,7 @@ namespace {
     reset_fixture([new FixtureSubscription('active', 2)]);
     $wpdb->outstanding = 1; $GLOBALS['wpdb'] = $wpdb; $_POST['subscriber_qty'] = '2';
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'pledge cannot exceed remaining entitlement for request');
-    check_fixture($wpdb->release_count === 1 && !$wpdb->is_locked(), 'excess denial releases verified lease');
+    check_fixture($wpdb->release_count === 1 && !$wpdb->is_locked(), 'pre-lease excess denial leaves no subscriber lease to release');
     reset_fixture([new FixtureSubscription('active', 2)]);
     $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_DISCOUNT_PRICE] = '';
     $_POST['subscriber_qty'] = '1'; invoke_backing();
@@ -306,7 +336,7 @@ namespace {
     check_fixture(count($wpdb->rows) === 1, 'exact retry is idempotent through backing replay key');
     $_POST['subscriber_qty'] = '2';
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 1, 'second distinct pledge respects aggregate outstanding quantity');
-    check_fixture($wpdb->release_count === 2 && !$wpdb->is_locked(), 'distinct excess retry releases verified lease (actual=' . $wpdb->release_count . ',pending=' . count(\RoxyRS\PledgeAttempts::$pending) . ',receipts=' . count(\RoxyRS\PledgeAttempts::$receipts) . ')');
+    check_fixture($wpdb->release_count === 1 && !$wpdb->is_locked(), 'distinct excess retry is denied before acquiring a subscriber lease');
     reset_fixture([new FixtureSubscription('active', 2)]); $wpdb->read_error = true;
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'aggregate-read error fails closed');
     check_fixture($wpdb->release_count === 1 && !$wpdb->is_locked(), 'aggregate read error releases verified lease');
@@ -346,12 +376,12 @@ namespace {
     check_fixture(is_wp_error($result) && $GLOBALS['fixture_order_creates'] === 0, 'conversion checks remaining entitlement before order creation');
     reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing(); \RoxyST\Holds::$allow = false;
     $result = $convert->invoke(null, 501, 801, ['id'=>1,'request_id'=>501,'user_id'=>77,'subscriber_qty'=>1,'charge_total'=>0]);
-    check_fixture(is_wp_error($result) && $GLOBALS['fixture_order_creates'] === 1 && $GLOBALS['fixture_order']->completed === 0, 'failed persisted seat claim blocks no-charge completion');
-    check_fixture((int) ($wpdb->rows[1]['woo_order_id'] ?? 0) === 7001, 'unpaid saved order is linked for safe manager retry');
+    check_fixture(is_wp_error($result) && $GLOBALS['fixture_order_creates'] === 1 && $GLOBALS['fixture_order']->completed === 0, 'failed persisted seat claim blocks no-charge completion (error=' . (is_wp_error($result) ? $result->get_error_message() : 'no') . ',creates=' . $GLOBALS['fixture_order_creates'] . ',completed=' . ($GLOBALS['fixture_order']->completed ?? -1) . ',claims=' . \RoxyST\Holds::$calls . ')');
+    check_fixture((int) ($wpdb->rows[1]['woo_order_id'] ?? 0) === 7001, 'unpaid saved order is linked for safe manager retry (row=' . json_encode($wpdb->rows[1] ?? null) . ',updates=' . json_encode($wpdb->update_calls) . ')');
     reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing();
     $result = $convert->invoke(null, 501, 801, ['id'=>1,'request_id'=>501,'user_id'=>77,'subscriber_qty'=>1,'charge_total'=>0]);
     $events = $GLOBALS['fixture_order']->events;
-    check_fixture($result === 7001 && \RoxyST\Holds::$calls === 1 && array_search('hold_claim', $events, true) < array_search('payment_complete', $events, true), 'persisted ticket hold is claimed before no-charge completion');
+    check_fixture($result === 7001 && \RoxyST\Holds::$calls === 1 && array_search('hold_claim', $events, true) < array_search('payment_complete', $events, true), 'persisted ticket hold is claimed before no-charge completion (result=' . (is_wp_error($result) ? $result->get_error_message() : var_export($result, true)) . ',calls=' . \RoxyST\Holds::$calls . ',events=' . json_encode($events) . ')');
     reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing(7002);
     $GLOBALS['fixture_order'] = new WC_Order(); $GLOBALS['fixture_order']->id = 7002; $GLOBALS['fixture_order']->saved = true; $GLOBALS['fixture_order']->paid = true;
     $GLOBALS['fixture_order']->meta = ['_roxy_rs_request_id'=>501,'_roxy_rs_backing_id'=>1];

@@ -28,6 +28,9 @@ class Square {
                 if (count($items) > 20000) throw new \RuntimeException('Square catalog exceeded the inventory safety limit.');
             }
         }
+        if (!$items) {
+            throw new \RuntimeException('Square returned no inventory variations. No inventory was changed; verify the Square catalog and connection before retrying.');
+        }
         foreach (array_chunk(array_keys($items), 1000) as $ids) {
             $counts = []; $cursor = null; $seen_cursors = []; $seen_counts = [];
             do {

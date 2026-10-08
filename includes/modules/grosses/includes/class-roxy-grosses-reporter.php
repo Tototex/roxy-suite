@@ -64,11 +64,12 @@ class Reporter {
       $return_tab = 'database';
     }
     $mode = !empty($_POST['test_send']) ? 'manual-test' : 'manual';
+    $send_request_id = isset($_POST['send_request_id']) ? sanitize_text_field(wp_unslash((string) $_POST['send_request_id'])) : '';
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date)) {
       self::redirect_with_notice('error', 'Choose a valid report date in YYYY-MM-DD format.', $return_tab);
     }
 
-    $result = self::send_report($report_date, $mode);
+    $result = self::send_report($report_date, $mode, $send_request_id);
     self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], $return_tab);
   }
 
@@ -83,6 +84,7 @@ class Reporter {
     $mode = !empty($_POST['test_send']) ? 'manual-live-test' : 'manual-live-email';
     $recipients = $mode === 'manual-live-test' ? self::test_email_list() : Settings::live_email_list();
     $include_concessions = !empty($_POST['include_concessions']);
+    $send_request_id = isset($_POST['send_request_id']) ? sanitize_text_field(wp_unslash((string) $_POST['send_request_id'])) : '';
 
     if ($entry_id <= 0) {
       self::redirect_with_notice('error', 'Choose a live show to email.', 'settings');
@@ -96,7 +98,7 @@ class Reporter {
       self::redirect_with_notice('error', 'Could not find that live show row.', 'settings');
     }
 
-    $result = self::send_live_grosses_email($row, $recipients, $include_concessions, $mode);
+    $result = self::send_live_grosses_email($row, $recipients, $include_concessions, $mode, $send_request_id);
     self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'settings');
   }
 
@@ -132,7 +134,12 @@ class Reporter {
       self::redirect_with_notice('error', 'Missing saved report ID.', 'database');
     }
 
-    $result = self::send_saved_report($report_id);
+    $intentional_resend = !empty($_POST['intentional_resend']);
+    $send_request_id = isset($_POST['send_request_id']) ? sanitize_text_field(wp_unslash((string) $_POST['send_request_id'])) : '';
+    if ($intentional_resend && !self::valid_send_request_id($send_request_id)) {
+      wp_die('A deliberate resend needs a fresh request identifier. Reopen the report and try again.');
+    }
+    $result = self::send_saved_report($report_id, $send_request_id, $intentional_resend);
     self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'database', ['report_id' => $report_id]);
   }
 
@@ -320,12 +327,12 @@ class Reporter {
     self::redirect_with_notice(!empty($result['success']) ? 'success' : 'error', (string) ($result['message'] ?? 'Automation run finished.'), 'settings');
   }
 
-  public static function send_report(string $report_date, string $mode = 'scheduled'): array {
-    try { return Square::with_sale_snapshot(static fn() => Store::with_refund_review_lock(static fn() => self::send_report_locked($report_date, $mode))); }
+  public static function send_report(string $report_date, string $mode = 'scheduled', string $send_request_id = ''): array {
+    try { return Square::with_sale_snapshot(static fn() => Store::with_refund_review_lock(static fn() => self::send_report_locked($report_date, $mode, $send_request_id))); }
     catch (\Throwable $error) { return ['success' => false, 'message' => $error->getMessage()]; }
   }
 
-  private static function send_report_locked(string $report_date, string $mode): array {
+  private static function send_report_locked(string $report_date, string $mode, string $send_request_id = ''): array {
     try {
       $reports = self::build_reports($report_date);
       if (in_array($mode, ['scheduled', 'scheduled-provisional'], true)) {
@@ -343,15 +350,55 @@ class Reporter {
       // not replace cross-category concession allocations with movie-only ones.
 
       Store::assert_refund_review_lock();
-      $send = self::send_email($reports, $summary, $mode);
+      $daily_key = 'daily-grosses:' . $report_date;
+      if (in_array($mode, ['manual', 'scheduled', 'scheduled-provisional'], true)) {
+        try {
+          $prior_attempt = EmailOutbox::find($daily_key);
+          if ($prior_attempt !== null) {
+            $prior_report_id = max(0, (int) ($prior_attempt['source_id'] ?? 0));
+            $prior_report = $prior_report_id > 0 ? Store::get_report($prior_report_id) : null;
+            if (!$prior_report) throw new \RuntimeException('A prior daily email attempt exists but its saved snapshot is missing. Review the Email Send Guard before proceeding.');
+            $same_snapshot = ($prior_report['summary'] ?? null) === $summary && ($prior_report['rows'] ?? null) === $reports;
+            if ($same_snapshot) {
+              if (($prior_attempt['status'] ?? '') === 'accepted') {
+                $marked = Store::mark_emailed($prior_report_id);
+                $message = 'This logical report was already accepted by WordPress for sending; no duplicate was sent.';
+                if (!$marked) $message .= ' The saved report status could not be reconciled; review report #' . $prior_report_id . ' and the Email Send Guard.';
+                Store::insert_log('send_report', $mode, $prior_report_id, $report_date, true, $message, ['duplicate_suppressed' => true]);
+                return ['success' => true, 'message' => $message, 'rows' => $reports, 'summary' => $summary, 'report_id' => $prior_report_id, 'duplicate_suppressed' => true];
+              }
+              throw new \RuntimeException('A prior email attempt is ' . (string) ($prior_attempt['status'] ?? 'unknown') . ' for this unchanged report. It was not resent; verify the mail-provider outcome.');
+            }
+          }
+        } catch (\Throwable $error) {
+          Store::insert_log('send_report', $mode, null, $report_date, false, $error->getMessage());
+          return ['success' => false, 'message' => $error->getMessage()];
+        }
+      }
+      // Persist the exact snapshot before crossing the mail boundary. If PHP
+      // stops after WordPress accepts the message, the manager can still review it.
+      $report_id = Store::create_report($report_date, max(0, (int) Settings::get('lookback_days', '0')), $mode, 'draft', $summary, $reports);
+      if ($report_id <= 0) throw new \RuntimeException('The report snapshot could not be saved; no email was attempted.');
+      $send = self::send_email($reports, $summary, $mode, null, 'daily-grosses', $report_id, $report_date, $send_request_id);
       if (!$send['success']) {
         throw new \RuntimeException($send['message']);
       }
-
-      $report_id = Store::create_report($report_date, max(0, (int) Settings::get('lookback_days', '0')), $mode, 'emailed', $summary, $reports);
-      if ($report_id > 0) {
-        Store::upsert_history_rows($reports, $mode, $report_id);
+      if (!empty($send['already_accepted'])) {
+        $message = $send['message'] . ' The reviewed snapshot remains saved as draft #' . $report_id . '.';
+        Store::insert_log('send_report', $mode, $report_id, $report_date, true, $message, ['row_count' => count($reports), 'duplicate_suppressed' => true]);
+        Settings::set_status([
+          'sent_at' => wp_date('Y-m-d H:i:s', null, new \DateTimeZone(Settings::get_report_timezone())),
+          'report_date' => $report_date,
+          'mode' => $mode,
+          'message' => $message,
+          'row_count' => count($reports),
+          'gross_total' => (float) ($summary['gross_total'] ?? 0),
+        ]);
+        return ['success' => true, 'message' => $message, 'rows' => $reports, 'summary' => $summary, 'report_id' => $report_id, 'duplicate_suppressed' => true];
       }
+
+      if (!Store::mark_emailed($report_id)) throw new \RuntimeException('WordPress accepted the email, but could not mark the saved report as emailed. Do not resend; review the email outbox and saved report.');
+      Store::upsert_history_rows($reports, $mode, $report_id);
 
       $message = $send['message'];
       if ($report_id > 0) {
@@ -1060,12 +1107,12 @@ class Reporter {
     }
   }
 
-  public static function send_saved_report(int $report_id): array {
-    try { return Store::with_refund_review_lock(static fn() => self::send_saved_report_locked($report_id)); }
+  public static function send_saved_report(int $report_id, string $send_request_id = '', bool $intentional_resend = false): array {
+    try { return Store::with_refund_review_lock(static fn() => self::send_saved_report_locked($report_id, $send_request_id, $intentional_resend)); }
     catch (\Throwable $error) { return ['success' => false, 'message' => $error->getMessage()]; }
   }
 
-  private static function send_saved_report_locked(int $report_id): array {
+  private static function send_saved_report_locked(int $report_id, string $send_request_id = '', bool $intentional_resend = false): array {
     $saved = Store::get_report($report_id);
     if (!$saved) {
       Store::insert_log('send_saved_report', 'saved-report', $report_id, null, false, 'Saved report not found.');
@@ -1089,16 +1136,37 @@ class Reporter {
     }
 
     Store::assert_refund_review_lock();
-    $send = self::send_email($rows, $summary, 'saved-report');
+    if ($intentional_resend && !self::valid_send_request_id($send_request_id)) {
+      return ['success' => false, 'message' => 'A deliberate resend needs a fresh request identifier. Reopen the report and try again.'];
+    }
+    if (!$intentional_resend && ($saved['status'] ?? '') === 'emailed') {
+      return ['success' => false, 'message' => 'This report was already emailed. Create and review a fresh draft for a correction, or use the deliberate resend control.'];
+    }
+    if (!$intentional_resend && !empty($saved['report_end_date'])) {
+      try {
+        $daily_attempt = EmailOutbox::find('daily-grosses:' . (string) $saved['report_end_date']);
+        if ($daily_attempt !== null) {
+          return ['success' => false, 'message' => 'A daily email attempt already exists for this report date (' . (string) ($daily_attempt['status'] ?? 'unknown') . '). It was not sent again. Use the deliberate resend control only after reviewing the prior attempt.'];
+        }
+      } catch (\Throwable $error) {
+        return ['success' => false, 'message' => 'The email outbox could not be checked; the report was not sent.'];
+      }
+    }
+    $outbox_key = $intentional_resend ? 'saved-report-resend:' . $report_id . ':' . $send_request_id : 'saved-report:' . $report_id;
+    $send = self::send_email($rows, $summary, $intentional_resend ? 'saved-report-resend' : 'saved-report', $outbox_key, 'saved-report', $report_id, (string) ($saved['report_end_date'] ?? ''), $send_request_id);
     if (!$send['success']) {
       Store::insert_log('send_saved_report', 'saved-report', $report_id, (string) ($saved['report_end_date'] ?? ''), false, $send['message']);
       self::notify_admin_failure('Saved grosses report failed', (string) ($saved['report_end_date'] ?? ''), 'saved-report', $send['message']);
       return $send;
     }
 
-    Store::mark_emailed($report_id);
+    if (!Store::mark_emailed($report_id)) {
+      return ['success' => false, 'message' => 'WordPress accepted the saved report email, but its status could not be updated. Do not resend; review the email outbox.'];
+    }
 
-    $message = 'Saved report #' . $report_id . ' emailed to ' . implode(', ', Settings::email_list()) . '.';
+    $message = !empty($send['already_accepted'])
+      ? 'Saved report #' . $report_id . ' was already accepted by WordPress for sending; it was not sent again.'
+      : 'Saved report #' . $report_id . ' emailed to ' . implode(', ', Settings::email_list()) . '.';
     Store::insert_log('send_saved_report', 'saved-report', $report_id, (string) ($saved['report_end_date'] ?? ''), true, $message, [
       'row_count' => count($rows),
       'gross_total' => (float) ($summary['gross_total'] ?? 0),
@@ -1988,7 +2056,7 @@ class Reporter {
     return $entries;
   }
 
-  private static function send_email(array $reports, array $summary, string $mode = 'scheduled'): array {
+  private static function send_email(array $reports, array $summary, string $mode = 'scheduled', ?string $send_key = null, string $kind = 'daily-grosses', int $source_id = 0, ?string $report_date = null, string $send_request_id = ''): array {
     $attachment = self::write_csv($reports);
     try {
       $is_test_send = $mode === 'manual-test';
@@ -2031,13 +2099,51 @@ class Reporter {
           );
         }
 
-      $sent = wp_mail($to, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
+      $request_id = self::valid_send_request_id($send_request_id) ? $send_request_id : self::new_send_request_id();
+      if ($send_key === null) {
+        if (in_array($mode, ['manual', 'scheduled', 'scheduled-provisional'], true)
+          && preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $report_date)) {
+          // Manual and scheduled sends for one reporting date share one durable key.
+          $send_key = 'daily-grosses:' . $report_date;
+        } else {
+          // Tests and ad-hoc non-production modes remain independently runnable.
+          $send_key = 'daily-grosses:' . $mode . ':' . $request_id;
+        }
+      }
+      try {
+        $claim = EmailOutbox::claim($send_key, $kind, $source_id, $report_date, [
+          'to' => $to,
+          'subject' => $subject,
+          'body' => $body,
+          'attachment_name' => basename($attachment),
+          'attachment_sha256' => is_file($attachment) ? hash_file('sha256', $attachment) : '',
+        ], ['mode' => $mode, 'request_id' => $request_id]);
+      } catch (\Throwable $error) {
+        return ['success' => false, 'message' => 'Email was not attempted because the durable send guard is unavailable: ' . $error->getMessage()];
+      }
+      if (empty($claim['claimed'])) {
+        $state = (string) ($claim['status'] ?? 'unknown');
+        return $state === 'accepted'
+          ? ['success' => true, 'already_accepted' => true, 'message' => 'This logical report was already accepted by WordPress for sending; no duplicate was sent.']
+          : ['success' => false, 'message' => 'A prior send attempt is ' . $state . '. It was not sent again; review the outbox/logs before taking action.'];
+      }
+
+      try {
+        $sent = wp_mail($to, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
+      } catch (\Throwable $error) {
+        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail threw: ' . substr($error->getMessage(), 0, 1500));
+        return ['success' => false, 'message' => 'Mail handling ended unexpectedly. The send is marked uncertain and will not be retried automatically. Review the outbox before acting.'];
+      }
 
       if (!$sent) {
+        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail returned false; delivery outcome may be ambiguous.');
         return [
           'success' => false,
-          'message' => 'WordPress could not send the grosses email.',
+          'message' => 'WordPress did not confirm the grosses email. The attempt is marked uncertain and will not be retried automatically.',
         ];
+      }
+      if (!EmailOutbox::finish((int) $claim['id'], 'accepted')) {
+        return ['success' => false, 'message' => 'WordPress accepted the email, but the outbox could not record that result. Do not resend; review the outbox before acting.'];
       }
 
       return [
@@ -2049,6 +2155,19 @@ class Reporter {
     }
   }
 
+  private static function valid_send_request_id(string $request_id): bool {
+    return (bool) preg_match('/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i', $request_id);
+  }
+
+  private static function new_send_request_id(): string {
+    if (function_exists('wp_generate_uuid4')) return (string) wp_generate_uuid4();
+    $bytes = random_bytes(16);
+    $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
+    $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
+    $hex = bin2hex($bytes);
+    return substr($hex, 0, 8) . '-' . substr($hex, 8, 4) . '-' . substr($hex, 12, 4) . '-' . substr($hex, 16, 4) . '-' . substr($hex, 20);
+  }
+
   private static function test_email_list(): array {
     $admin_email = Settings::admin_email();
     if ($admin_email === '') {
@@ -2058,7 +2177,7 @@ class Reporter {
     return [$admin_email];
   }
 
-  private static function send_live_grosses_email(array $row, array $recipients, bool $include_concessions, string $mode = 'manual-live-email'): array {
+  private static function send_live_grosses_email(array $row, array $recipients, bool $include_concessions, string $mode = 'manual-live-email', string $send_request_id = ''): array {
     $attachment = self::write_live_csv($row, $include_concessions);
     try {
       $show_title = (string) ($row['show_title'] ?? 'Live Show');
@@ -2092,9 +2211,41 @@ class Reporter {
       }
       $body .= "\nGenerated automatically by the Roxy Grosses plugin.";
 
-      $sent = wp_mail($recipients, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
+      $request_id = self::valid_send_request_id($send_request_id) ? $send_request_id : self::new_send_request_id();
+      $entry_id = max(0, (int) ($row['id'] ?? 0));
+      $row_fingerprint = hash('sha256', (string) json_encode([$row, $include_concessions, $recipients], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+      $send_key = $is_test_send
+        ? 'live-grosses-test:' . $entry_id . ':' . $request_id
+        : 'live-grosses:' . $entry_id . ':' . $row_fingerprint;
+      try {
+        $claim = EmailOutbox::claim($send_key, 'live_grosses', $entry_id, $report_date, [
+          'to' => $recipients,
+          'subject' => $subject,
+          'body' => $body,
+          'attachment_name' => basename($attachment),
+          'attachment_sha256' => is_file($attachment) ? hash_file('sha256', $attachment) : '',
+        ], ['mode' => $mode, 'request_id' => $request_id, 'include_concessions' => $include_concessions]);
+      } catch (\Throwable $error) {
+        return ['success' => false, 'message' => 'Email was not attempted because the durable send guard is unavailable: ' . $error->getMessage()];
+      }
+      if (empty($claim['claimed'])) {
+        $state = (string) ($claim['status'] ?? 'unknown');
+        if ($state === 'accepted') {
+          $message = 'This live report was already accepted by WordPress for sending; no duplicate was sent.';
+          Store::insert_log('send_live_grosses', $mode, null, $report_date, true, $message, ['live_entry_id' => $entry_id, 'duplicate_suppressed' => true]);
+          return ['success' => true, 'message' => $message, 'duplicate_suppressed' => true];
+        }
+        return ['success' => false, 'message' => 'A prior live email attempt is ' . $state . '. It was not sent again; review the outbox/logs before acting.'];
+      }
+      try {
+        $sent = wp_mail($recipients, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
+      } catch (\Throwable $error) {
+        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail threw: ' . substr($error->getMessage(), 0, 1500));
+        return ['success' => false, 'message' => 'Mail handling ended unexpectedly. The send is marked uncertain and will not be retried automatically. Review the outbox before acting.'];
+      }
 
       if (!$sent) {
+        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail returned false; delivery outcome may be ambiguous.');
         Store::insert_log('send_live_grosses', $mode, null, $report_date, false, 'WordPress could not send the live grosses email.', [
           'live_entry_id' => (int) ($row['id'] ?? 0),
           'include_concessions' => $include_concessions,
@@ -2103,6 +2254,9 @@ class Reporter {
           'success' => false,
           'message' => 'WordPress could not send the live grosses email.',
         ];
+      }
+      if (!EmailOutbox::finish((int) $claim['id'], 'accepted')) {
+        return ['success' => false, 'message' => 'WordPress accepted the live email, but the outbox could not record that result. Do not resend; review the outbox before acting.'];
       }
 
       Store::insert_log('send_live_grosses', $mode, null, $report_date, true, 'Live grosses email sent to ' . implode(', ', $recipients) . '.', [

@@ -12,6 +12,17 @@ namespace FreshEmailAllocationFixture {
   final class Square {
     public static function with_sale_snapshot(callable $operation) { return $operation(); }
   }
+  final class EmailOutbox {
+    public static array $rows = [];
+    public static int $next_id = 1;
+    public static function claim(string $key, string $kind, int $source_id, ?string $report_date, array $payload, array $context): array {
+      if (isset(self::$rows[$key])) return ['claimed'=>false,'id'=>self::$rows[$key]['id'],'status'=>self::$rows[$key]['status']];
+      $id=self::$next_id++; self::$rows[$key]=['id'=>$id,'status'=>'sending','source_id'=>$source_id];
+      return ['claimed'=>true,'id'=>$id,'status'=>'sending'];
+    }
+    public static function finish(int $id, string $status, string $error = ''): bool { foreach(self::$rows as &$row) if($row['id']===$id){$row['status']=$status;return true;} return false; }
+    public static function find(string $key): ?array { return self::$rows[$key] ?? null; }
+  }
   final class Store {
     public static array $protected_financial_rows = [];
     public static array $history_calls = [];
@@ -30,6 +41,8 @@ namespace FreshEmailAllocationFixture {
       self::$reports[$id] = compact('date','lookback','mode','status','summary','rows');
       return $id;
     }
+    public static function get_report(int $id): ?array { $row=self::$reports[$id]??null; return $row ? ['summary'=>$row['summary'],'rows'=>$row['rows'],'report_end_date'=>$row['date'],'status'=>$row['status']] : null; }
+    public static function mark_emailed(int $id): bool { if (!isset(self::$reports[$id])) return false; self::$reports[$id]['status']='emailed'; return true; }
     public static function insert_log(...$args): int { self::$logs[] = $args; return count(self::$logs); }
   }
 }
@@ -127,7 +140,8 @@ namespace {
   $check(empty($failure['success']) && count($GLOBALS['fresh_email_mail_calls'])===2, 'mail failure is returned and intercepted without real delivery');
   $failed_attachment = $GLOBALS['fresh_email_mail_calls'][1]['attachments'][0] ?? '';
   $check(!file_exists($failed_attachment), 'private CSV attachment is removed after failed intercepted send');
-  $check($store::$reports===$before_reports, 'mail failure creates no emailed report snapshot');
+  $failed_reports = array_diff_key($store::$reports, $before_reports);
+  $check(count($failed_reports)===1 && reset($failed_reports)['status']==='draft', 'mail failure preserves one reviewable draft but creates no emailed report');
   $check(count($store::$history_calls)===$before_history_count+1, 'pre-send history bookkeeping remains allowed on mail failure');
   $check($store::$protected_financial_rows===$before_financial && $protected_concessions()===10.0, 'mail failure leaves balanced and manually protected $5/$5 concessions allocations unchanged');
 
@@ -151,5 +165,18 @@ namespace {
   $check(!empty($provisional['success']) && str_starts_with((string) ($provisional_mail['subject'] ?? ''), '[PROVISIONAL — CLOSED-DAY REFRESH PENDING]')
     && str_contains((string) ($provisional_mail['message'] ?? ''), 'no corrected report is sent automatically')
     && ($provisional_saved['mode'] ?? '') === 'scheduled-provisional', 'provisional email is labeled truthfully and saved with a durable provisional mode');
+  $mail_count_before_duplicate = count($GLOBALS['fresh_email_mail_calls']);
+  $first_daily = $reporter::send_report('2038-05-13', 'manual');
+  $count_after_first_daily = count($GLOBALS['fresh_email_mail_calls']);
+  $second_daily = $reporter::send_report('2038-05-13', 'scheduled');
+  $check(!empty($first_daily['success']) && $count_after_first_daily === $mail_count_before_duplicate + 1, 'first production daily report claims and sends once');
+  $check(!empty($second_daily['success']) && !empty($second_daily['duplicate_suppressed']) && count($GLOBALS['fresh_email_mail_calls']) === $count_after_first_daily, 'manual/scheduled duplicate for the same date is suppressed across modes');
+  $GLOBALS['fresh_email_mail_result'] = false;
+  $mail_count_before_uncertain = count($GLOBALS['fresh_email_mail_calls']);
+  $uncertain_first = $reporter::send_report('2038-05-14', 'manual');
+  $count_after_uncertain = count($GLOBALS['fresh_email_mail_calls']);
+  $uncertain_retry = $reporter::send_report('2038-05-14', 'scheduled');
+  $check(empty($uncertain_first['success']) && $count_after_uncertain === $mail_count_before_uncertain + 1, 'ambiguous first mail result is returned without claiming delivery');
+  $check(empty($uncertain_retry['success']) && str_contains($uncertain_retry['message'], 'uncertain') && count($GLOBALS['fresh_email_mail_calls']) === $count_after_uncertain, 'uncertain result blocks a scheduled retry without a second mail attempt');
   echo "Passed fresh email/draft allocation orchestration checks; builders replaced only at guarded method boundaries.\n";
 }

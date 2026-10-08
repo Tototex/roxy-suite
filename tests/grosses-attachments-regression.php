@@ -7,6 +7,10 @@ namespace RoxyGrosses {
     public static function get($key, $default = '') { return $default; }
   }
   class Store { public static function insert_log(...$args): void {} }
+  class EmailOutbox {
+    public static function claim(string $key, string $kind, int $source_id, ?string $report_date, array $payload, array $context): array { return ['claimed'=>true,'id'=>1,'status'=>'sending']; }
+    public static function finish(int $id, string $status, string $error = ''): bool { return true; }
+  }
   function fputcsv($handle, $row) {
     if ($GLOBALS['write_fail'] ?? false) return false;
     return \fputcsv($handle, $row);
@@ -48,7 +52,11 @@ namespace {
   $b = invoke_attachment('write_csv', [$report]);
   attachment_assert($a !== $b && dirname($a) !== dirname($b), 'same-date runs have separate attachment directories');
   attachment_assert(!str_starts_with($a, ABSPATH) && str_ends_with($a, '.csv'), 'attachment outside web root with friendly CSV name');
-  attachment_assert((fileperms(dirname($a)) & 0777) === 0700 && (fileperms($a) & 0777) === 0600, 'directory and attachment private permissions');
+  if (PHP_OS_FAMILY === 'Windows') {
+    attachment_assert(is_dir(dirname($a)) && is_file($a), 'private temporary attachment exists (Windows ACLs are not represented by POSIX mode bits)');
+  } else {
+    attachment_assert((fileperms(dirname($a)) & 0777) === 0700 && (fileperms($a) & 0777) === 0600, 'directory and attachment private permissions');
+  }
   $stream = fopen($a, 'r'); $header = fgetcsv($stream); $row = fgetcsv($stream); $total = fgetcsv($stream); fclose($stream);
   attachment_assert(count($header) === 9 && $row[3] === $report['film_title'], 'original columns and multiline quote escaping preserved');
   attachment_assert($row[7] === '9' && $total[7] === '9' && $total[8] === '$12.34', 'paid attendance and gross totals preserved');
@@ -81,7 +89,7 @@ namespace {
       $result = null; $thrown = false;
       try { $result = $method === 'send_email' ? invoke_attachment($method, [$report], []) : invoke_attachment($method, $live, $GLOBALS['recipients'], true); }
       catch (\RuntimeException $e) { $thrown = true; }
-      attachment_assert($mode === 'throw' ? $thrown : $result['success'] === ($mode === 'success'), "$method: mail $mode result preserved");
+      attachment_assert($mode === 'throw' ? (!$thrown && empty($result['success'])) : $result['success'] === ($mode === 'success'), "$method: mail $mode result preserved");
       attachment_assert(!file_exists($GLOBALS['sent_path']) && !is_dir(dirname($GLOBALS['sent_path'])), "$method: mail $mode cleans attachment and directory");
     }
   }

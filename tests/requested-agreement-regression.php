@@ -30,7 +30,7 @@ $backing = [
 ];
 
 $quote = RoxyRS\Agreement::quote(42, 'movie_evening', $prices, 'usd', false);
-$check($quote['taxes_enabled'] === false && $quote['ticket_tax_policy'] === 'tax_absorbed_by_roxy', 'tax-disabled agreement records the final-price tax policy');
+$check($quote['taxes_enabled'] === false && $quote['ticket_tax_policy'] === 'not_collected', 'tax-disabled agreement records the nontaxable ticket policy');
 $check($quote['currency'] === 'USD' && $quote['quote_hash'] === RoxyRS\Agreement::quote_hash($quote), 'currency normalized and canonical quote hash');
 $snapshot = RoxyRS\Agreement::build($quote, $backing);
 $validated = RoxyRS\Agreement::validate($snapshot, $backing);
@@ -44,7 +44,7 @@ $ticket_only['sponsor_amount'] = '0';
 $ticket_only['charge_total'] = '3200';
 $ticket_only_snapshot = RoxyRS\Agreement::build($ticket_only_quote, $ticket_only);
 $ticket_only_valid = RoxyRS\Agreement::validate($ticket_only_snapshot, $ticket_only);
-$check($ticket_only_valid['taxes_enabled'] === true && $ticket_only_valid['ticket_tax_policy'] === 'tax_absorbed_by_roxy', 'tax-enabled site context keeps the customer charge tax-inclusive');
+$check($ticket_only_valid['taxes_enabled'] === true && $ticket_only_valid['ticket_tax_policy'] === 'not_collected', 'global tax enablement does not change the nontaxable ticket policy');
 
 $matinee_quote = RoxyRS\Agreement::quote(43, 'movie_matinee', $prices, 'USD', false);
 $matinee = $backing;
@@ -93,7 +93,7 @@ $tampered = json_decode($snapshot, true);
 $tampered['total_cents'] = 999;
 $throws(static fn() => RoxyRS\Agreement::validate(json_encode($tampered), $backing), 'tampered snapshot hash rejected');
 $unsupported = json_decode($snapshot, true);
-$unsupported['version'] = 2;
+$unsupported['version'] = 3;
 unset($unsupported['hash']);
 $unsupported['hash'] = hash('sha256', json_encode($unsupported, JSON_UNESCAPED_SLASHES));
 $throws(static fn() => RoxyRS\Agreement::validate(json_encode($unsupported, JSON_UNESCAPED_SLASHES), $backing), 'unsupported snapshot version rejected');

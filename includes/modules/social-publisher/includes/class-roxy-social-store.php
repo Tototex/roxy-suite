@@ -321,6 +321,11 @@ final class Store {
         return self::save_draft_snapshot($expected, ['status' => 'draft', 'ai_status' => 'pending', 'last_error' => null]);
     }
 
+    public static function replace_generated_caption(array $expected, string $text): bool {
+        if (($expected['status'] ?? '') !== 'draft' || !in_array(($expected['ai_status'] ?? ''), ['ready', 'pending'], true) || $text === '') return false;
+        return self::save_draft_snapshot($expected, ['post_text' => sanitize_textarea_field($text), 'ai_status' => 'ready', 'last_error' => null]);
+    }
+
     public static function acquire_publish_lock(int $id): ?array {
         global $wpdb;
         if ($id <= 0) return null;

@@ -19,12 +19,10 @@ namespace {
     $events=[]; $chat=['message'=>['content'=>'']]; $request=[]; $onChat=null;
     function wp_next_scheduled($hook,$args) { return false; }
     function wp_schedule_single_event($time,$hook,$args) { global $events; $events[]=[$hook,$args]; return true; }
-    function get_option($key,$default=false) { return $key==='roxy_social_ai_enabled' ? true : $default; }
     function untrailingslashit($v) { return rtrim($v,'/'); }
     function sanitize_text_field($v) { return $v; }
     function wp_parse_url($v,$p) { return parse_url($v,$p); }
     function home_url($v) { return 'https://newportroxy.com'.$v; }
-    function wp_json_encode($v) { return json_encode($v); }
     function wp_remote_post($url,$args) { global $chat,$request,$onChat; $request=json_decode($args['body'],true); if ($onChat) $onChat(); return ['body'=>$chat]; }
     $draft=['id'=>20,'campaign_key'=>'heart-of-the-beast-20261009','status'=>'draft','ai_status'=>'pending','scheduled_for'=>'2026-10-11 10:00:00','showing_ids'=>'3','post_text'=>'Today at the Roxy','last_error'=>''];
     $fixture_posts[3]->post_excerpt=str_repeat('A survival film about a veteran and his dog. ',4);
@@ -34,10 +32,10 @@ namespace {
     check(\RoxySocial\Store::$row['status']==='draft' && count($events)===1 && $events[0][1][2]===1);
     check($request['format']['required']===['caption']);
     check($fixture_cache['roxy_social_ai_failure_20']['reason']==='Ollama returned an empty caption response.');
-    $chat=['message'=>['content'=>json_encode(['caption'=>'One last adventure before Monday. Settle in with popcorn and enjoy the big screen.'])]];
+    $chat=['message'=>['content'=>json_encode(['caption'=>'Heart of the Beast plays at The Roxy. Settle in with popcorn and enjoy the big screen.'])]];
     \RoxySocial\AI::generate_text(20,$draft['campaign_key'],1);
     check(\RoxySocial\Store::$row['ai_status']==='ready');
-    check(str_contains(\RoxySocial\Store::$row['post_text'],'Sun, Oct 11, 2026 at 2:30 PM'));
+    check(str_contains(\RoxySocial\Store::$row['post_text'],'Sun, Oct 11 at 2:30 PM'));
     check(!str_contains(\RoxySocial\Store::$row['post_text'],'Fri,'));
     \RoxySocial\Store::$row=$draft; $chat=['message'=>['content'=>'not json']]; $events=[];
     \RoxySocial\AI::generate_text(20,$draft['campaign_key'],2);
@@ -47,9 +45,26 @@ namespace {
     check($parser->invoke(null,json_encode(['caption'=>'Sunday at 2:30 PM with all the popcorn you need.']))==='');
     check($parser->invoke(null,json_encode(['caption'=>'Short']))==='');
     check($parser->invoke(null,json_encode(['caption'=>'This caption uses a playful and conversational tone for the theater.']))==='');
+    check($parser->invoke(null,json_encode(['caption'=>"Come see *Fixture Movie* at The Roxy.\u{2063}\nBring a friend for the adventure."]))==="Come see Fixture Movie at The Roxy.\nBring a friend for the adventure.");
+    $quality=new \ReflectionMethod(\RoxySocial\AI::class,'caption_quality_error');
+    check($quality->invoke(null,'Wildwood plays at The Roxy today. Bring a friend.', 'Wildwood', [1], 'afternoon')==='');
+    check($quality->invoke(null,'Wildwood plays at The Roxy tonight. Bring a friend.', 'Wildwood', [1], 'afternoon')!=='');
+    check($quality->invoke(null,'Wildwood plays at The Roxy this weekend. Tickets on sale.', 'Wildwood', [], 'evening')!=='');
+    check($quality->invoke(null,'Wildwood plays at The Roxy this weekend. Doors open early.', 'Wildwood', [], 'evening')!=='');
+    check($quality->invoke(null,'Join The Roxy for a lovely movie this weekend.', 'Wildwood', [], 'evening')!=='');
+    check($quality->invoke(null,'Wildwood is now playing at The Roxy.', 'Wildwood', [], 'evening')!=='');
+    check($quality->invoke(null,'Last chance for Wildwood at The Roxy.', 'Wildwood', [1], 'afternoon')!=='');
+    check($quality->invoke(null,"Wildwood plays at The Roxy. Your seat's free.", 'Wildwood', [1], 'afternoon')!=='');
+    check($quality->invoke(null,'Wildwood plays at The Roxy. Bring your own snacks.', 'Wildwood', [1], 'afternoon')!=='');
+    \RoxySocial\Store::$row=$draft; $events=[];
+    $chat=['message'=>['content'=>json_encode(['caption'=>'Heart of the Beast plays at The Roxy. Bring a friend for an afternoon adventure.'])]];
+    $preview=\RoxySocial\AI::preview_text($draft);
+    check(!empty($preview['text']) && \RoxySocial\Store::$row===$draft && !$events);
+    check(str_contains($preview['prompt'],'afternoon') && !str_contains($preview['prompt'],'Sunday Funday at'));
+    check($request['think']===false && $request['options']['num_ctx']===8192);
     \RoxySocial\Store::$row=$draft;
     $onChat=static function() { \RoxySocial\Store::$row['post_text']='My manual edit'; \RoxySocial\Store::$row['ai_status']='manual'; };
     \RoxySocial\AI::generate_text(20,$draft['campaign_key']);
     check(\RoxySocial\Store::$row['post_text']==='My manual edit' && \RoxySocial\Store::$row['ai_status']==='manual');
-    echo "12 structured-caption and retry checks passed\n";
+    echo "25 structured-caption, quality, preview and retry checks passed\n";
 }

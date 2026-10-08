@@ -8,6 +8,11 @@ namespace RoxyGrosses {
     public static function get_report_timezone(): string { return 'UTC'; }
     public static function set_status(array $status): void { $GLOBALS['fixture_status'] = $status; }
   }
+  final class EmailOutbox {
+    public static function claim(string $key, string $kind, int $source_id, ?string $report_date, array $payload, array $context): array { return ['claimed'=>true,'id'=>1,'status'=>'sending']; }
+    public static function finish(int $id, string $status, string $error = ''): bool { return true; }
+    public static function find(string $key): ?array { return null; }
+  }
   final class Store {
     public static function with_refund_review_lock(callable $operation) { return $operation(); }
     public static function assert_refund_review_lock(): void {}

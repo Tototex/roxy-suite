@@ -3,13 +3,12 @@ namespace RoxyRS;
 
 /** Versioned, immutable price agreement for one requested-showing backing. */
 final class Agreement {
-    private const VERSION = 1;
+    private const VERSION = 2;
     private const MAX_MONEY = 2147483647;
     private const MAX_QTY = 4294967295;
-    // Customer-facing prices are final whole-dollar amounts. WooCommerce may
-    // have taxes enabled globally, but Requested Showings absorbs any tax on
-    // our side and never adds it to the customer's agreed charge.
-    private const TICKET_TAX_POLICY = 'tax_absorbed_by_roxy';
+    // Customer-facing prices are final whole-dollar amounts. Requested
+    // Showings ticket charges are not collected or reported as tax.
+    private const TICKET_TAX_POLICY = 'not_collected';
 
     /** Capture the ticket quote and site tax context without changing the final customer charge. */
     public static function quote(int $request_id, string $profile, array $prices_cents, string $currency, bool $taxes_enabled = false): array {
@@ -76,7 +75,7 @@ final class Agreement {
             ? self::integer($backing['sponsor_tax_cents'], self::MAX_MONEY, 'sponsor tax amount')
             : 0;
         if ($tax_cents !== 0 || $sponsor_tax_cents !== 0) {
-            throw new \InvalidArgumentException('Customer-facing agreement prices already include absorbed tax; no tax may be added to the charge.');
+            throw new \InvalidArgumentException('Requested-showing ticket and sponsorship charges must not collect or report tax.');
         }
 
         $unit = $core['unit_prices_cents'];

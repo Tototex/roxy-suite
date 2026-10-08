@@ -366,7 +366,7 @@ namespace {
   $GLOBALS['schedule_failure'] = 'noop';
   $scheduled = $schedule_closed->invoke(null, '2000-01-03', new DateTimeZone('America/Los_Angeles'), new DateTimeImmutable('2000-01-03 02:00:00', new DateTimeZone('America/Los_Angeles')));
   $GLOBALS['schedule_failure'] = false;
-  scheduler_calendar_assert(!$scheduled && \RoxyGrosses\Scheduler::closed_day_refresh_health()['status'] === 'unscheduled', 'failed cron registration leaves a durable health-visible queue item');
+  scheduler_calendar_assert(!$scheduled && \RoxyGrosses\Scheduler::closed_day_refresh_health()['status'] === 'unscheduled', 'failed cron registration leaves a durable health-visible queue item (health=' . json_encode(\RoxyGrosses\Scheduler::closed_day_refresh_health()) . ', events=' . json_encode($GLOBALS['cron_events']) . ')');
   \RoxyGrosses\Scheduler::ensure_schedule($settings, $fixed_now);
   scheduler_calendar_assert(\RoxyGrosses\Scheduler::closed_day_refresh_health()['status'] === 'scheduled', 'scheduler repair restores an unscheduled durable closed-day refresh');
   \RoxyGrosses\Reporter::$refresh_results = array_fill(0, 4, ['success' => false, 'message' => 'persistent failure']);

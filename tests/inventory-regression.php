@@ -28,6 +28,7 @@ namespace {
     function wp_remote_retrieve_response_code($response) { return $response['code']; }
     function wp_remote_retrieve_body($response) { return json_encode($response['data']); }
     function wp_remote_get($url, $args) {
+        if (!empty($GLOBALS['empty_catalog'])) return ['code' => 200, 'data' => ['objects' => []]];
         return ['code' => 200, 'data' => ['objects' => [[
             'type' => 'ITEM', 'id' => 'item', 'item_data' => ['name' => 'Test', 'variations' => [[
                 'type' => 'ITEM_VARIATION', 'id' => 'variation',
@@ -152,6 +153,12 @@ namespace {
     $wpdb->products['variation']['unit_cost'] = 1.50;
     \RoxyInventory\Square::pull();
     check($wpdb->products['variation']['unit_cost'] === 1.50, 'Existing purchase cost preserved');
+    $before_empty_catalog = [$wpdb->products, $wpdb->orders, $wpdb->runs];
+    $GLOBALS['empty_catalog'] = true;
+    $empty_catalog_rejected = false;
+    try { \RoxyInventory\Square::pull(); } catch (\RuntimeException $e) { $empty_catalog_rejected = strpos($e->getMessage(), 'no inventory variations') !== false; }
+    unset($GLOBALS['empty_catalog']);
+    check($empty_catalog_rejected && [$wpdb->products, $wpdb->orders, $wpdb->runs] === $before_empty_catalog, 'Empty successful catalog response cannot deactivate products or reset orders');
     $wpdb->products['variation']['on_hand'] = 42;
     $GLOBALS['fail_page2'] = true;
     try { \RoxyInventory\Square::pull(); throw new \RuntimeException('Failed page was accepted'); }

@@ -453,8 +453,7 @@ class Scheduler {
       if (($event['args'][0] ?? null) === $report_date && !self::unschedule_event(self::CLOSED_DAY_HOOK, $event)) return true;
     }
     // The option is the durable queue; ensure_schedule retries event creation.
-    self::schedule_single($timestamp, self::CLOSED_DAY_HOOK, $args);
-    return true;
+    return self::schedule_single($timestamp, self::CLOSED_DAY_HOOK, $args);
   }
 
   private static function ensure_pending_closed_day_refreshes(\DateTimeImmutable $now): array {

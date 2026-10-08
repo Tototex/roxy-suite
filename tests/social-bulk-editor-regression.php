@@ -17,7 +17,7 @@ namespace {
     function wp_unslash($v) { return stripslashes($v); }
     function admin_url($v) { return 'https://example.test/wp-admin/'.$v; }
     function content_url($v) { return 'https://example.test/wp-content/'.$v; }
-    function get_option($k,$d=false) { return $d; }
+    function get_option($k,$d=false) { return $GLOBALS['social_fixture_options'][$k] ?? $d; }
     function esc_url($v) { return htmlspecialchars($v,ENT_QUOTES); }
     function esc_attr($v) { return htmlspecialchars($v,ENT_QUOTES); }
     function esc_html($v) { return htmlspecialchars($v,ENT_QUOTES); }

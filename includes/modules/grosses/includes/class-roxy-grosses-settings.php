@@ -33,6 +33,12 @@ class Settings {
     }
     return in_array($tab,['database','live-shows','rentals','legacy-weekly','workbook','daily','settings','logs'],true)?$tab:'database';
   }
+
+  /** An anomaly log records a successfully detected discrepancy, not a successful reconciliation. */
+  public static function log_result_label(array $log_row): string {
+    if ((string) ($log_row['event_type'] ?? '') === 'anomaly') return 'Review';
+    return !empty($log_row['success']) ? 'Success' : 'Failed';
+  }
   public static function defaults(): array {
     return [
       'square_environment'=>'production','square_access_token'=>'','square_location_ids'=>'',
@@ -696,7 +702,8 @@ class Settings {
     echo '</form>';
     echo '<table class="widefat striped" style="max-width:1100px"><thead><tr><th>Time</th><th>Event</th><th>Mode</th><th>Report ID</th><th>End Date</th><th>Result</th><th>Message</th></tr></thead><tbody>';
     foreach($logs as $log_row){
-      echo '<tr><td>'.esc_html((string) $log_row['created_at']).'</td><td>'.esc_html((string) $log_row['event_type']).'</td><td>'.esc_html((string) $log_row['mode']).'</td><td>'.esc_html(!empty($log_row['report_id'])?(string) $log_row['report_id']:'-').'</td><td>'.esc_html((string) ($log_row['report_end_date']?:'-')).'</td><td>'.(!empty($log_row['success'])?'Success':'Failed').'</td><td>'.esc_html((string) $log_row['message']).'</td></tr>';
+      $result_label = self::log_result_label($log_row);
+      echo '<tr><td>'.esc_html((string) $log_row['created_at']).'</td><td>'.esc_html((string) $log_row['event_type']).'</td><td>'.esc_html((string) $log_row['mode']).'</td><td>'.esc_html(!empty($log_row['report_id'])?(string) $log_row['report_id']:'-').'</td><td>'.esc_html((string) ($log_row['report_end_date']?:'-')).'</td><td>'.esc_html($result_label).'</td><td>'.esc_html((string) $log_row['message']).'</td></tr>';
     }
     if(!$logs) echo '<tr><td colspan="7">No log entries matched these filters.</td></tr>'; echo '</tbody></table>';
     self::render_pagination($total_logs, $per_page, $page_number, 'logs_paged', [
@@ -708,6 +715,19 @@ class Settings {
       'log_from' => $log_from,
       'log_to' => $log_to,
     ]);
+    echo '<hr><h3>Email Send Guard</h3><p>These durable records prevent scheduled and manual reports for the same period from being sent twice. “Accepted” means WordPress accepted the message for handling, not that delivery was confirmed. “Sending” or “Uncertain” requires review; no automatic retry is available.</p>';
+    try {
+      $outbox_rows = EmailOutbox::recent(50);
+      echo '<table class="widefat striped" style="max-width:1100px"><thead><tr><th>Created (UTC)</th><th>Type</th><th>Source</th><th>Report date</th><th>Status</th><th>Mode</th><th>Review note</th></tr></thead><tbody>';
+      foreach ($outbox_rows as $outbox_row) {
+        $context = json_decode((string) ($outbox_row['context_json'] ?? ''), true);
+        echo '<tr><td>'.esc_html((string) ($outbox_row['created_at'] ?? '')).'</td><td>'.esc_html((string) ($outbox_row['kind'] ?? '')).'</td><td>'.esc_html((string) ($outbox_row['source_id'] ?? '0')).'</td><td>'.esc_html((string) (($outbox_row['report_date'] ?? '') ?: '-')).'</td><td><strong>'.esc_html(ucfirst((string) ($outbox_row['status'] ?? 'unknown'))).'</strong></td><td>'.esc_html((string) (is_array($context) ? ($context['mode'] ?? '') : '')).'</td><td>'.esc_html((string) (($outbox_row['error_text'] ?? '') ?: 'No exception recorded; verify through the mail provider if needed.')).'</td></tr>';
+      }
+      if (!$outbox_rows) echo '<tr><td colspan="7">No email attempts have been recorded.</td></tr>';
+      echo '</tbody></table>';
+    } catch (\Throwable $outbox_error) {
+      echo '<div class="notice notice-error"><p>Email outbox could not be read. Sends fail closed while the guard is unavailable.</p></div>';
+    }
     echo '<hr><h3>Reconciliation</h3><p>Compare Square In Store Purchase totals against the concessions currently assigned across Movies, Live Shows, and Rentals. This can be slower on larger date ranges, so it only runs when requested.</p>';
     echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
     echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="logs"><input type="hidden" name="run_reconciliation" value="1">';
@@ -739,6 +759,7 @@ class Settings {
     wp_nonce_field('roxy_grosses_send_manual');
     echo '<input type="hidden" name="action" value="roxy_grosses_send_manual">';
     echo '<input type="hidden" name="return_tab" value="settings">';
+    echo '<input type="hidden" name="send_request_id" value="'.esc_attr(wp_generate_uuid4()).'">';
     echo '<h3 style="margin-top:0;">Send Daily Grosses Email</h3>';
     echo '<p>Select a report date, then send either an admin-only test email or the full daily grosses email to the saved daily recipient list.</p>';
     echo '<p><label for="roxy-grosses-test-date"><strong>Report date</strong></label><br><input id="roxy-grosses-test-date" type="date" name="report_date" value="'.esc_attr($default_date).'"></p>';
@@ -752,10 +773,12 @@ class Settings {
     wp_nonce_field('roxy_grosses_send_advertiser_summary');
     echo '<input type="hidden" name="action" value="roxy_grosses_send_advertiser_summary">';
     echo '<input type="hidden" name="return_tab" value="settings">';
+    echo '<input type="hidden" name="send_request_id" value="'.esc_attr(wp_generate_uuid4()).'">';
     echo '<h3 style="margin-top:0;">Send Advertiser Email</h3>';
     echo '<p>Select a month range to send. For a single month, choose the same start and end month. For the last 12 months, choose the first and last months in that span.</p>';
     echo '<p><label for="roxy-grosses-advertiser-start-month"><strong>Start month</strong></label><br><input id="roxy-grosses-advertiser-start-month" type="month" name="advertiser_start_month" value="'.esc_attr($default_advertiser_start).'"></p>';
     echo '<p><label for="roxy-grosses-advertiser-end-month"><strong>End month</strong></label><br><input id="roxy-grosses-advertiser-end-month" type="month" name="advertiser_end_month" value="'.esc_attr($default_advertiser_end).'"></p>';
+    echo '<p><label><input type="checkbox" name="intentional_resend" value="1"> This is a deliberate resubmission after reviewing the Email Send Guard.</label></p>';
     echo '<div style="display:flex; gap:8px; flex-wrap:wrap;">';
     submit_button('Send Test Email','secondary','test_send',false,['value'=>'1']);
     submit_button('Send Advertiser Email','primary','submit',false);
@@ -765,6 +788,7 @@ class Settings {
     echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="min-width:380px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;">';
     wp_nonce_field('roxy_grosses_send_live_email');
     echo '<input type="hidden" name="action" value="roxy_grosses_send_live_email">';
+    echo '<input type="hidden" name="send_request_id" value="'.esc_attr(wp_generate_uuid4()).'">';
     echo '<h3 style="margin-top:0;">Send Live Grosses Email</h3>';
     echo '<input type="hidden" name="return_tab" value="settings">';
     echo '<p>Select a live show row, then send either an admin-only test email or the full live grosses email to the saved live recipient list.</p>';
@@ -815,7 +839,7 @@ class Settings {
     echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" enctype="multipart/form-data" style="margin-bottom:16px;">'; wp_nonce_field('roxy_grosses_upload_template'); echo '<input type="hidden" name="action" value="roxy_grosses_upload_template"><label for="roxy-grosses-template-file" style="margin-right:8px;"><strong>Upload workbook template</strong></label><input id="roxy-grosses-template-file" type="file" name="workbook_template" accept=".xlsx">'; submit_button('Upload Template','secondary','submit',false,['style'=>'margin-left:8px;']); echo '</form><div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:24px;">';
     echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">'; wp_nonce_field('roxy_grosses_refresh_workbook'); echo '<input type="hidden" name="action" value="roxy_grosses_refresh_workbook"><input type="hidden" name="year" value="'.esc_attr((string) $workbook_year).'">'; submit_button('Refresh Workbook Data','secondary','submit',false); echo '</form>';
     echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">'; wp_nonce_field('roxy_grosses_download_workbook'); echo '<input type="hidden" name="action" value="roxy_grosses_download_workbook"><input type="hidden" name="year" value="'.esc_attr((string) $workbook_year).'">'; submit_button('Download Excel Workbook','primary','submit',false); echo '</form>';
-    echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:flex; gap:8px; align-items:flex-end;">'; wp_nonce_field('roxy_grosses_send_advertiser_summary'); echo '<input type="hidden" name="action" value="roxy_grosses_send_advertiser_summary"><div><label for="roxy-grosses-advertiser-month"><strong>Advertiser month</strong></label><br><input id="roxy-grosses-advertiser-month" type="month" name="advertiser_month" value="'.esc_attr($default_advertiser_month).'"></div>'; submit_button('Send Advertiser Summary Now','secondary','submit',false); echo '</form></div>';
+    echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="display:flex; gap:8px; align-items:flex-end;">'; wp_nonce_field('roxy_grosses_send_advertiser_summary'); echo '<input type="hidden" name="action" value="roxy_grosses_send_advertiser_summary"><input type="hidden" name="send_request_id" value="'.esc_attr(wp_generate_uuid4()).'"><div><label for="roxy-grosses-advertiser-month"><strong>Advertiser month</strong></label><br><input id="roxy-grosses-advertiser-month" type="month" name="advertiser_month" value="'.esc_attr($default_advertiser_month).'"></div><label><input type="checkbox" name="intentional_resend" value="1"> Deliberate resend after review</label>'; submit_button('Send Advertiser Summary Now','secondary','submit',false); echo '</form></div>';
     echo '<h3>Monthly Totals</h3><table class="widefat striped" style="max-width:900px"><thead><tr><th>Month</th><th>Weeks</th><th>Admissions</th><th>Gross</th><th>Avg Gross / Week</th><th>Open Days</th></tr></thead><tbody>';
     foreach($monthly_rows as $row){ echo '<tr><td>'.esc_html((string) ($row['month_name']??'')).'</td><td>'.esc_html(number_format_i18n((int) ($row['weeks']??0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['admissions']??0))).'</td><td>$'.esc_html(number_format((float) ($row['gross']??0),2)).'</td><td>$'.esc_html(number_format((float) ($row['average_gross']??0),2)).'</td><td>'.esc_html(number_format_i18n((int) ($row['open_days']??0))).'</td></tr>'; }
     echo '</tbody></table><h3 style="margin-top:24px;">Weekly Log Preview</h3><table class="widefat striped"><thead><tr><th>Week</th><th>Week Of</th><th>Film Title</th><th>Studio</th><th>Admissions</th><th>Gross</th><th>Open Days</th></tr></thead><tbody>';
@@ -837,7 +861,10 @@ class Settings {
     if($selected_report){ $summary=is_array($selected_report['summary']??null)?$selected_report['summary']:[]; $status=(string) ($selected_report['status']??''); if(($selected_report['mode']??'')==='scheduled-provisional') $status.=' — Provisional'; echo '<hr><h2>Review Saved Report #'.esc_html((string) $selected_report['id']).'</h2><p>Created: '.esc_html((string) $selected_report['created_at']).' | Status: '.esc_html($status).'</p><table class="widefat striped" style="max-width:980px"><thead><tr><th>Report Date</th><th>Show Time</th><th>Theater</th><th>Film Title</th><th>General</th><th>Discount</th><th>Group</th><th>Total Tickets</th><th>Gross</th></tr></thead><tbody>';
       foreach((array) ($selected_report['rows']??[]) as $row){ echo '<tr><td>'.esc_html((string) ($row['report_date']??'')).'</td><td>'.esc_html((string) ($row['show_time']??'')).'</td><td>'.esc_html((string) ($row['theater_name']??'')).'</td><td>'.esc_html((string) ($row['film_title']??'')).'</td><td>'.esc_html(number_format_i18n((int) ($row['general_qty']??0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['discount_qty']??0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['group_qty']??0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['total_tickets']??0))).'</td><td>$'.esc_html(number_format((float) ($row['gross_total']??0),2)).'</td></tr>'; }
       echo '</tbody></table><p style="margin-top:12px;"><strong>Total Gross:</strong> $'.esc_html(number_format((float) ($summary['gross_total']??0),2)).' | <strong>Total Tickets:</strong> '.esc_html(number_format_i18n((int) ($summary['total_tickets']??0))).'</p>';
-      if(($selected_report['status']??'')!=='emailed'){ echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="margin-top:12px;">'; wp_nonce_field('roxy_grosses_send_saved_report'); echo '<input type="hidden" name="action" value="roxy_grosses_send_saved_report"><input type="hidden" name="report_id" value="'.esc_attr((string) $selected_report['id']).'">'; submit_button('Email This Saved Report','secondary','submit',false); echo '</form>'; }
+      echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="margin-top:12px;">'; wp_nonce_field('roxy_grosses_send_saved_report'); echo '<input type="hidden" name="action" value="roxy_grosses_send_saved_report"><input type="hidden" name="report_id" value="'.esc_attr((string) $selected_report['id']).'"><input type="hidden" name="send_request_id" value="'.esc_attr(wp_generate_uuid4()).'">';
+      if(($selected_report['status']??'')==='emailed'){ echo '<p><label><input type="checkbox" name="intentional_resend" value="1" required> I intentionally want to resend this exact saved report.</label></p>'; submit_button('Deliberately Resend Saved Report','secondary','submit',false); }
+      else { echo '<p><label><input type="checkbox" name="intentional_resend" value="1"> This is a reviewed correction or resend after checking the Email Send Guard.</label></p>'; submit_button('Email Saved Report','secondary','submit',false); }
+      echo '</form>';
     }
     echo '<hr><h2>Saved Reports</h2><table class="widefat striped" style="max-width:980px"><thead><tr><th>ID</th><th>End Date</th><th>Status</th><th>Rows</th><th>Tickets</th><th>Gross</th><th>Created</th><th>Action</th></tr></thead><tbody>';
     foreach($saved_reports as $report_row){ $view_url=add_query_arg(['page'=>'roxy-grosses','tab'=>'daily','report_id'=>(int) $report_row['id']],admin_url('admin.php')); echo '<tr><td>'.esc_html((string) $report_row['id']).'</td><td>'.esc_html((string) $report_row['report_end_date']).'</td><td>'.esc_html((string) $report_row['status']).'</td><td>'.esc_html(number_format_i18n((int) $report_row['row_count'])).'</td><td>'.esc_html(number_format_i18n((int) $report_row['summary_tickets'])).'</td><td>$'.esc_html(number_format((float) $report_row['summary_gross'],2)).'</td><td>'.esc_html((string) $report_row['created_at']).'</td><td><a class="button button-small" href="'.esc_url($view_url).'">Review</a></td></tr>'; }

@@ -75,14 +75,14 @@ check(\RoxyInventory\Square::pull()['v1']['on_hand']===0,'cursor-only count page
 resetfixture(encoded(['cursor'=>'catalog-page-2']));$GLOBALS['responses']['catalog'][]=encoded(catalog());
 check(\RoxyInventory\Square::pull()['v1']['on_hand']===3.0,'cursor-only catalog page followed by a complete page retains returned item');
 resetfixture(encoded(['cursor'=>'empty-catalog-page-2']));$GLOBALS['responses']['catalog'][]=encoded(['objects'=>[]]);
-check(\RoxyInventory\Square::pull()===[] && \RoxyInventory\Store::$commits===1,'cursor-only catalog page followed by an explicit empty terminal collection is valid');
+rejects('cursor-only catalog page followed by an empty terminal collection');
 resetfixture(null,encoded(['cursor'=>'counts-page-2']));$GLOBALS['responses']['counts'][]=encoded((object)[],500);
 rejects('count pagination request failure after cursor-only page');
 resetfixture(encoded(['cursor'=>'catalog-page-2']));$GLOBALS['responses']['catalog'][]=encoded((object)[],500);
 rejects('catalog pagination request failure after cursor-only page');
 resetfixture(null,encoded(['counts'=>[countrow('-2.5')]]));check(\RoxyInventory\Square::pull()['v1']['on_hand']===-2.5,'legitimate negative decimal Square stock retained');
 foreach ([(object)[],['counts'=>[]]] as $empty) { resetfixture(null,encoded($empty));check(\RoxyInventory\Square::pull()['v1']['on_hand']===0,'absent/empty counts legitimately mean no stock'); }
-resetfixture(encoded((object)[]));check(\RoxyInventory\Square::pull()===[] && count($GLOBALS['requests'])===1,'legitimate empty catalog completes without count requests');
+resetfixture(encoded((object)[]));rejects('successful empty catalog is not treated as a complete inventory pull');
 $method=new ReflectionMethod(\RoxyInventory\Square::class,'page_budget');$method->setAccessible(true);
 foreach ([[microtime(true)-1,0],[microtime(true)+10,100]] as [$deadline,$pages]) { $failed=false;try{$method->invokeArgs(null,[$deadline,&$pages]);}catch(Throwable $e){$failed=true;}check($failed,'expired/page-count budget fails closed'); }
 echo 'Passed '.$checks.' isolated inventory response checks.'."\n";

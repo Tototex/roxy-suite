@@ -64,7 +64,7 @@ class Admin {
         echo wp_nonce_field('roxy_inventory_send_draft','_wpnonce',true,false) . '<input type="hidden" name="action" value="roxy_inventory_send_draft"><input type="hidden" name="vendor" value="' . esc_attr($name) . '">';
         $review_products = array_column($rows, 'product');
         echo '<input type="hidden" name="review_token" value="' . esc_attr(self::review_token($vendor,$review_products)) . '"><input type="hidden" name="submission_key" value="' . esc_attr(hash('sha256',wp_generate_uuid4())) . '">';
-        echo '<p>All tracked vendor items are shown. Set an item to zero to skip it, or increase a zero quantity to add it intentionally. A zero unit cost is treated as unknown, so add a verified positive purchase cost before ordering that item.</p>';
+        echo '<p>All tracked vendor items are shown. Set an item to zero to skip it, or increase a zero quantity to add it intentionally. A zero unit cost is treated as unknown, so enter a positive configured purchase cost before ordering that item. Configured costs are estimates and are not independently verified supplier quotes.</p>';
         echo '<table class="widefat striped" id="roxy-inventory-vendor-review"><thead><tr><th>Product</th><th>On hand</th><th>Pack</th><th>Order qty</th><th>Unit cost</th><th>Line total</th></tr></thead><tbody>';
         foreach ($rows as $row) {
             $p = $row['product']; $id = (int) $p['id']; $qty = (int) $row['qty']; $raw_cost = $p['unit_cost'] ?? null; $known = self::verified_positive_cost($raw_cost); $cost = $known ? (float)$raw_cost : 0.0;
@@ -343,7 +343,7 @@ class Admin {
             $raw=$quantities[$p['id']] ?? null;
             if (!is_scalar($raw) || !preg_match('/^\d+$/D',(string)$raw) || (float)$raw>1000000) throw new \RuntimeException('Use nonnegative whole quantities for every reviewed item.');
             $q=(int)$raw; if ($q===0) continue;
-            if (!self::verified_positive_cost($p['unit_cost'] ?? null)) throw new \RuntimeException('A positive finite verified unit cost is required for every ordered item. Zero or invalid unit cost is treated as unknown.');
+            if (!self::verified_positive_cost($p['unit_cost'] ?? null)) throw new \RuntimeException('A positive finite configured unit cost is required for every ordered item. Zero or invalid unit cost is treated as unknown; configured costs are not independently verified supplier quotes.');
             $line_total=round($q*(float)$p['unit_cost'],2);
             $lines[]=['product'=>(string)$p['name'],'square_variation_id'=>(string)$p['square_variation_id'],'on_hand'=>(float)$p['on_hand'],'quantity'=>$q,'pack_size'=>(float)$p['pack_size'],'unit_cost'=>(float)$p['unit_cost'],'line_total'=>$line_total];
             $total+=$line_total;

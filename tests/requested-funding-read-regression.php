@@ -59,7 +59,8 @@ namespace {
 
     $GLOBALS['wpdb'] = new FundingFixtureWpdb();
     $GLOBALS['funding_fixture'] = [
-        'meta'=>[41=>['_roxy_rs_status'=>'active','_roxy_rs_funding_goal'=>5000,'_roxy_rs_deadline_at'=>'2000-01-01 00:00:00']],
+        'meta'=>[41=>['_roxy_rs_status'=>'active','_roxy_rs_funding_goal'=>5000,'_roxy_rs_deadline_at'=>'2000-01-01 00:00:00',
+            '_roxy_rs_general_price'=>'12','_roxy_rs_discount_price'=>'8','_roxy_rs_matinee_price'=>'8','_roxy_rs_pricing_profile'=>'movie_evening']],
         'updates'=>[], 'mail'=>0, 'posts'=>[], 'posts_error'=>false, 'options'=>[],
     ];
     function roxy_rs_module_fixture_unused(): void {}
@@ -101,6 +102,8 @@ namespace {
     function esc_html(string $value): string { return htmlspecialchars($value, ENT_QUOTES); }
     function esc_attr(string $value): string { return htmlspecialchars($value, ENT_QUOTES); }
     function wc_price($amount): string { return '$' . number_format((float) $amount, 2); }
+    function get_woocommerce_currency(): string { return 'USD'; }
+    function wc_tax_enabled(): bool { return false; }
     function wp_strip_all_tags(string $value): string { return strip_tags($value); }
     function wp_kses_post(string $value): string { return $value; }
     function number_format_i18n($value): string { return number_format((int) $value); }
@@ -111,6 +114,7 @@ namespace {
         $root . '/includes/modules/requested-showings/includes/schema.php',
         $root . '/includes/modules/requested-showings/includes/repository.php',
         $root . '/includes/modules/requested-showings/includes/class-roxy-rs-cpt.php',
+        $root . '/includes/modules/requested-showings/includes/class-roxy-rs-agreement.php',
         $root . '/includes/modules/requested-showings/includes/class-roxy-rs-frontend.php',
         $argv[2] ?? $root . '/includes/modules/requested-showings/includes/class-roxy-rs-conversion.php',
     ] as $file) {
@@ -259,7 +263,9 @@ namespace {
     try { \RoxyRS\Frontend::handle_commit_backing(); } catch (FundingFixtureRedirect $redirect) { $redirected = true; }
     $check($redirected && $wpdb->insert_calls === 1 && ($GLOBALS['funding_fixture']['redirect']['roxy_rs_notice'] ?? '') === 'success'
         && strpos($GLOBALS['funding_fixture']['redirect']['message'] ?? '', 'do not submit it again') !== false,
-        'mock-persisted backing remains acknowledged as saved after readiness read failure');
+        'mock-persisted backing remains acknowledged as saved after readiness read failure (insert=' . $wpdb->insert_calls
+        . ', notice=' . ($GLOBALS['funding_fixture']['redirect']['roxy_rs_notice'] ?? 'missing')
+        . ', message=' . ($GLOBALS['funding_fixture']['redirect']['message'] ?? 'missing') . ')');
     $check(in_array(501, $GLOBALS['funding_fixture']['cache'], true) && ($GLOBALS['funding_fixture']['saved_backing']['subscriber_qty'] ?? 0) === 1,
         'post-insert failure retains replay guard and original backing payload');
     $_POST = [];

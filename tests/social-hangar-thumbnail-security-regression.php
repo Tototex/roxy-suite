@@ -28,7 +28,7 @@ namespace RoxySocial {
     function wp_upload_dir() { return ['path' => $GLOBALS['hangar_fixture']['upload_dir'], 'url' => 'https://fixture.invalid/uploads']; }
     function wp_mkdir_p($path) { return is_dir($path) || mkdir($path, 0777, true); }
     function wp_unique_filename($dir, $filename) { return $filename; }
-    function trailingslashit($path) { return rtrim($path, '/\\') . DIRECTORY_SEPARATOR; }
+    function trailingslashit($path) { return rtrim($path, '/\\') . '/'; }
     function sanitize_file_name($name) { return preg_replace('/[^A-Za-z0-9._-]/', '', (string) $name); }
     function header($value) { $GLOBALS['hangar_fixture']['headers'][] = $value; }
     function status_header($code) { $GLOBALS['hangar_fixture']['status'] = $code; }
@@ -106,7 +106,9 @@ namespace RoxySocial {
     $save_poster->invoke(null, 501, 31, 'movie.mp4');
     $poster_path = $GLOBALS['hangar_fixture']['meta'][501]['_roxy_social_video_poster_file'] ?? '';
     $check(str_ends_with($poster_path, 'movie-poster.png') && is_file($poster_path), 'poster uses detected PNG extension and writes file');
-    $check(file_get_contents($poster_path) === $png && ($GLOBALS['hangar_fixture']['meta'][501]['_roxy_social_video_poster_url'] ?? '') === 'https://fixture.invalid/uploads/movie-poster.png', 'poster bytes and metadata match validated image');
+    $poster_bytes = file_get_contents($poster_path);
+    $poster_url = $GLOBALS['hangar_fixture']['meta'][501]['_roxy_social_video_poster_url'] ?? '';
+    $check($poster_bytes === $png && $poster_url === 'https://fixture.invalid/uploads/movie-poster.png', 'poster bytes and metadata match validated image (bytes=' . strlen((string) $poster_bytes) . ', expected=' . strlen($png) . ', url=' . $poster_url . ')');
     $before_files = count(glob($upload_dir . DIRECTORY_SEPARATOR . '*') ?: []);
     $before_meta = $GLOBALS['hangar_fixture']['meta'][501];
     $GLOBALS['hangar_fixture']['cache']['roxy_social_hangar_thumb_32'] = '/posters/bad.png';

@@ -32,6 +32,14 @@ try {
     $wpdb->prefix=$fixture_prefix;
     $row=roxy_snapshot_row();
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::save_ai_result($row,'Generated fixture caption')&&\RoxySocial\DraftFixtureStore::find(1)['ai_status']==='ready','unchanged pending draft accepts AI text and readiness together');
+    $row=roxy_snapshot_row(['ai_status'=>'ready']);
+    roxy_snapshot_check(\RoxySocial\DraftFixtureStore::replace_generated_caption($row,'Reviewed generated caption')&&\RoxySocial\DraftFixtureStore::find(1)['hangar_asset_id']===$row['hangar_asset_id']&&\RoxySocial\DraftFixtureStore::find(1)['status']==='draft','reviewed AI replacement preserves media and stays unapproved');
+    foreach ([['ai_status'=>'manual'],['status'=>'approved'],['facebook_post_id'=>'123'],['instagram_container_id'=>'123']] as $override) {
+        $row=roxy_snapshot_row($override);
+        roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::replace_generated_caption($row,'Replacement'), 'AI replacement preserves manual/approved/remote state: '.json_encode($override));
+    }
+    $row=roxy_snapshot_row(['ai_status'=>'ready']);$wpdb->update($table,['post_text'=>'New manager edit'],['id'=>1]);
+    roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::replace_generated_caption($row,'Replacement'),'reviewed preview cannot overwrite a newer edit');
     $row=roxy_snapshot_row();$wpdb->update($table,['post_text'=>'Manual edit'],['id'=>1]);
     roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::save_ai_result($row,'Stale generated caption')&&\RoxySocial\DraftFixtureStore::find(1)['post_text']==='Manual edit','same-second manual edit rejects stale AI result');
     $row=roxy_snapshot_row();$wpdb->update($table,['status'=>'approved'],['id'=>1]);

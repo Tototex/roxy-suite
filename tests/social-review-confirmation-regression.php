@@ -14,6 +14,9 @@ namespace {
     function roxy_suite_user_can_access_admin(){return true;}
     function check_admin_referer($action){$GLOBALS['nonces'][]=$action;}
     function sanitize_key($s){return $s;}
+    function wp_parse_url($url,$component=-1){return parse_url($url,$component);}
+    function wp_get_referer(){return 'https://fixture.test/wp-admin/admin.php?page=roxy-social-drafts';}
+    function add_query_arg($args,$url){return $url.(str_contains($url,'?')?'&':'?').http_build_query($args);}
     function admin_url($p){return 'https://fixture.test/wp-admin/'.$p;}
     function wp_safe_redirect($url){throw new RedirectResult($url);}
     function esc_attr($s){return htmlspecialchars($s,ENT_QUOTES);}

@@ -352,6 +352,9 @@ class Frontend {
         if (!is_user_logged_in()) {
             wp_die('Login required.');
         }
+        if (defined('ROXY_RS_SCHEMA_READY') && !ROXY_RS_SCHEMA_READY) {
+            self::redirect_request_notice((int) ($_POST['request_id'] ?? 0), 'error', 'Pledges are temporarily unavailable while the request data store is repaired. No backing was saved.');
+        }
 
         $request_id = (int) ($_POST['request_id'] ?? 0);
         $request = get_post($request_id);
@@ -417,14 +420,9 @@ class Frontend {
             self::redirect_request_notice($request_id, 'success', 'We already saved that backing request. Please refresh the page to see the latest progress.');
         }
 
-        $price_types = [];
-        if ($profile === 'movie_matinee') {
-            if ($general_qty > 0) $price_types[] = 'matinee';
-        } else {
-            if ($general_qty > 0) $price_types[] = 'general';
-            if ($discount_qty > 0) $price_types[] = 'discount';
-        }
-        $prices = self::ticket_prices($request_id, $price_types);
+        // Capture a complete price book at pledge time so conversion cannot
+        // silently adopt prices edited after the customer made this backing.
+        $prices = self::ticket_prices($request_id);
         if (is_wp_error($prices)) {
             self::redirect_request_notice($request_id, 'error', 'Ticket prices need review before backing can be accepted. No backing was saved.');
         }
@@ -470,7 +468,7 @@ class Frontend {
             $backing_type = 'subscriber';
         }
 
-        $backing_id = roxy_rs_repo_insert_backing([
+        $backing_data = [
             'request_id' => $request_id,
             'user_id' => get_current_user_id(),
             'status' => 'pending',
@@ -483,7 +481,20 @@ class Frontend {
             'sponsor_amount' => $sponsor_amount,
             'sponsor_ticket_qty' => $sponsor_ticket_qty,
             'charge_total' => $charge_total,
-        ]);
+        ];
+        try {
+            $agreement_quote = Agreement::quote(
+                $request_id,
+                $profile,
+                $prices,
+                function_exists('get_woocommerce_currency') ? (string) get_woocommerce_currency() : '',
+                function_exists('wc_tax_enabled') ? (bool) wc_tax_enabled() : false
+            );
+            $backing_data['agreement_json'] = Agreement::build($agreement_quote, $backing_data);
+        } catch (\Throwable $error) {
+            self::redirect_request_notice($request_id, 'error', 'The ticket price agreement could not be safely saved. No backing was created; please contact the theater.');
+        }
+        $backing_id = roxy_rs_repo_insert_backing($backing_data);
 
         if (is_wp_error($backing_id)) {
             self::redirect_request_notice($request_id, 'error', $backing_id->get_error_message());

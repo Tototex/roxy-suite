@@ -313,6 +313,23 @@ final class Admin {
         echo '<tr><th><label for="roxy-ai-model">Model</label></th><td><input class="regular-text" id="roxy-ai-model" name="ai_model" value="' . esc_attr($model) . '"><p class="description">The model name installed in Ollama, for example <code>llama3.2:latest</code>.</p></td></tr>';
         echo '<tr><th><label for="roxy-ai-style">Writing style</label></th><td><textarea class="large-text" rows="4" id="roxy-ai-style" name="ai_style">' . esc_textarea($style) . '</textarea><p class="description">Describe the Roxy voice and any boundaries you want the captions to follow.</p></td></tr></table>';
         echo '<table class="form-table"><tr><th><label for="roxy-ai-examples">Style examples and patterns</label></th><td><textarea class="large-text" rows="10" id="roxy-ai-examples" name="ai_examples">' . esc_textarea(trim($examples)) . '</textarea><p class="description">These examples guide the tone and structure of every caption. Schedule accuracy and the ticket footer remain enforced by the application.</p></td></tr></table>';
+        echo '<h3>Film References</h3><input type="hidden" name="film_references_present" value="1"><div style="overflow-x:auto"><table class="widefat striped"><colgroup><col style="width:16%"><col style="width:90px"><col style="width:14%"><col style="width:40%"><col style="width:20%"></colgroup><thead><tr><th>Film</th><th>Release Year</th><th>Genre</th><th>Synopsis</th><th>Source</th></tr></thead><tbody>';
+        $references = array_values((array) get_option('roxy_social_film_references', []));
+        $references[] = ['title' => '', 'release_year' => '', 'genre' => '', 'synopsis' => '', 'source_url' => ''];
+        foreach ($references as $index => $reference) {
+            if (!is_array($reference)) continue;
+            echo '<tr>';
+            foreach (['title', 'release_year', 'genre', 'synopsis', 'source_url'] as $field) {
+                $name = 'film_references[' . $index . '][' . $field . ']';
+                $label = ($reference['title'] ?? '') . ' ' . str_replace('_', ' ', $field);
+                echo '<td>';
+                if ($field === 'synopsis') echo '<textarea rows="5" style="width:100%;min-width:260px" name="' . esc_attr($name) . '" aria-label="' . esc_attr($label) . '">' . esc_textarea((string) ($reference[$field] ?? '')) . '</textarea>';
+                else echo '<input type="' . ($field === 'release_year' ? 'number' : ($field === 'source_url' ? 'url' : 'text')) . '" style="width:100%;min-width:' . ($field === 'release_year' ? '80' : '140') . 'px" name="' . esc_attr($name) . '" aria-label="' . esc_attr($label) . '" value="' . esc_attr((string) ($reference[$field] ?? '')) . '">';
+                echo '</td>';
+            }
+            echo '</tr>';
+        }
+        echo '</tbody></table></div>';
         submit_button('Save AI Settings');
         echo '</form><form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:12px"><input type="hidden" name="action" value="roxy_social_ai_test">' . wp_nonce_field('roxy_social_ai_test', '_wpnonce', true, false) . '<button type="submit" class="button">Test Ollama connection</button></form>';
     }

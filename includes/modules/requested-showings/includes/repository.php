@@ -98,6 +98,7 @@ function roxy_rs_repo_insert_backing_owned(array $data, string $request_guard) {
         'sponsor_amount' => 0,
         'sponsor_ticket_qty' => 0,
         'charge_total' => 0,
+        'agreement_json' => null,
         'approved_showing_id' => null,
         'woo_order_id' => null,
         'charge_intent_id' => null,

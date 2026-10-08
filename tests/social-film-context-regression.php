@@ -2,6 +2,8 @@
 define('ABSPATH', __DIR__);
 define('DAY_IN_SECONDS', 86400);
 $fixture_posts = []; $fixture_response = []; $fixture_cache = [];
+$fixture_options = [];
+function get_option($key,$default=false) { global $fixture_options; return $fixture_options[$key] ?? ($key==='roxy_social_ai_enabled' ? true : $default); }
 function absint($v) { return abs((int)$v); }
 function get_post($id) { global $fixture_posts; return $fixture_posts[$id] ?? null; }
 function wp_strip_all_tags($v) { return strip_tags($v); }
@@ -14,6 +16,7 @@ function is_wp_error($r) { return false; }
 function wp_remote_retrieve_response_code($r) { return $r['code'] ?? 200; }
 function wp_remote_retrieve_body($r) { return json_encode($r['body'] ?? []); }
 function esc_url_raw($v) { return $v; }
+function wp_json_encode($v) { return json_encode($v); }
 function remove_accents($v) { return $v; }
 function get_post_meta($id,$key,$single) { return [1=>'2026-10-09T14:30',2=>'2026-10-10T19:30',3=>'2026-10-11T14:30'][$id] ?? ''; }
 function wp_timezone() { return new DateTimeZone('America/Los_Angeles'); }
@@ -34,6 +37,15 @@ check(strpos($method->invoke(null,$draft,'Heart of the Beast'),'sourced synopsis
 $fixture_cache=[];
 $fixture_response=['body'=>['query'=>['pages'=>[1=>$page,2=>$page]]]];
 check($method->invoke(null,$draft,'Heart of the Beast') === '');
+$fixture_options['roxy_social_film_references'] = ['streetfighter' => ['title' => 'Street Fighter', 'release_year' => 2026, 'synopsis' => str_repeat('Two fighters enter a martial arts tournament. ', 3), 'source_url' => 'https://example.test/street-fighter']];
+check(str_contains($method->invoke(null,$draft,'Streetfighter'),'martial arts tournament'));
+$fixture_options = [];
+$fixture_cache=[]; $page['title']='Street Fighter (2026 film)';
+$fixture_response=['body'=>['query'=>['pages'=>[1=>$page]]]];
+check(str_contains($method->invoke(null,$draft,'Streetfighter'),'sourced synopsis'));
+$fixture_cache=[]; $novel=$page; $novel['title']='Street Fighter (novel)';
+$fixture_response=['body'=>['query'=>['pages'=>[1=>$novel]]]];
+check($method->invoke(null,$draft,'Streetfighter') === '');
 $page['title']='Unrelated Movie'; $fixture_response=['body'=>['query'=>['pages'=>[1=>$page]]]];
 check($method->invoke(null,$draft,'Heart of the Beast') === '');
 check(!RoxySocial\Campaigns::asset_matches_title(['filename'=>'Universal_v4.1_Six_Theyre-a-10_4x5.mp4'],'Heart of the Beast'));

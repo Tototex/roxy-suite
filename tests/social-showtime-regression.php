@@ -21,6 +21,10 @@ namespace {
     function wp_timezone(){return new \DateTimeZone('America/Los_Angeles');}
     function wp_date($format,$stamp,$zone){return (new \DateTimeImmutable('@'.$stamp))->setTimezone($zone)->format($format);}
     function get_post($id){return $GLOBALS['shows'][$id]??null;}
+    function absint($v){return abs((int)$v);}
+    function wp_strip_all_tags($v){return strip_tags($v);}
+    function strip_shortcodes($v){return $v;}
+    function remove_accents($v){return $v;}
     function get_post_meta($id,$key,$single){return $GLOBALS['starts'][$id]??'';}
     function get_posts($args){return array_values($GLOBALS['shows']);}
     function get_the_title($id){return htmlspecialchars(get_post($id)->post_title,ENT_QUOTES);}
@@ -40,11 +44,11 @@ namespace {
     function is_wp_error($r){return false;}
     function wp_remote_retrieve_response_code($r){return 200;}
     function wp_remote_retrieve_body($r){return $r['body'];}
-    function wp_remote_post($url,$args){$GLOBALS['calls']++;$GLOBALS['prompt']=$args['body'];if($GLOBALS['mutation'])($GLOBALS['mutation'])();return ['body'=>json_encode(['message'=>['content'=>"A warm local invitation.\nMonday at 8:00 PM\n10:00 AM surprise"]])];}
+    function wp_remote_post($url,$args){$GLOBALS['calls']++;$GLOBALS['prompt']=$args['body'];if($GLOBALS['mutation'])($GLOBALS['mutation'])();return ['body'=>json_encode(['message'=>['content'=>json_encode(['caption'=>"Come see Fixture Movie at The Roxy. A warm local invitation.\nMonday at 8:00 PM\n10:00 AM surprise"])]] )];}
     function check($ok,$label){if(!$ok)throw new \RuntimeException($label);echo "PASS: $label\n";}
     function reset_fixture(){
         $GLOBALS['shows']=[];$GLOBALS['starts']=[];
-        foreach([1=>'2026-10-09T18:00',2=>'2026-10-09T21:00',3=>'2026-10-10T16:00',4=>'2026-10-11T13:00'] as $id=>$start){$GLOBALS['shows'][$id]=(object)['ID'=>$id,'post_type'=>'roxy_showing','post_status'=>'publish','post_title'=>'Fixture Movie'];$GLOBALS['starts'][$id]=$start;}
+        foreach([1=>'2026-10-09T18:00',2=>'2026-10-09T21:00',3=>'2026-10-10T16:00',4=>'2026-10-11T13:00'] as $id=>$start){$GLOBALS['shows'][$id]=(object)['ID'=>$id,'post_type'=>'roxy_showing','post_status'=>'publish','post_title'=>'Fixture Movie','post_excerpt'=>str_repeat('A supplied film synopsis about an adventure. ',3),'post_content'=>''];$GLOBALS['starts'][$id]=$start;}
         \RoxySocial\Store::$row=['id'=>1,'showing_ids'=>'1,2,3,4','campaign_key'=>'fixture-movie-20261009','status'=>'draft','ai_status'=>'pending','scheduled_for'=>'2026-10-05 10:00:00','post_text'=>'Untrusted caption: Fri at 7:30 PM'];
         $GLOBALS['calls']=0;$GLOBALS['mutation']=null;$GLOBALS['auto_approve']=false;\RoxySocial\Store::$generated=[];
     }
@@ -65,7 +69,7 @@ namespace {
     reset_fixture();\RoxySocial\Store::$row['scheduled_for']='2026-10-10 10:00:00';$rows=\RoxySocial\Campaigns::verified_showtimes(\RoxySocial\Store::$row);
     check(array_column($rows,'id')===[3,4],'Saturday filtering removes every Friday showing by date, not position');
     reset_fixture();\RoxySocial\Store::$row['showing_ids']='3';\RoxySocial\AI::generate_text(1,'fixture-movie-20261009');$text=\RoxySocial\Store::$row['post_text'];
-    check(str_contains($text,'Sat, Oct 10, 2026 at 4:00 PM')&&!str_contains($text,'Fri,')&&!str_contains($text,'Sun,')&&!str_contains($text,'7:30')&&!str_contains($text,'2:30'),'Saturday-only schedule never invents absent Friday/Sunday times');
+    check(str_contains($text,'Sat, Oct 10 at 4:00 PM')&&!str_contains($text,'Fri,')&&!str_contains($text,'Sun,')&&!str_contains($text,'7:30')&&!str_contains($text,'2:30'),'Saturday-only schedule never invents absent Friday/Sunday times');
     check(!str_contains($text,'8:00 PM')&&!str_contains($text,'10:00 AM'),'generated time lines are removed for every weekday and unlabeled clocks');
     reset_fixture();$GLOBALS['starts'][1]='2027-01-01T18:00';$GLOBALS['starts'][2]='2026-12-31T21:00';\RoxySocial\Store::$row['showing_ids']='1,2';\RoxySocial\Store::$row['scheduled_for']='2026-12-30 10:00:00';$rows=\RoxySocial\Campaigns::verified_showtimes(\RoxySocial\Store::$row);
     check(array_column($rows,'id')===[2,1]&&str_contains($rows[1]['line'],'2027'),'holiday weekday and year rollover use real dates and chronological order');
