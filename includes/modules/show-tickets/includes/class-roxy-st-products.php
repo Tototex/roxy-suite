@@ -143,7 +143,7 @@ class Products {
     $start_timestamp = Eligibility::showing_start_timestamp($showing_id);
     // The readiness check rejects invalid dates; keep labels on the same strict,
     // site-local interpretation instead of letting strtotime normalize bad data.
-    $start_label = $start_timestamp !== null ? date_i18n('D n/j g:ia', $start_timestamp) : '';
+    $start_label = $start_timestamp !== null ? wp_date('D n/j g:ia', $start_timestamp) : '';
 
     $thumb_id = get_post_thumbnail_id($showing_id);
 

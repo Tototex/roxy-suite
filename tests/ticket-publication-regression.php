@@ -48,6 +48,7 @@ function admin_url($path=''){return 'https://fixture.invalid/'.$path;}
 function wp_create_nonce($action){return 'fixture-nonce';}
 function wc_format_localized_price($price){return number_format((float)$price,2,'.','');}
 function wp_timezone(){return new DateTimeZone('America/Los_Angeles');}
+function wp_date($format,$timestamp){return (new DateTimeImmutable('@'.(int)$timestamp))->setTimezone(wp_timezone())->format('Y-m-d H:i');}
 function current_datetime(){return new DateTimeImmutable('2040-01-02 12:00:00',wp_timezone());}
 class WP_Query {
     public $posts=[];
@@ -150,6 +151,8 @@ $GLOBALS['meta'][1]['_roxy_duration_minutes']='60';
 check(is_wp_error(\RoxyST\Eligibility::product_error(101)) && \RoxyST\Eligibility::showing_end_timestamp(1)===null,'malformed start date fails closed for live ticket sales');
 \RoxyST\Products::ensure_products_for_showing(1);
 check(!isset($GLOBALS['transients']['roxy_st_sync_1']),'malformed showing date blocks ticket product synchronization without acquiring a sync lock');
+$meta_title=new ReflectionMethod(\RoxyST\Frontend::class,'meta_title');$meta_title->setAccessible(true);
+check($meta_title->invoke(null,1)==='Fixture showing','malformed showing date is omitted from customer-facing SEO title');
 $GLOBALS['meta'][1]['_roxy_start']=current_datetime()->modify('-90 minutes')->format('Y-m-d\TH:i');
 $GLOBALS['meta'][1]['_roxy_duration_minutes']='60';
 check(is_wp_error(\RoxyST\Eligibility::product_error(101)),'ended live showing is no longer purchasable');
