@@ -130,7 +130,7 @@ namespace {
   $multi_gateway_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
   $assert($multi_gateway_report['totals']['woocommerce_collected_cents'] === 3700
     && $multi_gateway_report['counts']['woocommerce_collections'] === 2
-    && array_column($GLOBALS['wc_queries'], 'payment_method') === ['stripe', 'paypal', null],
+    && array_map(static fn(array $query): ?string => $query['payment_method'] ?? null, $GLOBALS['wc_queries']) === ['stripe', 'paypal', null],
     'combined cashflow queries every allow-listed Woo gateway separately and includes each once');
   \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = 'stripe';
   $assert(\RoxyGrosses\Square::$calls[0] === ['payments', '2026-10-02T07:00:00Z', '2026-10-03T07:00:00Z'], 'Square payment read uses exact UTC boundaries for the selected report-timezone day');
