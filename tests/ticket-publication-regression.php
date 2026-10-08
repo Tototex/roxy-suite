@@ -37,6 +37,9 @@ $GLOBALS['meta']=[]; $GLOBALS['types']=[]; $GLOBALS['statuses']=[]; $GLOBALS['no
 $GLOBALS['room_lock_calls']=[]; $GLOBALS['room_conflict']=false; $GLOBALS['scheduled_events']=[]; $GLOBALS['schedule_fail']=false;
 class WooCommerce {} class WP_Error { private $message; function __construct($code,$message){$this->message=$message;} function get_error_message(){return $this->message;} }
 function is_wp_error($v){return $v instanceof WP_Error;}
+class FixtureSubscriptionItem { private $quantity; function __construct($quantity){$this->quantity=$quantity;} function get_quantity(){return $this->quantity;} }
+class FixtureSubscription { private $status; private $items; function __construct($status,$items){$this->status=$status;$this->items=$items;} function has_status($status){return $this->status===$status;} function get_items(){return $this->items;} }
+function wcs_get_users_subscriptions($user_id){$subscriptions=$GLOBALS['fixture_wcs_subscriptions']??[];if($subscriptions==='throw')throw new RuntimeException('private subscription read failure');return $subscriptions;}
 function __($s,...$args){return $s;}
 function get_post_type($id){if(!empty($GLOBALS['throw_post_type']))throw new RuntimeException('fixture readiness read failure');return $GLOBALS['types'][$id]??false;}
 function get_post_status($id){if(isset($GLOBALS['stale_statuses'][$id]))return $GLOBALS['stale_statuses'][$id];return $GLOBALS['statuses'][$id]??false;}
@@ -97,6 +100,19 @@ class WP_Query {
 function check($ok,$label){if(!$ok)throw new RuntimeException($label); echo "PASS: $label\n";}
 require $fixture.'class-roxy-st-cpt.php'; require $fixture.'class-roxy-st-products.php'; require $fixture.'class-roxy-st-eligibility.php'; require $fixture.'class-roxy-st-capacity.php'; require $fixture.'class-roxy-st-tickets.php'; require $fixture.'class-roxy-st-frontend.php';
 \RoxyST\Eligibility::init(); \RoxyST\Products::init();
+$GLOBALS['fixture_wcs_subscriptions']=[new FixtureSubscription('active',[new FixtureSubscriptionItem(2),new FixtureSubscriptionItem(1)]),new FixtureSubscription('pending-cancel',[new FixtureSubscriptionItem(1)])];
+check(\RoxyST\Capacity::subscription_entitlement_count(7)===4,'active and pending-cancel subscription item quantities produce the confirmed entitlement');
+foreach([new WP_Error('private','subscription lookup failed'),'throw','unavailable'] as $unreadable){
+    $GLOBALS['fixture_wcs_subscriptions']=$unreadable;
+    check(\RoxyST\Capacity::subscription_entitlement_count(7)===0 && \RoxyST\Capacity::subscriber_limit_remaining_for_showing(1,7,false)===0,'unreadable subscription collection grants no subscriber seats');
+}
+foreach(['bad',-1,1.5,NAN,INF,PHP_INT_MAX] as $malformed_quantity){
+    $GLOBALS['fixture_wcs_subscriptions']=[new FixtureSubscription('active',[new FixtureSubscriptionItem($malformed_quantity)])];
+    check(\RoxyST\Capacity::subscription_entitlement_count(7)===0 && \RoxyST\Capacity::subscriber_limit_remaining_for_showing(1,7,false)===0,'malformed/overflow subscription quantity grants no subscriber seats');
+}
+$GLOBALS['fixture_wcs_subscriptions']=[new FixtureSubscription('active',[new stdClass()])];
+check(\RoxyST\Capacity::subscription_entitlement_count(7)===0 && \RoxyST\Capacity::subscriber_limit_remaining_for_showing(1,7,false)===0,'malformed subscription item grants no subscriber seats');
+$GLOBALS['fixture_wcs_subscriptions']=[];
 check(isset($GLOBALS['hooks']['woocommerce_is_purchasable'],$GLOBALS['hooks']['woocommerce_checkout_process'],$GLOBALS['hooks']['woocommerce_check_cart_items'],$GLOBALS['hooks']['transition_post_status'],$GLOBALS['hooks']['before_delete_post'],$GLOBALS['hooks']['roxy_st_sync_products_retry']), 'all managed publication and checkout hooks registered');
 $GLOBALS['types']=[1=>'roxy_showing',101=>'product',102=>'product',103=>'product',104=>'product',200=>'product'];
 $GLOBALS['statuses']=[1=>'publish',101=>'publish',102=>'publish',103=>'publish',104=>'publish',200=>'publish'];

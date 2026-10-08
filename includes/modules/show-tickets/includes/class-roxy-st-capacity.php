@@ -24,7 +24,7 @@ class Capacity {
             if (!is_object($item) || !method_exists($item, 'get_quantity')) return 0;
             $quantity = $item->get_quantity();
             if (!is_numeric($quantity) || !is_finite((float) $quantity) || (float) $quantity < 0
-              || floor((float) $quantity) !== (float) $quantity || (float) $quantity > PHP_INT_MAX - $qty_sum) return 0;
+              || floor((float) $quantity) !== (float) $quantity || (float) $quantity >= PHP_INT_MAX - $qty_sum) return 0;
             $qty_sum += (int) $quantity;
           }
           $count += max(1, $qty_sum);
