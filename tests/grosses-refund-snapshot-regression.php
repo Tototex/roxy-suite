@@ -23,6 +23,24 @@ final class FakeWooRefund {
   public function get_amount() { return $this->amount; }
   public function get_date_created(): ?\DateTimeInterface { return $this->created; }
 }
+final class FakeWooCollectionOrder {
+  public function __construct(
+    private int $id,
+    private string $gateway,
+    private bool $paid,
+    private string $currency,
+    private $total,
+    private ?\DateTimeInterface $paid_at,
+    private string $transaction_id
+  ) {}
+  public function get_id(): int { return $this->id; }
+  public function get_payment_method(): string { return $this->gateway; }
+  public function is_paid(): bool { return $this->paid; }
+  public function get_currency(): string { return $this->currency; }
+  public function get_total() { return $this->total; }
+  public function get_date_paid(): ?\DateTimeInterface { return $this->paid_at; }
+  public function get_transaction_id(): string { return $this->transaction_id; }
+}
 final class Square {
   public static array $orders = [];
   public static array $refunds = [];
@@ -178,6 +196,21 @@ namespace {
   $expect_throw(static fn() => \RoxyGrosses\WooRefundEvents::from_order_refunds([new \RoxyGrosses\FakeWooRefund(11, 101, true, 'USD', '1.001', new \DateTimeImmutable('2026-08-14T07:30:00Z'))]), 'Woo refund fractional cents fail closed');
   $expect_throw(static fn() => \RoxyGrosses\WooRefundEvents::from_order_refunds([new \RoxyGrosses\FakeWooRefund(11, 101, true, 'CAD', '1.00', new \DateTimeImmutable('2026-08-14T07:30:00Z'))]), 'Woo refund non-USD currency fails closed');
   $expect_throw(static fn() => \RoxyGrosses\WooRefundEvents::from_order_refunds([new \RoxyGrosses\FakeWooRefund(11, 101, true, 'USD', '1.00', null)]), 'Woo refund without creation timestamp fails closed');
+  $woo_collections = \RoxyGrosses\WooCollectionEvents::from_orders([
+    new \RoxyGrosses\FakeWooCollectionOrder(201, 'stripe', true, 'USD', '42.37', new \DateTimeImmutable('2026-10-03T06:30:00Z'), 'ch_private_1'),
+    new \RoxyGrosses\FakeWooCollectionOrder(202, 'stripe', false, 'USD', '99.00', new \DateTimeImmutable('2026-10-03T06:40:00Z'), 'pending_1'),
+    new \RoxyGrosses\FakeWooCollectionOrder(203, 'cod', true, 'USD', '25.00', new \DateTimeImmutable('2026-10-03T06:45:00Z'), 'cash_1'),
+    new \RoxyGrosses\FakeWooCollectionOrder(204, 'stripe', true, 'USD', '0.00', new \DateTimeImmutable('2026-10-03T06:50:00Z'), 'free_1'),
+  ], ['stripe']);
+  $assert(count($woo_collections) === 1 && $woo_collections[0]['amount_cents'] === 4237, 'Woo collection projection includes positive paid orders only from the explicit online gateway allow-list');
+  $assert($woo_collections[0]['transaction_id'] === 'ch_private_1' && $woo_collections[0]['collection_date'] === '2026-10-02', 'Woo collection retains transaction identity and Pacific paid date');
+  $expect_throw(static fn() => \RoxyGrosses\WooCollectionEvents::from_orders([new \RoxyGrosses\FakeWooCollectionOrder(201, 'stripe', true, 'USD', '1.00', null, 'tx')], ['stripe']), 'paid Woo collection without paid timestamp fails closed');
+  $expect_throw(static fn() => \RoxyGrosses\WooCollectionEvents::from_orders([new \RoxyGrosses\FakeWooCollectionOrder(201, 'stripe', true, 'USD', '1.001', new \DateTimeImmutable('2026-10-03T06:30:00Z'), 'tx')], ['stripe']), 'Woo collection fractional cents fail closed');
+  $expect_throw(static fn() => \RoxyGrosses\WooCollectionEvents::from_orders([new \RoxyGrosses\FakeWooCollectionOrder(201, 'stripe', true, 'CAD', '1.00', new \DateTimeImmutable('2026-10-03T06:30:00Z'), 'tx')], ['stripe']), 'Woo collection non-USD order fails closed');
+  $expect_throw(static fn() => \RoxyGrosses\WooCollectionEvents::from_orders([
+    new \RoxyGrosses\FakeWooCollectionOrder(201, 'stripe', true, 'USD', '1.00', new \DateTimeImmutable('2026-10-03T06:30:00Z'), 'same_tx'),
+    new \RoxyGrosses\FakeWooCollectionOrder(202, 'stripe', true, 'USD', '2.00', new \DateTimeImmutable('2026-10-03T06:31:00Z'), 'same_tx'),
+  ], ['stripe']), 'duplicate Woo payment transaction fails closed');
   $collection_events = \RoxyGrosses\SquareCollectionEvents::from_orders([
     ['id' => 'order-1', 'location_id' => 'loc-1', 'state' => 'COMPLETED', 'total_money' => ['amount' => 12345, 'currency' => 'USD'], 'closed_at' => '2026-10-03T06:30:00Z', 'tenders' => [['payment_id' => 'payment-1']]],
     ['id' => 'order-2', 'location_id' => 'loc-1', 'state' => 'COMPLETED', 'total_money' => ['amount' => 0, 'currency' => 'USD'], 'closed_at' => '2026-10-03T07:30:00Z', 'tenders' => [['id' => 'payment-2']]],

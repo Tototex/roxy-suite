@@ -313,6 +313,74 @@ final class WooRefundEvents {
   }
 }
 
+/** Read-only WooCommerce collection events for explicitly approved online gateways. */
+final class WooCollectionEvents {
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
+
+  private static function amount_cents($amount): int {
+    if (!is_string($amount) && !is_int($amount)) throw new \RuntimeException('WooCommerce order amount has an unsupported representation.');
+    $value = (string) $amount;
+    if (!preg_match('/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/D', $value)) throw new \RuntimeException('WooCommerce order amount is invalid or has fractional cents.');
+    $parts = explode('.', $value, 2);
+    $whole = (int) $parts[0];
+    $fraction = isset($parts[1]) ? (int) str_pad($parts[1], 2, '0') : 0;
+    if ($whole > intdiv(PHP_INT_MAX - $fraction, 100)) throw new \RuntimeException('WooCommerce order exceeds the supported amount range.');
+    return ($whole * 100) + $fraction;
+  }
+
+  /** Only paid orders from the caller's allow-list count; manual/offline gateways are excluded. */
+  public static function from_orders(array $orders, array $allowed_gateways): array {
+    if (!self::is_list($orders) || !self::is_list($allowed_gateways) || !$allowed_gateways) throw new \RuntimeException('WooCommerce collection inputs are invalid.');
+    $gateways = [];
+    foreach ($allowed_gateways as $gateway) {
+      if (!is_string($gateway) || !preg_match('/^[a-z0-9_-]{1,80}$/D', $gateway) || isset($gateways[$gateway])) throw new \RuntimeException('WooCommerce collection gateway allow-list is invalid.');
+      $gateways[$gateway] = true;
+    }
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $events = [];
+    $seen_orders = [];
+    $seen_transactions = [];
+    foreach ($orders as $order) {
+      $methods = ['get_id','get_payment_method','is_paid','get_currency','get_total','get_date_paid','get_transaction_id'];
+      if (!is_object($order)) throw new \RuntimeException('WooCommerce returned a malformed collection order.');
+      foreach ($methods as $method) if (!method_exists($order, $method)) throw new \RuntimeException('WooCommerce collection order lacks required payment evidence.');
+      $id = $order->get_id();
+      if (!is_int($id) || $id <= 0 || isset($seen_orders[$id])) throw new \RuntimeException('WooCommerce returned a duplicate or invalid collection order ID.');
+      $seen_orders[$id] = true;
+      $gateway = $order->get_payment_method();
+      if (!is_string($gateway) || $gateway === '') throw new \RuntimeException('WooCommerce collection order has an invalid gateway identity.');
+      if (!isset($gateways[$gateway]) || $order->is_paid() !== true) continue;
+      if ($order->get_currency() !== 'USD') throw new \RuntimeException('WooCommerce collection order uses an unsupported currency.');
+      $amount_cents = self::amount_cents($order->get_total());
+      if ($amount_cents === 0) continue;
+      $paid_at = $order->get_date_paid();
+      if (!$paid_at instanceof \DateTimeInterface) throw new \RuntimeException('Paid WooCommerce order has no paid timestamp.');
+      $transaction_id = $order->get_transaction_id();
+      if (!is_string($transaction_id) || trim($transaction_id) === '' || strlen($transaction_id) > 255) throw new \RuntimeException('Paid WooCommerce order has no stable transaction identity.');
+      $transaction_key = $gateway . ':' . $transaction_id;
+      if (isset($seen_transactions[$transaction_key])) throw new \RuntimeException('WooCommerce collection feed repeats a gateway transaction identity.');
+      $seen_transactions[$transaction_key] = true;
+      $timestamp = \DateTimeImmutable::createFromInterface($paid_at)->setTimezone(new \DateTimeZone('UTC'));
+      $events[] = [
+        'source' => 'woocommerce',
+        'order_id' => $id,
+        'gateway' => $gateway,
+        'transaction_id' => $transaction_id,
+        'amount_cents' => $amount_cents,
+        'currency' => 'USD',
+        'collected_at' => $timestamp->format('Y-m-d H:i:s'),
+        'collection_date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
+      ];
+    }
+    usort($events, static fn(array $a, array $b): int => [$a['collected_at'], $a['order_id']] <=> [$b['collected_at'], $b['order_id']]);
+    return $events;
+  }
+}
+
 /** Read-only normalization for fully paid Square Orders and tender deduplication references. */
 final class SquareCollectionEvents {
   private static function is_list(array $value): bool {
