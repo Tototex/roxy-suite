@@ -497,6 +497,53 @@ final class SquareCollectionEvents {
   }
 }
 
+/** Normalize Square's payments feed by actual payment-created time, not order close time. */
+final class SquarePaymentEvents {
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
+
+  public static function from_payments(array $payments): array {
+    if (!self::is_list($payments)) throw new \RuntimeException('Square returned an invalid payment collection list.');
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $events = []; $seen = [];
+    foreach ($payments as $payment) {
+      if (!is_array($payment) || !is_string($payment['status'] ?? null)) throw new \RuntimeException('Square returned a malformed payment record.');
+      $id = $payment['id'] ?? null;
+      $location_id = $payment['location_id'] ?? null;
+      if (!is_string($id) || $id === '' || strlen($id) > 192 || isset($seen[$id]) || !is_string($location_id) || $location_id === '') {
+        throw new \RuntimeException('Square returned a duplicate or invalid payment identity.');
+      }
+      $seen[$id] = true;
+      if ($payment['status'] !== 'COMPLETED') continue;
+      $money = $payment['amount_money'] ?? null;
+      if (!is_array($money) || !is_int($money['amount'] ?? null) || $money['amount'] < 0 || ($money['currency'] ?? null) !== 'USD') {
+        throw new \RuntimeException('Completed Square payment has an invalid amount or unsupported currency.');
+      }
+      $created = $payment['created_at'] ?? null;
+      if (!is_string($created) || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/', $created)) {
+        throw new \RuntimeException('Completed Square payment has no valid creation timestamp.');
+      }
+      try { $timestamp = new \DateTimeImmutable($created); }
+      catch (\Throwable $error) { throw new \RuntimeException('Completed Square payment has an invalid creation timestamp.'); }
+      $errors = \DateTimeImmutable::getLastErrors();
+      if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('Completed Square payment has an invalid creation date.');
+      $events[] = [
+        'source' => 'square', 'order_id' => (string) ($payment['order_id'] ?? $id),
+        'tender_id' => $id, 'payment_id' => $id, 'location_id' => $location_id,
+        'amount_cents' => $money['amount'], 'currency' => 'USD',
+        'collected_at' => $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
+        'collection_date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
+        'collection_date_basis' => 'square_payment_created_at',
+      ];
+    }
+    usort($events, static fn(array $a, array $b): int => [$a['collected_at'], $a['tender_id']] <=> [$b['collected_at'], $b['tender_id']]);
+    return $events;
+  }
+}
+
 /** Pure daily aggregation of separately sourced collection and refund projections. */
 final class CashflowProjection {
   private static function is_list(array $value): bool {

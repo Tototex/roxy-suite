@@ -1,0 +1,122 @@
+<?php
+declare(strict_types=1);
+
+namespace RoxyGrosses {
+  final class Settings {
+    public static array $values = ['cashflow_woo_gateways' => 'stripe'];
+    public static function get_report_timezone(): string { return 'America/Los_Angeles'; }
+    public static function get(string $key, $default = '') { return self::$values[$key] ?? $default; }
+    public static function line_list(string $value): array { return array_values(array_filter(array_map('trim', preg_split('/[\r\n,]+/', $value) ?: []), 'strlen')); }
+  }
+  final class Store {
+    public static function refund_completion_event(array $refund, string $updated): ?array { return null; }
+  }
+  final class Square {
+    public static array $orders = [];
+    public static array $payments = [];
+    public static array $refunds = [];
+    public static array $calls = [];
+    public static function fetch_orders_for_date(string $date): array { self::$calls[] = ['orders', $date]; return self::$orders; }
+    public static function list_payments_created_between(string $start, string $end): array { self::$calls[] = ['payments', $start, $end]; return self::$payments; }
+    public static function list_payment_refunds_updated_between(string $start, string $end): array { self::$calls[] = ['refunds', $start, $end]; return self::$refunds; }
+  }
+  final class FakeOrder {
+    public function __construct(private int $id, private string $gateway, private string $amount, private string $transaction, private \DateTimeImmutable $paid) {}
+    public function get_id(): int { return $this->id; }
+    public function get_payment_method(): string { return $this->gateway; }
+    public function is_paid(): bool { return true; }
+    public function get_currency(): string { return 'USD'; }
+    public function get_total(): string { return $this->amount; }
+    public function get_date_paid(): \DateTimeImmutable { return $this->paid; }
+    public function get_transaction_id(): string { return $this->transaction; }
+  }
+  final class FakeRefund {
+    public function __construct(private int $id, private int $parent, private string $amount, private \DateTimeImmutable $created, private bool $processed = true) {}
+    public function get_id(): int { return $this->id; }
+    public function get_parent_id(): int { return $this->parent; }
+    public function get_refunded_payment(): bool { return $this->processed; }
+    public function get_currency(): string { return 'USD'; }
+    public function get_amount(): string { return $this->amount; }
+    public function get_date_created(): \DateTimeImmutable { return $this->created; }
+  }
+}
+
+namespace {
+  define('ABSPATH', __DIR__ . DIRECTORY_SEPARATOR);
+  $checks = 0;
+  $failures = [];
+  $assert = static function (bool $condition, string $message) use (&$checks, &$failures): void {
+    ++$checks;
+    if (!$condition) $failures[] = $message;
+  };
+  $expect_throw = static function (callable $callback, string $message) use (&$checks, &$failures): void {
+    ++$checks;
+    try { $callback(); $failures[] = $message; }
+    catch (\Throwable $error) {}
+  };
+
+  $GLOBALS['wc_pages'] = [];
+  $GLOBALS['wc_queries'] = [];
+  function wc_get_orders(array $args) {
+    $GLOBALS['wc_queries'][] = $args;
+    $page = (int) ($args['page'] ?? 1);
+    $type = (string) ($args['type'] ?? '');
+    $rows = $GLOBALS['wc_pages'][$type][$page] ?? [];
+    $pages = $GLOBALS['wc_page_counts'][$type] ?? 1;
+    return (object) ['orders' => $rows, 'total_pages' => $pages];
+  }
+  function is_wp_error($value): bool { return false; }
+
+  require_once __DIR__ . '/../includes/modules/grosses/includes/class-roxy-grosses-refund-snapshot.php';
+  require_once __DIR__ . '/../includes/modules/grosses/includes/class-roxy-grosses-cashflow-report.php';
+
+  \RoxyGrosses\Square::$payments = [
+    ['id' => 'sq-payment', 'location_id' => 'loc', 'order_id' => 'sq-order', 'status' => 'COMPLETED', 'amount_money' => ['amount' => 1500, 'currency' => 'USD'], 'created_at' => '2026-10-03T02:00:00Z'],
+    ['id' => 'sq-pending', 'location_id' => 'loc', 'status' => 'PENDING', 'amount_money' => ['amount' => 9900, 'currency' => 'USD'], 'created_at' => '2026-10-03T02:00:00Z'],
+  ];
+  \RoxyGrosses\Square::$refunds = [[
+    'id' => 'sq-refund', 'payment_id' => 'sq-payment', 'location_id' => 'loc', 'status' => 'COMPLETED',
+    'amount_money' => ['amount' => 200, 'currency' => 'USD'], 'updated_at' => '2026-10-03T03:00:00Z',
+  ]];
+  $GLOBALS['wc_pages'] = [
+    'shop_order' => [1 => [new \RoxyGrosses\FakeOrder(21, 'stripe', '30.00', 'stripe-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z'))]],
+    'shop_order_refund' => [1 => [new \RoxyGrosses\FakeRefund(22, 21, '5.00', new \DateTimeImmutable('2026-10-03T04:00:00Z'))]],
+  ];
+  $GLOBALS['wc_page_counts'] = ['shop_order' => 1, 'shop_order_refund' => 1];
+  $report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $assert($report['totals']['square_collected_cents'] === 1500 && $report['totals']['woocommerce_collected_cents'] === 3000, 'daily cashflow includes completed Square payment and allow-listed Woo paid amount, excluding non-completed payments');
+  $assert($report['totals']['square_refunded_cents'] === 200 && $report['totals']['woocommerce_refunded_cents'] === 500 && $report['totals']['net_cents'] === 3800, 'daily cashflow subtracts each provider refund on its refund date');
+  $assert($report['counts'] === ['square_collections'=>1,'woocommerce_collections'=>1,'square_refunds'=>1,'woocommerce_refunds'=>1], 'daily report counts only provider events attributed to selected local date');
+  $assert($report['refund_date_bases']['square'] === ['square_updated_at_proxy'] && $report['refund_date_bases']['woocommerce'] === ['woocommerce_refund_creation_proxy'], 'daily report retains explicit refund-date provenance');
+  $assert($GLOBALS['wc_queries'][0]['date_paid'] === '1790924400...1791010799' && $GLOBALS['wc_queries'][1]['date_created'] === '1790924400...1791010799', 'WooCommerce queries use exact UTC bounds for the report timezone day');
+  $assert(\RoxyGrosses\Square::$calls[0] === ['payments', '2026-10-03T07:00:00Z', '2026-10-04T07:00:00Z'], 'Square payment read uses exact UTC boundaries for the selected report-timezone day');
+
+  \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = '';
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'combined report refuses to silently omit WooCommerce collections when gateway allow-list is empty');
+  \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = 'stripe';
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-02-30'), 'invalid calendar date fails before provider reads');
+  $assert(count(\RoxyGrosses\Square::$calls) === 1, 'invalid date and missing gateway configuration cause no provider reads');
+
+  $GLOBALS['wc_queries'] = [];
+  $page_one = [];
+  for ($id = 100; $id < 200; ++$id) $page_one[] = new \RoxyGrosses\FakeOrder($id, 'stripe', '0.01', 'tx-' . $id, new \DateTimeImmutable('2026-10-03T01:00:00Z'));
+  $GLOBALS['wc_pages']['shop_order'] = [
+    1 => $page_one,
+    2 => [new \RoxyGrosses\FakeOrder(200, 'stripe', '0.01', 'tx-200', new \DateTimeImmutable('2026-10-03T01:00:00Z'))],
+  ];
+  $GLOBALS['wc_page_counts'] = ['shop_order' => 2, 'shop_order_refund' => 1];
+  $paged = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $assert($paged['counts']['woocommerce_collections'] === 101 && $paged['totals']['woocommerce_collected_cents'] === 101, 'WooCommerce financial reads traverse every bounded page before returning complete totals');
+  $assert(count(array_filter($GLOBALS['wc_queries'], static fn(array $query): bool => ($query['type'] ?? '') === 'shop_order')) === 2, 'WooCommerce read requests exactly both required order pages');
+
+  $GLOBALS['wc_queries'] = [];
+  $GLOBALS['wc_pages']['shop_order'][1] = array_slice($page_one, 0, 99);
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'short nonterminal WooCommerce page fails closed rather than presenting partial totals');
+
+  if ($failures) {
+    foreach ($failures as $failure) fwrite(STDERR, "FAIL: {$failure}\n");
+    fwrite(STDERR, sprintf("%d checks, %d failures\n", $checks, count($failures)));
+    exit(1);
+  }
+  printf("%d checks passed\n", $checks);
+}

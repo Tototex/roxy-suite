@@ -8,6 +8,7 @@ require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-metadata.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-square.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-returns.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-refund-snapshot.php';
+require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-cashflow-report.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-refund-webhook.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-store.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-email-outbox.php';

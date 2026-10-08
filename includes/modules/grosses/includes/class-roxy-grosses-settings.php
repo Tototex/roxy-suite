@@ -45,7 +45,7 @@ class Settings {
     if ($tab === 'imports') {
       $tab = 'workbook';
     }
-    return in_array($tab,['database','live-shows','rentals','legacy-weekly','workbook','daily','settings','logs'],true)?$tab:'database';
+    return in_array($tab,['database','live-shows','rentals','legacy-weekly','workbook','daily','cashflow','settings','logs'],true)?$tab:'database';
   }
 
   /** An anomaly log records a successfully detected discrepancy, not a successful reconciliation. */
@@ -56,6 +56,7 @@ class Settings {
   public static function defaults(): array {
     return [
       'square_environment'=>'production','square_access_token'=>'','square_webhook_signature_key'=>'','square_location_ids'=>'',
+      'cashflow_woo_gateways'=>'',
       'report_timezone'=>wp_timezone_string()?:'America/Los_Angeles',
       'ticket_keywords'=>"ticket\nadmission",'exclude_keywords'=>"popcorn\nsoda\ndrink\ncandy\nmembership",
       'film_mappings'=>'','studio_mappings'=>'',
@@ -105,6 +106,7 @@ class Settings {
     $fields=[
       'square_environment'=>['Square environment','roxy_grosses_square'],'square_access_token'=>['Square access token','roxy_grosses_square'],
       'square_webhook_signature_key'=>['Square webhook signature key','roxy_grosses_square'],
+      'cashflow_woo_gateways'=>['WooCommerce cashflow gateway IDs','roxy_grosses_square'],
       'square_location_ids'=>['Square location IDs','roxy_grosses_square'],'report_timezone'=>['Report timezone','roxy_grosses_square'],
       'ticket_keywords'=>['Ticket keywords','roxy_grosses_square'],'exclude_keywords'=>['Exclude keywords','roxy_grosses_square'],
       'film_mappings'=>['Film mappings','roxy_grosses_square'],'studio_mappings'=>['Studio overrides','roxy_grosses_square'],'recipient_emails'=>['Daily grosses recipient emails','roxy_grosses_email'],
@@ -146,6 +148,7 @@ class Settings {
       'square_access_token'=>$square_token,
       'square_webhook_signature_key'=>$webhook_key,
       'square_location_ids'=>self::sanitize_line_list((string) ($input['square_location_ids']??$d['square_location_ids'])),
+      'cashflow_woo_gateways'=>self::sanitize_line_list((string) ($input['cashflow_woo_gateways']??($existing['cashflow_woo_gateways']??$d['cashflow_woo_gateways']))),
       'report_timezone'=>self::sanitize_timezone((string) ($input['report_timezone']??$d['report_timezone'])),
       'ticket_keywords'=>self::sanitize_line_list((string) ($input['ticket_keywords']??$d['ticket_keywords'])),
       'exclude_keywords'=>self::sanitize_line_list((string) ($input['exclude_keywords']??$d['exclude_keywords'])),
@@ -202,10 +205,11 @@ class Settings {
         $saved=get_option(self::OPTION_KEY,[]);
         $has_key=is_array($saved) && !empty($saved['square_webhook_signature_key']);
         echo '<input type="password" class="regular-text code" name="'.esc_attr($name).'" value="" autocomplete="off"'.($has_key ? ' placeholder="Key saved - leave blank to keep current key"' : '').'><p class="description">Optional until you configure Square refund.updated webhooks. Stored encrypted; leave blank to retain it.</p><p class="description">Notification URL: <code>'.esc_html(rest_url('roxy/v1/square-refund-events')).'</code></p>'; return;
-      case 'square_location_ids': case 'ticket_keywords': case 'exclude_keywords': case 'film_mappings': case 'studio_mappings': case 'email_body': case 'advertiser_email_body':
+      case 'square_location_ids': case 'cashflow_woo_gateways': case 'ticket_keywords': case 'exclude_keywords': case 'film_mappings': case 'studio_mappings': case 'email_body': case 'advertiser_email_body':
         $rows=$key==='film_mappings'?'8':'5';
         echo '<textarea class="large-text code" rows="'.esc_attr($rows).'" name="'.esc_attr($name).'">'.esc_textarea((string) $value).'</textarea>';
         if($key==='square_location_ids') echo '<p class="description">One Square location ID per line. Square requires at least one location ID for order searches.</p>';
+        elseif($key==='cashflow_woo_gateways') echo '<p class="description">Explicit WooCommerce payment method IDs to include in read-only financial totals, one per line (for example, the ID shown in WooCommerce payment settings). Leave blank to disable the combined cashflow report. Offline/manual gateways should not be included. Square access also requires the PAYMENTS_READ permission.</p>';
         elseif($key==='ticket_keywords') echo '<p class="description">One keyword per line. A line item must match at least one keyword to count as a ticket.</p>';
         elseif($key==='exclude_keywords') echo '<p class="description">One keyword per line. Matching line items are always ignored.</p>';
         elseif($key==='film_mappings') echo '<p class="description">One mapping per line in the format: match text|Comscore title|Film code.</p>';
@@ -252,6 +256,7 @@ class Settings {
     echo '<a class="nav-tab '.($tab==='legacy-weekly'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=legacy-weekly')).'">Legacy Movies</a>';
     echo '<a class="nav-tab '.($tab==='workbook'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=workbook')).'">Workbook</a>';
     echo '<a class="nav-tab '.($tab==='daily'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=daily')).'">Saved Reports</a>';
+    echo '<a class="nav-tab '.($tab==='cashflow'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=cashflow')).'">Cashflow</a>';
     echo '<a class="nav-tab '.($tab==='settings'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=settings')).'">Settings</a>';
     echo '<a class="nav-tab '.($tab==='logs'?'nav-tab-active':'').'" href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=logs')).'">Logs</a></nav>';
     if(!empty($_GET['roxy_grosses_notice'])){ $notice=sanitize_text_field(wp_unslash((string) $_GET['roxy_grosses_notice'])); $message=isset($_GET['message'])?sanitize_text_field(wp_unslash((string) $_GET['message'])):''; echo '<div class="'.esc_attr($notice==='success'?'notice notice-success':'notice notice-error').'"><p>'.esc_html($message).'</p></div>'; }
@@ -262,6 +267,7 @@ class Settings {
     elseif($tab==='legacy-weekly'){ self::render_legacy_weekly_tab(); }
     elseif($tab==='workbook'){ self::render_workbook_tab(self::workbook_year(),self::default_advertiser_month($timezone)); }
     elseif($tab==='daily'){ self::render_reports_tab($default_date, $selected_report, $saved_reports); }
+    elseif($tab==='cashflow'){ self::render_cashflow_tab($default_date); }
     else { self::render_database_tab($default_date); }
     echo '</div>';
   }
@@ -272,6 +278,44 @@ class Settings {
 
   private static function default_advertiser_month(\DateTimeZone $timezone): string {
     return (new \DateTimeImmutable('now', $timezone))->modify('first day of last month')->format('Y-m');
+  }
+
+  private static function render_cashflow_tab(string $default_date): void {
+    $date = isset($_GET['cashflow_date']) ? sanitize_text_field(wp_unslash((string) $_GET['cashflow_date'])) : $default_date;
+    echo '<h2>Daily financial cashflow</h2><p>Read-only provider snapshot. This is separate from Hollywood's nominal ticket gross and does not alter saved reports, history, or send email.</p>';
+    echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'">';
+    echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="cashflow"><input type="hidden" name="cashflow_load" value="1">';
+    wp_nonce_field('roxy_grosses_cashflow_' . $date);
+    echo '<label for="roxy-cashflow-date">Report date (' . esc_html(self::get_report_timezone()) . ')</label> <input id="roxy-cashflow-date" type="date" name="cashflow_date" value="'.esc_attr($date).'"> ';
+    submit_button('Load provider totals', 'primary', 'submit', false);
+    echo '</form>';
+    if (empty($_GET['cashflow_load'])) {
+      echo '<p>Choose a date and load provider data to calculate that day. This page makes read-only Square and WooCommerce API queries.</p>';
+      return;
+    }
+    $nonce = isset($_GET['_wpnonce']) ? sanitize_text_field(wp_unslash((string) $_GET['_wpnonce'])) : '';
+    if (!wp_verify_nonce($nonce, 'roxy_grosses_cashflow_' . $date)) {
+      echo '<div class="notice notice-error"><p>The report request expired. Reload the page and try again.</p></div>';
+      return;
+    }
+    try {
+      $report = CashflowReport::for_day($date);
+    } catch (\Throwable $error) {
+      echo '<div class="notice notice-error"><p>'.esc_html($error->getMessage()).'</p></div>';
+      if (strpos($error->getMessage(), 'gateway IDs') !== false) {
+        echo '<p><a href="'.esc_url(admin_url('admin.php?page=roxy-grosses&tab=settings')).'">Configure payment gateway IDs in Grosses settings</a>.</p>';
+      }
+      return;
+    }
+    $totals = $report['totals'];
+    $money = static fn(int $cents): string => '$' . number_format($cents / 100, 2, '.', ',');
+    echo '<h3>'.esc_html($report['report_date']).' — provider cashflow snapshot</h3>';
+    echo '<table class="widefat striped" style="max-width:900px"><thead><tr><th>Source</th><th>Collected</th><th>Refunded</th><th>Net</th><th>Transactions</th></tr></thead><tbody>';
+    echo '<tr><th>Square</th><td>'.esc_html($money((int) $totals['square_collected_cents'])).'</td><td>'.esc_html($money((int) $totals['square_refunded_cents'])).'</td><td>'.esc_html($money((int) ($totals['square_collected_cents'] - $totals['square_refunded_cents']))).'</td><td>'.esc_html((string) ($report['counts']['square_collections'] + $report['counts']['square_refunds'])).'</td></tr>';
+    echo '<tr><th>WooCommerce</th><td>'.esc_html($money((int) $totals['woocommerce_collected_cents'])).'</td><td>'.esc_html($money((int) $totals['woocommerce_refunded_cents'])).'</td><td>'.esc_html($money((int) ($totals['woocommerce_collected_cents'] - $totals['woocommerce_refunded_cents']))).'</td><td>'.esc_html((string) ($report['counts']['woocommerce_collections'] + $report['counts']['woocommerce_refunds'])).'</td></tr>';
+    echo '<tr><th>Combined</th><td>'.esc_html($money((int) $totals['total_collected_cents'])).'</td><td>'.esc_html($money((int) $totals['total_refunded_cents'])).'</td><td><strong>'.esc_html($money((int) $totals['net_cents'])).'</strong></td><td>—</td></tr></tbody></table>';
+    echo '<p><strong>Date and amount basis:</strong> Square collections use completed payment creation time and Square payment amount (excluding tips); WooCommerce uses paid time and order paid total. Refunds use a matched Square refund.updated timestamp when available, otherwise its update time; WooCommerce uses refund-record creation time. These refund dates are not bank-posting dates or settlement statements.</p>';
+    echo '<p>This live snapshot is not saved or emailed. Manual/offline WooCommerce gateways are excluded; only the explicitly configured online gateway IDs are included.</p>';
   }
 
   private static function render_database_tab(string $default_date): void {

@@ -112,6 +112,43 @@ class Square {
     return array_values($refunds);
   }
 
+  /** Read-only completed payments for the actual payment-created day, independent of order close time. */
+  public static function list_payments_created_between(string $start_at, string $end_at, ?float $deadline = null): array {
+    [$start, $end] = self::ordered_timestamps($start_at, $end_at);
+    $locations = array_values(array_unique(Settings::line_list((string) (Settings::get_all()['square_location_ids'] ?? ''))));
+    if (!$locations || count($locations) > 10) throw new \RuntimeException('Configure one to ten Square locations for payment discovery.');
+    $payments = []; $pages = 0; $deadline = $deadline ?? microtime(true) + 120;
+    foreach ($locations as $location) {
+      $cursor = null; $seen_cursors = [];
+      do {
+        if (++$pages > 100 || microtime(true) >= $deadline) throw new \RuntimeException('Square payment retrieval exceeded its safety limit. No partial payment list was returned.');
+        $inclusive_end = $end->modify('-1 microsecond');
+        $query = ['begin_time' => $start->format('c'), 'end_time' => $inclusive_end->format('Y-m-d\TH:i:s.uP'), 'sort_order' => 'ASC', 'limit' => 100, 'location_id' => $location];
+        if ($cursor !== null) $query['cursor'] = $cursor;
+        $response = self::request('GET', '/v2/payments?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986), null, $deadline);
+        if (array_key_exists('payments', $response) && (!is_array($response['payments']) || !self::is_list($response['payments']))) throw new \RuntimeException('Square returned an invalid payment list.');
+        foreach ($response['payments'] ?? [] as $payment) {
+          $id = is_array($payment) ? ($payment['id'] ?? null) : null;
+          if (!is_string($id) || $id === '' || strlen($id) > 192 || isset($payments[$id]) || ($payment['location_id'] ?? null) !== $location) throw new \RuntimeException('Square returned an invalid, misplaced or duplicate payment.');
+          $created = $payment['created_at'] ?? null;
+          if (!is_string($created)) throw new \RuntimeException('Square payment has no creation timestamp.');
+          [$created_at] = self::ordered_timestamps($created, $end->modify('+1 second')->format('c'));
+          if ($created_at < $start || $created_at >= $end) throw new \RuntimeException('Square payment falls outside the requested creation window.');
+          if (!in_array($payment['status'] ?? '', ['APPROVED', 'PENDING', 'COMPLETED', 'CANCELED', 'FAILED'], true)) throw new \RuntimeException('Square payment has an unknown status.');
+          $payments[$id] = $payment;
+        }
+        if (array_key_exists('cursor', $response) && (!is_string($response['cursor']) || $response['cursor'] === '' || strlen($response['cursor']) > 10000)) throw new \RuntimeException('Square returned an invalid payment pagination cursor.');
+        $cursor = $response['cursor'] ?? null;
+        if ($cursor !== null) {
+          if (empty($response['payments'])) throw new \RuntimeException('Square returned an empty payment page with a continuation cursor.');
+          if (isset($seen_cursors[$cursor])) throw new \RuntimeException('Square repeated a payment pagination cursor.');
+          $seen_cursors[$cursor] = true;
+        }
+      } while ($cursor !== null);
+    }
+    return array_values($payments);
+  }
+
   public static function retrieve_orders(array $order_ids, ?float $deadline = null): array {
     $ids = [];
     foreach ($order_ids as $id) {
