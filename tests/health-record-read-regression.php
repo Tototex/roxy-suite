@@ -12,7 +12,7 @@ function get_posts($args): array {
     return $GLOBALS['posts_results'] ?? [];
 }
 function wp_date($format, $timestamp = null, $timezone = null): string { return '2026-10-08T12:00'; }
-function wp_timezone() { return new DateTimeZone('UTC'); }
+function wp_timezone() { return new DateTimeZone($GLOBALS['fixture_timezone'] ?? 'UTC'); }
 function get_the_title($id): string { return 'Fixture show'; }
 function get_post_meta($id, $key, $single = false) { return true; }
 final class HealthRecordFixture {
@@ -128,7 +128,33 @@ $check($grosses_log_item()['detail'] === 'Log history unavailable', 'malformed G
 $wpdb->log_row['success'] = 1;
 $check($grosses_log_item()['status'] === 'pass', 'verified successful Grosses log remains green');
 $wpdb->log_row = null;
-$GLOBALS['health_options']['roxy_grosses_settings'] = ['schedule_enabled'=>'1'];
+$GLOBALS['fixture_timezone'] = 'America/Los_Angeles';
+$GLOBALS['health_options']['roxy_grosses_settings'] = ['schedule_enabled'=>'1', 'schedule_time'=>'23:00'];
+$GLOBALS['health_options']['roxy_grosses_last_auto_date'] = '2026-10-07';
+$before_report_time = new DateTimeImmutable('2026-10-08 22:59:00', new DateTimeZone('America/Los_Angeles'));
+$grosses_items = $call('functional_grosses', $before_report_time);
+foreach ($grosses_items as $item) if ($item['label'] === 'Last automatic run') $auto_item = $item;
+$check(is_array($auto_item) && $auto_item['status'] === 'pass', 'yesterday run remains current before today\'s configured send time');
+$missed_prior_day = new DateTimeImmutable('2026-10-08 23:01:00', new DateTimeZone('America/Los_Angeles'));
+$GLOBALS['health_options']['roxy_grosses_last_auto_date'] = '2026-10-06';
+$grosses_items = $call('functional_grosses', $before_report_time);
+foreach ($grosses_items as $item) if ($item['label'] === 'Last automatic run') $auto_item = $item;
+$check(is_array($auto_item) && $auto_item['status'] === 'warn', 'one missed scheduled date warns before tonight\'s run');
+$GLOBALS['health_options']['roxy_grosses_last_auto_date'] = '2026-10-07';
+$after_report_time = $missed_prior_day;
+$grosses_items = $call('functional_grosses', $after_report_time);
+foreach ($grosses_items as $item) if ($item['label'] === 'Last automatic run') $auto_item = $item;
+$check(is_array($auto_item) && $auto_item['status'] === 'warn' && str_contains($auto_item['note'], 'has not completed'), 'missed run warns after configured send time');
+$GLOBALS['health_options']['roxy_grosses_last_auto_date'] = '2026-10-08';
+$grosses_items = $call('functional_grosses', $after_report_time);
+foreach ($grosses_items as $item) if ($item['label'] === 'Last automatic run') $auto_item = $item;
+$check(is_array($auto_item) && $auto_item['status'] === 'pass', 'completed run for current scheduled date passes');
+$GLOBALS['health_options']['roxy_grosses_last_auto_date'] = '2026-10-07';
+$GLOBALS['health_options']['roxy_grosses_settings']['schedule_time'] = 'invalid';
+$grosses_items = $call('functional_grosses', $before_report_time);
+foreach ($grosses_items as $item) if ($item['label'] === 'Last automatic run') $auto_item = $item;
+$check(is_array($auto_item) && $auto_item['status'] === 'warn' && str_contains($auto_item['note'], 'Could not interpret'), 'invalid scheduled time is unavailable rather than incorrectly fresh');
+$GLOBALS['health_options']['roxy_grosses_settings']['schedule_time'] = '23:00';
 $GLOBALS['health_options']['roxy_grosses_last_auto_date'] = '2026-02-30';
 $grosses_items = $call('functional_grosses');
 $auto_item = null;

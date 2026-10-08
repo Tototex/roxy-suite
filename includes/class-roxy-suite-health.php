@@ -686,7 +686,7 @@ class Health {
         return [self::record_count_item('Score records', $table)];
     }
 
-    private static function functional_grosses(): array {
+    private static function functional_grosses(?\DateTimeImmutable $now = null): array {
         if (!self::module_enabled('grosses')) return [];
 
         global $wpdb;
@@ -708,6 +708,7 @@ class Health {
         $last_date   = is_array($status) && !empty($status['report_date']) ? $status['report_date'] : 'Never';
         $last_mode   = is_array($status) && !empty($status['mode']) ? $status['mode'] : '';
         $settings    = get_option('roxy_grosses_settings', []);
+        $settings    = is_array($settings) ? $settings : [];
         $sched_enabled = ($settings['schedule_enabled'] ?? '0') === '1';
         $advertiser_enabled = ($settings['advertiser_schedule_enabled'] ?? '0') === '1';
         $report_hook = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::report_hook() : 'roxy_grosses_scheduled_send';
@@ -779,9 +780,16 @@ class Health {
                         || $last_auto->format('Y-m-d') !== $last_auto_date) {
                         throw new \RuntimeException('Automatic Grosses date is invalid.');
                     }
-                    $today = new \DateTimeImmutable('today', $timezone);
-                    $days = (int) $last_auto->diff($today)->format('%r%a');
-                    if ($days < 0) {
+                    $schedule_time = (string) ($settings['schedule_time'] ?? '22:00');
+                    if (!preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/D', $schedule_time)) {
+                        throw new \RuntimeException('Automatic Grosses schedule time is invalid.');
+                    }
+                    $now = ($now ?? new \DateTimeImmutable('now', $timezone))->setTimezone($timezone);
+                    $today = $now->setTime(0, 0, 0);
+                    $last_expected_run = $today->setTime((int) substr($schedule_time, 0, 2), (int) substr($schedule_time, 3, 2), 0);
+                    $expected_date = $now < $last_expected_run ? $today->modify('-1 day') : $today;
+                    $days = (int) $last_auto->diff($expected_date)->format('%r%a');
+                    if ($last_auto > $today) {
                         $stale_status = self::WARN;
                         $stale_note = 'The saved automatic Grosses date is in the future.';
                     } elseif ($days >= 2) {
@@ -789,7 +797,7 @@ class Health {
                         $stale_note = 'The automatic grosses run is stale. Cron may have stopped firing.';
                     } elseif ($days >= 1) {
                         $stale_status = self::WARN;
-                        $stale_note = 'The last automatic grosses run was not today.';
+                        $stale_note = 'The last scheduled automatic Grosses run has not completed.';
                     }
                 } catch (\Throwable $e) {
                     $stale_status = self::WARN;
