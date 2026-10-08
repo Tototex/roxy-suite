@@ -65,6 +65,7 @@ resetfixture(null,null,encoded(['changes'=>[$receipt]]));
 \RoxyInventory\Square::pull();
 $change_request=$GLOBALS['requests'][1]; $change_body=json_decode($change_request[1]['body'],true);
 check($change_request[0]==='changes' && $change_body['types']===['ADJUSTMENT'] && $change_body['updated_after']==='2026-10-06T17:00:00Z','receipt lookup uses ordered-time cutoff and adjustment-only change history');
+check(($change_request[1]['headers']['Square-Version']??'')==='2026-09-16','receipt query uses the Square API version whose official reference supports updated_after');
 check((\RoxyInventory\Store::$receipts['v1']['id']??'')==='receipt-1','valid post-order Square receipt is passed to order state reconciliation');
 resetfixture(null,null,encoded(['changes'=>[$receipt]]));
 \RoxyInventory\Store::$receipt_orders=[['id'=>3,'created_at'=>'2026-10-06 19:30:00','payload'=>json_encode([['square_variation_id'=>'v1']])]];
