@@ -6,7 +6,7 @@ Show-ticket sales summaries now distinguish a complete empty order result from a
 
 ## Verification
 
-The isolated Sales refund regression now simulates a failed legacy order query, verifies that prior totals remain unchanged, verifies that capacity-facing sold quantity fails closed, then retries successfully and confirms the scan marker is set only after recovery. A separate failed-tag-write case confirms the completion marker remains unset. Existing payment eligibility, itemized refund, refund deletion, and cache invalidation checks remain in the same suite. Hosted PHP matrix/full-suite verification is pending this checkpoint's CI run. No production records or checkout settings were changed.
+The isolated Sales refund regression now simulates a failed legacy order query, verifies that prior totals remain unchanged, verifies that capacity-facing sold quantity fails closed, then retries successfully and confirms the scan marker is set only after recovery. A separate failed-tag-write case confirms the completion marker remains unset. Existing payment eligibility, itemized refund, refund deletion, and cache invalidation checks remain in the same suite. Hosted run [37756591666](https://github.com/Tototex/roxy-suite/actions/runs/37756591666) passes PHP 8.0–8.4 syntax and the complete configured isolated regression suite (PHP 8.3). No production records or checkout settings were changed.
 
 ## Remaining
 
