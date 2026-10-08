@@ -27,6 +27,18 @@ $result = wc_get_orders([
 ]);
 $vars = is_object($result) ? get_object_vars($result) : null;
 $orders = is_array($vars) ? ($vars['orders'] ?? null) : null;
+$gateway_counts = [];
+$invalid_orders = 0;
+if (is_array($orders)) {
+    foreach ($orders as $order) {
+        $gateway = is_object($order) && method_exists($order, 'get_payment_method') ? $order->get_payment_method() : null;
+        if (!is_string($gateway) || $gateway === '') {
+            ++$invalid_orders;
+            continue;
+        }
+        $gateway_counts[$gateway] = ($gateway_counts[$gateway] ?? 0) + 1;
+    }
+}
 $out = [
     'result_type' => gettype($result),
     'result_class' => is_object($result) ? get_class($result) : null,
@@ -41,5 +53,7 @@ $out = [
     'total_type' => is_array($vars) && array_key_exists('total', $vars) ? gettype($vars['total']) : 'missing',
     'total' => is_array($vars) ? ($vars['total'] ?? null) : null,
     'wp_error' => function_exists('is_wp_error') && is_wp_error($result),
+    'gateway_counts' => $gateway_counts,
+    'orders_without_gateway_identity' => $invalid_orders,
 ];
 echo json_encode($out, JSON_UNESCAPED_SLASHES) . PHP_EOL;

@@ -80,6 +80,10 @@ namespace {
     $page = (int) ($args['page'] ?? 1);
     $type = (string) ($args['type'] ?? '');
     $rows = $GLOBALS['wc_pages'][$type][$page] ?? [];
+    if (isset($args['payment_method'])) {
+      $rows = array_values(array_filter($rows, static fn($order): bool => is_object($order)
+        && method_exists($order, 'get_payment_method') && $order->get_payment_method() === $args['payment_method']));
+    }
     $pages = $GLOBALS['wc_page_counts'][$type] ?? 1;
     $result = ['orders' => $rows];
     $field = $GLOBALS['wc_page_field'] ?? 'max_num_pages';
@@ -118,7 +122,17 @@ namespace {
   $assert($report['totals']['square_refunded_cents'] === 200 && $report['totals']['woocommerce_refunded_cents'] === 500 && $report['totals']['net_cents'] === 3800, 'daily cashflow subtracts approved-gateway provider refunds on their refund date and omits unapproved-gateway refunds');
   $assert($report['counts'] === ['square_collections'=>1,'woocommerce_collections'=>1,'square_refunds'=>1,'woocommerce_refunds'=>1], 'daily report counts only provider events attributed to selected local date');
   $assert($report['refund_date_bases']['square'] === ['square_updated_at_proxy'] && $report['refund_date_bases']['woocommerce'] === ['woocommerce_refund_creation_proxy'], 'daily report retains explicit refund-date provenance');
-  $assert($GLOBALS['wc_queries'][0]['date_paid'] === '1790924400...1791010799' && $GLOBALS['wc_queries'][1]['date_created'] === '1790924400...1791010799', 'WooCommerce queries use exact UTC bounds for the report timezone day');
+  $assert($GLOBALS['wc_queries'][0]['date_paid'] === '1790924400...1791010799' && $GLOBALS['wc_queries'][0]['payment_method'] === 'stripe'
+    && $GLOBALS['wc_queries'][1]['date_created'] === '1790924400...1791010799', 'WooCommerce queries use exact UTC bounds and isolate the selected gateway');
+  $GLOBALS['wc_pages']['shop_order'][1][] = new \RoxyGrosses\FakeOrder(24, 'paypal', '7.00', 'paypal-tx-24', new \DateTimeImmutable('2026-10-03T02:00:00Z'));
+  \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = 'stripe,paypal';
+  $GLOBALS['wc_queries'] = [];
+  $multi_gateway_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $assert($multi_gateway_report['totals']['woocommerce_collected_cents'] === 3700
+    && $multi_gateway_report['counts']['woocommerce_collections'] === 2
+    && array_column($GLOBALS['wc_queries'], 'payment_method') === ['stripe', 'paypal', null],
+    'combined cashflow queries every allow-listed Woo gateway separately and includes each once');
+  \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = 'stripe';
   $assert(\RoxyGrosses\Square::$calls[0] === ['payments', '2026-10-02T07:00:00Z', '2026-10-03T07:00:00Z'], 'Square payment read uses exact UTC boundaries for the selected report-timezone day');
 
   \RoxyGrosses\Store::$completion_event = ['event_id' => 'refund-event-1', 'event_created_at' => '2026-10-03 03:15:00'];

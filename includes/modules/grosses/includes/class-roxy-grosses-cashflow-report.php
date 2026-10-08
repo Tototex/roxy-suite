@@ -27,11 +27,11 @@ final class CashflowReport {
   }
 
   /** Query Woo through its order data store, with a strict page ceiling and no partial results. */
-  private static function woo_objects(string $type, string $date_field, int $start, int $end): array {
+  private static function woo_objects(string $type, string $date_field, int $start, int $end, ?string $payment_method = null): array {
     $objects = [];
     $last_page = null;
     for ($page = 1; $page <= self::MAX_PAGES; ++$page) {
-      $result = wc_get_orders([
+      $query = [
         'type' => $type,
         $date_field => $start . '...' . ($end - 1),
         'limit' => self::PAGE_SIZE,
@@ -40,7 +40,9 @@ final class CashflowReport {
         'return' => 'objects',
         'orderby' => 'ID',
         'order' => 'ASC',
-      ]);
+      ];
+      if ($payment_method !== null) $query['payment_method'] = $payment_method;
+      $result = wc_get_orders($query);
       if (function_exists('is_wp_error') && is_wp_error($result)) throw new \RuntimeException('WooCommerce could not read the selected day.');
       if (!is_object($result) || !isset($result->orders)
         || !is_array($result->orders) || !self::is_list($result->orders)) {
@@ -151,7 +153,10 @@ final class CashflowReport {
 
     $start_timestamp = $utc_start->getTimestamp();
     $end_timestamp = $utc_end->getTimestamp();
-    $woo_orders = self::woo_objects('shop_order', 'date_paid', $start_timestamp, $end_timestamp);
+    $woo_orders = [];
+    foreach ($gateways as $gateway) {
+      foreach (self::woo_objects('shop_order', 'date_paid', $start_timestamp, $end_timestamp, $gateway) as $order) $woo_orders[] = $order;
+    }
     $woo_refund_rows = self::woo_objects('shop_order_refund', 'date_created', $start_timestamp, $end_timestamp);
     $woo_collections = WooCollectionEvents::from_orders($woo_orders, $gateways);
     $woo_refunds = WooRefundEvents::from_order_refunds($woo_refund_rows, $gateways);
