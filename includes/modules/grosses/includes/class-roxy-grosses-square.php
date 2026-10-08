@@ -39,6 +39,22 @@ class Square {
     return $orders;
   }
 
+  /** One bounded Square order search for a multi-day report range. */
+  public static function fetch_orders_for_range(string $date_from, string $date_to): array {
+    $timezone = Settings::get_report_timezone();
+    [$start_at] = self::date_window($date_from, $timezone);
+    [, $end_at] = self::date_window($date_to, $timezone);
+    if (new \DateTimeImmutable($start_at) >= new \DateTimeImmutable($end_at)) {
+      throw new \RuntimeException('Square report range must be in chronological order.');
+    }
+    $settings = Settings::get_all();
+    $key = hash('sha256', serialize(['range', $start_at, $end_at, $settings['square_environment'] ?? 'production', $settings['square_location_ids'] ?? '']));
+    if (self::$sale_snapshot_depth > 0 && array_key_exists($key, self::$sale_snapshot)) return self::$sale_snapshot[$key];
+    $orders = self::search_orders_window($start_at, $end_at, 'closed_at');
+    if (self::$sale_snapshot_depth > 0) self::$sale_snapshot[$key] = $orders;
+    return $orders;
+  }
+
   /** Return discovery is separate from sale-day searches, including late updates. */
   public static function fetch_orders_updated_between(string $start_at, string $end_at, ?float $deadline = null, bool $returns_only = false): array {
     [$start, $end] = self::ordered_timestamps($start_at, $end_at);

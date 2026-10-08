@@ -9,6 +9,7 @@ namespace RoxyGrosses {
     public static int $depth = 0;
     public static array $cache = [];
     public static array $calls = [];
+    public static array $range_calls = [];
     public static array $orders = [];
     public static function with_sale_snapshot(callable $operation) {
       $outer = self::$depth === 0;
@@ -24,6 +25,13 @@ namespace RoxyGrosses {
         self::$cache[$date] = self::$orders[$date] ?? [];
       }
       return self::$cache[$date];
+    }
+    public static function fetch_orders_for_range(string $from, string $to): array {
+      if (self::$depth < 1) throw new \RuntimeException('Square range read escaped its operation snapshot.');
+      self::$range_calls[] = [$from, $to];
+      $orders = [];
+      foreach (self::$orders as $date => $date_orders) if ($date >= $from && $date <= $to) $orders = array_merge($orders, $date_orders);
+      return $orders;
     }
     public static function concession_reporting_categories(array $ids): array { return ['snack' => true]; }
     public static function is_in_store_purchase_item(string $id, array $map = []): bool { return $id === 'snack'; }
@@ -149,8 +157,24 @@ namespace {
   $draft = \RoxyGrosses\Reporter::save_report_draft('2038-05-02');
   $check(!empty($draft['success']) && \RoxyGrosses\Square::$depth === 0 && \RoxyGrosses\Square::$cache === [], 'draft snapshot clears after completion');
   \RoxyGrosses\Square::$calls = [];
-  \RoxyGrosses\Reporter::reconciliation_rows('2038-05-01', '2038-05-02');
-  $check(\RoxyGrosses\Square::$depth === 0 && \RoxyGrosses\Square::$cache === [] && \RoxyGrosses\Square::$calls === ['2038-05-01','2038-05-02'], 'reconciliation range shares one scope across dates and clears afterward');
+  \RoxyGrosses\Square::$range_calls = [];
+  \RoxyGrosses\Square::$orders = [
+    '2038-05-01' => [['id'=>'range-a','closed_at'=>'2038-05-01T18:00:00-07:00','line_items'=>[['catalog_object_id'=>'snack','total_money'=>['amount'=>1001,'currency'=>'USD']]]]],
+    '2038-05-02' => [['id'=>'range-b','closed_at'=>'2038-05-03T01:00:00Z','line_items'=>[['catalog_object_id'=>'snack','total_money'=>['amount'=>555,'currency'=>'USD']]]]],
+  ];
+  $range_rows = \RoxyGrosses\Reporter::reconciliation_rows('2038-05-01', '2038-05-02');
+  $check(\RoxyGrosses\Square::$depth === 0 && \RoxyGrosses\Square::$cache === [] && \RoxyGrosses\Square::$range_calls === [['2038-05-01','2038-05-02']] && \RoxyGrosses\Square::$calls === [], 'reconciliation uses one snapshot-bounded Square range request instead of a request per day');
+  $range_by_date = [];
+  foreach ($range_rows as $row) $range_by_date[$row['date']] = $row['square_total'];
+  $check(($range_by_date['2038-05-01'] ?? null) === 10.01 && ($range_by_date['2038-05-02'] ?? null) === 5.55, 'range orders group by report-timezone close date and preserve exact cents');
+  foreach (['tomorrow', '2038-05-01T25:61:00Z', '2038-04-30T18:00:00-07:00'] as $bad_closed_at) {
+    \RoxyGrosses\Square::$orders = ['2038-05-01' => [['id'=>'bad-range','closed_at'=>$bad_closed_at,'line_items'=>[]]]];
+    $failed_closed = false;
+    try { \RoxyGrosses\Reporter::reconciliation_rows('2038-05-01', '2038-05-02'); }
+    catch (RuntimeException $error) { $failed_closed = true; }
+    $check($failed_closed && \RoxyGrosses\Square::$depth === 0, 'malformed or out-of-range close timestamp fails closed and clears snapshot');
+  }
+  \RoxyGrosses\Square::$orders = [];
   $prior_calls = \RoxyGrosses\Square::$calls;
   $invalid_date_rows = \RoxyGrosses\Reporter::reconciliation_rows('2038-02-30', '2038-03-01');
   $check($invalid_date_rows === [] && \RoxyGrosses\Square::$calls === $prior_calls, 'impossible reconciliation dates are rejected before Square reads');

@@ -2520,11 +2520,19 @@ class Reporter {
       [$start, $end] = [$end, $start];
     }
 
-    $assigned = Store::concessions_by_date($start->format('Y-m-d'), $end->format('Y-m-d'));
+    $date_from = $start->format('Y-m-d');
+    $date_to = $end->format('Y-m-d');
+    $assigned = Store::concessions_by_date($date_from, $date_to);
+    $square_totals = self::square_in_store_purchase_totals_for_range(
+      Square::fetch_orders_for_range($date_from, $date_to),
+      $date_from,
+      $date_to,
+      Settings::get_report_timezone()
+    );
     $rows = [];
     for ($cursor = $start; $cursor <= $end; $cursor = $cursor->modify('+1 day')) {
       $date_key = $cursor->format('Y-m-d');
-      $square_total = self::square_in_store_purchase_total_for_date($date_key);
+      $square_total = $square_totals[$date_key] ?? 0.0;
       $assigned_row = $assigned[$date_key] ?? ['movies' => 0.0, 'live' => 0.0, 'rentals' => 0.0, 'assigned_total' => 0.0];
       $difference = round($square_total - (float) ($assigned_row['assigned_total'] ?? 0), 2);
 
@@ -2548,6 +2556,53 @@ class Reporter {
     });
 
     return $rows;
+  }
+
+  /** Group a complete Square range by local sale date; malformed/incomplete orders fail closed. */
+  private static function square_in_store_purchase_totals_for_range(array $orders, string $date_from, string $date_to, string $timezone): array {
+    $report_timezone = new \DateTimeZone($timezone);
+    $range_start = \DateTimeImmutable::createFromFormat('!Y-m-d', $date_from, $report_timezone);
+    $range_end = \DateTimeImmutable::createFromFormat('!Y-m-d', $date_to, $report_timezone)->modify('+1 day');
+    if (!$range_start || !$range_end) throw new \RuntimeException('Invalid reconciliation range.');
+    $catalog_ids = [];
+    $dated_orders = [];
+    foreach ($orders as $order) {
+      $closed_at_raw = is_array($order) ? ($order['closed_at'] ?? null) : null;
+      if (!is_string($closed_at_raw) || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/', $closed_at_raw)) {
+        throw new \RuntimeException('Square returned an order without a valid close timestamp. Reconciliation stopped without partial totals.');
+      }
+      try {
+        $closed_at = new \DateTimeImmutable($closed_at_raw);
+      } catch (\Throwable $error) {
+        throw new \RuntimeException('Square returned an invalid order close timestamp. Reconciliation stopped without partial totals.', 0, $error);
+      }
+      $date_errors = \DateTimeImmutable::getLastErrors();
+      if ($date_errors && ($date_errors['warning_count'] || $date_errors['error_count'])) {
+        throw new \RuntimeException('Square returned an invalid order close timestamp. Reconciliation stopped without partial totals.');
+      }
+      $date = $closed_at->setTimezone($report_timezone)->format('Y-m-d');
+      if ($closed_at < $range_start || $closed_at >= $range_end || $date < $date_from || $date > $date_to) {
+        throw new \RuntimeException('Square returned an order outside the requested reconciliation range. No partial totals were returned.');
+      }
+      $dated_orders[$date][] = $order;
+      foreach ((array) ($order['line_items'] ?? []) as $line_item) {
+        $catalog_object_id = (string) ($line_item['catalog_object_id'] ?? '');
+        if ($catalog_object_id !== '') $catalog_ids[] = $catalog_object_id;
+      }
+    }
+
+    $category_map = Square::concession_reporting_categories($catalog_ids);
+    $totals_cents = [];
+    foreach ($dated_orders as $date => $date_orders) {
+      foreach ($date_orders as $order) {
+        foreach ((array) ($order['line_items'] ?? []) as $line_item) {
+          $catalog_object_id = (string) ($line_item['catalog_object_id'] ?? '');
+          if ($catalog_object_id === '' || !Square::is_in_store_purchase_item($catalog_object_id, $category_map)) continue;
+          $totals_cents[$date] = ($totals_cents[$date] ?? 0) + self::square_line_item_concession_cents($line_item);
+        }
+      }
+    }
+    return array_map(static fn(int $cents): float => round($cents / 100, 2), $totals_cents);
   }
 
   private static function redirect_with_notice(string $status, string $message, string $tab = 'database', array $extra = []): void {

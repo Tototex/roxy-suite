@@ -40,6 +40,20 @@ namespace {
   $window=new \ReflectionMethod(\RoxyGrosses\Square::class,'date_window');$window->setAccessible(true);
   foreach(['2026-02-30','2026-13-01','2026-1-1','2026-10-03junk',''] as $date){try{$window->invoke(null,$date,'America/Los_Angeles');throw new \LogicException('Expected invalid date');}catch(\RuntimeException $e){check(true,'invalid date cannot silently roll into another day');}}
   foreach(['2026-03-08'=>23,'2026-11-01'=>25] as $date=>$hours){[$start,$end]=$window->invoke(null,$date,'America/Los_Angeles');check((strtotime($end)-strtotime($start))/3600===$hours,'site calendar window preserves '.$hours.'-hour DST day');}
+  reset_fixture([response(['orders'=>[['id'=>'range-a']],'cursor'=>'next']),response(['orders'=>[['id'=>'range-b']]])]);
+  check(count(\RoxyGrosses\Square::fetch_orders_for_range('2026-03-08','2026-03-09'))===2,'one bounded date-range query fully paginates all orders');
+  $range_body=json_decode($GLOBALS['calls'][0][1]['body'],true);
+  check($range_body['query']['filter']['date_time_filter']['closed_at']===['start_at'=>'2026-03-08T08:00:00+00:00','end_at'=>'2026-03-10T07:00:00+00:00'],'range request uses local calendar boundaries across DST');
+  check(json_decode($GLOBALS['calls'][0][1]['body'],true)['query']===json_decode($GLOBALS['calls'][1][1]['body'],true)['query'],'range pagination preserves the same filter');
+  foreach([['2026-02-30','2026-03-01'],['2026-03-09','2026-03-08']] as [$from,$to]){
+    reset_fixture([]);try{\RoxyGrosses\Square::fetch_orders_for_range($from,$to);throw new \LogicException('Expected invalid Square date range');}catch(\RuntimeException $e){check(!$GLOBALS['calls'],'invalid or reversed date range fails before provider request');}
+  }
+  reset_fixture([response(['orders'=>[['id'=>'cached-range']]])]);
+  \RoxyGrosses\Square::with_sale_snapshot(static function(){
+    \RoxyGrosses\Square::fetch_orders_for_range('2026-03-08','2026-03-09');
+    \RoxyGrosses\Square::fetch_orders_for_range('2026-03-08','2026-03-09');
+  });
+  check(count($GLOBALS['calls'])===1,'same date range is fetched once per managed snapshot');
   reset_fixture([]);\RoxyGrosses\Settings::$locations=implode("\n",range(1,11));
   try{\RoxyGrosses\Square::fetch_orders_for_date('2026-10-03');throw new \LogicException('Expected location failure');}catch(\RuntimeException $e){check(!$GLOBALS['calls'],'unsupported location count fails before provider call');}
   reset_fixture([response(['orders'=>[['id'=>'return-a']],'cursor'=>'n']),response(['orders'=>[['id'=>'return-b']]])]);
