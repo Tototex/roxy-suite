@@ -39,6 +39,7 @@ sort($enabled_gateways);
 echo json_encode([
     'cashflow_report_loaded' => class_exists(\RoxyGrosses\CashflowReport::class),
     'enabled_woo_gateway_ids' => $enabled_gateways,
+    'cashflow_gateway_allowlist' => $gateway_allowlist,
     'cashflow_gateway_allowlist_count' => count($gateway_allowlist),
     'cashflow_unconfigured_path' => $cashflow_gate_result,
     'square_refund_webhook_key_configured' => $webhook_key_configured,

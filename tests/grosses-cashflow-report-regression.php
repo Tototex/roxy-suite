@@ -81,7 +81,11 @@ namespace {
     $type = (string) ($args['type'] ?? '');
     $rows = $GLOBALS['wc_pages'][$type][$page] ?? [];
     $pages = $GLOBALS['wc_page_counts'][$type] ?? 1;
-    return (object) ['orders' => $rows, 'total_pages' => $pages];
+    $result = ['orders' => $rows];
+    $field = $GLOBALS['wc_page_field'] ?? 'max_num_pages';
+    if ($field !== 'missing') $result[$field] = $pages;
+    if (array_key_exists('wc_conflicting_page_count', $GLOBALS)) $result['total_pages'] = $GLOBALS['wc_conflicting_page_count'];
+    return (object) $result;
   }
   function wc_get_order(int $id) { return $GLOBALS['wc_parent_orders'][$id] ?? false; }
   function is_wp_error($value): bool { return false; }
@@ -191,6 +195,18 @@ namespace {
   $GLOBALS['wc_queries'] = [];
   $GLOBALS['wc_pages']['shop_order'][1] = array_slice($page_one, 0, 99);
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'short nonterminal WooCommerce page fails closed rather than presenting partial totals');
+
+  $GLOBALS['wc_pages'] = ['shop_order'=>[1=>[]], 'shop_order_refund'=>[1=>[]]];
+  $GLOBALS['wc_page_counts'] = ['shop_order'=>0, 'shop_order_refund'=>0];
+  $GLOBALS['wc_page_field'] = 'total_pages';
+  $alias_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $assert($alias_report['counts']['woocommerce_collections'] === 0, 'legacy total_pages adapters remain supported');
+  $GLOBALS['wc_page_field'] = 'missing';
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'missing WooCommerce pagination summary fails closed');
+  $GLOBALS['wc_page_field'] = 'max_num_pages';
+  $GLOBALS['wc_conflicting_page_count'] = 1;
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'contradictory WooCommerce pagination summaries fail closed');
+  unset($GLOBALS['wc_conflicting_page_count']);
 
   if ($failures) {
     foreach ($failures as $failure) fwrite(STDERR, "FAIL: {$failure}\n");
