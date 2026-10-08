@@ -14,6 +14,7 @@ final class CleanupWpdb {
     public string $options = 'wp_options';
     public string $last_error = '';
     public array $rows = [];
+    public array $cleanup_rows = [];
     public array $attachments = [];
     public array $meta = [];
     public array $post_content = [];
@@ -45,6 +46,7 @@ final class CleanupWpdb {
     public function esc_like(string $value): string { return addcslashes($value, '_%\\'); }
     public function get_results(string $query, $format = null): array {
         $this->queries[] = $query;
+        if (strpos($query, 'FROM wp_roxy_social_media_cleanup') !== false) return [];
         if ($this->initial_query_error) { $this->last_error = 'fixture query error'; return []; }
         preg_match('/LIMIT\s+(\d+)/i', $query, $limit);
         preg_match('/id > (\d+)/i', $query, $cursor);
@@ -88,6 +90,7 @@ final class CleanupWpdb {
         if (strpos($query, 'IS_USED_LOCK(') !== false) return $this->locked ? (string) $this->connection : null;
         if (strpos($query, 'RELEASE_LOCK(') !== false) { $this->locked = false; return 1; }
         if ($this->reference_query_error) { $this->last_error = 'fixture reference query error'; return null; }
+        if (strpos($query, 'FROM wp_roxy_social_media_cleanup') !== false) return null;
         if (strpos($query, 'FROM wp_roxy_social_posts') !== false) {
             preg_match('/id <> (\d+)/', $query, $m); $self = (int) ($m[1] ?? 0);
             preg_match('/temporary_attachment_id = (\d+)/', $query, $a); $attachment = (int) ($a[1] ?? 0);
@@ -169,7 +172,8 @@ $wpdb->attachments[44] = (object) ['ID'=>44, 'post_type'=>'attachment'];
 $wpdb->meta[44] = ['_roxy_social_temporary'=>'1', '_roxy_hangar_asset_id'=>'902'];
 check_cleanup(\RoxySocial\Store::cleanup_expired() === 1, 'owned expired attachment is deleted');
 check_cleanup(!isset($wpdb->attachments[42]) && $wpdb->rows[1]['temporary_attachment_id'] === null && isset($wpdb->attachments[43]) && isset($wpdb->attachments[44]), 'successful delete clears pointer and future/failed rows stay');
-$initial_candidate_query = $wpdb->queries[1] ?? '';
+$initial_candidate_query = '';
+foreach ($wpdb->queries as $candidate_query) if (strpos($candidate_query, 'SELECT id, temporary_attachment_id, cleanup_after') !== false) $initial_candidate_query = $candidate_query;
 check_cleanup(strpos($initial_candidate_query, "'2026-10-06 12:00:00'") !== false && strpos($initial_candidate_query, 'LIMIT 100') !== false, 'candidate query uses local cutoff and bounded batch');
 
 foreach ([

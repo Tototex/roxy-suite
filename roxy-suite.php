@@ -400,6 +400,7 @@ register_deactivation_hook(__FILE__, function () {
     }
     // Clear every paged continuation regardless of its cursor/upper-ID args.
     wp_unschedule_hook('roxy_social_cleanup_page');
+    wp_unschedule_hook('roxy_social_cleanup_media_page');
     wp_clear_scheduled_hook('roxy_eb_prune_sling_logs_daily');
     wp_clear_scheduled_hook('roxy_eb_daily_health_check');
     flush_rewrite_rules();

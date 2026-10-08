@@ -24,11 +24,12 @@ function roxy_snapshot_row($overrides=[]){
 $prefix=$wpdb->prefix;
 $fixture_prefix='roxy_draft_fixture_'.bin2hex(random_bytes(5)).'_';
 $table=$fixture_prefix.\RoxySocial\DraftFixtureStore::TABLE;
+$queue_table=$fixture_prefix.'roxy_social_media_cleanup';
 $real_table=\RoxySocial\Store::table_name();
 $production_before=hash('sha256',serialize($wpdb->get_results("SELECT * FROM `$real_table` ORDER BY id",ARRAY_A)));
 $suppressed=$wpdb->suppress_errors(true);
 try {
-    if(false===$wpdb->query("CREATE TEMPORARY TABLE `$table` LIKE `$real_table`"))throw new RuntimeException('Temporary schema clone failed');
+    if(false===$wpdb->query("CREATE TEMPORARY TABLE `$table` LIKE `$real_table`")||false===$wpdb->query("CREATE TEMPORARY TABLE `$queue_table` (attachment_id BIGINT UNSIGNED NOT NULL, social_post_id BIGINT UNSIGNED NOT NULL, cleanup_after DATETIME NOT NULL, created_at DATETIME NOT NULL, PRIMARY KEY (attachment_id), KEY cleanup_after (cleanup_after), KEY social_post_id (social_post_id))"))throw new RuntimeException('Temporary schema clone failed');
     $wpdb->prefix=$fixture_prefix;
     $row=roxy_snapshot_row();
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::save_ai_result($row,'Generated fixture caption')&&\RoxySocial\DraftFixtureStore::find(1)['ai_status']==='ready','unchanged pending draft accepts AI text and readiness together');
@@ -67,6 +68,21 @@ try {
     roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::update_imported_media(1,999,'image',null,123,'fixture.jpg',$row),'manual media replacement rejects stale download');
     $row=roxy_snapshot_row();
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::update_imported_media(1,999,'image',null,123,'fixture.jpg',$row)&&\RoxySocial\DraftFixtureStore::find(1)['media_url']==='https://fixture.test/999.jpg','unchanged draft still accepts imported media');
+    $row=roxy_snapshot_row(['media_type'=>'video','temporary_attachment_id'=>2147483001,'cleanup_after'=>'2026-10-01 00:00:00']);
+    $minimum_deadline=current_datetime()->modify('+71 hours 59 minutes')->format('Y-m-d H:i:s');
+    roxy_snapshot_check(\RoxySocial\DraftFixtureStore::update_draft(1,'Manager caption','2026-10-06 10:00:00','https://fixture.test/replacement.jpg','image',\RoxySocial\DraftFixtureStore::draft_revision($row))&&\RoxySocial\DraftFixtureStore::find(1)['temporary_attachment_id']===null,'manual media replacement detaches imported video pointer');
+    $queued=$wpdb->get_row($wpdb->prepare("SELECT attachment_id, social_post_id, cleanup_after FROM `$queue_table` WHERE attachment_id = %d",2147483001),ARRAY_A);
+    roxy_snapshot_check(is_array($queued)&&(int)$queued['social_post_id']===1&&(string)$queued['cleanup_after']>=$minimum_deadline,'detached video is durably queued for a fresh 72-hour grace period');
+    $row=roxy_snapshot_row(['media_type'=>'video','temporary_attachment_id'=>2147483002,'cleanup_after'=>'2026-10-01 00:00:00']);
+    $wpdb->query("DROP TEMPORARY TABLE `$queue_table`");
+    roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::update_draft(1,'Must not detach','2026-10-06 10:00:00','https://fixture.test/replacement.jpg','image',\RoxySocial\DraftFixtureStore::draft_revision($row))&&(int)\RoxySocial\DraftFixtureStore::find(1)['temporary_attachment_id']===2147483002,'queue write failure preserves existing media ownership pointer');
+    $wpdb->query("CREATE TEMPORARY TABLE `$queue_table` (attachment_id BIGINT UNSIGNED NOT NULL, social_post_id BIGINT UNSIGNED NOT NULL, cleanup_after DATETIME NOT NULL, created_at DATETIME NOT NULL, PRIMARY KEY (attachment_id), KEY cleanup_after (cleanup_after), KEY social_post_id (social_post_id))");
+    $row=roxy_snapshot_row(['media_type'=>'video','temporary_attachment_id'=>2147483003,'cleanup_after'=>'2026-10-01 00:00:00']);
+    roxy_snapshot_check(\RoxySocial\DraftFixtureStore::delete_unposted(1)===0&&(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `$queue_table` WHERE attachment_id = %d",2147483003))===1,'deleting an unposted draft retains cleanup tracking for its video');
+    $row=roxy_snapshot_row(['media_type'=>'video','temporary_attachment_id'=>2147483004,'cleanup_after'=>'2026-10-01 00:00:00']);
+    roxy_snapshot_check(\RoxySocial\DraftFixtureStore::update_imported_media(1,8888,'video','2099-01-01 00:00:00',123,'replacement.mp4',$row)&&(int)\RoxySocial\DraftFixtureStore::find(1)['temporary_attachment_id']===8888&&(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `$queue_table` WHERE attachment_id = %d",2147483004))===1,'replacing imported video queues old attachment and tracks the new one');
+    $row=roxy_snapshot_row(['media_type'=>'video','temporary_attachment_id'=>2147483005,'cleanup_after'=>'2026-10-01 00:00:00']);
+    roxy_snapshot_check(\RoxySocial\DraftFixtureStore::clear_media(1)===0&&\RoxySocial\DraftFixtureStore::find(1)['temporary_attachment_id']===null&&(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `$queue_table` WHERE attachment_id = %d",2147483005))===1,'manual clear removes media from draft while retaining cleanup tracking');
     $row=roxy_snapshot_row();\RoxySocial\DraftFixtureStore::save_ai_result($row,'Generated caption first');
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::update_imported_media(1,999,'image',null,123,'fixture.jpg',$row)&&\RoxySocial\DraftFixtureStore::find(1)['post_text']==='Generated caption first','AI-first completion safely rebases media without losing generated text');
     $row=roxy_snapshot_row();\RoxySocial\DraftFixtureStore::update_draft(1,'Manager caption','2026-10-05 10:00:00',null,null,\RoxySocial\DraftFixtureStore::draft_revision($row));
@@ -100,6 +116,7 @@ try {
     finally {$wpdb=$first;if($claim)\RoxySocial\DraftFixtureStore::release_publish_lock($claim);$second->close();}
 } finally {
     $wpdb->prefix=$prefix;
+    $wpdb->query("DROP TEMPORARY TABLE IF EXISTS `$queue_table`");
     $wpdb->query("DROP TEMPORARY TABLE IF EXISTS `$table`");
     $wpdb->suppress_errors($suppressed);
 }

@@ -215,5 +215,6 @@ c6_check(is_string($root_source), 'plugin bootstrap source should be readable');
 c6_check(!preg_match("/add_action\\s*\\(\\s*['\"]init['\"]\\s*,\\s*['\"]roxy_suite_grant_capabilities['\"]/", $root_source), 'role grant must not run on init');
 c6_check(strpos($root_source, "register_activation_hook(__FILE__, function () {\n    roxy_suite_grant_capabilities();") !== false, 'existing grant must remain in activation hook');
 c6_check(strpos($root_source, "wp_unschedule_hook('roxy_social_cleanup_page');") !== false, 'deactivation clears paged Social cleanup events with any cursor arguments');
+c6_check(strpos($root_source, "wp_unschedule_hook('roxy_social_cleanup_media_page');") !== false, 'deactivation clears detached-media cleanup pages with any cursor arguments');
 
 echo "C6 governance regression checks passed.\n";
