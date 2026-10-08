@@ -311,3 +311,77 @@ final class WooRefundEvents {
     return $events;
   }
 }
+
+/** Read-only normalization for fully paid Square Orders and tender deduplication references. */
+final class SquareCollectionEvents {
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
+
+  private static function timestamp(string $value): \DateTimeImmutable {
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/', $value)) {
+      throw new \RuntimeException('Square order has an invalid close timestamp.');
+    }
+    try { $timestamp = new \DateTimeImmutable($value); }
+    catch (\Throwable $error) { throw new \RuntimeException('Square order has an invalid close timestamp.'); }
+    $errors = \DateTimeImmutable::getLastErrors();
+    if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('Square order has an invalid close calendar date.');
+    return $timestamp;
+  }
+
+  /** Completed orders only; tenders identify Square payments that may also appear in Woo. */
+  public static function from_orders(array $orders): array {
+    if (!self::is_list($orders)) throw new \RuntimeException('Square returned an invalid collection order list.');
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $events = [];
+    $seen = [];
+    foreach ($orders as $order) {
+      if (!is_array($order) || !is_string($order['state'] ?? null)) throw new \RuntimeException('Square returned a malformed collection order.');
+      if ($order['state'] !== 'COMPLETED') continue;
+      $id = $order['id'] ?? null;
+      $location_id = $order['location_id'] ?? null;
+      if (!is_string($id) || $id === '' || strlen($id) > 192 || isset($seen[$id])
+        || !is_string($location_id) || $location_id === '') {
+        throw new \RuntimeException('Square returned a duplicate or invalid collection order identity.');
+      }
+      $seen[$id] = true;
+      $money = $order['total_money'] ?? null;
+      if (!is_array($money) || !is_int($money['amount'] ?? null) || $money['amount'] < 0 || ($money['currency'] ?? null) !== 'USD') {
+        throw new \RuntimeException('Completed Square order has an invalid amount or unsupported currency.');
+      }
+      $closed_at = $order['closed_at'] ?? null;
+      if (!is_string($closed_at)) throw new \RuntimeException('Completed Square order has no close timestamp.');
+      $timestamp = self::timestamp($closed_at);
+      $payment_ids = [];
+      $tender_ids_complete = array_key_exists('tenders', $order) && is_array($order['tenders']) && self::is_list($order['tenders']);
+      if (array_key_exists('tenders', $order) && (!is_array($order['tenders']) || !self::is_list($order['tenders']))) {
+        throw new \RuntimeException('Completed Square order has a malformed tender list.');
+      }
+      foreach ($order['tenders'] ?? [] as $tender) {
+        if (!is_array($tender)) throw new \RuntimeException('Completed Square order has a malformed tender.');
+        $payment_id = $tender['payment_id'] ?? null;
+        if ($payment_id === null) { $tender_ids_complete = false; continue; }
+        if (!is_string($payment_id) || $payment_id === '' || strlen($payment_id) > 192) {
+          throw new \RuntimeException('Completed Square order has an invalid tender payment identity.');
+        }
+        if (isset($payment_ids[$payment_id])) throw new \RuntimeException('Completed Square order repeats a tender payment identity.');
+        $payment_ids[$payment_id] = true;
+      }
+      $events[] = [
+        'source' => 'square',
+        'order_id' => $id,
+        'location_id' => $location_id,
+        'amount_cents' => $money['amount'],
+        'currency' => 'USD',
+        'collected_at' => $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
+        'collection_date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
+        'payment_ids' => array_keys($payment_ids),
+        'tender_ids_complete' => $tender_ids_complete,
+      ];
+    }
+    usort($events, static fn(array $a, array $b): int => [$a['collected_at'], $a['order_id']] <=> [$b['collected_at'], $b['order_id']]);
+    return $events;
+  }
+}
