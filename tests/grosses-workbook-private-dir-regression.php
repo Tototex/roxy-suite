@@ -35,6 +35,7 @@ if (!is_string($source) || substr_count($source, 'namespace RoxyGrosses;') !== 1
     throw new RuntimeException('Could not isolate the Grosses Workbook class.');
 }
 $namespace = 'RoxyWorkbookPrivateFixture_' . bin2hex(random_bytes(4));
+eval('namespace ' . $namespace . '; class Settings { public const OPTION_KEY = "roxy_grosses_fixture_settings"; }');
 $source = str_replace('namespace RoxyGrosses;', 'namespace ' . $namespace . ';', $source);
 eval('?>' . $source);
 
