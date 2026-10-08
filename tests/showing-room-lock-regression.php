@@ -63,7 +63,8 @@ final class RoomLockDatabaseFixture {
         return null;
     }
     public function query(string $query) {
-        if (strpos($query, 'SAVEPOINT ') === 0 || strpos($query, 'RELEASE SAVEPOINT ') === 0) return false;
+        if (strpos($query, 'SAVEPOINT ') === 0) return 1;
+        if (strpos($query, 'RELEASE SAVEPOINT ') === 0) return false;
         return 1;
     }
     public function suppress_errors(bool $value): bool { return false; }
