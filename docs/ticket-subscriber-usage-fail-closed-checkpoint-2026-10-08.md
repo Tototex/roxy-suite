@@ -12,7 +12,7 @@ The subscriber allowance calculator treated WooCommerce's paid-order query as an
 
 ## Verification
 
-`tests/capacity-walkup-regression.php` adds fault cases for invalid showing identity, a failed and throwing paid-order query, a missing and throwing order read, and a malformed line-item result. `tests/capacity-missing-order-api-regression.php` verifies missing `wc_get_orders` support with an active fixture subscription. Hosted run [37749869635](https://github.com/Tototex/roxy-suite/actions/runs/37749869635) passed before these final boundary additions; their PHP 8.0–8.4 matrix and full PHP 8.3 regression suite are queued on the next hosted run. No live ticket cart/order was changed.
+`tests/capacity-walkup-regression.php` adds fault cases for invalid showing identity, a failed and throwing paid-order query, a missing and throwing order read, and a malformed line-item result. `tests/capacity-missing-order-api-regression.php` verifies missing `wc_get_orders` support with an active fixture subscription. Hosted run [37750257124](https://github.com/Tototex/roxy-suite/actions/runs/37750257124) passed the PHP 8.0–8.4 syntax matrix and full PHP 8.3 isolated suite, including both capacity regressions. No live ticket cart/order was changed.
 
 ## Remaining
 
