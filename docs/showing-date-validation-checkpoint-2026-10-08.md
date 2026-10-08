@@ -6,10 +6,12 @@ The Show Tickets save handler now validates single showing start values as exact
 
 Valid date strings remain unchanged local wall-clock values, including leap-day values. DST gap times that normalize to a different local value are rejected; ambiguous fall-back local values retain the established wall-clock representation.
 
+Scheduled live-ticket price change dates now use the same strict validation. “Duplicate to next weekend” advances each configured price-change date by seven site-local calendar days, preserving its wall-clock time through spring and fall DST transitions. If an existing saved price-change date is malformed or cannot be represented at the shifted date, the duplicate is not created rather than inheriting an invalid schedule.
+
 ## Regression coverage
 
-`tests/schedule-child-status-regression.php` now covers an impossible single date preserving prior metadata, valid leap-day persistence, and an invalid row rejecting a multi-showing batch without partial child creation or marking generation complete. Fixture transients are reset between cases. Additional scalar guards prevent malformed arrays from generating string-cast warnings.
+`tests/schedule-child-status-regression.php` covers impossible single and price-change dates preserving prior metadata, valid leap-day persistence, invalid batch rejection without partial child creation, and seven-day price-date shifts across both Los Angeles DST transitions. Fixture transients are reset between cases. Additional scalar guards prevent malformed arrays from generating string-cast warnings.
 
 ## Verification boundary
 
-`git diff --check` passes. Hosted run 37736678490 passes all tracked-PHP syntax checks on PHP 8.0–8.4 and the complete 71-program isolated regression suite on PHP 8.3, including the schedule child status regression. An initial hosted attempt exposed a missing fixture stub, which was added and verified in this successful run. This is branch-only; no production deployment or live data change was made.
+`git diff --check` passes. Hosted run 37736890032 passes all tracked-PHP syntax checks on PHP 8.0–8.4 and the complete 71-program isolated regression suite on PHP 8.3, including the schedule child status regression. The earlier date-validation attempt exposed a missing fixture stub, which was added and verified in the successful run 37736678490; the expanded date-shift tests passed in run 37736890032. This is branch-only; no production deployment or live data change was made.
