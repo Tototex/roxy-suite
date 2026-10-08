@@ -48,3 +48,85 @@ jobs:
 
       - name: Run workbook snapshot atomicity regression
         run: php tests/grosses-workbook-atomic-regression.php
+
+      - name: Run isolated cross-module regression suite
+        if: matrix.php == '8.3'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            arcade-prize-regression.php
+            arcade-review-gate-regression.php
+            arcade-score-regression.php
+            booking-refund-regression.php
+            c6-governance-regression.php
+            capacity-walkup-regression.php
+            checkout-cart-regression.php
+            core-storage-regression.php
+            deployment-manifest-regression.php
+            grosses-attachments-regression.php
+            grosses-closed-day-retry-regression.php
+            grosses-closed-day-store-regression.php
+            grosses-export-regression.php
+            grosses-fresh-email-allocation-regression.php
+            grosses-list-compatibility-regression.php
+            grosses-refund-auto-regression.php
+            grosses-refund-reporter-regression.php
+            grosses-refund-snapshot-regression.php
+            grosses-reporter-snapshot-rebalance-regression.php
+            grosses-sale-snapshot-regression.php
+            grosses-saved-report-readonly-regression.php
+            grosses-scheduler-calendar-regression.php
+            grosses-secrets-regression.php
+            grosses-square-money-regression.php
+            grosses-square-response-regression.php
+            grosses-square-returns-regression.php
+            grosses-workbook-calendar-regression.php
+            health-advertiser-freshness-regression.php
+            health-freshness-regression.php
+            health-record-read-regression.php
+            health-scheduler-outcome-regression.php
+            inventory-decision-regression.php
+            inventory-handler-errors-regression.php
+            inventory-integrity-regression.php
+            inventory-regression.php
+            inventory-settings-callback-regression.php
+            inventory-square-response-regression.php
+            member-door-regression.php
+            member-export-regression.php
+            member-regression.php
+            members-dashboard-regression.php
+            requested-agreement-conversion-regression.php
+            requested-agreement-regression.php
+            requested-entitlement-regression.php
+            requested-funding-read-regression.php
+            requested-money-regression.php
+            requested-payment-attempt-regression.php
+            requested-payment-review-render-regression.php
+            requested-payment-status-regression.php
+            requested-privacy-regression.php
+            sales-payment-refund-regression.php
+            schedule-child-status-regression.php
+            social-account-regression.php
+            social-ai-references-regression.php
+            social-ai-retry-regression.php
+            social-ai-snapshot-regression.php
+            social-bulk-editor-regression.php
+            social-cleanup-regression.php
+            social-film-context-regression.php
+            social-hangar-thumbnail-security-regression.php
+            social-publisher-regression.php
+            social-review-confirmation-regression.php
+            social-secrets-regression.php
+            social-showtime-regression.php
+            stability-regression.php
+            ticket-cart-pricing-regression.php
+            ticket-eligibility-regression.php
+            ticket-hold-settings-regression.php
+            ticket-publication-regression.php
+            updater-integrity-regression.php
+          )
+          for test in "${tests[@]}"; do
+            echo "Running $test"
+            php "tests/$test"
+          done
