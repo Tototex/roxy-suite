@@ -36,7 +36,7 @@ eval('namespace ' . $namespace . ';
   function wc_get_orders(array $args) { $GLOBALS["sales_fixture_query"] = $args; if (!empty($GLOBALS["sales_fixture_query_failure"]) && (empty($GLOBALS["sales_fixture_legacy_failure_only"]) || !isset($args["meta_query"]))) return false; return array_keys(array_filter($GLOBALS["sales_fixture_orders"] ?? [], static fn($order) => in_array($order->get_status(), $args["status"] ?? [], true))); }
   function wc_get_order($id) { return $GLOBALS["sales_fixture_orders"][(int)$id] ?? null; }
   function get_post_meta($id, $key, $single=false) { return $GLOBALS["sales_fixture_meta"][(int)$id][$key] ?? ""; }
-  function update_post_meta($id, $key, $value) { $GLOBALS["sales_fixture_meta"][(int)$id][$key]=$value; return true; }
+  function update_post_meta($id, $key, $value) { if (!empty($GLOBALS["sales_fixture_tag_write_failure"]) && strpos((string)$key, "_roxy_contains_showing_") === 0) return false; $GLOBALS["sales_fixture_meta"][(int)$id][$key]=$value; return true; }
   function delete_post_meta($id, $key) { unset($GLOBALS["sales_fixture_meta"][(int)$id][$key]); return true; }
   function current_time($type) { return "2037-01-01 12:00:00"; }
   function wp_timezone() { return new \\DateTimeZone("UTC"); }
@@ -143,5 +143,15 @@ $recovered = $sales::refresh_showing_stats($showing_id);
 $check(empty($recovered['read_error']) && $recovered['sold_qty']===0
   && $GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete']==='1',
   'successful retry completes the legacy scan and clears the temporary unavailable state');
+$GLOBALS['sales_fixture_orders'] = [42 => new $order('processing',true,[new $item(901,701,1,10.0)])];
+unset($GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete']);
+$GLOBALS['sales_fixture_tag_write_failure'] = true;
+$legacy_scan = new ReflectionMethod($sales, 'find_and_tag_legacy_orders_for_showing');
+$legacy_scan->setAccessible(true);
+$tag_failure = false;
+try { $legacy_scan->invoke(null, $showing_id, [701=>'adult']); } catch (Throwable $e) { $tag_failure = true; }
+unset($GLOBALS['sales_fixture_tag_write_failure']);
+$check($tag_failure && !isset($GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete']),
+  'failed legacy order-tag write cannot certify the scan complete');
 
 echo "Passed {$checks} isolated Sales payment/refund checks. No provider or database access.\n";

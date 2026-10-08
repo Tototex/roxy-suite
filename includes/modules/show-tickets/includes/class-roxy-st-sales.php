@@ -271,14 +271,26 @@ class Sales {
         }
         $pid = (int) $item->get_product_id();
         if (isset($ticket_type_by_product[$pid])) {
-          update_post_meta((int) $order_id, '_roxy_contains_showing_' . $showing_id, '1');
+          $tag_key = '_roxy_contains_showing_' . $showing_id;
+          if (get_post_meta((int) $order_id, $tag_key, true) !== '1'
+            && update_post_meta((int) $order_id, $tag_key, '1') === false) {
+            throw new \RuntimeException('A legacy order could not be tagged for the showing.');
+          }
+          if (get_post_meta((int) $order_id, $tag_key, true) !== '1') {
+            throw new \RuntimeException('A legacy order showing tag could not be verified.');
+          }
           $matched[] = (int) $order_id;
           break;
         }
       }
     }
 
-    update_post_meta($showing_id, self::LEGACY_SCAN_COMPLETE_KEY, '1');
+    if (get_post_meta($showing_id, self::LEGACY_SCAN_COMPLETE_KEY, true) !== '1') {
+      update_post_meta($showing_id, self::LEGACY_SCAN_COMPLETE_KEY, '1');
+    }
+    if (get_post_meta($showing_id, self::LEGACY_SCAN_COMPLETE_KEY, true) !== '1') {
+      throw new \RuntimeException('The legacy showing sales scan could not be marked complete.');
+    }
 
     return $matched;
   }
