@@ -94,6 +94,10 @@ T16 follow-up (2026-10-08): Product synchronization and public showing labels no
 
 Door ticket labels and the default door-showing picker now use strict local date parsing and compare real Unix timestamps; malformed ticket dates are omitted. Hosted run 37738884544 passes the full PHP matrix and isolated regression suite. Live/admin browser integration and the private WP-CLI duplicate fixture remain outstanding.
 
+## Grosses G6 follow-up — 2026-10-08
+
+Checkpoint 80 hardens the currently unused import batch/file write API: failed inserts cannot return stale IDs, invalid parent IDs are rejected, and update helpers verify target rows after zero-change writes. Focused fault-injection coverage and the schema/logging regressions pass hosted workflow [37764342992](https://github.com/Tototex/roxy-suite/actions/runs/37764342992) across PHP 8.0–8.4 syntax and the PHP 8.3 full isolated suite. The Grosses schema/bootstrap and failed audit-log-insert fixes passed workflow [37763883660](https://github.com/Tototex/roxy-suite/actions/runs/37763883660). These remain local/GitHub changes, not deployed. Broader importer implementation is out of scope because there are no write callers.
+
 ## I4 live verification update — 2026-10-08
 
 This supersedes the earlier I4 note that the connected-account request was unverified. A guarded candidate read parsed 203 live catalog variations, made one receipt-history request for three actual ordered Inventory records, and matched before/after SHA-256 snapshots of the products, vendors, orders, and runs tables. It exposed Square's current API schema: from_location_id/to_location_id replaced location_id in version 2026-07-15. The candidate now uses the receipt destination and skips irrelevant sale adjustments before checking that destination. Fifty-eight focused checks pass on host PHP 8.5. The hosted PHP 8.0–8.4 matrix, PHP 8.3 cross-module suite, release-manifest guard, and deterministic archive verification pass in workflow 37758734972. Release/deployment and confirmation during the next actual delivery remain open. No live Inventory records or production code changed.

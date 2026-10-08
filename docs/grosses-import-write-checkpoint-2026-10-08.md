@@ -13,5 +13,5 @@ Low. Methods that previously returned `void` now return a boolean that existing 
 ## Verification
 
 - `git diff --check` passes.
-- PHP CLI is not installed in this workstation; hosted PHP 8.0–8.4 syntax matrix and PHP 8.3 cross-module suite are the execution check after push.
+- PHP CLI is not installed in this workstation. Hosted workflow [37764342992](https://github.com/Tototex/roxy-suite/actions/runs/37764342992) passes all five PHP 8.0–8.4 syntax jobs and the PHP 8.3 full isolated cross-module suite, including this regression.
 - No importer, database row, report, email, or production site was changed.
