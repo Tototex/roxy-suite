@@ -14,7 +14,8 @@ function wc_get_order($id){return $GLOBALS['orders'][$id]??false;}
 function wc_get_orders($args){
     $GLOBALS['order_queries'][]=$args;
     if (!empty($GLOBALS['order_query_throw'])) throw new RuntimeException('fixture order query failure');
-    if (!empty($GLOBALS['order_query_fail'])) return false;
+    $page=(int)($args['paged']??1);
+    if (!empty($GLOBALS['order_query_fail']) || (int)($GLOBALS['order_query_fail_page']??0)===$page) return false;
     $ids=array_keys($GLOBALS['orders']); sort($ids,SORT_NUMERIC);
     $statuses=array_map(fn($status)=>preg_replace('/^wc-/','',(string)$status),(array)($args['status']??[]));
     $cutoff=substr((string)($args['date_created']??''),1);
@@ -25,7 +26,9 @@ function wc_get_orders($args){
         return !$created || $created->getTimestamp()>=(new DateTimeImmutable($cutoff.' 00:00:00'))->getTimestamp();
     }));
     $limit=(int)($args['limit']??-1);
-    return $limit>0?array_slice($ids,0,$limit):$ids;
+    $page_ids=$limit>0?array_slice($ids,($page-1)*$limit,$limit):$ids;
+    if(!empty($args['paginate']))return (object)['orders'=>$page_ids,'total'=>count($ids),'max_num_pages'=>$limit>0?(int)ceil(count($ids)/$limit):1];
+    return $page_ids;
 }
 function get_option($key,$default=false){return $default;} function update_option(...$args){}
 function wp_json_encode($value){return json_encode($value);}
@@ -108,7 +111,7 @@ check(roxy_will_call_authoritative_checkins(8,[$key=>['used_qty'=>0]])[$key]['us
 $list=roxy_will_call_get_list([8],['8'=>'General'],true);
 check($list['totals']['total_qty']===2 && abs($list['totals']['total_revenue']-13.2)<0.00001,'partial refunds reduce quantity and collected revenue including tax');
 $saved_orders=$GLOBALS['orders']; $GLOBALS['orders']=[];
-for($i=1;$i<=201;$i++){
+for($i=1;$i<=401;$i++){
     $order=new WC_Order;
     $order->status=$i===201?'completed':($i===2?'cancelled':($i===3?'on-hold':'processing'));
     $order->created=new FixtureDate($i===4?'2025-04-01 12:00:00':'2026-10-01 12:00:00');
@@ -118,8 +121,8 @@ for($i=1;$i<=201;$i++){
 }
 $GLOBALS['order_queries']=[];
 $complete_list=roxy_will_call_get_list([8],['8'=>'General'],true);
-check($complete_list['totals']['total_qty']===397 && $complete_list['totals']['order_count']===198 && abs($complete_list['totals']['total_revenue']-2620.2)<0.00001 && count($complete_list['rows'])===198,'Will Call reconciles distinct quantities, refunds, customers and excluded statuses/date across 201 orders');
-check(count($GLOBALS['order_queries'])===1 && $GLOBALS['order_queries'][0]['limit']===-1 && $GLOBALS['order_queries'][0]['status']===['wc-processing','wc-completed'] && $GLOBALS['order_queries'][0]['return']==='ids' && strpos((string)$GLOBALS['order_queries'][0]['date_created'],'>')===0,'Will Call makes one unpaginated eligible-order ID query');
+check($complete_list['totals']['total_qty']===797 && $complete_list['totals']['order_count']===398 && abs($complete_list['totals']['total_revenue']-5260.2)<0.00001 && count($complete_list['rows'])===398,'Will Call reconciles distinct quantities, refunds, customers and excluded statuses/date across 401 orders');
+check(count($GLOBALS['order_queries'])===2 && $GLOBALS['order_queries'][0]['limit']===200 && $GLOBALS['order_queries'][0]['paged']===1 && $GLOBALS['order_queries'][1]['paged']===2 && $GLOBALS['order_queries'][0]['orderby']==='ID' && $GLOBALS['order_queries'][0]['order']==='ASC' && $GLOBALS['order_queries'][0]['paginate']===true && $GLOBALS['order_queries'][0]['status']===['wc-processing','wc-completed'] && $GLOBALS['order_queries'][0]['return']==='ids' && strpos((string)$GLOBALS['order_queries'][0]['date_created'],'>')===0,'Will Call reads the complete eligible order set in stable bounded pages');
 $GLOBALS['cache']=[]; $failed_forms=0;
 foreach(['order_query_fail','order_query_throw'] as $failure_flag){
     $GLOBALS[$failure_flag]=true; $failed=false;
@@ -127,7 +130,11 @@ foreach(['order_query_fail','order_query_throw'] as $failure_flag){
     unset($GLOBALS[$failure_flag]);
     if($failed && $GLOBALS['cache']===[]) $failed_forms++;
 }
-check($failed_forms===2,'false and thrown order query failures are rejected before caching');
+check($failed_forms===2,'false and thrown first-page order query failures are rejected before caching');
+$GLOBALS['order_query_fail_page']=2;$GLOBALS['cache']=[];$failed=false;
+try { roxy_will_call_get_list([8],['8'=>'General'],true); } catch (Throwable $e) { $failed=true; }
+unset($GLOBALS['order_query_fail_page']);
+check($failed && $GLOBALS['cache']===[],'later-page order query failure rejects the full Will Call list without caching partial results');
 $GLOBALS['orders']=$saved_orders;
 check(roxy_will_call_cache_key([8],[8=>'General'])!==roxy_will_call_cache_key([8],[8=>'Renamed']),'cache identity includes ticket labels');
 $save=$GLOBALS['actions']['wp_ajax_roxy_will_call_save'];

@@ -840,14 +840,63 @@ function roxy_will_call_get_list($product_ids, array $ticket_type_labels = [], b
   }
 
   $statuses = ['wc-processing', 'wc-completed'];
-  $order_ids = wc_get_orders([
-    'type' => 'shop_order',
-    'status' => $statuses,
-    'limit' => -1,
-    'return' => 'ids',
-    'date_created' => '>' . (new DateTime('-18 months'))->format('Y-m-d'),
-  ]);
-  if (!is_array($order_ids)) throw new \RuntimeException('Will Call could not load the complete order list. No partial list was cached.');
+  $page_size = 200;
+  $page = 1;
+  $expected_total = null;
+  $expected_pages = null;
+  $order_ids = [];
+  $seen_order_ids = [];
+  do {
+    $page_result = wc_get_orders([
+      'type' => 'shop_order',
+      'status' => $statuses,
+      'limit' => $page_size,
+      'paged' => $page,
+      'paginate' => true,
+      'return' => 'ids',
+      'orderby' => 'ID',
+      'order' => 'ASC',
+      'date_created' => '>' . (new DateTime('-18 months'))->format('Y-m-d'),
+    ]);
+    global $wpdb;
+    if ((function_exists('is_wp_error') && is_wp_error($page_result))
+      || (isset($wpdb->last_error) && (string) $wpdb->last_error !== '')
+      || !is_object($page_result) || !isset($page_result->orders, $page_result->total, $page_result->max_num_pages)
+      || !is_array($page_result->orders) || !is_numeric($page_result->total) || !is_numeric($page_result->max_num_pages)
+      || (float) $page_result->total < 0 || (float) $page_result->total !== (float) (int) $page_result->total
+      || (float) $page_result->max_num_pages < 0 || (float) $page_result->max_num_pages !== (float) (int) $page_result->max_num_pages) {
+      throw new \RuntimeException('Will Call could not load the complete order list. No partial list was cached.');
+    }
+    $total = (int) $page_result->total;
+    $pages = (int) $page_result->max_num_pages;
+    if ($page === 1) {
+      $expected_total = $total;
+      $expected_pages = $pages;
+      if ($pages > 10000 || ($total === 0 && $pages !== 0) || ($total > 0 && $pages < 1)) {
+        throw new \RuntimeException('Will Call order pagination could not be verified. No partial list was cached.');
+      }
+    } elseif ($total !== $expected_total || $pages !== $expected_pages) {
+      throw new \RuntimeException('The paid order list changed while it was loading. Refresh before using Will Call.');
+    }
+    if (count($page_result->orders) > $page_size || ($page <= $pages && !$page_result->orders)) {
+      throw new \RuntimeException('Will Call order pagination returned an incomplete page. No partial list was cached.');
+    }
+    foreach ($page_result->orders as $order_id) {
+      if (!is_numeric($order_id) || (float) $order_id <= 0 || (float) $order_id !== (float) (int) $order_id) {
+        throw new \RuntimeException('Will Call order pagination returned an invalid order identity. No partial list was cached.');
+      }
+      $order_id = (int) $order_id;
+      if (isset($seen_order_ids[$order_id])) {
+        throw new \RuntimeException('Will Call order pagination returned duplicate orders. Refresh before using Will Call.');
+      }
+      $seen_order_ids[$order_id] = true;
+      $order_ids[] = $order_id;
+    }
+    $page++;
+  } while ($page <= $expected_pages);
+  if (count($order_ids) !== $expected_total) {
+    throw new \RuntimeException('Will Call could not verify the complete order list. No partial list was cached.');
+  }
 
   $product_lookup = array_fill_keys($product_ids, true);
   $agg = [];
