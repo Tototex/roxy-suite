@@ -230,20 +230,23 @@ class Members_Dashboard {
         $sub_id = isset($_POST['subscription_id']) ? absint($_POST['subscription_id']) : 0;
         if ($sub_id <= 0) return;
 
-        if (function_exists('wcs_get_subscription') && !wcs_get_subscription($sub_id)) {
+        $subscription = function_exists('wcs_get_subscription') ? wcs_get_subscription($sub_id) : false;
+        if (!$subscription || !method_exists($subscription, 'update_meta_data') || !method_exists($subscription, 'save')) {
             return;
         }
 
         if ($action === 'save_photo') {
             $attachment_id = isset($_POST['attachment_id']) ? absint($_POST['attachment_id']) : 0;
             if ($attachment_id > 0) {
-                update_post_meta($sub_id, self::photo_meta_key(), $attachment_id);
-                echo '<div class="notice notice-success is-dismissible"><p>Member photo updated.</p></div>';
+                $subscription->update_meta_data(self::photo_meta_key(), $attachment_id);
+                $saved_id = $subscription->save();
+                echo '<div class="notice notice-'.($saved_id ? 'success' : 'error').' is-dismissible"><p>'.($saved_id ? 'Member photo updated.' : 'Member photo could not be saved.').'</p></div>';
             }
         } elseif ($action === 'toggle_trade') {
             $trade = !empty($_POST['trade_value']) && (string) wp_unslash($_POST['trade_value']) !== '0';
-            update_post_meta($sub_id, self::META_TRADE, $trade ? 1 : 0);
-            echo '<div class="notice notice-success is-dismissible"><p>Trade / comp flag updated.</p></div>';
+            $subscription->update_meta_data(self::META_TRADE, $trade ? 1 : 0);
+            $saved_id = $subscription->save();
+            echo '<div class="notice notice-'.($saved_id ? 'success' : 'error').' is-dismissible"><p>'.($saved_id ? 'Trade / comp flag updated.' : 'Trade / comp flag could not be saved.').'</p></div>';
         }
     }
 
@@ -329,7 +332,6 @@ class Members_Dashboard {
         $subscription_ids=array_values(array_unique(array_filter(array_map('intval',$subscription_ids),static fn($id)=>$id>0)));
         $ranks=[];
         foreach(array_chunk($subscription_ids,100) as $batch) {
-          update_meta_cache('post',$batch);
           $scan_stats_map=self::scan_stats_map($batch);
           foreach($batch as $sub_id) {
             $subscription=$filtered_subscriptions[$sub_id] ?? wcs_get_subscription($sub_id);
@@ -342,10 +344,10 @@ class Members_Dashboard {
             $user = method_exists($subscription, 'get_user') ? $subscription->get_user() : null;
             $name = self::customer_name($subscription, $user);
             $email = is_object($user) && !empty($user->user_email) ? (string) $user->user_email : '';
-            $photo_url = self::photo_url($sub_id);
+            $photo_url = self::photo_url($subscription);
             $next_payment = method_exists($subscription, 'get_date') ? $subscription->get_date('next_payment') : '';
             $status = method_exists($subscription, 'get_status') ? (string) $subscription->get_status() : '';
-            $trade = self::is_trade_subscription($sub_id);
+            $trade = self::is_trade_subscription($subscription);
             $products = self::product_summary($subscription);
 
             if ($filters['status'] !== '' && $status !== $filters['status']) continue;
@@ -383,7 +385,7 @@ class Members_Dashboard {
           $subscription=$filtered_subscriptions[$sub_id] ?? wcs_get_subscription($sub_id);
           if(!is_object($subscription))throw new \RuntimeException('Subscription changed while reading report');
           $user=$subscription->get_user();$scan=$selected_stats[$sub_id]??['month'=>0,'lifetime'=>0,'last'=>''];$next=$subscription->get_date('next_payment');
-          $rows[]=['subscription_id'=>$sub_id,'name'=>self::customer_name($subscription,$user),'email'=>is_object($user)?(string)$user->user_email:'','photo_url'=>self::photo_url($sub_id),'products'=>self::product_summary($subscription),'subs'=>self::subscription_quantity($subscription),'monthly_revenue'=>self::monthly_revenue($subscription),'visits_month'=>(int)$scan['month'],'visits_lifetime'=>(int)$scan['lifetime'],'last_visit'=>self::format_datetime($scan['last']),'next_payment'=>$next?date_i18n(get_option('date_format'),strtotime($next)):'','status'=>$subscription->get_status(),'trade'=>self::is_trade_subscription($sub_id),'edit_url'=>admin_url('post.php?post='.$sub_id.'&action=edit')];
+          $rows[]=['subscription_id'=>$sub_id,'name'=>self::customer_name($subscription,$user),'email'=>is_object($user)?(string)$user->user_email:'','photo_url'=>self::photo_url($subscription),'products'=>self::product_summary($subscription),'subs'=>self::subscription_quantity($subscription),'monthly_revenue'=>self::monthly_revenue($subscription),'visits_month'=>(int)$scan['month'],'visits_lifetime'=>(int)$scan['lifetime'],'last_visit'=>self::format_datetime($scan['last']),'next_payment'=>$next?date_i18n(get_option('date_format'),strtotime($next)):'','status'=>$subscription->get_status(),'trade'=>self::is_trade_subscription($subscription),'edit_url'=>admin_url('post.php?post='.$sub_id.'&action=edit')];
         }
 
         $estimated_cost = ($visits_month * self::visit_cost()) + self::fixed_cost();
@@ -534,8 +536,9 @@ class Members_Dashboard {
         return implode(', ', $parts);
     }
 
-    private static function photo_url(int $sub_id): string {
-        $photo_id = absint(get_post_meta($sub_id, self::photo_meta_key(), true));
+    private static function photo_url($subscription): string {
+        if (!is_object($subscription) || !method_exists($subscription, 'get_meta')) return '';
+        $photo_id = absint($subscription->get_meta(self::photo_meta_key(), true));
         if (!$photo_id) return '';
         $img = wp_get_attachment_image_src($photo_id, 'thumbnail');
         return is_array($img) && !empty($img[0]) ? (string) $img[0] : '';
@@ -557,8 +560,8 @@ class Members_Dashboard {
         return class_exists('\\Roxy_Sub_Check') ? \Roxy_Sub_Check::META_PHOTO_ID : '_roxy_member_photo_id';
     }
 
-    private static function is_trade_subscription(int $sub_id): bool {
-        return (bool) get_post_meta($sub_id, self::META_TRADE, true);
+    private static function is_trade_subscription($subscription): bool {
+        return is_object($subscription) && method_exists($subscription, 'get_meta') && (bool) $subscription->get_meta(self::META_TRADE, true);
     }
 
     private static function format_datetime(string $dt): string {

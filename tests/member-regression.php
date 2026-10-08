@@ -10,6 +10,7 @@ function current_time($format){return '2026-10-03 10:00:00';}function date_i18n(
 function absint($value){return abs((int)$value);}function get_post_meta(...$args){return '';}
 function get_user_meta($id,$key,$single=true){return $key==='first_name'?'Fixture':'Member';}
 function wcs_get_subscription($id){return new TestSubscription($id);}
+function wcs_get_subscriptions($args){$GLOBALS['member_search_queries'][]=$args;if(!empty($GLOBALS['member_search_fail']))throw new RuntimeException('fixture query failure');$ids=range(101,1);$offset=((int)($args['paged']??1)-1)*(int)($args['subscriptions_per_page']??100);return array_map(static fn($id)=>new TestSubscription($id),array_slice($ids,$offset,(int)($args['subscriptions_per_page']??100)));}
 function home_url($path=''){return 'https://example.test'.$path;}
 function admin_url($path=''){return 'https://example.test/wp-admin/'.$path;}
 function wp_nonce_url($url,$action){return $url.'&_wpnonce=test';}
@@ -20,8 +21,13 @@ function roxy_suite_user_can_access_admin(){return true;}
 function get_the_author_meta(...$args){return 'Fixture staff';}
 class TestSubscription {
     private $id;function __construct($id){$this->id=$id;}
-    function get_user(){return (object)['ID'=>8,'user_email'=>'fixture@example.test','display_name'=>'Fixture Member'];}
+    function get_id(){return (int)$this->id;}
+    function get_user(){return (object)['ID'=>8,'user_email'=>'fixture'.$this->id.'@example.test','display_name'=>'Fixture Member'];}
     function get_status(){return $this->id===2?'cancelled':($this->id===3?'expired':'active');}
+    function get_billing_email(){return 'billing'.$this->id.'@example.test';}
+    function get_billing_first_name(){return 'Fixture';}function get_billing_last_name(){return 'Member';}
+    function get_meta($key,$single=true){return $key==='_roxy_member_photo_id'?0:0;}
+    function update_meta_data($key,$value){}function delete_meta_data($key){}function save(){return $this->id;}
     function get_items(){return [new class {function get_quantity(){return 3;}}];}
     function get_date($key){return '';}
 }
@@ -38,6 +44,12 @@ $root=$argv[1]??dirname(__DIR__);
 require $root.'/includes/modules/sub-check/roxy-sub-check.php';
 require $root.'/includes/class-roxy-suite-members-dashboard.php';
 check(Roxy_Sub_Check::prepare_admission_log(),'admission verifies initialized log without schema repair');
+$found=Roxy_Sub_Check::search_members('fixture1@',5);
+check(count($found)===1&&$found[0]['subscription_id']===1&&count($GLOBALS['member_search_queries'])===2,'member search pages through subscription CRUD results and finds an older email match');
+check($GLOBALS['member_search_queries'][0]['subscription_status']===['active','pending-cancel']&&$GLOBALS['member_search_queries'][0]['subscriptions_per_page']===100&&$GLOBALS['member_search_queries'][0]['paged']===1,'member search uses bounded stable Woo Subscriptions query pages');
+$GLOBALS['member_search_fail']=true;
+check(Roxy_Sub_Check::search_members('fixture1@',5)===[],'subscription query failure returns no potentially misleading partial search results');
+unset($GLOBALS['member_search_fail']);
 $payload=Roxy_Sub_Check::get_member_payload(1,false);
 check($payload['last_visit']==='2026-09-28 19:30','nonlogging lookup includes latest actual admission in site timezone');
 $query=end($GLOBALS['wpdb']->queries);

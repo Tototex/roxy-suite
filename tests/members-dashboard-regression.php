@@ -66,6 +66,8 @@ class FixtureSubscription {
     function get_user(){return (object)['user_email'=>'fixture'.$this->id.'@example.test','display_name'=>'Fixture'];}
     function get_billing_first_name(){return 'Fixture';} function get_billing_last_name(){return (string)$this->id;}
     function get_status(){return $this->id%3===0 ? 'pending-cancel':'active';}
+    function get_meta($key,$single=true){return str_contains($key,'trade')?($this->id%10===0):($this->id%2===0?$this->id:0);}
+    function update_meta_data($key,$value){}function delete_meta_data($key){}function save(){return $this->id;}
     function get_date($key){return '';}
     function get_total(){return $this->custom_total ?? (10+$this->id%7);}
     function get_billing_interval(){return 1;} function get_billing_period(){return 'month';}

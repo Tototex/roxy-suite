@@ -344,7 +344,7 @@ class Roxy_Sub_Check {
       $out['next_payment'] = date_i18n(get_option('date_format'), strtotime($next));
     }
 
-    $photo_id = absint(get_post_meta($sub_id, self::META_PHOTO_ID, true));
+    $photo_id = method_exists($sub, 'get_meta') ? absint($sub->get_meta(self::META_PHOTO_ID, true)) : 0;
     if ($photo_id) {
       $img = wp_get_attachment_image_src($photo_id, 'medium');
       if (is_array($img) && !empty($img[0])) {
@@ -427,93 +427,50 @@ class Roxy_Sub_Check {
   }
 
   private static function search_member_subscription_ids(string $term, int $limit): array {
-    global $wpdb;
-
-    $posts_table = $wpdb->posts;
-    $postmeta_table = $wpdb->postmeta;
-    $users_table = $wpdb->users;
-    $usermeta_table = $wpdb->usermeta;
-
-    $like = '%' . $wpdb->esc_like($term) . '%';
-    $status_placeholders = implode(',', array_fill(0, 2, '%s'));
-    $params = [
-      'shop_subscription',
-      'wc-active',
-      'wc-pending-cancel',
-      '_customer_user',
-      'first_name',
-      'last_name',
-      '_billing_email',
-      '_billing_first_name',
-      '_billing_last_name',
-      $like,
-      $like,
-      $like,
-      $like,
-      $like,
-      $like,
-      $like,
-      $like,
-      $limit,
-    ];
-
-    $sql = "
-      SELECT DISTINCT p.ID
-      FROM {$posts_table} p
-      LEFT JOIN {$postmeta_table} pm_user
-        ON pm_user.post_id = p.ID AND pm_user.meta_key = %s
-      LEFT JOIN {$users_table} u
-        ON u.ID = CAST(pm_user.meta_value AS UNSIGNED)
-      LEFT JOIN {$usermeta_table} umf
-        ON umf.user_id = u.ID AND umf.meta_key = %s
-      LEFT JOIN {$usermeta_table} uml
-        ON uml.user_id = u.ID AND uml.meta_key = %s
-      LEFT JOIN {$postmeta_table} pm_email
-        ON pm_email.post_id = p.ID AND pm_email.meta_key = %s
-      LEFT JOIN {$postmeta_table} pm_bfirst
-        ON pm_bfirst.post_id = p.ID AND pm_bfirst.meta_key = %s
-      LEFT JOIN {$postmeta_table} pm_blast
-        ON pm_blast.post_id = p.ID AND pm_blast.meta_key = %s
-      WHERE p.post_type = %s
-        AND p.post_status IN ({$status_placeholders})
-        AND (
-          CAST(p.ID AS CHAR) LIKE %s
-          OR u.user_email LIKE %s
-          OR u.display_name LIKE %s
-          OR umf.meta_value LIKE %s
-          OR uml.meta_value LIKE %s
-          OR CONCAT_WS(' ', umf.meta_value, uml.meta_value) LIKE %s
-          OR pm_email.meta_value LIKE %s
-          OR CONCAT_WS(' ', pm_bfirst.meta_value, pm_blast.meta_value) LIKE %s
-        )
-      ORDER BY p.ID DESC
-      LIMIT %d
-    ";
-
-    $prepared = $wpdb->prepare(
-      $sql,
-      $params[3],
-      $params[4],
-      $params[5],
-      $params[6],
-      $params[7],
-      $params[8],
-      $params[0],
-      $params[1],
-      $params[2],
-      $params[9],
-      $params[10],
-      $params[11],
-      $params[12],
-      $params[13],
-      $params[14],
-      $params[15],
-      $params[16],
-      $params[17]
-    );
-
-    $ids = $wpdb->get_col($prepared);
-    return array_values(array_filter(array_map('intval', (array) $ids)));
+    if (!function_exists('wcs_get_subscriptions')) return [];
+    $page_size = 100;
+    $page = 1;
+    $matches = [];
+    $seen = [];
+    try {
+      do {
+        $subscriptions = wcs_get_subscriptions([
+          'subscription_status' => ['active', 'pending-cancel'],
+          'subscriptions_per_page' => $page_size,
+          'paged' => $page,
+          'orderby' => 'ID',
+          'order' => 'DESC',
+        ]);
+        if (!is_array($subscriptions) || (function_exists('is_wp_error') && is_wp_error($subscriptions))) return [];
+        if (!$subscriptions) break;
+        foreach ($subscriptions as $subscription) {
+          if (!is_object($subscription) || !method_exists($subscription, 'get_id') || !method_exists($subscription, 'get_status')) return [];
+          $id = (int) $subscription->get_id();
+          if ($id <= 0 || isset($seen[$id])) return [];
+          $seen[$id] = true;
+          if (!in_array((string) $subscription->get_status(), ['active', 'pending-cancel'], true)) continue;
+          $user = method_exists($subscription, 'get_user') ? $subscription->get_user() : null;
+          $first = is_object($user) && !empty($user->ID) ? (string) get_user_meta((int) $user->ID, 'first_name', true) : '';
+          $last = is_object($user) && !empty($user->ID) ? (string) get_user_meta((int) $user->ID, 'last_name', true) : '';
+          $parts = [$id, $first, $last];
+          foreach (['get_billing_email', 'get_billing_first_name', 'get_billing_last_name'] as $method) {
+            if (method_exists($subscription, $method)) $parts[] = (string) $subscription->{$method}();
+          }
+          if (is_object($user)) {
+            $parts[] = (string) ($user->user_email ?? '');
+            $parts[] = (string) ($user->display_name ?? '');
+          }
+          if (strpos(strtolower(implode(' ', $parts)), $term) === false) continue;
+          $matches[] = $id;
+          if (count($matches) >= $limit) return $matches;
+        }
+        if (count($subscriptions) < $page_size) break;
+        $page++;
+      } while (true);
+    } catch (\Throwable $error) {
+      return [];
+    }
+    return $matches;
   }
 
   public static function showing_admit_rows(int $showing_id): array {
@@ -840,7 +797,7 @@ class Roxy_Sub_Check {
     $owner = $subscription->get_user_id();
     if ((int)$owner !== (int)$current_user_id) return;
 
-    $photo_id = absint(get_post_meta($sub_id, self::META_PHOTO_ID, true));
+    $photo_id = method_exists($subscription, 'get_meta') ? absint($subscription->get_meta(self::META_PHOTO_ID, true)) : 0;
     $photo_url = '';
     if ($photo_id) {
       $img = wp_get_attachment_image_src($photo_id, 'medium');
@@ -915,7 +872,9 @@ class Roxy_Sub_Check {
       return;
     }
 
-    update_post_meta($sub_id, self::META_PHOTO_ID, (int)$attachment_id);
+    if (!method_exists($sub, 'update_meta_data') || !method_exists($sub, 'save')) return;
+    $sub->update_meta_data(self::META_PHOTO_ID, (int)$attachment_id);
+    if (!$sub->save()) return;
 
     wp_safe_redirect(wp_get_referer() ?: wc_get_account_endpoint_url('subscriptions'));
     exit;
@@ -984,7 +943,8 @@ class Roxy_Sub_Check {
   public static function render_subscription_photo_metabox($post) {
     wp_nonce_field('roxy_member_photo_save', 'roxy_member_photo_nonce');
 
-    $photo_id = absint(get_post_meta($post->ID, self::META_PHOTO_ID, true));
+    $subscription = function_exists('wcs_get_subscription') ? wcs_get_subscription((int)$post->ID) : false;
+    $photo_id = is_object($subscription) && method_exists($subscription, 'get_meta') ? absint($subscription->get_meta(self::META_PHOTO_ID, true)) : 0;
     $photo_url = '';
     if ($photo_id) {
       $img = wp_get_attachment_image_src($photo_id, 'medium');
@@ -1018,11 +978,11 @@ class Roxy_Sub_Check {
 
     $photo_id = isset($_POST['roxy_member_photo_id']) ? absint($_POST['roxy_member_photo_id']) : 0;
 
-    if ($photo_id > 0) {
-      update_post_meta($post_id, self::META_PHOTO_ID, $photo_id);
-    } else {
-      delete_post_meta($post_id, self::META_PHOTO_ID);
-    }
+    $subscription = function_exists('wcs_get_subscription') ? wcs_get_subscription((int)$post_id) : false;
+    if (!is_object($subscription) || !method_exists($subscription, 'save')) return;
+    if ($photo_id > 0) $subscription->update_meta_data(self::META_PHOTO_ID, $photo_id);
+    else $subscription->delete_meta_data(self::META_PHOTO_ID);
+    $subscription->save();
   }
 }
 
