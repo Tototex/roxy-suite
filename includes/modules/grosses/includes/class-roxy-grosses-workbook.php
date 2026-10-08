@@ -1244,13 +1244,33 @@ class Workbook {
 
   private static function protect_directory(string $dir): void {
     $index = trailingslashit($dir) . 'index.html';
-    if (!file_exists($index)) {
-      file_put_contents($index, '');
+    if (!is_file($index) && @file_put_contents($index, '') === false) {
+      throw new \RuntimeException('Could not create the private workbook directory index.');
+    }
+    if (!is_file($index) || !is_readable($index)) {
+      throw new \RuntimeException('The private workbook directory index could not be verified.');
     }
 
     $htaccess = trailingslashit($dir) . '.htaccess';
-    if (!file_exists($htaccess)) {
-      file_put_contents($htaccess, "Require all denied\nDeny from all\n");
+    $rules = "Require all denied\nDeny from all\n";
+    $contents = is_file($htaccess) ? @file_get_contents($htaccess) : false;
+    $has_modern_deny = is_string($contents) && preg_match('/^\s*Require\s+all\s+denied\s*$/mi', $contents);
+    $has_legacy_deny = is_string($contents) && preg_match('/^\s*Deny\s+from\s+all\s*$/mi', $contents);
+    if (!$has_modern_deny || !$has_legacy_deny) {
+      $missing_rules = ($has_modern_deny ? '' : "Require all denied\n")
+        . ($has_legacy_deny ? '' : "Deny from all\n");
+      $updated_contents = is_string($contents) && $contents !== ''
+        ? rtrim($contents) . "\n" . $missing_rules
+        : $rules;
+      if (@file_put_contents($htaccess, $updated_contents) === false) {
+        throw new \RuntimeException('Could not write private workbook directory access rules.');
+      }
+      $contents = @file_get_contents($htaccess);
+    }
+    if (!is_file($htaccess) || !is_readable($htaccess) || !is_string($contents)
+      || !preg_match('/^\s*Require\s+all\s+denied\s*$/mi', $contents)
+      || !preg_match('/^\s*Deny\s+from\s+all\s*$/mi', $contents)) {
+      throw new \RuntimeException('Private workbook directory access rules could not be verified.');
     }
   }
 

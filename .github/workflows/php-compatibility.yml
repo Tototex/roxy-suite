@@ -84,6 +84,7 @@ jobs:
             grosses-square-response-regression.php
             grosses-square-returns-regression.php
             grosses-workbook-calendar-regression.php
+            grosses-workbook-private-dir-regression.php
             health-advertiser-freshness-regression.php
             health-freshness-regression.php
             health-record-read-regression.php
