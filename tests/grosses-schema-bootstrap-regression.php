@@ -12,8 +12,9 @@ function dbDelta($sql) {
   if (!preg_match('/CREATE TABLE\s+([a-zA-Z0-9_]+)/i', $sql, $match)) return [];
   $table = $match[1];
   if ($wpdb->fail_table === $table) return [];
-  preg_match_all('/^\s*([a-z][a-z0-9_]*)\s+(?:BIGINT|INT|TINYINT|DATETIME|DATE|VARCHAR|DECIMAL|LONGTEXT|TEXT)/im', $sql, $columns);
+  preg_match_all('/^\s*([a-z][a-z0-9_]*)\s+(?:BIGINT|INT|TINYINT|DATETIME|DATE|CHAR|VARCHAR|DECIMAL|LONGTEXT|TEXT)/im', $sql, $columns);
   $wpdb->tables[$table] = array_fill_keys($columns[1], true);
+  if (preg_match('/UNIQUE KEY\s+event_id\s*\(event_id\)/i', $sql)) $wpdb->tables[$table]['event_id_unique'] = true;
   return [];
 }
 
@@ -27,6 +28,7 @@ class FixtureWpdb {
   public function esc_like(string $value): string { return addcslashes($value, '_%\\'); }
   public function get_var(string $sql) {
     $this->last_error = '';
+    if (preg_match("/SHOW INDEX FROM `?([a-z0-9_]+)`? WHERE Key_name = 'event_id' AND Non_unique = 0/i", $sql, $m)) return isset($this->tables[$m[1]]['event_id_unique']) ? 'event_id' : null;
     if (preg_match('/SHOW TABLES LIKE \'([^\']+)\'/i', $sql, $m)) { $name = stripslashes($m[1]); return isset($this->tables[$name]) ? $name : null; }
     if (preg_match('/SHOW COLUMNS FROM `?([a-z0-9_]+)`? LIKE \'([a-z0-9_]+)\'/i', $sql, $m)) return isset($this->tables[$m[1]][$m[2]]) ? $m[2] : null;
     $this->last_error = 'Unexpected fixture query';

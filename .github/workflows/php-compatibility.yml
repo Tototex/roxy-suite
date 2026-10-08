@@ -97,6 +97,7 @@ jobs:
             grosses-fresh-email-allocation-regression.php
             grosses-list-compatibility-regression.php
             grosses-refund-auto-regression.php
+            grosses-refund-webhook-regression.php
             grosses-refund-reporter-regression.php
             grosses-refund-snapshot-regression.php
             grosses-reporter-snapshot-rebalance-regression.php

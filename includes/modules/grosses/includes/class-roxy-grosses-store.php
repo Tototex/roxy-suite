@@ -14,11 +14,12 @@ class Store {
   public const IMPORT_BATCH_TABLE = 'roxy_grosses_import_batches';
   public const IMPORT_FILE_TABLE = 'roxy_grosses_import_files';
   public const SCHEMA_OPTION = 'roxy_grosses_schema_version';
-  public const SCHEMA_VERSION = 'verified-1';
   public const HISTORY_BACKFILL_OPTION = 'roxy_grosses_history_backfilled';
   public const ENTRY_MIGRATION_OPTION = 'roxy_grosses_entries_migrated';
   public const ROW_LOCK_SCHEMA_OPTION = 'roxy_grosses_row_lock_schema';
   public const REFUND_REVIEW_TABLE = 'roxy_grosses_refund_reviews';
+  public const REFUND_WEBHOOK_TABLE = 'roxy_grosses_refund_webhook_events';
+  public const SCHEMA_VERSION = 'verified-2';
   private static ?bool $refund_review_schema_exists = null;
   private static int $refund_review_lock_depth = 0;
 
@@ -72,6 +73,11 @@ class Store {
   public static function import_file_table_name(): string {
     global $wpdb;
     return $wpdb->prefix . self::IMPORT_FILE_TABLE;
+  }
+
+  public static function refund_webhook_table_name(): string {
+    global $wpdb;
+    return $wpdb->prefix . self::REFUND_WEBHOOK_TABLE;
   }
 
   public static function install_schema(): bool {
@@ -292,6 +298,27 @@ class Store {
       KEY status (status)
     ) {$charset};");
 
+    dbDelta("CREATE TABLE " . self::refund_webhook_table_name() . " (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      event_id VARCHAR(191) NOT NULL,
+      refund_id VARCHAR(191) NOT NULL,
+      payment_id VARCHAR(191) NOT NULL DEFAULT '',
+      order_id VARCHAR(191) NOT NULL DEFAULT '',
+      location_id VARCHAR(191) NOT NULL DEFAULT '',
+      status VARCHAR(32) NOT NULL DEFAULT '',
+      amount_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
+      currency CHAR(3) NOT NULL DEFAULT '',
+      event_created_at DATETIME NOT NULL,
+      refund_created_at DATETIME NULL,
+      refund_updated_at DATETIME NULL,
+      payload_hash CHAR(64) NOT NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY event_id (event_id),
+      KEY refund_id (refund_id),
+      KEY status (status),
+      KEY event_created_at (event_created_at)
+    ) {$charset};");
+
     if (!self::required_schema_is_present()) {
       error_log('Roxy Grosses schema installation did not produce the required tables and columns; retry pending.');
       return false;
@@ -313,6 +340,7 @@ class Store {
       self::legacy_weekly_table_name() => ['id', 'week_start_date'],
       self::import_batch_table_name() => ['id', 'created_at', 'status'],
       self::import_file_table_name() => ['id', 'batch_id', 'status'],
+      self::refund_webhook_table_name() => ['id', 'event_id', 'refund_id', 'status', 'amount_cents', 'event_created_at', 'payload_hash'],
     ];
     foreach ($required as $table => $columns) {
       $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table)));
@@ -321,6 +349,8 @@ class Store {
         if (!$wpdb->get_var("SHOW COLUMNS FROM `{$table}` LIKE '" . esc_sql($column) . "'") || $wpdb->last_error !== '') return false;
       }
     }
+    $unique_event_index = $wpdb->get_var("SHOW INDEX FROM `" . self::refund_webhook_table_name() . "` WHERE Key_name = 'event_id' AND Non_unique = 0");
+    if (!$unique_event_index || $wpdb->last_error !== '') return false;
     return true;
   }
 

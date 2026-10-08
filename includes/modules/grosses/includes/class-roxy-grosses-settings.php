@@ -41,7 +41,7 @@ class Settings {
   }
   public static function defaults(): array {
     return [
-      'square_environment'=>'production','square_access_token'=>'','square_location_ids'=>'',
+      'square_environment'=>'production','square_access_token'=>'','square_webhook_signature_key'=>'','square_location_ids'=>'',
       'report_timezone'=>wp_timezone_string()?:'America/Los_Angeles',
       'ticket_keywords'=>"ticket\nadmission",'exclude_keywords'=>"popcorn\nsoda\ndrink\ncandy\nmembership",
       'film_mappings'=>'','studio_mappings'=>'',
@@ -63,6 +63,7 @@ class Settings {
     $saved=get_option(self::OPTION_KEY,[]); if(!is_array($saved)) $saved=[];
     $all = wp_parse_args($saved,self::defaults());
     $all['square_access_token'] = self::decrypt_secret((string) ($saved['square_access_token'] ?? $all['square_access_token']));
+    $all['square_webhook_signature_key'] = self::decrypt_secret((string) ($saved['square_webhook_signature_key'] ?? ''));
     return $all;
   }
   public static function get(string $key,$default=''){ $all=self::get_all(); return array_key_exists($key,$all)?$all[$key]:$default; }
@@ -89,6 +90,7 @@ class Settings {
     add_settings_section('roxy_grosses_schedule','Schedule',fn()=>print('<p>Grosses automation runs every day at the selected time. Use the manual forms only for one-off testing or backfills.</p>'),'roxy-grosses');
     $fields=[
       'square_environment'=>['Square environment','roxy_grosses_square'],'square_access_token'=>['Square access token','roxy_grosses_square'],
+      'square_webhook_signature_key'=>['Square webhook signature key','roxy_grosses_square'],
       'square_location_ids'=>['Square location IDs','roxy_grosses_square'],'report_timezone'=>['Report timezone','roxy_grosses_square'],
       'ticket_keywords'=>['Ticket keywords','roxy_grosses_square'],'exclude_keywords'=>['Exclude keywords','roxy_grosses_square'],
       'film_mappings'=>['Film mappings','roxy_grosses_square'],'studio_mappings'=>['Studio overrides','roxy_grosses_square'],'recipient_emails'=>['Daily grosses recipient emails','roxy_grosses_email'],
@@ -113,10 +115,14 @@ class Settings {
     }
     $incoming_square_token = sanitize_text_field((string) ($input['square_access_token'] ?? ''));
     $previous_token=(string)($existing['square_access_token']??$d['square_access_token']);
+    $incoming_webhook_key = sanitize_text_field((string) ($input['square_webhook_signature_key'] ?? ''));
+    $previous_webhook_key=(string)($existing['square_webhook_signature_key']??'');
     try {
       $square_token=$incoming_square_token!=='' ? self::encrypt_secret($incoming_square_token) : $previous_token;
+      $webhook_key=$incoming_webhook_key!=='' ? self::encrypt_secret($incoming_webhook_key) : $previous_webhook_key;
       // Migrate legacy plaintext during a normal settings save, even if token is blank.
       if ($square_token!=='' && !str_starts_with($square_token,self::ENCRYPTION_PREFIX)) $square_token=self::encrypt_secret($square_token);
+      if ($webhook_key!=='' && !str_starts_with($webhook_key,self::ENCRYPTION_PREFIX)) $webhook_key=self::encrypt_secret($webhook_key);
     } catch (\Throwable $error) {
       add_settings_error(self::OPTION_KEY,'credential_encryption','Secure token storage failed. Existing settings and token were not changed.','error');
       return $existing;
@@ -124,6 +130,7 @@ class Settings {
     $sanitized=[
       'square_environment'=>in_array(($input['square_environment']??''),['production','sandbox'],true)?$input['square_environment']:$d['square_environment'],
       'square_access_token'=>$square_token,
+      'square_webhook_signature_key'=>$webhook_key,
       'square_location_ids'=>self::sanitize_line_list((string) ($input['square_location_ids']??$d['square_location_ids'])),
       'report_timezone'=>self::sanitize_timezone((string) ($input['report_timezone']??$d['report_timezone'])),
       'ticket_keywords'=>self::sanitize_line_list((string) ($input['ticket_keywords']??$d['ticket_keywords'])),
@@ -177,6 +184,10 @@ class Settings {
         $saved=get_option(self::OPTION_KEY,[]);
         if (!empty($saved['square_access_token']) && self::decrypt_secret((string)$saved['square_access_token'])==='') echo '<p class="description" style="color:#b32d2e">The saved Square token could not be read. Re-enter the token; the saved value has not been erased.</p>';
         echo '<input type="password" class="regular-text code" name="'.esc_attr($name).'" value="" autocomplete="off"'.(self::has_square_access_token() ? ' placeholder="Token saved - leave blank to keep current token"' : '').'><p class="description">Personal access token or OAuth token with Orders read access. Leave blank to keep the current token.</p>'; return;
+      case 'square_webhook_signature_key':
+        $saved=get_option(self::OPTION_KEY,[]);
+        $has_key=is_array($saved) && !empty($saved['square_webhook_signature_key']);
+        echo '<input type="password" class="regular-text code" name="'.esc_attr($name).'" value="" autocomplete="off"'.($has_key ? ' placeholder="Key saved - leave blank to keep current key"' : '').'><p class="description">Optional until you configure Square refund.updated webhooks. Stored encrypted; leave blank to retain it.</p><p class="description">Notification URL: <code>'.esc_html(rest_url('roxy/v1/square-refund-events')).'</code></p>'; return;
       case 'square_location_ids': case 'ticket_keywords': case 'exclude_keywords': case 'film_mappings': case 'studio_mappings': case 'email_body': case 'advertiser_email_body':
         $rows=$key==='film_mappings'?'8':'5';
         echo '<textarea class="large-text code" rows="'.esc_attr($rows).'" name="'.esc_attr($name).'">'.esc_textarea((string) $value).'</textarea>';
