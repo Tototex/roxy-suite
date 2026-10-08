@@ -10,7 +10,7 @@ function update_post_meta($id,$key,$value){$GLOBALS['meta'][$id][$key]=$value;re
 function delete_post_meta($id,$key){unset($GLOBALS['meta'][$id][$key]);return true;}
 function get_post_type($id){return isset($GLOBALS['meta'][$id])?'roxy_ticket':'';}
 function get_current_user_id(){return 9;} function current_time($format){return '2026-10-03 10:00:00';}
-function wc_get_order($id){return $GLOBALS['orders'][$id]??false;}
+function wc_get_order($id){if((int)($GLOBALS['order_read_fail_id']??0)===(int)$id)return false;if((int)($GLOBALS['order_read_throw_id']??0)===(int)$id)throw new RuntimeException('fixture order read failure');return $GLOBALS['orders'][$id]??false;}
 function wc_get_orders($args){
     $GLOBALS['order_queries'][]=$args;
     if (!empty($GLOBALS['order_query_throw'])) throw new RuntimeException('fixture order query failure');
@@ -135,6 +135,10 @@ $GLOBALS['order_query_fail_page']=2;$GLOBALS['cache']=[];$failed=false;
 try { roxy_will_call_get_list([8],['8'=>'General'],true); } catch (Throwable $e) { $failed=true; }
 unset($GLOBALS['order_query_fail_page']);
 check($failed && $GLOBALS['cache']===[],'later-page order query failure rejects the full Will Call list without caching partial results');
+$GLOBALS['order_read_fail_id']=401;$GLOBALS['cache']=[];$failed=false;
+try { roxy_will_call_get_list([8],['8'=>'General'],true); } catch (Throwable $e) { $failed=true; }
+unset($GLOBALS['order_read_fail_id']);
+check($failed && $GLOBALS['cache']===[],'order disappearing during page hydration rejects the full Will Call list without caching partial results');
 $GLOBALS['orders']=$saved_orders;
 check(roxy_will_call_cache_key([8],[8=>'General'])!==roxy_will_call_cache_key([8],[8=>'Renamed']),'cache identity includes ticket labels');
 $save=$GLOBALS['actions']['wp_ajax_roxy_will_call_save'];

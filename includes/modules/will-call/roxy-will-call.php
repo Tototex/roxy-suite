@@ -844,8 +844,13 @@ function roxy_will_call_get_list($product_ids, array $ticket_type_labels = [], b
   $page = 1;
   $expected_total = null;
   $expected_pages = null;
-  $order_ids = [];
-  $seen_order_ids = [];
+  $last_order_id = 0;
+  $processed_order_count = 0;
+  $product_lookup = array_fill_keys($product_ids, true);
+  $agg = [];
+  $total_qty = 0;
+  $total_revenue = 0.0;
+  $matching_order_count = 0;
   do {
     $page_result = wc_get_orders([
       'type' => 'shop_order',
@@ -886,93 +891,86 @@ function roxy_will_call_get_list($product_ids, array $ticket_type_labels = [], b
         throw new \RuntimeException('Will Call order pagination returned an invalid order identity. No partial list was cached.');
       }
       $order_id = (int) $order_id;
-      if (isset($seen_order_ids[$order_id])) {
-        throw new \RuntimeException('Will Call order pagination returned duplicate orders. Refresh before using Will Call.');
+      if ($order_id <= $last_order_id) {
+        throw new \RuntimeException('Will Call order pagination returned duplicate or out-of-order records. Refresh before using Will Call.');
       }
-      $seen_order_ids[$order_id] = true;
-      $order_ids[] = $order_id;
+      $last_order_id = $order_id;
+      $processed_order_count++;
+
+      $order = wc_get_order($order_id);
+      if (!is_object($order) || !($order instanceof WC_Order) || (isset($wpdb->last_error) && (string) $wpdb->last_error !== '')) {
+        throw new \RuntimeException('A paid order could not be read completely. Refresh before using Will Call.');
+      }
+      $items = $order->get_items('line_item');
+      if (!is_array($items) || (function_exists('is_wp_error') && is_wp_error($items))
+        || (isset($wpdb->last_error) && (string) $wpdb->last_error !== '')) {
+        throw new \RuntimeException('A paid order returned incomplete ticket items. Refresh before using Will Call.');
+      }
+      $matched_this_order = false;
+      foreach ($items as $item) {
+        if (!is_object($item) || !method_exists($item, 'get_product_id') || !method_exists($item, 'get_variation_id')
+          || !method_exists($item, 'get_quantity') || !method_exists($item, 'get_id') || !method_exists($item, 'get_total')
+          || !method_exists($item, 'get_total_tax') || !method_exists($item, 'get_taxes')) {
+          throw new \RuntimeException('A paid order returned incomplete ticket item data. Refresh before using Will Call.');
+        }
+        $pid = (int) $item->get_product_id();
+        $vid = (int) $item->get_variation_id();
+        if (!isset($product_lookup[$pid]) && !isset($product_lookup[$vid])) continue;
+
+        $qty = max(0, (int) $item->get_quantity() - (int) ceil(abs((float) $order->get_qty_refunded_for_item($item->get_id()))));
+        if ($qty <= 0) continue;
+        $matched_this_order = true;
+        $total_qty += $qty;
+
+        $line_total = (float) $item->get_total() - abs((float) $order->get_total_refunded_for_item($item->get_id()));
+        $line_tax = (float) $item->get_total_tax();
+        foreach ((array) ($item->get_taxes()['total'] ?? []) as $tax_id => $tax_amount) $line_tax -= abs((float) $order->get_tax_refunded_for_item($item->get_id(), $tax_id));
+        $total_revenue += ($line_total + $line_tax);
+
+        $first = trim((string) $order->get_billing_first_name());
+        $last = trim((string) $order->get_billing_last_name());
+        $email = strtolower(trim((string) $order->get_billing_email()));
+        $name = trim($first . ' ' . $last);
+        if ($name === '') $name = 'Unknown Name';
+        if ($email === '') $email = 'unknown-email';
+        $customer_key = roxy_will_call_customer_key($name, $email);
+
+        if (!isset($agg[$customer_key])) {
+          $agg[$customer_key] = [
+            'customer_key' => $customer_key,
+            'name' => $name,
+            'email' => $email,
+            'qty' => 0,
+            'ticket_types' => [],
+            'orders' => [],
+            'latest_order_ts' => 0,
+          ];
+        }
+
+        $agg[$customer_key]['qty'] += $qty;
+        $matched_product_id = isset($product_lookup[$pid]) ? $pid : $vid;
+        if ($matched_product_id <= 0) $matched_product_id = $pid;
+        $type_label = isset($ticket_type_labels[$matched_product_id]) ? (string) $ticket_type_labels[$matched_product_id] : '';
+        if ($type_label === '') {
+          $product = wc_get_product($matched_product_id);
+          $type_label = $product ? (string) $product->get_name() : 'Ticket';
+        }
+        if (!isset($agg[$customer_key]['ticket_types'][$type_label])) $agg[$customer_key]['ticket_types'][$type_label] = 0;
+        $agg[$customer_key]['ticket_types'][$type_label] += $qty;
+        $date_created = $order->get_date_created();
+        $ts = $date_created ? $date_created->getTimestamp() : 0;
+        $agg[$customer_key]['orders'][$order_id] = $date_created ? $date_created->date('Y-m-d H:i:s') : '';
+        if ($ts > (int) $agg[$customer_key]['latest_order_ts']) $agg[$customer_key]['latest_order_ts'] = $ts;
+      }
+      if (isset($wpdb->last_error) && (string) $wpdb->last_error !== '') {
+        throw new \RuntimeException('A paid order could not be fully reconciled. Refresh before using Will Call.');
+      }
+      if ($matched_this_order) $matching_order_count++;
     }
     $page++;
   } while ($page <= $expected_pages);
-  if (count($order_ids) !== $expected_total) {
+  if ($processed_order_count !== $expected_total) {
     throw new \RuntimeException('Will Call could not verify the complete order list. No partial list was cached.');
-  }
-
-  $product_lookup = array_fill_keys($product_ids, true);
-  $agg = [];
-  $total_qty = 0;
-  $total_revenue = 0.0;
-  $matching_order_count = 0;
-
-  foreach ($order_ids as $oid) {
-    $order = wc_get_order($oid);
-    if (!$order) continue;
-    if (class_exists('WC_Order_Refund') && ($order instanceof WC_Order_Refund)) continue;
-    if (!($order instanceof WC_Order)) continue;
-
-    $matched_this_order = false;
-
-    foreach ($order->get_items('line_item') as $item) {
-      $pid = (int) $item->get_product_id();
-      $vid = (int) $item->get_variation_id();
-      $matches = isset($product_lookup[$pid]) || isset($product_lookup[$vid]);
-      if (!$matches) continue;
-
-      $qty = max(0, (int) $item->get_quantity() - (int) ceil(abs((float) $order->get_qty_refunded_for_item($item->get_id()))));
-      if ($qty <= 0) continue;
-      $matched_this_order = true;
-      $total_qty += $qty;
-
-      $line_total = (float) $item->get_total() - abs((float) $order->get_total_refunded_for_item($item->get_id()));
-      $line_tax = (float) $item->get_total_tax();
-      foreach ((array) ($item->get_taxes()['total'] ?? []) as $tax_id => $tax_amount) $line_tax -= abs((float) $order->get_tax_refunded_for_item($item->get_id(), $tax_id));
-      $total_revenue += ($line_total + $line_tax);
-
-      $first = trim((string) $order->get_billing_first_name());
-      $last = trim((string) $order->get_billing_last_name());
-      $email = strtolower(trim((string) $order->get_billing_email()));
-      $name = trim($first . ' ' . $last);
-      if ($name === '') $name = 'Unknown Name';
-      if ($email === '') $email = 'unknown-email';
-      $customer_key = roxy_will_call_customer_key($name, $email);
-
-      if (!isset($agg[$customer_key])) {
-        $agg[$customer_key] = [
-          'customer_key' => $customer_key,
-          'name' => $name,
-          'email' => $email,
-          'qty' => 0,
-          'ticket_types' => [],
-          'orders' => [],
-          'latest_order_ts' => 0,
-        ];
-      }
-
-      $agg[$customer_key]['qty'] += $qty;
-      $matched_product_id = isset($product_lookup[$pid]) ? $pid : $vid;
-      if ($matched_product_id <= 0) {
-        $matched_product_id = $pid;
-      }
-      $type_label = isset($ticket_type_labels[$matched_product_id]) ? (string) $ticket_type_labels[$matched_product_id] : '';
-      if ($type_label === '') {
-        $product = wc_get_product($matched_product_id);
-        $type_label = $product ? (string) $product->get_name() : 'Ticket';
-      }
-      if (!isset($agg[$customer_key]['ticket_types'][$type_label])) {
-        $agg[$customer_key]['ticket_types'][$type_label] = 0;
-      }
-      $agg[$customer_key]['ticket_types'][$type_label] += $qty;
-      $date_created = $order->get_date_created();
-      $ts = $date_created ? $date_created->getTimestamp() : 0;
-      $agg[$customer_key]['orders'][(int) $oid] = $date_created ? $date_created->date('Y-m-d H:i:s') : '';
-      if ($ts > (int) $agg[$customer_key]['latest_order_ts']) {
-        $agg[$customer_key]['latest_order_ts'] = $ts;
-      }
-    }
-
-    if ($matched_this_order) {
-      $matching_order_count++;
-    }
   }
 
   $rows = array_values($agg);
