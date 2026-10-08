@@ -52,15 +52,29 @@ class FixtureDatabase {
     }
 }
 $GLOBALS['wpdb']=new FixtureDatabase;
+// Accept either an explicit baseline PHP path or a committed Git revision so
+// this parity test can run without a hand-created fixture file.
+$baseline_path = $argv[1] ?? '';
+$candidate_path = $argv[2] ?? '';
+if ($baseline_path === '--baseline-ref') {
+    $revision = $argv[2] ?? '';
+    $candidate_path = $argv[3] ?? '';
+    if (!preg_match('/^[A-Za-z0-9._\/-]{1,80}$/D', $revision)) throw new RuntimeException('Invalid baseline Git revision.');
+    $baseline_source = shell_exec('git show ' . escapeshellarg($revision . ':includes/class-roxy-suite-members-dashboard.php'));
+} else {
+    $baseline_source = $baseline_path !== '' ? file_get_contents($baseline_path) : false;
+}
+if (!is_string($baseline_source) || $baseline_source === '' || $candidate_path === '' || !is_file($candidate_path)) {
+    throw new RuntimeException('Usage: members-dashboard-regression.php baseline.php candidate.php, or --baseline-ref <revision> candidate.php');
+}
 // The baseline intentionally loads all metadata; exempt that original path only.
-$baseline_source=file_get_contents($argv[1]);
 $baseline_source=str_replace('update_meta_cache(', 'fixture_baseline_meta_cache(', $baseline_source);
 function fixture_baseline_meta_cache(...$args) {}
 // Temporary fixture artifact is outside the repository; deleted immediately after parity.
 $baseline=tempnam(sys_get_temp_dir(),'roxy-member-baseline-');
 try {
     file_put_contents($baseline,$baseline_source);
-    $args=[$baseline,$argv[2]];
+    $args=[$baseline,$candidate_path];
     require __DIR__.'/members-dashboard-parity.php';
     $filters=['search'=>'','status'=>'','photo'=>'','trade'=>'all'];
     foreach([0,-9,'bad',[]] as $invalid){$_GET=['member_page'=>$invalid];if($new->invoke(null,$filters)['page']!==1)throw new RuntimeException('Invalid page not normalized');}
