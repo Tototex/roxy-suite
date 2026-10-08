@@ -125,6 +125,7 @@ $check($after_delete['sold_qty']===3 && $after_delete['refunded_revenue']===0.0 
 
 // A failed legacy read must not complete the scan or replace good cached totals.
 $GLOBALS['sales_fixture_orders'] = [];
+unset($GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete']);
 $GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats'] = [
   'cache_version'=>3, 'sold_qty'=>7, 'paid_qty'=>7, 'gross_revenue'=>70.0,
   'refunded_revenue'=>0.0, 'net_revenue'=>70.0, 'order_count'=>2,
@@ -134,12 +135,7 @@ $GLOBALS['sales_fixture_legacy_failure_only'] = true;
 $failed_refresh = $sales::refresh_showing_stats($showing_id);
 $check(!empty($failed_refresh['read_error']) && $failed_refresh['sold_qty']===7
   && $GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats']['sold_qty']===7,
-  'failed legacy order query preserves last-known-good totals and marks the read unavailable: ' . json_encode([
-    'returned'=>$failed_refresh,
-    'stored'=>$GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats'] ?? null,
-    'legacy_complete'=>$GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete'] ?? null,
-    'query'=>$GLOBALS['sales_fixture_query'] ?? null,
-  ]));
+  'failed legacy order query preserves last-known-good totals and marks the read unavailable');
 $check(!isset($GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete'])
   && $sales::sold_qty_for_showing($showing_id)===PHP_INT_MAX,
   'failed legacy order query cannot mark its scan complete or let capacity treat unreadable sales as zero');
