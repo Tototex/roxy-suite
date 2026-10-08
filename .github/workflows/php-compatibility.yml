@@ -28,13 +28,13 @@ jobs:
           php-version: ${{ matrix.php }}
           coverage: none
 
-      - name: Lint all plugin runtime PHP files
+      - name: Lint all tracked PHP files
         shell: bash
         run: |
           set -euo pipefail
           while IFS= read -r file; do
             php -l "$file" >/dev/null
-          done < <(git ls-files '*.php' ':!:tests/**' ':!:tools/**')
+          done < <(git ls-files '*.php')
 
       - name: Run showing selector regression
         run: php tests/showing-selection-regression.php "$GITHUB_WORKSPACE"
