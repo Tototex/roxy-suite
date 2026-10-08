@@ -18,7 +18,7 @@ class Admin {
     private static function dashboard(): void {
         $last_pull = Store::latest_run('pull');
         $pull_text = $last_pull ? $last_pull['created_at'] . ' — ' . ucfirst((string) $last_pull['status']) . ': ' . $last_pull['message'] : 'No Square pull has run yet.';
-        echo '<p>Pull Square inventory, review suggested quantities, then open a vendor order for final edits. Orders already submitted or ordered cannot be submitted again until Square reports a stock increase.</p><p><strong>Last Square pull:</strong> ' . esc_html($pull_text) . '</p><form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">' . wp_nonce_field('roxy_inventory_pull','_wpnonce',true,false) . '<input type="hidden" name="action" value="roxy_inventory_pull">' . get_submit_button('Pull Inventory from Square','primary','submit',false) . '</form>';
+        echo '<p>Pull Square inventory, review suggested quantities, then open a vendor order for final edits. To release an ordered vendor for reordering, employees should record deliveries with Square’s Receive Stock action. Sales, recounts, and manual corrections will not release the order.</p><p><strong>Last Square pull:</strong> ' . esc_html($pull_text) . '</p><form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">' . wp_nonce_field('roxy_inventory_pull','_wpnonce',true,false) . '<input type="hidden" name="action" value="roxy_inventory_pull">' . get_submit_button('Pull Inventory from Square','primary','submit',false) . '</form>';
         $vendors = Store::vendors(); $products = Store::products();
         echo '<h2>Suggested orders</h2><table class="widefat striped"><thead><tr><th>Vendor</th><th>Items</th><th>Estimated total</th><th>Minimum</th><th>Status</th><th>Action</th></tr></thead><tbody>';
         foreach ($vendors as $vendor) {
@@ -47,7 +47,7 @@ class Admin {
         if ($open) {
             $status = (string) $open['status'];
             $status_text = $status === 'pending_manager' ? 'Submission awaiting review' : ($status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'ordered' ? 'Ordered' : 'Order in review'));
-            echo '<div class="notice notice-warning inline"><p>This vendor already has an open order: <strong>' . esc_html($status_text) . '</strong>. A new order cannot be submitted until a stock increase is detected.</p><p><a class="button" href="' . esc_url(add_query_arg(['tab'=>'history','order_id'=>(int) $open['id']], self::url('history'))) . '">View existing order</a></p></div>';
+            echo '<div class="notice notice-warning inline"><p>This vendor already has an open order: <strong>' . esc_html($status_text) . '</strong>. A new order cannot be submitted until Square records a received-stock adjustment for one of the ordered items.</p><p><a class="button" href="' . esc_url(add_query_arg(['tab'=>'history','order_id'=>(int) $open['id']], self::url('history'))) . '">View existing order</a></p></div>';
         }
         echo '<h2>' . esc_html($name) . ' order review</h2><p>Edit quantities before submitting. Quantities must be whole order units, and the vendor minimum must be met.</p>';
         $direct = Settings::get('direct_vendor_sending_enabled') === '1' && $vendor['order_method'] === 'email';
@@ -122,7 +122,8 @@ class Admin {
             $quantity = (float) ($line['quantity'] ?? 0);
             $unit_cost = (float) ($line['unit_cost'] ?? 0);
             $checked = !empty($line['added_to_cart']);
-            if (!empty($line['stock_increase_detected_at'])) echo '<tr><td colspan="6"><small>Stock increase observed for '.esc_html((string)($line['product']??'')).': '.esc_html((string)$line['stock_increase_from']).' → '.esc_html((string)$line['stock_increase_to']).' at '.esc_html((string)$line['stock_increase_detected_at']).'. This unlocks reordering; it does not confirm the whole order arrived.</small></td></tr>';
+            if (!empty($line['square_receipt_event_id'])) echo '<tr><td colspan="6"><small>Square recorded a receipt of '.esc_html((string)($line['square_receipt_quantity']??'')).' units for '.esc_html((string)($line['product']??'')).' at '.esc_html((string)($line['square_receipt_created_at']??$line['stock_increase_detected_at']??'')).'. This receipt released the vendor for a new order; it does not confirm the whole order arrived.</small></td></tr>';
+            elseif (!empty($line['stock_increase_detected_at'])) echo '<tr><td colspan="6"><small>Legacy stock increase observed for '.esc_html((string)($line['product']??'')).': '.esc_html((string)($line['stock_increase_from']??'')).' → '.esc_html((string)($line['stock_increase_to']??'')).' at '.esc_html((string)$line['stock_increase_detected_at']).'. This unlocks reordering; it does not confirm the whole order arrived.</small></td></tr>';
             if (!empty($line['cart_progress_at'])) echo '<tr><td colspan="6"><small>Cart progress last changed at '.esc_html((string)$line['cart_progress_at']).' by user #'.esc_html((string)($line['cart_progress_by']??'')).'.</small></td></tr>';
             $cost_known = self::cost_is_known($line);
             $cost_label = ($line['unit_cost_status'] ?? '') === 'free' ? 'Free' : ($cost_known ? '$' . number_format($unit_cost,2) . ' (' . ucfirst((string)($line['unit_cost_status'] ?? 'estimate')) . ')' : 'Unknown');

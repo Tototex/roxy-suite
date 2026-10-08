@@ -325,6 +325,9 @@ class Store {
         self::checked_read();
         return is_array($row) ? $row : null;
     }
+    public static function orders_waiting_for_receipt(): array {
+        return self::rows("SELECT id,payload,created_at FROM " . self::orders_table() . " WHERE status='ordered' ORDER BY id");
+    }
 
     public static function update_order_status(int $id, string $status): bool {
         global $wpdb;
@@ -357,12 +360,12 @@ class Store {
         return is_array($row) ? $row : null;
     }
 
-    public static function mark_stock_increases(array $previous_stock = []): int {
-        return self::transaction(static function () use ($previous_stock) { return self::mark_stock_increases_locked($previous_stock); });
+    public static function mark_stock_increases(array $previous_stock = [], array $receipt_events = []): int {
+        return self::transaction(static function () use ($previous_stock,$receipt_events) { return self::mark_stock_increases_locked($previous_stock,$receipt_events); });
     }
-    private static function mark_stock_increases_locked(array $previous_stock): int {
+    private static function mark_stock_increases_locked(array $previous_stock,array $receipt_events): int {
         global $wpdb;
-$products = self::rows("SELECT square_variation_id,name,on_hand FROM " . self::products_table());
+        $products = self::rows("SELECT square_variation_id,name,on_hand FROM " . self::products_table());
         $current = [];
         $by_name = [];
         foreach ($products as $product) {
@@ -371,11 +374,13 @@ $products = self::rows("SELECT square_variation_id,name,on_hand FROM " . self::p
             if (array_key_exists($name_key,$by_name)) $by_name[$name_key]=null; // Ambiguous names cannot establish receipt identity.
             else $by_name[$name_key] = ['square_variation_id' => (string) $product['square_variation_id'], 'on_hand' => (float) $product['on_hand']];
         }
-        $orders = self::rows("SELECT id,payload FROM " . self::orders_table() . " WHERE status='ordered'");
+        $orders = self::rows("SELECT id,payload,created_at FROM " . self::orders_table() . " WHERE status='ordered'");
         $marked = 0;
         foreach ($orders as $order) {
             $lines = json_decode((string) ($order['payload'] ?? ''), true);
             if (!is_array($lines)) continue;
+            try { $order_created_ts=(new \DateTimeImmutable((string)($order['created_at']??''),wp_timezone()))->getTimestamp(); }
+            catch (\Throwable $e) { $order_created_ts=PHP_INT_MAX; }
             $increased = false; $changed = false;
             foreach ($lines as &$line) {
                 $variation_id = (string) ($line['square_variation_id'] ?? '');
@@ -390,11 +395,28 @@ $products = self::rows("SELECT square_variation_id,name,on_hand FROM " . self::p
                 }
                 if ($variation_id !== '' && array_key_exists($variation_id, $current) && array_key_exists('on_hand', $line)) {
                     $before = $previous_stock[$variation_id] ?? ($line['last_observed_on_hand'] ?? $line['on_hand']);
-                    if ($current[$variation_id] > (float) $before) {
+                    $receipt = $receipt_events[$variation_id] ?? null;
+                    $receipt_created_at = is_array($receipt) ? ($receipt['created_at'] ?? null) : null;
+                    $receipt_occurred_at = is_array($receipt) ? ($receipt['occurred_at'] ?? null) : null;
+                    if (is_array($receipt)
+                        && in_array($receipt['from_state'] ?? '', ['NONE','UNLINKED_RETURN'], true)
+                        && ($receipt['to_state'] ?? '') === 'IN_STOCK'
+                        && ($receipt['reason_type'] ?? '') === 'RECEIVED'
+                        && is_numeric($receipt['quantity'] ?? null) && is_finite((float)$receipt['quantity']) && (float)$receipt['quantity'] > 0
+                        && is_string($receipt['id'] ?? null) && $receipt['id'] !== ''
+                        && is_string($receipt_created_at) && strtotime($receipt_created_at)!==false
+                        && is_string($receipt_occurred_at) && strtotime($receipt_occurred_at)!==false
+                        && strtotime($receipt_created_at)>=$order_created_ts
+                        && strtotime($receipt_occurred_at)>=$order_created_ts) {
                         $increased = true;
-                        $line['stock_increase_detected_at'] = current_time('mysql');
+                        $line['stock_increase_detected_at'] = $receipt_created_at;
                         $line['stock_increase_from'] = (float) $before;
                         $line['stock_increase_to'] = $current[$variation_id];
+                        $line['square_receipt_event_id'] = (string)$receipt['id'];
+                        $line['square_receipt_quantity'] = (float)$receipt['quantity'];
+                        $line['square_receipt_created_at'] = $receipt_created_at;
+                        $line['square_receipt_occurred_at'] = $receipt_occurred_at;
+                        $line['square_receipt_reason'] = 'RECEIVED';
                     }
                     $line['last_observed_on_hand'] = $current[$variation_id];
                     $changed = true;

@@ -43,7 +43,10 @@ try {
     $check((float)$wpdb->get_var("SELECT minimum_amount FROM `$vendors` WHERE id=$vendor_id")===25.0,'existing vendor saves under ownership');
     $failed=false;try{$store::update_vendor(999999999,['minimum_amount'=>99]);}catch(Throwable $e){$failed=true;}
     $check($failed,'missing vendor update cannot report a successful save');
-    $check($store::mark_stock_increases(['fixture-v'=>20])===1 && $store::order($id)['status']==='stock_increased','real partial arrival below submission snapshot detected');
+    $receipt_time=(new DateTimeImmutable(current_time('mysql'),wp_timezone()))->modify('+1 minute')->format('c');
+    $receipt=['id'=>'fixture-receipt','quantity'=>5,'from_state'=>'NONE','to_state'=>'IN_STOCK','reason_type'=>'RECEIVED','created_at'=>$receipt_time,'occurred_at'=>$receipt_time];
+    $check($store::mark_stock_increases(['fixture-v'=>20])===0 && $store::order($id)['status']==='ordered','real order is not reset by a net stock increase alone');
+    $check($store::mark_stock_increases(['fixture-v'=>20],['fixture-v'=>$receipt])===1 && $store::order($id)['status']==='stock_increased','real explicit partial Square receipt releases order');
     $prior=$store::order($id)['payload'];
     $check(!$store::update_order_payload($id,[$line],'stale'),'real stale progress rejected');
     $failed=false;

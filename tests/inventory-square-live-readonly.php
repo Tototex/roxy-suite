@@ -42,6 +42,7 @@ try {
             public static function upsert_product($p){++self::$writes;}
             public static function deactivate_missing($ids){return 0;}
             public static function mark_stock_increases($s){return 0;}
+            public static function orders_waiting_for_receipt(){return [];}
             public static function log(...$args){return true;}
         }
     ');
