@@ -22,6 +22,22 @@ final class RefundSnapshot {
     $this->payment_refunds = $payment_refunds;
   }
 
+  /** Create a read-only financial projection from the complete Square payment-refund feed. */
+  public static function from_financial_refund_feed(array $refunds): self {
+    if (!self::is_list($refunds)) throw new \RuntimeException('Square returned an invalid financial refund feed.');
+    $indexed = [];
+    foreach ($refunds as $refund) {
+      if (!is_array($refund) || !is_string($refund['id'] ?? null) || $refund['id'] === ''
+        || strlen($refund['id']) > 255 || isset($indexed[$refund['id']])
+        || !is_string($refund['location_id'] ?? null) || $refund['location_id'] === ''
+        || !in_array($refund['status'] ?? '', ['PENDING', 'COMPLETED', 'REJECTED', 'FAILED'], true)) {
+        throw new \RuntimeException('Square returned a malformed or duplicate financial refund.');
+      }
+      $indexed[$refund['id']] = $refund;
+    }
+    return new self([], [], $indexed);
+  }
+
   public static function load(string $earliest_sale_date, ?\DateTimeImmutable $now = null, ?float $deadline = null): self {
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $start = \DateTimeImmutable::createFromFormat('!Y-m-d', $earliest_sale_date, $timezone);
@@ -124,18 +140,19 @@ final class RefundSnapshot {
     return new self($returns, $sources, $refund_records);
   }
 
-  /** Return-linked completed refunds as dated cash-out events; separate from sale-day ticket adjustments. */
-  public function completed_return_financial_refunds(): array {
+  /** Completed refunds as dated cash-out events; separate from sale-day ticket adjustments. */
+  public function completed_financial_refunds(): array {
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $events = [];
     foreach ($this->payment_refunds as $refund_id => $refund) {
       if (($refund['status'] ?? '') !== 'COMPLETED') continue;
       if (($refund['id'] ?? null) !== $refund_id
         || !is_string($refund['payment_id'] ?? null) || $refund['payment_id'] === ''
-        || !is_string($refund['order_id'] ?? null) || $refund['order_id'] === ''
         || !is_string($refund['location_id'] ?? null) || $refund['location_id'] === '') {
         throw new \RuntimeException('A completed Square refund is missing a stable financial identity.');
       }
+      $order_id = $refund['order_id'] ?? null;
+      if ($order_id !== null && (!is_string($order_id) || $order_id === '')) throw new \RuntimeException('A completed Square refund has an invalid order identity.');
       $money = $refund['amount_money'] ?? null;
       if (!is_array($money) || !is_int($money['amount'] ?? null) || $money['amount'] < 0 || ($money['currency'] ?? null) !== 'USD') {
         throw new \RuntimeException('A completed Square refund has an invalid amount or unsupported currency.');
@@ -151,7 +168,7 @@ final class RefundSnapshot {
       $events[] = [
         'refund_id' => $refund_id,
         'payment_id' => $refund['payment_id'],
-        'order_id' => $refund['order_id'],
+        'order_id' => $order_id,
         'location_id' => $refund['location_id'],
         'amount_cents' => $money['amount'],
         'currency' => 'USD',
@@ -161,6 +178,11 @@ final class RefundSnapshot {
     }
     usort($events, static fn(array $a, array $b): int => [$a['refund_updated_at'], $a['refund_id']] <=> [$b['refund_updated_at'], $b['refund_id']]);
     return $events;
+  }
+
+  /** Backward-compatible name for return-linked callers. */
+  public function completed_return_financial_refunds(): array {
+    return $this->completed_financial_refunds();
   }
 
   /** Adjust quantities only. Never use these copied orders for cash arithmetic. */
