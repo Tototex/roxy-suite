@@ -20,6 +20,11 @@ class Eligibility {
     if ($id <= 0 || get_post_type($id) !== CPT::POST_TYPE) return null;
 
     $start_raw = (string) get_post_meta($id, '_roxy_start', true);
+    return self::local_datetime_timestamp($start_raw);
+  }
+
+  /** Parse an exact supported site-local date/time without normalizing invalid values. */
+  public static function local_datetime_timestamp(string $start_raw): ?int {
     if (trim($start_raw) === '') return null;
 
     $timezone = function_exists('wp_timezone') ? wp_timezone() : new \DateTimeZone(date_default_timezone_get());

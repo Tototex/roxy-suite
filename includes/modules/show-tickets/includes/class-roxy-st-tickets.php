@@ -370,10 +370,10 @@ class Tickets {
     foreach ($posts as $post) {
       $showing_id = (int) $post->ID;
       if (get_post_meta($showing_id, '_roxy_pricing_profile', true) === 'free_event') continue;
-      $start = (string) get_post_meta($showing_id, '_roxy_start', true);
+      $start_timestamp = Eligibility::showing_start_timestamp($showing_id);
       $label = get_the_title($showing_id);
-      if ($start !== '') {
-        $label .= ' — ' . date_i18n('M j, Y g:ia', strtotime($start));
+      if ($start_timestamp !== null) {
+        $label .= ' — ' . wp_date('M j, Y g:ia', $start_timestamp);
       }
       $out[] = [
         'id' => $showing_id,
@@ -403,7 +403,7 @@ class Tickets {
       return 0;
     }
 
-    $now = current_time('timestamp');
+    $now = current_time('timestamp', true);
     $best_id = 0;
     $best_distance = null;
 
@@ -414,10 +414,8 @@ class Tickets {
       if ($start_raw === '') {
         continue;
       }
-      $start_ts = strtotime($start_raw);
-      if (!$start_ts) {
-        continue;
-      }
+      $start_ts = Eligibility::showing_start_timestamp($showing_id);
+      if ($start_ts === null) continue;
 
       $delta = $start_ts - $now;
       if ($delta < -3600 || $delta > 4 * HOUR_IN_SECONDS) {
@@ -749,18 +747,9 @@ class Tickets {
   }
 
   private static function ticket_showing_when_label(string $start): string {
-    $start = trim($start);
-    if ($start === '') {
-      return '';
-    }
-
-    try {
-      $dt = new \DateTimeImmutable($start, wp_timezone());
-    } catch (\Exception $e) {
-      return $start;
-    }
-
-    return wp_date('l, F j, Y \\a\\t g:i A', $dt->getTimestamp(), wp_timezone());
+    $timestamp = Eligibility::local_datetime_timestamp(trim($start));
+    if ($timestamp === null) return '';
+    return wp_date('l, F j, Y \\a\\t g:i A', $timestamp);
   }
 
   public static function render_door_mode_page(bool $wrap = true): void {

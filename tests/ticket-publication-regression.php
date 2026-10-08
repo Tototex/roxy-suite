@@ -63,7 +63,7 @@ class WP_Query {
     }
 }
 function check($ok,$label){if(!$ok)throw new RuntimeException($label); echo "PASS: $label\n";}
-require $fixture.'class-roxy-st-cpt.php'; require $fixture.'class-roxy-st-products.php'; require $fixture.'class-roxy-st-eligibility.php'; require $fixture.'class-roxy-st-frontend.php';
+require $fixture.'class-roxy-st-cpt.php'; require $fixture.'class-roxy-st-products.php'; require $fixture.'class-roxy-st-eligibility.php'; require $fixture.'class-roxy-st-tickets.php'; require $fixture.'class-roxy-st-frontend.php';
 \RoxyST\Eligibility::init(); \RoxyST\Products::init();
 check(isset($GLOBALS['hooks']['woocommerce_is_purchasable'],$GLOBALS['hooks']['woocommerce_checkout_process'],$GLOBALS['hooks']['woocommerce_check_cart_items'],$GLOBALS['hooks']['transition_post_status'],$GLOBALS['hooks']['before_delete_post']), 'all managed publication and checkout hooks registered');
 $GLOBALS['types']=[1=>'roxy_showing',101=>'product',102=>'product',103=>'product',200=>'product'];
@@ -153,6 +153,8 @@ check(is_wp_error(\RoxyST\Eligibility::product_error(101)) && \RoxyST\Eligibilit
 check(!isset($GLOBALS['transients']['roxy_st_sync_1']),'malformed showing date blocks ticket product synchronization without acquiring a sync lock');
 $meta_title=new ReflectionMethod(\RoxyST\Frontend::class,'meta_title');$meta_title->setAccessible(true);
 check($meta_title->invoke(null,1)==='Fixture showing','malformed showing date is omitted from customer-facing SEO title');
+$door_label=new ReflectionMethod(\RoxyST\Tickets::class,'ticket_showing_when_label');$door_label->setAccessible(true);
+check($door_label->invoke(null,'2026-02-30T19:30')==='','malformed legacy showing date is omitted from ticket date labels');
 $GLOBALS['meta'][1]['_roxy_start']=current_datetime()->modify('-90 minutes')->format('Y-m-d\TH:i');
 $GLOBALS['meta'][1]['_roxy_duration_minutes']='60';
 check(is_wp_error(\RoxyST\Eligibility::product_error(101)),'ended live showing is no longer purchasable');
