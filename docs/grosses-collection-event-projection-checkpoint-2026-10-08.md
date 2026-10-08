@@ -27,3 +27,9 @@ Scope: read-only event normalization and live payment-gateway discovery only.
 ## Still open under G2
 
 These projections are not yet called by a ledger or report. Still needed: durable provenance/idempotent collection and refund event storage, historical backfill review, exact versus proxy refund completion dating, payment-provider reconciliation, custom/exchange/manual adjustments, original-sale-day movie corrections across all report builders, and read-only end-to-end reconciliation against representative Woo/Square records. Do not treat this checkpoint as G2 resolution or as authorization to rewrite historical reports.
+
+## Daily cashflow aggregation follow-up
+
+Commit `64086df` adds `CashflowProjection::daily_totals()` as a pure, non-persisting aggregation seam. It keeps collection dates separate from refund dates, reports source-specific and combined USD cents, and rejects malformed lists, duplicate typed identities, invalid calendar dates/currencies/amounts, and integer overflow. The test fixture confirms that Square collections and Woo collections are not conflated, while each refund reduces financial net on its own refund date. It does not alter studio nominal ticket reports or rewrite original sale dates.
+
+Hosted workflow [37744106699](https://github.com/Tototex/roxy-suite/actions/runs/37744106699) passed PHP 8.0–8.4 syntax jobs and the PHP 8.3 isolated cross-module regression suite, including the expanded refund snapshot regression. Local PHP is unavailable; `git diff --check` passed before commit. This remains an unintegrated projection: no database writes, dashboard changes, historical backfill, or live deployment.
