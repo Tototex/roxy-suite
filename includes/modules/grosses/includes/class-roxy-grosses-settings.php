@@ -669,11 +669,7 @@ class Settings {
     ], static function ($value) {
       return $value !== null && $value !== '';
     });
-    if ($success_raw === 'success') {
-      $log_filters['success'] = true;
-    } elseif ($success_raw === 'failed') {
-      $log_filters['success'] = false;
-    }
+    if (in_array($success_raw, ['review', 'success', 'failed'], true)) $log_filters['result'] = $success_raw;
     $total_logs = Store::count_logs($log_filters);
     $logs = Store::list_logs($log_filters, $per_page, ($page_number - 1) * $per_page);
     $event_types = ['anomaly','send_advertiser_summary','send_live_report','send_report','send_saved_report','sync_tables','scheduled_sync','save_draft','import'];
@@ -693,6 +689,7 @@ class Settings {
     echo '</select></div>';
     echo '<div><label><strong>Result</strong></label><br><select name="log_success">';
     echo '<option value="">All results</option>';
+    echo '<option value="review" '.selected($success_raw, 'review', false).'>Review</option>';
     echo '<option value="success" '.selected($success_raw, 'success', false).'>Success</option>';
     echo '<option value="failed" '.selected($success_raw, 'failed', false).'>Failed</option>';
     echo '</select></div>';

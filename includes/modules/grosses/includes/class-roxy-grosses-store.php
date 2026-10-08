@@ -2439,7 +2439,14 @@ class Store {
       $params[] = $event_type;
     }
 
-    if (array_key_exists('success', $filters) && $filters['success'] !== '' && $filters['success'] !== null) {
+    $result = (string) ($filters['result'] ?? '');
+    if ($result === 'review') {
+      $where[] = "AND event_type = 'anomaly'";
+    } elseif ($result === 'success') {
+      $where[] = "AND success = 1 AND event_type <> 'anomaly'";
+    } elseif ($result === 'failed') {
+      $where[] = "AND success = 0 AND event_type <> 'anomaly'";
+    } elseif (array_key_exists('success', $filters) && $filters['success'] !== '' && $filters['success'] !== null) {
       $where[] = 'AND success = %d';
       $params[] = (int) ((bool) $filters['success']);
     }

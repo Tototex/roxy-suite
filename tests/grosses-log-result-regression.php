@@ -1,6 +1,7 @@
 <?php
 define('ABSPATH', __DIR__);
 require dirname(__DIR__) . '/includes/modules/grosses/includes/class-roxy-grosses-settings.php';
+require dirname(__DIR__) . '/includes/modules/grosses/includes/class-roxy-grosses-store.php';
 
 $cases = [
     [['event_type' => 'anomaly', 'success' => 1], 'Review'],
@@ -13,3 +14,19 @@ foreach ($cases as $index => [$row, $expected]) {
     if ($actual !== $expected) throw new RuntimeException('Grosses log result case ' . ($index + 1) . ' returned ' . $actual . ', expected ' . $expected);
 }
 echo count($cases) . " Grosses log result checks passed.\n";
+
+$where = new ReflectionMethod('RoxyGrosses\\Store', 'log_where_sql');
+$where->setAccessible(true);
+$sql_for = static function (array $filters) use ($where): string {
+    return $where->invoke(null, $filters)[0];
+};
+foreach ([
+    ['result' => 'review', 'expected' => "event_type = 'anomaly'"],
+    ['result' => 'success', 'expected' => "success = 1 AND event_type <> 'anomaly'"],
+    ['result' => 'failed', 'expected' => "success = 0 AND event_type <> 'anomaly'"],
+] as $filter) {
+    if (!str_contains($sql_for(['result' => $filter['result']]), $filter['expected'])) {
+        throw new RuntimeException('Grosses result filter ' . $filter['result'] . ' did not match its displayed status semantics.');
+    }
+}
+echo "3 Grosses log result-filter checks passed.\n";
