@@ -715,19 +715,41 @@ class Health {
         $latest_log_status = self::WARN;
         $latest_log_note = '';
 
-        if (self::table_exists($t_logs)) {
-            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $latest_log = $wpdb->get_row("SELECT event_type, mode, success, created_at, message FROM `{$t_logs}` ORDER BY id DESC LIMIT 1", ARRAY_A);
-            if (is_array($latest_log) && $latest_log) {
+        try {
+            $wpdb->last_error = '';
+            $logs_exist = self::table_exists($t_logs);
+            if ($wpdb->last_error !== '') throw new \RuntimeException('Grosses log table could not be checked.');
+            if ($logs_exist) {
+                $wpdb->last_error = '';
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $latest_log = $wpdb->get_row("SELECT event_type, mode, success, created_at, message FROM `{$t_logs}` ORDER BY id DESC LIMIT 1", ARRAY_A);
+                if ($wpdb->last_error !== '' || (!is_array($latest_log) && $latest_log !== null)) {
+                    throw new \RuntimeException('Grosses log history could not be read.');
+                }
+            }
+            if (isset($latest_log)) {
+                $required_log_fields = ['event_type', 'mode', 'success', 'created_at', 'message'];
+                foreach ($required_log_fields as $field) {
+                    if (!array_key_exists($field, $latest_log) || !is_string($latest_log[$field]) && $field !== 'success') {
+                        throw new \RuntimeException('Grosses log row is incomplete.');
+                    }
+                }
+                if (!in_array($latest_log['success'], [0, 1, '0', '1'], true)) {
+                    throw new \RuntimeException('Grosses log outcome is malformed.');
+                }
                 $latest_log_detail = trim(sprintf(
                     '%s (%s) at %s',
-                    (string) ($latest_log['event_type'] ?? 'log'),
-                    (string) ($latest_log['mode'] ?? 'n/a'),
-                    (string) ($latest_log['created_at'] ?? 'unknown time')
+                    $latest_log['event_type'],
+                    $latest_log['mode'],
+                    $latest_log['created_at']
                 ));
-                $latest_log_status = !empty($latest_log['success']) ? self::PASS : self::WARN;
-                $latest_log_note = (string) ($latest_log['message'] ?? '');
+                $latest_log_status = in_array($latest_log['success'], [1, '1'], true) ? self::PASS : self::WARN;
+                $latest_log_note = $latest_log['message'];
             }
+        } catch (\Throwable $error) {
+            $latest_log_detail = 'Log history unavailable';
+            $latest_log_status = self::WARN;
+            $latest_log_note = 'The latest Grosses log result could not be verified; this is not an empty or successful log history.';
         }
 
         if ($sched_enabled) {

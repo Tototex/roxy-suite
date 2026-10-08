@@ -20,6 +20,8 @@ final class HealthRecordFixture {
     public bool $count_error = false;
     public bool $lookup_error = false;
     public bool $throws = false;
+    public $log_row = null;
+    public bool $log_error = false;
     public function prepare($sql, ...$args) { return str_replace('%s', "'" . $args[0] . "'", $sql); }
     public function get_var($sql) {
         if ($this->throws) throw new RuntimeException('fixture SQL exception');
@@ -30,6 +32,10 @@ final class HealthRecordFixture {
         }
         if ($this->count_error) $this->last_error = 'fixture count failure';
         return $this->count_result ?? $this->count;
+    }
+    public function get_row($sql, $format) {
+        if ($this->log_error) $this->last_error = 'fixture log failure';
+        return $this->log_row;
     }
 }
 $GLOBALS['wpdb'] = new HealthRecordFixture();
@@ -80,6 +86,24 @@ foreach ([false, 'unknown', '-1', '1.5', '99999999999999999999'] as $bad_count) 
     $check($event_booking()['detail'] === 'Unavailable', 'malformed/overflow booking count is unavailable');
 }
 $wpdb->count_result = null;
+$grosses_log_item = static function () use ($call) {
+    $items = $call('functional_grosses');
+    foreach ($items as $item) if ($item['label'] === 'Latest log event') return $item;
+    throw new RuntimeException('Latest Grosses log health item missing.');
+};
+$wpdb->log_row = null;
+$check($grosses_log_item()['detail'] === 'No logs found', 'verified empty Grosses logs remain a truthful empty result');
+$wpdb->log_error = true;
+$log_unavailable = $grosses_log_item();
+$check($log_unavailable['status'] === 'warn' && $log_unavailable['detail'] === 'Log history unavailable', 'Grosses log SQL failure cannot appear as empty/successful history');
+$wpdb->log_error = false;
+$wpdb->log_row = false;
+$check($grosses_log_item()['detail'] === 'Log history unavailable', 'malformed Grosses log query result is unavailable');
+$wpdb->log_row = ['event_type'=>'sync','mode'=>'auto','success'=>true,'created_at'=>'2026-10-08 12:00:00','message'=>''];
+$check($grosses_log_item()['detail'] === 'Log history unavailable', 'malformed Grosses log success flag is not accepted');
+$wpdb->log_row['success'] = 1;
+$check($grosses_log_item()['status'] === 'pass', 'verified successful Grosses log remains green');
+$wpdb->log_row = null;
 $GLOBALS['posts_error'] = true;
 $check($call('functional_requested_showings')[0]['status'] === 'warn', 'failed request query not empty list');
 $GLOBALS['posts_error'] = false;
