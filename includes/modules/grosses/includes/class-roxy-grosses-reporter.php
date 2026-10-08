@@ -1798,6 +1798,8 @@ class Reporter {
     $provisional = [];
     $eligible_cents = 0;
     $locked_cents = 0;
+    $unmatched_lines = 0;
+    $unmatched_cents = 0;
     foreach ($reports as $entry_id => $report) {
       if (!empty($report['_is_locked'])) {
         $fixed = round((float) ($report['concessions_total'] ?? 0) * 100);
@@ -1830,10 +1832,11 @@ class Reporter {
 
         $candidate_ids = $order_closed_at ? self::matching_entry_ids_for_order_time($order_closed_at, $reports) : [];
         if (!$candidate_ids) {
+          if ($line_total_cents > PHP_INT_MAX - $unmatched_cents) throw new \RuntimeException('Unmatched Square concessions exceed the supported amount range.');
+          $unmatched_lines++;
+          $unmatched_cents += $line_total_cents;
           continue;
         }
-
-        if (!$candidate_ids) continue;
         if ($line_total_cents > PHP_INT_MAX - $eligible_cents) throw new \RuntimeException('Daily concessions exceed the supported allocation range.');
         $eligible_cents += $line_total_cents;
         $candidate_ids = array_values(array_filter($candidate_ids, static fn(int $entry_id): bool => empty($reports[$entry_id]['_is_locked'])));
@@ -1846,6 +1849,11 @@ class Reporter {
       }
     }
 
+    if ($unmatched_lines > 0) throw new \RuntimeException(sprintf(
+      '%d eligible Square concession line(s), totaling $%s, could not be matched to a report row within the show-time window; review this date before refreshing.',
+      $unmatched_lines,
+      number_format($unmatched_cents / 100, 2, '.', ',')
+    ));
     if ($locked_cents > $eligible_cents) throw new \RuntimeException('Locked concessions exceed the matching Square total; review the protected rows before refreshing.');
     if ($eligible_cents <= 0) return;
     $remaining_cents = $eligible_cents - $locked_cents;

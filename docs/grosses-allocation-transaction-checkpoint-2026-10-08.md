@@ -6,14 +6,17 @@ Daily concessions rebalancing now holds a MySQL advisory lock scoped to the repo
 
 This makes the rebalancer's writes serialized and all-or-nothing. It does not cover every possible writer to these tables, reconcile source concession sales that have no eligible reporting row, or change historical report contents. No live report data was changed and no deployment was performed.
 
+A qualifying Square concession line that has no matching report row within the show-time window now aborts the rebalance before writes and reports the unmatched line count and dollar amount. This prevents a successful-looking partial reconciliation, but it is an error surfaced to the operator rather than a durable reconciliation queue.
+
 ## Verification
 
 - Seven isolated transaction fixtures cover successful commit/lock release, rollback after an injected later failure, non-InnoDB refusal, lock contention, preserving an existing outer transaction, loss of lock with rollback, and connection replacement without cross-session rollback.
 - The private-MySQL regression now injects a failure after the first allocation row has been updated and verifies the entire fixture returns to its pre-transaction values.
 - The reporter's multi-row failure fixture verifies the earlier update is restored when a later write fails.
+- An actual Reporter fixture with a $12.50 eligible Square line outside all show windows verifies the line is identified and no allocation rows are changed.
 - All 77 isolated cross-module regression scripts pass locally under PHP 8.3.35 with the mbstring and OpenSSL extensions enabled.
 - Hosted PHP compatibility run [37768619404](https://github.com/Tototex/roxy-suite/actions/runs/37768619404) passes PHP 8.0–8.4 syntax and the complete PHP 8.3 isolated suite.
 
 ## Remaining
 
-The transaction path has not yet been exercised against the production database or verified on the live site. Arbitrary direct writers remain outside this guard, and unmatched Square concession sales still need an explicit reconciliation path. Production deployment remains a separate, backup-gated task.
+The transaction path has not yet been exercised against the production database or verified on the live site. Arbitrary direct writers remain outside this guard. Unmatched-sales details are not yet persisted in a dedicated reconciliation queue. Production deployment remains a separate, backup-gated task.

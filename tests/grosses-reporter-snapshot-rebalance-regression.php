@@ -194,6 +194,20 @@ namespace {
   $allocated_cents = array_sum(array_map(static fn(array $row): int => (int) round((float) ($row['concessions_total'] ?? 0) * 100), \RoxyGrosses\Store::$movie[$large_date]));
   $check(count(\RoxyGrosses\Store::$updates) === 1001 && $allocated_cents === 1001, 'rebalance reads and conserves every row beyond the former 1,000-row cap');
 
+  // Eligible sales outside every report row's show-time window must be surfaced
+  // before writes instead of silently disappearing from daily reconciliation.
+  $unmatched_date = '2038-05-04';
+  \RoxyGrosses\Store::$movie[$unmatched_date] = [['id'=>7001,'show_time'=>'7:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0]];
+  \RoxyGrosses\Square::$orders[$unmatched_date] = [[
+    'closed_at' => $unmatched_date . 'T23:30:00-07:00',
+    'line_items' => [['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1250,'currency'=>'USD']]],
+  ]];
+  $before_unmatched_writes = count(\RoxyGrosses\Store::$updates);
+  $unmatched_failed = false;
+  try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$unmatched_date])); }
+  catch (Throwable $error) { $unmatched_failed = str_contains($error->getMessage(), '1 eligible Square concession line(s), totaling $12.50'); }
+  $check($unmatched_failed && count(\RoxyGrosses\Store::$updates) === $before_unmatched_writes && (float) \RoxyGrosses\Store::$movie[$unmatched_date][0]['concessions_total'] === 0.0, 'unmatched eligible sale is reported with amount and stops before allocation writes');
+
   // A storage failure on an unlocked row must abort the allocation explicitly;
   // a locked row remains protected and is skipped rather than treated as failure.
   $state_before_rollback = [\RoxyGrosses\Store::$movie,\RoxyGrosses\Store::$live,\RoxyGrosses\Store::$rental];
