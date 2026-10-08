@@ -1320,7 +1320,8 @@ class Workbook {
         }
       }
       $copy_ok = $copy_ok && $copied === $expected_size && @fflush($target);
-      $target_size = @filesize($target_path);
+      $target_stat = @fstat($target);
+      $target_size = is_array($target_stat) && isset($target_stat['size']) ? (int) $target_stat['size'] : -1;
       $copy_ok = $copy_ok && is_int($target_size) && $target_size === $expected_size;
     } catch (\Throwable $error) {
       $copy_ok = false;
