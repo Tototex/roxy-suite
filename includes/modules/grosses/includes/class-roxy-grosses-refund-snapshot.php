@@ -277,6 +277,7 @@ final class WooRefundEvents {
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $events = [];
     $seen = [];
+    $seen_payment_ids = [];
     foreach ($refunds as $refund) {
       if (!is_object($refund)
         || !method_exists($refund, 'get_id') || !method_exists($refund, 'get_parent_id')
@@ -366,8 +367,9 @@ final class SquareCollectionEvents {
         if (!is_string($payment_id) || $payment_id === '' || strlen($payment_id) > 192) {
           throw new \RuntimeException('Completed Square order has an invalid tender payment identity.');
         }
-        if (isset($payment_ids[$payment_id])) throw new \RuntimeException('Completed Square order repeats a tender payment identity.');
+        if (isset($payment_ids[$payment_id]) || isset($seen_payment_ids[$payment_id])) throw new \RuntimeException('Square collection feed repeats a tender payment identity.');
         $payment_ids[$payment_id] = true;
+        $seen_payment_ids[$payment_id] = true;
       }
       $events[] = [
         'source' => 'square',
