@@ -92,6 +92,8 @@ Refund attribution confirmed 2026-10-06: later Square ticket refunds correct ori
 
 T16 follow-up (2026-10-08): Product synchronization and public showing labels now use strict validated timestamps. Hosted run 37738638386 passes the complete PHP 8.0–8.4 lint matrix and PHP 8.3 isolated regression suite, including malformed-date sync/SEO checks. Installed private WP-CLI duplicate fixture and public/admin browser routes remain unverified; this branch is not deployed.
 
+Door ticket labels and the default door-showing picker now use strict local date parsing and compare real Unix timestamps; malformed ticket dates are omitted. Hosted run 37738884544 passes the full PHP matrix and isolated regression suite. Live/admin browser integration and the private WP-CLI duplicate fixture remain outstanding.
+
 ## Deferred opportunities
 
 - Advertising contracts/tracking on the website, monthly reporting, renewal management, and permission-based outreach: explicitly requested for follow-up after stability. Automatic renewal terms and payment authorization require a separate design review.
