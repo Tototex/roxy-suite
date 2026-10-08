@@ -9,6 +9,8 @@ function wp_date($format,$timestamp=null,$timezone=null){return (new DateTimeImm
 function current_time($format){return '2026-10-03 10:00:00';}function date_i18n($fmt,$timestamp){return date($fmt,$timestamp);}
 function absint($value){return abs((int)$value);}function get_post_meta(...$args){return '';}
 function get_user_meta($id,$key,$single=true){return $key==='first_name'?'Fixture':'Member';}
+function wp_verify_nonce($nonce,$action){return $nonce==='fixture';}function current_user_can(...$args){return true;}
+function wp_get_attachment_image_src($id,$size){return ['https://example.test/photo/'.$id];}
 function wcs_get_subscription($id){return new TestSubscription($id);}
 function wcs_get_subscriptions($args){$GLOBALS['member_search_queries'][]=$args;if(!empty($GLOBALS['member_search_fail']))throw new RuntimeException('fixture query failure');$ids=range(101,1);$offset=((int)($args['paged']??1)-1)*(int)($args['subscriptions_per_page']??100);return array_map(static fn($id)=>new TestSubscription($id),array_slice($ids,$offset,(int)($args['subscriptions_per_page']??100)));}
 function home_url($path=''){return 'https://example.test'.$path;}
@@ -20,14 +22,15 @@ function sanitize_key($v){return (string)$v;}function sanitize_text_field($v){re
 function roxy_suite_user_can_access_admin(){return true;}
 function get_the_author_meta(...$args){return 'Fixture staff';}
 class TestSubscription {
-    private $id;function __construct($id){$this->id=$id;}
+    private $id;private $pending=[];function __construct($id){$this->id=$id;$this->pending=$GLOBALS['test_sub_meta'][(int)$id]??[];}
     function get_id(){return (int)$this->id;}
     function get_user(){return (object)['ID'=>8,'user_email'=>'fixture'.$this->id.'@example.test','display_name'=>'Fixture Member'];}
     function get_status(){return $this->id===2?'cancelled':($this->id===3?'expired':'active');}
     function get_billing_email(){return 'billing'.$this->id.'@example.test';}
     function get_billing_first_name(){return 'Fixture';}function get_billing_last_name(){return 'Member';}
-    function get_meta($key,$single=true){return $key==='_roxy_member_photo_id'?0:0;}
-    function update_meta_data($key,$value){}function delete_meta_data($key){}function save(){return $this->id;}
+    function get_meta($key,$single=true){return $this->pending[$key]??'';}
+    function update_meta_data($key,$value){$this->pending[$key]=$value;}function delete_meta_data($key){unset($this->pending[$key]);}
+    function save(){if(!empty($GLOBALS['test_sub_save_fail']))return false;$GLOBALS['test_sub_meta'][(int)$this->id]=$this->pending;return $this->id;}
     function get_items(){return [new class {function get_quantity(){return 3;}}];}
     function get_date($key){return '';}
 }
@@ -40,6 +43,7 @@ class TestDatabase {
     function insert($table,$data,$formats){if($this->fail)return false;$this->inserts[]=$data;return 1;}
 }
 $GLOBALS['wpdb']=new TestDatabase;
+$GLOBALS['test_sub_meta']=[];
 $root=$argv[1]??dirname(__DIR__);
 require $root.'/includes/modules/sub-check/roxy-sub-check.php';
 require $root.'/includes/class-roxy-suite-members-dashboard.php';
@@ -50,6 +54,14 @@ check($GLOBALS['member_search_queries'][0]['subscription_status']===['active','p
 $GLOBALS['member_search_fail']=true;
 check(Roxy_Sub_Check::search_members('fixture1@',5)===[],'subscription query failure returns no potentially misleading partial search results');
 unset($GLOBALS['member_search_fail']);
+$dashboard_action=new ReflectionMethod(\RoxySuite\Members_Dashboard::class,'handle_member_actions');$dashboard_action->setAccessible(true);
+$_POST=['roxy_members_action_nonce'=>'fixture','roxy_members_action'=>'save_photo','subscription_id'=>42,'attachment_id'=>77];ob_start();$dashboard_action->invoke(null);$photo_notice=ob_get_clean();
+check(($GLOBALS['test_sub_meta'][42]['_roxy_member_photo_id']??0)===77&&str_contains($photo_notice,'Member photo updated.'),'member dashboard persists photo metadata through subscription CRUD');
+check((Roxy_Sub_Check::get_member_payload(42,false)['photo_url']??'')==='https://example.test/photo/77','member-check photo read sees CRUD-saved subscription metadata');
+$_POST=['roxy_members_action_nonce'=>'fixture','roxy_members_action'=>'toggle_trade','subscription_id'=>42,'trade_value'=>'1'];ob_start();$dashboard_action->invoke(null);$trade_notice=ob_get_clean();
+check(($GLOBALS['test_sub_meta'][42]['_roxy_member_trade_subscription']??0)===1&&str_contains($trade_notice,'Trade / comp flag updated.'),'member dashboard persists trade metadata through subscription CRUD');
+$GLOBALS['test_sub_save_fail']=true;$_POST=['roxy_members_action_nonce'=>'fixture','roxy_members_action'=>'toggle_trade','subscription_id'=>42,'trade_value'=>'0'];ob_start();$dashboard_action->invoke(null);$failed_save_notice=ob_get_clean();unset($GLOBALS['test_sub_save_fail']);
+check(($GLOBALS['test_sub_meta'][42]['_roxy_member_trade_subscription']??0)===1&&str_contains($failed_save_notice,'could not be saved'),'failed subscription CRUD save is reported and does not alter persisted metadata');
 $payload=Roxy_Sub_Check::get_member_payload(1,false);
 check($payload['last_visit']==='2026-09-28 19:30','nonlogging lookup includes latest actual admission in site timezone');
 $query=end($GLOBALS['wpdb']->queries);
