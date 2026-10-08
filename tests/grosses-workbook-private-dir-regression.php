@@ -5,6 +5,16 @@ $fixture_root = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'roxy-workbook-privat
 if (!mkdir($fixture_root, 0700)) throw new RuntimeException('Could not create private fixture root.');
 define('WP_CONTENT_DIR', $fixture_root . DIRECTORY_SEPARATOR . 'content');
 
+class Settings { public const OPTION_KEY = 'roxy_grosses_fixture_settings'; }
+function get_option($key, $default = false) { return $GLOBALS['workbook_options'][$key] ?? $default; }
+function update_option($key, $value) {
+    if (!empty($GLOBALS['workbook_option_write_fails'])) return false;
+    $GLOBALS['workbook_options'][$key] = $value;
+    return true;
+}
+function sanitize_text_field($value) { return trim((string) $value); }
+function sanitize_file_name($value) { return basename(preg_replace('/[^A-Za-z0-9._-]/', '-', (string) $value)); }
+function wp_normalize_path($value) { return str_replace('\\', '/', (string) $value); }
 function trailingslashit($value) { return rtrim((string) $value, '/\\') . DIRECTORY_SEPARATOR; }
 function wp_mkdir_p($path) { return is_dir($path) || mkdir($path, 0777, true); }
 function wp_unique_filename($dir, $filename) {
@@ -34,6 +44,10 @@ $workbooks_method = new ReflectionMethod($namespace . '\\Workbook', 'private_wor
 $workbooks_method->setAccessible(true);
 $move_method = new ReflectionMethod($namespace . '\\Workbook', 'move_file_to_private_storage');
 $move_method->setAccessible(true);
+$set_template_method = new ReflectionMethod($namespace . '\\Workbook', 'set_uploaded_template');
+$set_template_method->setAccessible(true);
+$ensure_template_method = new ReflectionMethod($namespace . '\\Workbook', 'ensure_uploaded_template_private');
+$ensure_template_method->setAccessible(true);
 $checks = 0;
 $check = static function (bool $condition, string $label) use (&$checks): void {
     if (!$condition) throw new RuntimeException('FAIL: ' . $label);
@@ -74,6 +88,27 @@ try {
     $moved = $move_method->invoke(null, $source, $workbooks_dir, 'collision.xlsx');
     $check(file_get_contents($occupied) === 'preserve-existing-file', 'exclusive move preserves a destination created during the filename race');
     $check($moved !== $occupied && file_get_contents($moved) === 'new-template-bytes' && !file_exists($source), 'private move retries collision and verifies complete contents before removing source');
+
+    $template = ['path' => $moved, 'name' => 'collision.xlsx', 'uploaded_at' => '2026-10-08 12:00:00'];
+    $check($set_template_method->invoke(null, $template) === true, 'uploaded template setting is confirmed by read-back');
+    $GLOBALS['workbook_option_write_fails'] = true;
+    $old_settings = $GLOBALS['workbook_options'][Settings::OPTION_KEY];
+    $failed_template = ['path' => $workbooks_dir . DIRECTORY_SEPARATOR . 'not-saved.xlsx', 'name' => 'not-saved.xlsx', 'uploaded_at' => '2026-10-08 13:00:00'];
+    $check($set_template_method->invoke(null, $failed_template) === false
+        && $GLOBALS['workbook_options'][Settings::OPTION_KEY] === $old_settings, 'failed setting write is reported and preserves the existing template setting');
+
+    $legacy = $fixture_root . DIRECTORY_SEPARATOR . 'legacy-template.xlsx';
+    file_put_contents($legacy, 'preserve-public-source-on-save-failure');
+    $GLOBALS['workbook_options'][Settings::OPTION_KEY]['workbook_template_upload'] = [
+        'path' => $legacy, 'name' => 'legacy-template.xlsx', 'uploaded_at' => '2026-10-07 10:00:00',
+    ];
+    $migration_failed = false;
+    try { $ensure_template_method->invoke(null); } catch (RuntimeException $error) { $migration_failed = true; }
+    $private_templates = $workbooks_dir;
+    $private_copies = glob($private_templates . DIRECTORY_SEPARATOR . 'legacy-template*.xlsx') ?: [];
+    $check($migration_failed && file_get_contents($legacy) === 'preserve-public-source-on-save-failure' && !$private_copies,
+        'failed legacy migration preserves the old source and removes its unreferenced private copy');
+    unset($GLOBALS['workbook_option_write_fails']);
 } finally {
     $iterator = new RecursiveIteratorIterator(
         new RecursiveDirectoryIterator($fixture_root, FilesystemIterator::SKIP_DOTS),

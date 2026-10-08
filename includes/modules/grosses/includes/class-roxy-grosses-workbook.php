@@ -59,11 +59,24 @@ class Workbook {
       self::redirect_with_notice('error', $message, null, 'workbook');
     }
 
-    self::set_uploaded_template([
+    $saved_template = self::set_uploaded_template([
       'path' => $private_path,
       'name' => $original_name,
       'uploaded_at' => wp_date('Y-m-d H:i:s', null, new \DateTimeZone(Settings::get_report_timezone())),
     ]);
+    if ($saved_template !== true) {
+      $current_template = self::uploaded_template();
+      $still_referenced = (string) ($current_template['path'] ?? '') === $private_path;
+      $cleanup_failed = $saved_template === false && !$still_referenced && is_file($private_path) && !@unlink($private_path);
+      if ($cleanup_failed) error_log('Roxy Grosses: unable to remove an unreferenced workbook template after settings-save failure.');
+      $message = $saved_template === false
+        ? ($still_referenced
+          ? 'The uploaded template path is saved, but the complete settings record did not verify. The referenced private file was preserved; review the workbook template setting.'
+          : 'Workbook template was copied privately, but its settings could not be verified; the existing template setting was retained.')
+        : 'Workbook template settings could not be read back, so the private copy was retained for safety. Retry or check the workbook setting before uploading again.';
+      if ($cleanup_failed) $message .= ' The unused private copy could not be removed automatically.';
+      self::redirect_with_notice('error', $message, null, 'workbook');
+    }
 
     Store::insert_log('upload_workbook_template', 'manual-template', null, null, true, 'Workbook template uploaded.', [
       'path' => $private_path,
@@ -754,17 +767,21 @@ class Workbook {
     return is_array($template) ? $template : [];
   }
 
-  private static function set_uploaded_template(array $template): void {
+  private static function set_uploaded_template(array $template): ?bool {
     $settings = get_option(Settings::OPTION_KEY, []);
     if (!is_array($settings)) {
       $settings = [];
     }
-    $settings[self::TEMPLATE_KEY] = [
+    $saved_template = [
       'path' => sanitize_text_field((string) ($template['path'] ?? '')),
       'name' => sanitize_file_name((string) ($template['name'] ?? '')),
       'uploaded_at' => sanitize_text_field((string) ($template['uploaded_at'] ?? '')),
     ];
+    $settings[self::TEMPLATE_KEY] = $saved_template;
     update_option(Settings::OPTION_KEY, $settings);
+    $verified = get_option(Settings::OPTION_KEY, null);
+    if (!is_array($verified)) return null;
+    return ($verified[self::TEMPLATE_KEY] ?? null) === $saved_template;
   }
 
   private static function resolve_template_path(int $year): string {
@@ -1265,7 +1282,7 @@ class Workbook {
     }
   }
 
-  private static function move_file_to_private_storage(string $source_path, string $target_dir, string $preferred_name): string {
+  private static function move_file_to_private_storage(string $source_path, string $target_dir, string $preferred_name, bool $remove_source = true): string {
     $source_path = trim($source_path);
     if ($source_path === '' || !is_readable($source_path)) {
       throw new \RuntimeException('The uploaded workbook template could not be read.');
@@ -1329,7 +1346,7 @@ class Workbook {
     $source_closed = @fclose($source);
     $target_closed = @fclose($target);
     $copy_ok = $copy_ok && $source_closed && $target_closed && is_readable($target_path);
-    if (!$copy_ok || (is_file($source_path) && !@unlink($source_path))) {
+    if (!$copy_ok || ($remove_source && is_file($source_path) && !@unlink($source_path))) {
       @unlink($target_path);
       throw new \RuntimeException('The workbook file could not be moved completely into private storage.');
     }
@@ -1347,14 +1364,29 @@ class Workbook {
     $migrated_path = self::move_file_to_private_storage(
       $path,
       self::private_templates_dir(),
-      sanitize_file_name((string) ($uploaded['name'] ?? basename($path)))
+      sanitize_file_name((string) ($uploaded['name'] ?? basename($path))),
+      false
     );
 
     $uploaded['path'] = $migrated_path;
     if (empty($uploaded['name'])) {
       $uploaded['name'] = basename($migrated_path);
     }
-    self::set_uploaded_template($uploaded);
+    $saved_template = self::set_uploaded_template($uploaded);
+    if ($saved_template === false) {
+      $current_template = self::uploaded_template();
+      if ((string) ($current_template['path'] ?? '') === $migrated_path) {
+        error_log('Roxy Grosses: migrated workbook path is saved but the complete settings record did not verify.');
+        return $current_template;
+      }
+      if (is_file($migrated_path) && !@unlink($migrated_path)) error_log('Roxy Grosses: unable to remove an unreferenced migrated workbook template.');
+      throw new \RuntimeException('The private workbook path could not be saved; the existing uploaded template was preserved.');
+    }
+    if ($saved_template === null) {
+      error_log('Roxy Grosses: migrated workbook setting could not be verified; both source and private copy were preserved.');
+      throw new \RuntimeException('The private workbook setting could not be verified; both template files were preserved.');
+    }
+    if (is_file($path) && !@unlink($path)) error_log('Roxy Grosses: migrated workbook is private but its former public copy could not be removed.');
 
     return $uploaded;
   }
