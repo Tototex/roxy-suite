@@ -42,8 +42,8 @@ class TestDatabase {
     function esc_like($value){return str_replace('_','\\_',$value);}
     function prepare($sql,...$args){$this->prepared_args=$args;return $sql;}
     function get_col($sql){$this->queries[]=$sql;$this->last_col_query=$sql;$this->last_col_args=$this->prepared_args;if($this->fail){$this->last_error='fixture query failure';return null;}$this->last_error='';return [1];}
-    function get_var($sql){$this->queries[]=$sql;if(str_contains($sql,'SHOW TABLES'))return 'test_roxy_member_scans';if(str_contains($sql,'COUNT'))return 1;return '2026-09-28 19:30:00';}
-    function get_results($sql,$format){$this->queries[]=$sql;if(str_contains($sql,'GROUP BY subscription_id, user_id'))return [['subscription_id'=>(int)($GLOBALS['history_subscription_id']??2),'user_id'=>8,'scanned_at'=>'2026-09-28 19:30:00','quantity'=>3]];if(str_contains($sql,'GROUP BY subscription_id'))return [['subscription_id'=>1,'visits_month'=>3,'visits_lifetime'=>6,'last_visit'=>'2026-09-28 19:30:00']];return [['id'=>1,'scanned_at'=>'2026-09-28 19:30:00','subscription_id'=>1,'is_active'=>1,'status'=>'active','user_id'=>8,'ip'=>'','user_agent'=>'']];}
+    function get_var($sql){$this->queries[]=$sql;$this->last_error='';if(str_contains($sql,'SHOW TABLES'))return 'test_roxy_member_scans';if(str_contains($sql,'COUNT'))return 1;return '2026-09-28 19:30:00';}
+    function get_results($sql,$format){$this->queries[]=$sql;$this->last_error='';if(str_contains($sql,'GROUP BY subscription_id, user_id'))return [['subscription_id'=>(int)($GLOBALS['history_subscription_id']??2),'user_id'=>8,'scanned_at'=>'2026-09-28 19:30:00','quantity'=>3]];if(str_contains($sql,'GROUP BY subscription_id'))return [['subscription_id'=>1,'visits_month'=>3,'visits_lifetime'=>6,'last_visit'=>'2026-09-28 19:30:00']];return [['id'=>1,'scanned_at'=>'2026-09-28 19:30:00','subscription_id'=>1,'is_active'=>1,'status'=>'active','user_id'=>8,'ip'=>'','user_agent'=>'']];}
     function insert($table,$data,$formats){if($this->fail)return false;$this->inserts[]=$data;return 1;}
 }
 $GLOBALS['wpdb']=new TestDatabase;
