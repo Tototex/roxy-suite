@@ -237,8 +237,8 @@ run_test('duplicate and retry path does not blindly submit twice', function() {
 function wp_timezone() { return new DateTimeZone('America/Los_Angeles'); }
 function roxy_eb_get_settings() { return ['cancel_free_days'=>7]; }
 function roxy_eb_mysql_to_dt($value) { return new DateTimeImmutable($value, wp_timezone()); }
-function roxy_eb_booking_adjustment_order_ids($booking) { return $booking['woo_adjustment_order_ids'] ?? []; }
 function roxy_eb_repo_get_booking_by_order($order_id) { foreach ($GLOBALS['bookings']??[] as $booking) if ((int)($booking['woo_order_id']??0)===(int)$order_id) return $booking; return null; }
+function wp_json_encode($value) { return json_encode($value); }
 function roxy_eb_repo_update_booking($id, $data) {
     $expected=$data['_roxy_expected_revision']??null; unset($data['_roxy_expected_revision']);
     if ($expected!==null && !hash_equals(roxy_eb_booking_revision($GLOBALS['bookings'][$id]),(string)$expected)) return new WP_Error('booking_stale','fixture revision changed');
