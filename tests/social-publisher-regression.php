@@ -18,7 +18,7 @@ namespace RoxySocial {
         public static function acquire_publish_lock($id){if(self::$deny_lock||self::$locked)return null;self::$locked=true;return ['name'=>'fixture','connection'=>'1'];}
         public static function owns_publish_lock($claim){return self::$locked;}
         public static function release_publish_lock($claim){self::$locked=false;}
-        public static function compare_publish_status($id,$expected,$status){if(self::$row['status']!==$expected)return false;self::$row['status']=$status;return true;}
+        public static function compare_publish_status($id,$expected,$status){if(self::$row['status']!==$expected)return false;self::$row['status']=$status;if($expected==='needs_review'&&$status==='approved')self::$row['last_error']=null;return true;}
         public static function find($id){return self::$row;}
         public static function table_name(){return 'fixture_social';}
         public static function update_publish_result($id,$status,$error='',$fb='',$ig=''){
@@ -89,6 +89,13 @@ namespace {
     check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='needs_review'&&count($GLOBALS['calls'])===1,'ambiguous Facebook outcome halts other platform and retry');
     reset_fixture();\RoxySocial\Store::$fail_id=true;$GLOBALS['responses']=[response(['id'=>'123'])];
     check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='needs_review'&&count($GLOBALS['calls'])===1,'failed ID persistence stops next platform');
+    foreach ([400, 500] as $status) {
+        reset_fixture('instagram');$GLOBALS['responses']=[response(['id'=>'234567']),response(['error'=>['message'=>'Media ID is not available']],$status)];
+        check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='needs_review'
+            &&\RoxySocial\Store::$row['instagram_container_id']==='234567'
+            &&count(array_filter($GLOBALS['calls'],static fn($call)=>str_ends_with($call[0],'/media_publish')) )===1,
+            'Instagram Media ID unavailable response '.$status.' gets one publish attempt, retains container and requires review');
+    }
     reset_fixture('facebook');\RoxySocial\Meta::$instagram=false;$GLOBALS['responses']=[response(['id'=>'123'])];
     check(\RoxySocial\Publisher::publish_now(1)&&count($GLOBALS['calls'])===1,'Facebook-only publishing needs no Instagram connection');
     reset_fixture('instagram');\RoxySocial\Meta::$facebook=false;$GLOBALS['responses']=[response(['id'=>'234']),response(['id'=>'345'])];
@@ -169,4 +176,22 @@ namespace {
     check(\RoxySocial\Store::$row['status']==='publishing'&&$GLOBALS['scheduled_events'][0][1]==='roxy_social_publish_single'
         &&$GLOBALS['scheduled_events'][0][2]===[1,5],
         'legacy stuck video receives one final status-check recovery instead of an unbounded retry loop');
+
+    reset_fixture('instagram','failed');\RoxySocial\Store::$row['instagram_container_id']='legacy-container';
+    \RoxySocial\Store::$row['last_error']='Meta returned HTTP 500: Media ID is not available';
+    \RoxySocial\Store::$row['facebook_post_id']='facebook-123';
+    $GLOBALS['wpdb']=new PublisherFixtureDb();$GLOBALS['due_rows']=[\RoxySocial\Store::$row];\RoxySocial\Publisher::publish_due();
+    check(\RoxySocial\Store::$row['status']==='needs_review'&&\RoxySocial\Store::$row['facebook_post_id']==='facebook-123'
+        &&\RoxySocial\Store::$row['instagram_container_id']==='legacy-container'&&!$GLOBALS['scheduled_events']&&!$GLOBALS['calls'],
+        'legacy ambiguous Instagram publish failure is moved to review without automatic retry or losing IDs');
+
+    reset_fixture('instagram','publishing');\RoxySocial\Store::$row['instagram_container_id']='queued-container';
+    \RoxySocial\Store::$row['last_error']='Meta returned HTTP 500: Media ID is not available';
+    \RoxySocial\Store::$row['facebook_post_id']='facebook-queued';
+    \RoxySocial\Publisher::process_queued(1);
+    check(\RoxySocial\Store::$row['status']==='needs_review'&&\RoxySocial\Store::$row['facebook_post_id']==='facebook-queued'
+        &&\RoxySocial\Store::$row['instagram_container_id']==='queued-container'&&!$GLOBALS['calls'],
+        'already-queued legacy retry is stopped in the worker and preserves both platform identities');
+    check(\RoxySocial\Store::compare_publish_status(1,'needs_review','approved')&&\RoxySocial\Store::$row['last_error']===null,
+        'explicit manager approval after remote review clears only the stale ambiguity marker');
 }

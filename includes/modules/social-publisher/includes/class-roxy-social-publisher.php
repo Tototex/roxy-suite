@@ -35,6 +35,18 @@ final class Publisher {
         }
         $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . Store::table_name() . ' WHERE ((status = %s) OR (status = %s AND instagram_media_id IS NULL AND (last_error LIKE %s OR last_error LIKE %s))) AND scheduled_for <= %s ORDER BY scheduled_for ASC, id ASC LIMIT 3', 'approved', 'failed', '%Instagram video is still processing%', '%Media ID is not available%', current_time('mysql')), ARRAY_A) ?: [];
         foreach ($rows as $row) {
+            if ((string) ($row['status'] ?? '') === 'failed'
+                && stripos((string) ($row['last_error'] ?? ''), 'Media ID is not available') !== false) {
+                self::with_lock((int) $row['id'], static function () use ($row) {
+                    $id = (int) ($row['id'] ?? 0);
+                    $fresh = Store::find($id);
+                    if (!$fresh || (string) ($fresh['status'] ?? '') !== 'failed'
+                        || !empty($fresh['instagram_media_id'])
+                        || stripos((string) ($fresh['last_error'] ?? ''), 'Media ID is not available') === false) return false;
+                    return self::save_result($id, 'needs_review', 'A previous Instagram publish attempt returned “Media ID is not available.” The outcome is not safe to retry automatically. Check the Instagram account, then approve a new attempt only after remote review; recorded platform IDs and the container ID have been retained.');
+                });
+                continue;
+            }
             $attempt = 0;
             if ((string) ($row['status'] ?? '') === 'failed' && stripos((string) ($row['last_error'] ?? ''), 'Instagram video is still processing') !== false) {
                 $attempt = 5;
@@ -55,6 +67,10 @@ final class Publisher {
         self::with_lock($id, static function () use ($id, $video_attempt) {
             $row = Store::find($id);
             if (!$row || (string) $row['status'] !== 'publishing') return false;
+            if (stripos((string) ($row['last_error'] ?? ''), 'Media ID is not available') !== false) {
+                self::save_result($id, 'needs_review', 'A queued Instagram publish retry had an earlier “Media ID is not available” outcome. The queued retry was stopped. Check the Instagram account, then approve a new attempt only after remote review; recorded platform IDs and the container ID have been retained.');
+                return false;
+            }
             try { return self::publish_row($row, $video_attempt); }
             catch (\Throwable $error) {
                 if (self::owns_lock()) self::save_result($id, 'needs_review', 'The publishing worker was interrupted. Review remote accounts before retrying.');
@@ -204,11 +220,12 @@ final class Publisher {
         }
         $publish_url = 'https://graph.facebook.com/' . rawurlencode(Meta::instagram_user_id()) . '/media_publish';
         $publish_body = ['creation_id' => $container['id'], 'access_token' => Meta::access_token()];
-        $published = [];
-        for ($attempt = 0; $attempt < 5; $attempt++) {
-            if ($attempt > 0) sleep(3);
-            $published = self::request($publish_url, $publish_body);
-            if (empty($published['error']) || stripos((string) $published['error'], 'Media ID is not available') === false) break;
+        // A publish request may succeed remotely even when its response is
+        // rejected or lost. Never repeat it automatically; ambiguous outcomes
+        // require a manager to reconcile the remote account first.
+        $published = self::request($publish_url, $publish_body);
+        if (!empty($published['error']) && stripos((string) $published['error'], 'Media ID is not available') !== false) {
+            $published['ambiguous'] = true;
         }
         return $published;
     }

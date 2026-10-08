@@ -17,6 +17,9 @@ try {
     $wpdb->insert($table,['id'=>1,'status'=>'approved','updated_at'=>current_time('mysql')]);
     roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::compare_publish_status(1,'approved','publishing'),'atomic status claim wins once');
     roxy_publish_fixture_check(!\RoxySocial\PublishFixtureStore::compare_publish_status(1,'approved','publishing'),'stale status claim cannot win twice');
+    $wpdb->insert($table,['id'=>2,'status'=>'needs_review','last_error'=>'previous ambiguous result','updated_at'=>current_time('mysql')]);
+    roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::compare_publish_status(2,'needs_review','approved')
+        &&\RoxySocial\PublishFixtureStore::find(2)['last_error']===null,'explicit reviewed approval atomically clears the stale ambiguity marker');
     $claim=\RoxySocial\PublishFixtureStore::acquire_publish_lock(1);
     roxy_publish_fixture_check($claim&&\RoxySocial\PublishFixtureStore::owns_publish_lock($claim),'actual connection owns named worker lock');
     roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::update_publish_result(1,'publishing','','123','',$claim),'owned guarded SQL durably persists ID');

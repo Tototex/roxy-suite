@@ -402,10 +402,14 @@ final class Store {
 
     public static function compare_publish_status(int $id, string $expected, string $status, ?array $claim = null): bool {
         global $wpdb;
+        $clear_review_error = $expected === 'needs_review' && $status === 'approved';
         if ($claim !== null) {
-            return 1 === $wpdb->query($wpdb->prepare('UPDATE ' . self::table_name() . ' SET status = %s, updated_at = %s WHERE id = %d AND status = %s AND IS_USED_LOCK(%s) = CONNECTION_ID() AND CONNECTION_ID() = %d', $status, current_time('mysql'), $id, $expected, $claim['name'], $claim['connection']));
+            $error_sql = $clear_review_error ? ', last_error = NULL' : '';
+            return 1 === $wpdb->query($wpdb->prepare('UPDATE ' . self::table_name() . ' SET status = %s, updated_at = %s' . $error_sql . ' WHERE id = %d AND status = %s AND IS_USED_LOCK(%s) = CONNECTION_ID() AND CONNECTION_ID() = %d', $status, current_time('mysql'), $id, $expected, $claim['name'], $claim['connection']));
         }
-        return 1 === $wpdb->update(self::table_name(), ['status' => $status, 'updated_at' => current_time('mysql')], ['id' => $id, 'status' => $expected]);
+        $values = ['status' => $status, 'updated_at' => current_time('mysql')];
+        if ($clear_review_error) $values['last_error'] = null;
+        return 1 === $wpdb->update(self::table_name(), $values, ['id' => $id, 'status' => $expected]);
     }
 
     public static function update_ai_status(int $id, string $status): bool {
