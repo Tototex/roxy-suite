@@ -139,6 +139,7 @@ jobs:
             social-secrets-regression.php
             social-showtime-regression.php
             stability-regression.php
+            showing-room-lock-regression.php
             ticket-cart-pricing-regression.php
             ticket-eligibility-regression.php
             ticket-hold-settings-regression.php

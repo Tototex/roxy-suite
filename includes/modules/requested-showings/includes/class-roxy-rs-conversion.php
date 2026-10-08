@@ -319,37 +319,44 @@ class Conversion {
         }
         $lease->assert_owner();
         $showing_id = (int) get_post_meta($request_id, CPT::META_APPROVED_SHOWING_ID, true);
-        if ($showing_id <= 0 || get_post_type($showing_id) !== \RoxyST\CPT::POST_TYPE) {
-            // A missing prior showing must not be silently replaced.
-            if ($showing_id > 0) return new \WP_Error('showing_review_required', 'The linked showing is missing. Reconcile it before creating another.');
-            ConversionClaims::begin_creation($request_id, 'showing');
-            $lease->assert_owner();
-            $showing_id = wp_insert_post([
-                'post_type' => \RoxyST\CPT::POST_TYPE,
-                'post_status' => 'publish',
-                'post_title' => $post->post_title,
-                'post_content' => $post->post_content,
-                'post_excerpt' => CPT::public_excerpt((string) $post->post_excerpt),
-            ], true);
-            if (is_wp_error($showing_id)) {
-                return $showing_id;
+        $write_showing = static function () use ($request_id, $post, $target_at, &$showing_id, $lease) {
+            if ($showing_id <= 0 || get_post_type($showing_id) !== \RoxyST\CPT::POST_TYPE) {
+                // A missing prior showing must not be silently replaced.
+                if ($showing_id > 0) return new \WP_Error('showing_review_required', 'The linked showing is missing. Reconcile it before creating another.');
+                ConversionClaims::begin_creation($request_id, 'showing');
+                $lease->assert_owner();
+                $created = wp_insert_post([
+                    'post_type' => \RoxyST\CPT::POST_TYPE,
+                    'post_status' => 'publish',
+                    'post_title' => $post->post_title,
+                    'post_content' => $post->post_content,
+                    'post_excerpt' => CPT::public_excerpt((string) $post->post_excerpt),
+                ], true);
+                if (is_wp_error($created) || !$created) return is_wp_error($created) ? $created : new \WP_Error('showing_create_failed', 'The showing could not be created.');
+                $showing_id = (int) $created;
+                $lease->assert_owner();
+                update_post_meta($request_id, CPT::META_APPROVED_SHOWING_ID, $showing_id);
+                wp_cache_delete($request_id, 'post_meta');
+                if ((int) get_post_meta($request_id, CPT::META_APPROVED_SHOWING_ID, true) !== $showing_id) {
+                    return new \WP_Error('showing_link_failed', 'The showing link could not be verified. Review it before retrying.');
+                }
+                update_post_meta($showing_id, '_roxy_rs_request_id', $request_id);
+                $thumbnail_id = get_post_thumbnail_id($request_id);
+                if ($thumbnail_id) set_post_thumbnail($showing_id, $thumbnail_id);
             }
-            $lease->assert_owner();
-            update_post_meta($request_id, CPT::META_APPROVED_SHOWING_ID, $showing_id);
-            wp_cache_delete($request_id, 'post_meta');
-            if ((int) get_post_meta($request_id, CPT::META_APPROVED_SHOWING_ID, true) !== (int) $showing_id) {
-                return new \WP_Error('showing_link_failed', 'The showing link could not be verified. Review it before retrying.');
-            }
-            update_post_meta($showing_id, '_roxy_rs_request_id', $request_id);
-            $thumbnail_id = get_post_thumbnail_id($request_id);
-            if ($thumbnail_id) {
-                set_post_thumbnail($showing_id, $thumbnail_id);
-            }
-        }
 
-        update_post_meta($showing_id, '_roxy_start', $target_at);
-        update_post_meta($showing_id, '_roxy_pricing_profile', (string) get_post_meta($request_id, CPT::META_PRICING_PROFILE, true) ?: 'movie_evening');
-        update_post_meta($showing_id, '_roxy_trailer_url', (string) get_post_meta($request_id, CPT::META_TRAILER_URL, true));
+            update_post_meta($showing_id, '_roxy_start', $target_at);
+            update_post_meta($showing_id, '_roxy_pricing_profile', (string) get_post_meta($request_id, CPT::META_PRICING_PROFILE, true) ?: 'movie_evening');
+            update_post_meta($showing_id, '_roxy_trailer_url', (string) get_post_meta($request_id, CPT::META_TRAILER_URL, true));
+            if ((string) get_post_meta($showing_id, '_roxy_start', true) !== $target_at) return new \WP_Error('showing_time_write', 'The showing date could not be verified. Review it before retrying.');
+            return true;
+        };
+        $showing_write_result = function_exists('roxy_eb_with_showing_time_lock')
+            ? roxy_eb_with_showing_time_lock($target_at, $showing_id, $write_showing)
+            : $write_showing();
+        if (is_wp_error($showing_write_result)) return $showing_write_result;
+
+        $lease->assert_owner();
 
         \RoxyST\Products::ensure_products_for_showing($showing_id);
 

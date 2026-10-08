@@ -11,6 +11,7 @@ namespace {
 define('ABSPATH', __DIR__); define('MINUTE_IN_SECONDS',60); define('ROXY_ST_META_SHOWING_ID','_roxy_showing_id'); define('ROXY_ST_META_TICKET_TYPE','_roxy_ticket_type');
 $root=$argv[1]??dirname(__DIR__); $fixture=$argv[2]??$root.'/includes/modules/show-tickets/includes/';
 $GLOBALS['meta']=[]; $GLOBALS['types']=[]; $GLOBALS['statuses']=[]; $GLOBALS['notices']=[]; $GLOBALS['writes']=[]; $GLOBALS['hooks']=[]; $GLOBALS['listing_queries']=[]; $GLOBALS['cleanup_queries']=[]; $GLOBALS['cleanup_pages']=[]; $GLOBALS['transients']=[];
+$GLOBALS['room_lock_calls']=[]; $GLOBALS['room_conflict']=false;
 class WooCommerce {} class WP_Error { private $message; function __construct($code,$message){$this->message=$message;} function get_error_message(){return $this->message;} }
 function is_wp_error($v){return $v instanceof WP_Error;}
 function __($s,...$args){return $s;}
@@ -30,6 +31,7 @@ function get_current_user_id(){return 7;}
 function set_transient($key,$value,$expiration){$GLOBALS['transients'][$key]=$value;return true;}
 function get_transient($key){return $GLOBALS['transients'][$key]??false;}
 function delete_transient($key){unset($GLOBALS['transients'][$key]);}
+function roxy_eb_with_showing_time_lock($start,$ignore_showing_id,$write){$GLOBALS['room_lock_calls'][]=[$start,$ignore_showing_id];if($GLOBALS['room_conflict'])return new WP_Error('reservation_conflict','That showing time overlaps another room reservation or showing. The change was not saved.');return $write();}
 function wp_is_post_revision($id){return false;}
 function add_action($hook,$callback,...$args){$GLOBALS['hooks'][$hook][]=$callback;}
 function add_filter($hook,$callback,...$args){add_action($hook,$callback,...$args);}
@@ -107,6 +109,18 @@ check($GLOBALS['meta'][1]['_roxy_duration_minutes']==='60','nonscalar duration i
 $_POST['roxy_duration_minutes']='90'; \RoxyST\CPT::save(1,null);
 check($GLOBALS['meta'][1]['_roxy_duration_minutes']==='90','valid duration updates the canonical saved value');
 $GLOBALS['meta'][1]['_roxy_duration_minutes']='60';
+
+$previous_start=(string)$GLOBALS['meta'][1]['_roxy_start'];
+$_POST['roxy_start']='2040-01-02T14:30';
+$before_room_calls=count($GLOBALS['room_lock_calls']);
+\RoxyST\CPT::save(1,null);
+check(($GLOBALS['meta'][1]['_roxy_start']??'')==='2040-01-02T14:30' && $GLOBALS['room_lock_calls'][$before_room_calls]===['2040-01-02T14:30',1],'managed showing-time edits use the shared room-lock boundary and preserve valid edits');
+$previous_start=(string)$GLOBALS['meta'][1]['_roxy_start'];
+$GLOBALS['room_conflict']=true;
+$_POST['roxy_start']='2040-01-02T15:30';
+\RoxyST\CPT::save(1,null);
+check(($GLOBALS['meta'][1]['_roxy_start']??'')===$previous_start && isset($GLOBALS['transients']['roxy_st_room_conflict_7']),'conflicting showing-time edit is rejected without replacing the saved start');
+$GLOBALS['room_conflict']=false;
 
 $GLOBALS['meta'][1]['_roxy_start']='2024-03-10T02:30';
 check(\RoxyST\Eligibility::showing_start_timestamp(1)===null,'nonexistent local time during the spring DST jump is rejected');
