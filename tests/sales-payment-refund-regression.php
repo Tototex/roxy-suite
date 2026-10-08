@@ -134,7 +134,12 @@ $GLOBALS['sales_fixture_legacy_failure_only'] = true;
 $failed_refresh = $sales::refresh_showing_stats($showing_id);
 $check(!empty($failed_refresh['read_error']) && $failed_refresh['sold_qty']===7
   && $GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats']['sold_qty']===7,
-  'failed legacy order query preserves last-known-good totals and marks the read unavailable');
+  'failed legacy order query preserves last-known-good totals and marks the read unavailable: ' . json_encode([
+    'returned'=>$failed_refresh,
+    'stored'=>$GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats'] ?? null,
+    'legacy_complete'=>$GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete'] ?? null,
+    'query'=>$GLOBALS['sales_fixture_query'] ?? null,
+  ]));
 $check(!isset($GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete'])
   && $sales::sold_qty_for_showing($showing_id)===PHP_INT_MAX,
   'failed legacy order query cannot mark its scan complete or let capacity treat unreadable sales as zero');
