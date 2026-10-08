@@ -13,8 +13,16 @@ namespace RoxyST {
     class Issuance {
         public static int $walkups=0;
         public static bool $fail=false;
+        public static bool $lease_fail=false;
+        public static bool $unpublish_on_lease=false;
+        public static int $lease_acquired=0;
+        public static int $lease_released=0;
+        public static int $ownership_checks=0;
         public function __construct($ids,string $scope='') { $GLOBALS['capacity_locks'][]=$scope; }
         public function run(callable $operation) { if(self::$fail)throw new RuntimeException('fixture lock failure');return $operation($this); }
+        public function acquire_lease(): void { if(self::$lease_fail)throw new RuntimeException('fixture lease failure'); self::$lease_acquired++; if(self::$unpublish_on_lease)$GLOBALS['statuses'][1]='draft'; }
+        public function assert_owner(): void { self::$ownership_checks++; }
+        public function release_lease(): void { self::$lease_released++; }
         public function member_walkup_quantity(int $showing_id,int $subscription_id=0): int { return self::$walkups; }
         public function post_meta(int $id,string $key,$value,bool $remove=false): void { update_post_meta($id,$key,$value); }
         public function post_meta_value(int $id,string $key) { return get_post_meta($id,$key,true); }
@@ -62,6 +70,10 @@ function wp_kses_post($value){return (string)$value;}
 function admin_url($path=''){return 'https://fixture.invalid/'.$path;}
 function wp_create_nonce($action){return 'fixture-nonce';}
 function wc_format_localized_price($price){return number_format((float)$price,2,'.','');}
+function wc_format_decimal($price,$decimals=2){return number_format((float)$price,(int)$decimals,'.','');}
+function wc_get_price_decimals(){return 2;}
+function get_post_thumbnail_id($id){return 0;}
+function wp_set_object_terms(...$args){return true;}
 function wp_timezone(){return new DateTimeZone('America/Los_Angeles');}
 function wp_date($format,$timestamp){return (new DateTimeImmutable('@'.(int)$timestamp))->setTimezone(wp_timezone())->format('Y-m-d H:i');}
 function current_datetime(){return new DateTimeImmutable('2040-01-02 12:00:00',wp_timezone());}
@@ -78,14 +90,28 @@ class WP_Query {
     }
 }
 function check($ok,$label){if(!$ok)throw new RuntimeException($label); echo "PASS: $label\n";}
-require $fixture.'class-roxy-st-cpt.php'; require $fixture.'class-roxy-st-products.php'; require $fixture.'class-roxy-st-eligibility.php'; require $fixture.'class-roxy-st-tickets.php'; require $fixture.'class-roxy-st-frontend.php';
+require $fixture.'class-roxy-st-cpt.php'; require $fixture.'class-roxy-st-products.php'; require $fixture.'class-roxy-st-eligibility.php'; require $fixture.'class-roxy-st-capacity.php'; require $fixture.'class-roxy-st-tickets.php'; require $fixture.'class-roxy-st-frontend.php';
 \RoxyST\Eligibility::init(); \RoxyST\Products::init();
 check(isset($GLOBALS['hooks']['woocommerce_is_purchasable'],$GLOBALS['hooks']['woocommerce_checkout_process'],$GLOBALS['hooks']['woocommerce_check_cart_items'],$GLOBALS['hooks']['transition_post_status'],$GLOBALS['hooks']['before_delete_post']), 'all managed publication and checkout hooks registered');
-$GLOBALS['types']=[1=>'roxy_showing',101=>'product',102=>'product',103=>'product',200=>'product'];
-$GLOBALS['statuses']=[1=>'publish',101=>'publish',102=>'publish',103=>'publish',200=>'publish'];
-$GLOBALS['meta']=[1=>['_roxy_pricing_profile'=>'movie_evening','_roxy_pid_adult'=>101,'_roxy_pid_discount'=>102,'_roxy_start'=>current_datetime()->modify('-30 minutes')->format('Y-m-d\TH:i'),'_roxy_duration_minutes'=>'60'],101=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'adult'],102=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'discount'],103=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'adult']];
+$GLOBALS['types']=[1=>'roxy_showing',101=>'product',102=>'product',103=>'product',104=>'product',200=>'product'];
+$GLOBALS['statuses']=[1=>'publish',101=>'publish',102=>'publish',103=>'publish',104=>'publish',200=>'publish'];
+$GLOBALS['meta']=[1=>['_roxy_pricing_profile'=>'movie_evening','_roxy_pid_adult'=>101,'_roxy_pid_discount'=>102,'_roxy_pid_subscriber'=>104,'_roxy_start'=>current_datetime()->modify('-30 minutes')->format('Y-m-d\TH:i'),'_roxy_duration_minutes'=>'60'],101=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'adult'],102=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'discount'],103=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'adult'],104=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'subscriber']];
 set_error_handler(static function($severity,$message,$file,$line){if(!(error_reporting()&$severity))return false;throw new \ErrorException($message,0,$severity,$file,$line);});
 check(\RoxyST\Eligibility::showing_sales_open(1),'show remains eligible before its calculated end');
+\RoxyST\Products::ensure_products_for_showing(1);
+check(\RoxyST\Issuance::$lease_acquired===1 && \RoxyST\Issuance::$lease_released===1 && \RoxyST\Issuance::$ownership_checks>0,'ticket-product synchronization holds and verifies the shared seat-claim lease');
+check(!isset($GLOBALS['transients']['roxy_st_sync_1']),'successful ticket-product synchronization releases its secondary sync lock');
+$GLOBALS['statuses'][103]='publish';
+$GLOBALS['writes']=[]; $GLOBALS['capacity_locks']=[];
+$writes_before_lease_failure=count($GLOBALS['writes']); $meta_before_lease_failure=$GLOBALS['meta'][1];
+\RoxyST\Issuance::$lease_fail=true; \RoxyST\Products::ensure_products_for_showing(1); \RoxyST\Issuance::$lease_fail=false;
+check(count($GLOBALS['writes'])===$writes_before_lease_failure && $GLOBALS['meta'][1]===$meta_before_lease_failure && !isset($GLOBALS['transients']['roxy_st_sync_1']),'ticket-product synchronization fails closed when the seat lease is unavailable');
+$lease_releases_before_sync_conflict=\RoxyST\Issuance::$lease_released;
+set_transient('roxy_st_sync_1',1,30); \RoxyST\Products::ensure_products_for_showing(1); unset($GLOBALS['transients']['roxy_st_sync_1']);
+check(\RoxyST\Issuance::$lease_released===$lease_releases_before_sync_conflict+1 && count($GLOBALS['writes'])===$writes_before_lease_failure,'overlapping product sync releases its seat lease without changing products');
+$lease_releases_before_status_change=\RoxyST\Issuance::$lease_released;
+\RoxyST\Issuance::$unpublish_on_lease=true; \RoxyST\Products::ensure_products_for_showing(1); \RoxyST\Issuance::$unpublish_on_lease=false; $GLOBALS['statuses'][1]='publish';
+check(\RoxyST\Issuance::$lease_released===$lease_releases_before_status_change+1 && count($GLOBALS['writes'])===$writes_before_lease_failure && !isset($GLOBALS['transients']['roxy_st_sync_1']),'product sync rechecks showing readiness after acquiring the seat lease');
 $show_end=\RoxyST\Eligibility::showing_end_timestamp(1);
 check($show_end!==null && \RoxyST\Eligibility::showing_sales_open(1,$show_end-1) && !\RoxyST\Eligibility::showing_sales_open(1,$show_end),'sales cutoff is exclusive at the actual showing end');
 $cleanup=new ReflectionMethod(\RoxyST\Products::class,'trash_products_for_expired_showing'); $cleanup->setAccessible(true);

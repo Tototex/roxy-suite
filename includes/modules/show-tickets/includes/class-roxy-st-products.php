@@ -132,11 +132,28 @@ class Products {
       return;
     }
 
+    if (!class_exists(Issuance::class)) return;
+    $seat_lease = new Issuance([], 'walkup:' . $showing_id);
+    try {
+      $seat_lease->acquire_lease();
+    } catch (\Throwable $error) {
+      return;
+    }
+
+    // The showing could have changed between the initial readiness check and
+    // obtaining the shared seat lease. Recheck while coordinated with saves.
+    if (!self::showing_is_ready_for_products($showing_id)) {
+      $seat_lease->release_lease();
+      return;
+    }
+
     if (!self::acquire_sync_lock($showing_id)) {
+      $seat_lease->release_lease();
       return;
     }
 
     try {
+      $seat_lease->assert_owner();
       $profile = get_post_meta($showing_id, '_roxy_pricing_profile', true) ?: 'movie_evening';
 
     $title = trim((string) get_the_title($showing_id));
@@ -174,9 +191,12 @@ class Products {
       $existing = self::canonical_product_id($showing_id, $type, $existing);
 
       $prod_title = trim($title . ($start_label ? " — {$start_label}" : '') . " ({$cfg['label']})");
+      $seat_lease->assert_owner();
       $product_id = self::upsert_product($existing, $prod_title, $cfg['price'], $showing_id, $type, $thumb_id);
+      $seat_lease->assert_owner();
       if ($product_id) {
         update_post_meta($showing_id, $meta_key, (int) $product_id);
+        $seat_lease->assert_owner();
       }
     }
 
@@ -184,6 +204,7 @@ class Products {
     foreach ($all_types as $t) {
       if (!isset($need[$t])) {
         $k = self::type_to_meta_key($t);
+        $seat_lease->assert_owner();
         $existing = (int) get_post_meta($showing_id, $k, true);
         if ($existing > 0 && get_post_type($existing) === 'product' && get_post_status($existing) !== 'trash') {
           wp_trash_post($existing);
@@ -193,11 +214,14 @@ class Products {
             wp_trash_post($extra_id);
           }
         }
+        $seat_lease->assert_owner();
         delete_post_meta($showing_id, $k);
+        $seat_lease->assert_owner();
       }
     }
     } finally {
       self::release_sync_lock($showing_id);
+      $seat_lease->release_lease();
     }
   }
 
