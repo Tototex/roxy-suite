@@ -35,7 +35,8 @@ try {
     $row=$reset();$row['id']=2;$row['post_key']='PRIVATE-shared';$row['status']='draft';$row['cleanup_after']=null;$wpdb->insert($table,$row);
     $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0&&$store::find(1)['temporary_attachment_id']!==null,'actual shared Social row prevents media deletion');
     $reset();$GLOBALS['cleanup53_delete_fail']=true;
-    $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===1&&$store::find(1)['temporary_attachment_id']!==null,'failed virtual deletion preserves actual SQL pointer');
+    $failed_delete_result=$store::cleanup_expired();$failed_delete_row=$store::find(1);
+    $assert($failed_delete_result===0&&$GLOBALS['cleanup53_delete_calls']===1&&($failed_delete_row['temporary_attachment_id']??null)!==null,'failed virtual deletion preserves actual SQL pointer; '.json_encode(['result'=>$failed_delete_result,'delete_calls'=>$GLOBALS['cleanup53_delete_calls'],'attachment_id'=>$failed_delete_row['temporary_attachment_id']??null,'db_error'=>$wpdb->last_error]));
     $GLOBALS['cleanup53_delete_fail']=false;
     $assert($store::cleanup_expired()===1&&$GLOBALS['cleanup53_delete_calls']===2&&$store::find(1)['temporary_attachment_id']===null,'retry succeeds and guarded SQL clears pointer only afterward');
     $reset();$GLOBALS['cleanup53_exists']=false;

@@ -274,7 +274,7 @@ final class Store {
             '%i:' . $attachment_id . ';%',
             '%"' . $attachment_id . '"%',
         ];
-        $numeric_id_pattern = '(^|[:,][[:space:]]*|[[][[:space:]]*)' . $attachment_id . '([[:space:]]*[,}]|[]][[:space:]]*|$)';
+        $numeric_id_pattern = '(^|[:,][[:space:]]*|\\[[[:space:]]*)' . $attachment_id . '([[:space:]]*[,}]|\\][[:space:]]*|$)';
         $stores = [
             [$wpdb->postmeta, 'meta_value', 'meta_id'],
             [$wpdb->usermeta, 'meta_value', 'umeta_id'],
