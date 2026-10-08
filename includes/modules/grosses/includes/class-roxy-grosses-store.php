@@ -1091,6 +1091,50 @@ class Store {
     return is_array($rows) ? $rows : [];
   }
 
+  /** Read every row for one allocation day without the admin table's 1,000-row page cap. */
+  public static function list_all_entries_for_rebalance(string $dataset, string $report_date): array {
+    global $wpdb;
+    $tables = [
+      'movie' => self::entries_table_name(),
+      'live' => self::live_entries_table_name(),
+      'rental' => self::rental_entries_table_name(),
+    ];
+    if (!isset($tables[$dataset]) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date)) throw new \InvalidArgumentException('Invalid dataset or report date for concessions allocation.');
+    $date = \DateTimeImmutable::createFromFormat('!Y-m-d', $report_date, new \DateTimeZone('UTC'));
+    $errors = \DateTimeImmutable::getLastErrors();
+    if (!$date || $date->format('Y-m-d') !== $report_date || ($errors && ($errors['warning_count'] || $errors['error_count']))) throw new \InvalidArgumentException('Invalid calendar date for concessions allocation.');
+    $table = $tables[$dataset];
+    $maximum = $wpdb->get_var("SELECT MAX(id) FROM $table WHERE report_date = " . $wpdb->prepare('%s', $report_date));
+    if ($wpdb->last_error !== '') throw new \RuntimeException('Could not establish the concessions allocation read boundary.');
+    if ($maximum === null) return [];
+    if (!is_numeric($maximum) || (int) $maximum <= 0) throw new \RuntimeException('Concessions allocation read boundary is invalid.');
+    $maximum = (int) $maximum;
+    $cursor = 0;
+    $rows = [];
+    $seen = [];
+    for ($page = 0; $cursor < $maximum; $page++) {
+      if ($page >= 200) throw new \RuntimeException('Concessions allocation exceeded its per-day row safety limit.');
+      $batch = $wpdb->get_results($wpdb->prepare(
+        "SELECT * FROM $table WHERE report_date = %s AND id > %d AND id <= %d ORDER BY id ASC LIMIT 500",
+        $report_date,
+        $cursor,
+        $maximum
+      ), ARRAY_A);
+      if ($wpdb->last_error !== '' || !is_array($batch)) throw new \RuntimeException('Could not read all rows for the concessions allocation date.');
+      if (!$batch) break;
+      foreach ($batch as $row) {
+        $id = is_array($row) ? (int) ($row['id'] ?? 0) : 0;
+        if ($id <= $cursor || $id > $maximum || isset($seen[$id]) || (string) ($row['report_date'] ?? '') !== $report_date) throw new \RuntimeException('Concessions allocation page contained an invalid or repeated row.');
+        $seen[$id] = true;
+        $rows[] = $row;
+      }
+      $cursor = (int) ($batch[count($batch) - 1]['id'] ?? 0);
+      if ($cursor <= 0) throw new \RuntimeException('Concessions allocation pagination did not advance.');
+    }
+    if ($cursor < $maximum) throw new \RuntimeException('Concessions allocation rows changed or could not be read through the fixed boundary.');
+    return $rows;
+  }
+
   public static function count_entries(array $filters = []): int {
     global $wpdb;
     [$where, $params] = self::entry_where_sql($filters);

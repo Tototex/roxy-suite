@@ -44,6 +44,17 @@ namespace RoxyGrosses {
     public static function list_entries(array $filters = [], int $limit = 1000, int $offset = 0): array { return self::$movie[$filters['day'] ?? ''] ?? []; }
     public static function list_live_entries(array $filters = [], int $limit = 1000, int $offset = 0): array { return self::$live[$filters['day'] ?? ''] ?? []; }
     public static function list_rental_entries(array $filters = [], int $limit = 1000, int $offset = 0): array { return self::$rental[$filters['day'] ?? ''] ?? []; }
+    public static function list_all_entries_for_rebalance(string $dataset, string $date): array {
+      $rows = match ($dataset) { 'movie' => self::$movie[$date] ?? [], 'live' => self::$live[$date] ?? [], 'rental' => self::$rental[$date] ?? [], default => throw new \InvalidArgumentException('bad fixture dataset') };
+      $all = []; $cursor = 0;
+      for ($page = 0; $page < 200; $page++) {
+        $batch = array_slice($rows, $cursor, 500);
+        if (!$batch) return $all;
+        $all = array_merge($all, $batch);
+        $cursor += count($batch);
+      }
+      throw new \RuntimeException('fixture pagination safety exceeded');
+    }
     private static function save(string $kind, int $id, array $data): bool {
       self::$updates[] = [$kind, $id, $data];
       if (self::$fail_update) return false;
@@ -160,6 +171,21 @@ namespace {
     foreach ([\RoxyGrosses\Store::$movie,\RoxyGrosses\Store::$live,\RoxyGrosses\Store::$rental] as $dataset) $cents += (int) round((float) ($dataset[$date][0]['concessions_total'] ?? 0) * 100);
     $check($cents === 1001, "movie/live/rental allocation conserves all 1001 cents on {$date}");
   }
+
+  // The production allocator must include rows past the old 1,000-row cap.
+  $large_date = '2038-05-03';
+  for ($i = 1; $i <= 1001; $i++) \RoxyGrosses\Store::$movie[$large_date][] = [
+    'id' => 5000 + $i, 'show_time' => '7:00 PM', 'general_qty' => 1, 'discount_qty' => 0,
+    'group_qty' => 0, 'is_locked' => 0, 'concessions_total' => 0,
+  ];
+  \RoxyGrosses\Square::$orders[$large_date] = [[
+    'closed_at' => $large_date . 'T19:00:00-07:00',
+    'line_items' => [['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1001,'currency'=>'USD']]],
+  ]];
+  \RoxyGrosses\Store::$updates = [];
+  \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$large_date]));
+  $allocated_cents = array_sum(array_map(static fn(array $row): int => (int) round((float) ($row['concessions_total'] ?? 0) * 100), \RoxyGrosses\Store::$movie[$large_date]));
+  $check(count(\RoxyGrosses\Store::$updates) === 1001 && $allocated_cents === 1001, 'rebalance reads and conserves every row beyond the former 1,000-row cap');
 
   // A storage failure on an unlocked row must abort the allocation explicitly;
   // a locked row remains protected and is skipped rather than treated as failure.

@@ -1702,7 +1702,7 @@ class Reporter {
     }
 
     $reports = [];
-    foreach (Store::list_entries(['day' => $report_date], 1000, 0) as $row) {
+    foreach (Store::list_all_entries_for_rebalance('movie', $report_date) as $row) {
       $entry_id = (int) ($row['id'] ?? 0);
       if ($entry_id <= 0) {
         continue;
@@ -1720,7 +1720,7 @@ class Reporter {
       ];
     }
 
-    foreach (Store::list_live_entries(['day' => $report_date], 1000, 0) as $row) {
+    foreach (Store::list_all_entries_for_rebalance('live', $report_date) as $row) {
       $entry_id = (int) ($row['id'] ?? 0);
       if ($entry_id <= 0) {
         continue;
@@ -1739,7 +1739,7 @@ class Reporter {
       ];
     }
 
-    foreach (Store::list_rental_entries(['day' => $report_date], 1000, 0) as $row) {
+    foreach (Store::list_all_entries_for_rebalance('rental', $report_date) as $row) {
       $entry_id = (int) ($row['id'] ?? 0);
       if ($entry_id <= 0) {
         continue;
