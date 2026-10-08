@@ -15,7 +15,7 @@ A qualifying Square concession line that has no matching report row within the s
 - The reporter's multi-row failure fixture verifies the earlier update is restored when a later write fails.
 - An actual Reporter fixture with a $12.50 eligible Square line outside all show windows verifies the line is identified and no allocation rows are changed.
 - All 77 isolated cross-module regression scripts pass locally under PHP 8.3.35 with the mbstring and OpenSSL extensions enabled.
-- Hosted PHP compatibility run [37768619404](https://github.com/Tototex/roxy-suite/actions/runs/37768619404) passes PHP 8.0–8.4 syntax and the complete PHP 8.3 isolated suite.
+- Hosted PHP compatibility run [37769177810](https://github.com/Tototex/roxy-suite/actions/runs/37769177810) passes PHP 8.0–8.4 syntax and the complete PHP 8.3 isolated suite, including the unmatched-sale regression.
 
 ## Remaining
 
