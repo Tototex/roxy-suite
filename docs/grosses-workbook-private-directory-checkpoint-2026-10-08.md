@@ -8,9 +8,9 @@ files with one canonical deny-only policy. The policy uses Apache 2.4's
 `Require all denied` when `mod_authz_core` is present and falls back to Apache
 2.2's `Deny from all` otherwise. Repeated checks leave the file unchanged.
 
-Four isolated filesystem checks cover a fresh directory, partial-rule repair,
+Five isolated filesystem checks cover a fresh directory, partial-rule repair,
 weakened-rule repair, and idempotent repeated verification. The PHP 8.3 hosted
-cross-module run 37735806423 passes the new fixture and all 71 scripts in its
+cross-module run 37735979820 passes the new fixture and all 71 scripts in its
 isolated suite. PHP syntax and the focused regression matrix pass on PHP
 8.0–8.4.
 
