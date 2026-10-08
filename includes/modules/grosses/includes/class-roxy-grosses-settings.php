@@ -209,7 +209,7 @@ class Settings {
         $rows=$key==='film_mappings'?'8':'5';
         echo '<textarea class="large-text code" rows="'.esc_attr($rows).'" name="'.esc_attr($name).'">'.esc_textarea((string) $value).'</textarea>';
         if($key==='square_location_ids') echo '<p class="description">One Square location ID per line. Square requires at least one location ID for order searches.</p>';
-        elseif($key==='cashflow_woo_gateways') echo '<p class="description">Explicit WooCommerce payment method IDs to include in read-only financial totals, one per line (for example, the ID shown in WooCommerce payment settings). Leave blank to disable the combined cashflow report. Offline/manual gateways should not be included. Square access also requires the PAYMENTS_READ permission.</p>';
+        elseif($key==='cashflow_woo_gateways') echo '<p class="description">Explicit WooCommerce payment method IDs to include in read-only financial totals, one per line (for example, the ID shown in WooCommerce payment settings). Leave blank to disable the combined cashflow report. Offline/manual gateways and Square-backed WooCommerce gateways must not be included; Square is reported separately. Square access also requires the PAYMENTS_READ permission.</p>';
         elseif($key==='ticket_keywords') echo '<p class="description">One keyword per line. A line item must match at least one keyword to count as a ticket.</p>';
         elseif($key==='exclude_keywords') echo '<p class="description">One keyword per line. Matching line items are always ignored.</p>';
         elseif($key==='film_mappings') echo '<p class="description">One mapping per line in the format: match text|Comscore title|Film code.</p>';

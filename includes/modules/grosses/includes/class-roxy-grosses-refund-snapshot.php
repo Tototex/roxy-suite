@@ -294,8 +294,16 @@ final class WooRefundEvents {
   }
 
   /** API-confirmed refund events; manual refund records are deliberately excluded. */
-  public static function from_order_refunds(array $refunds): array {
+  public static function from_order_refunds(array $refunds, ?array $allowed_gateways = null): array {
     if (!self::is_list($refunds)) throw new \RuntimeException('WooCommerce returned an invalid refund list.');
+    if ($allowed_gateways !== null) {
+      if (!self::is_list($allowed_gateways) || !$allowed_gateways || !function_exists('wc_get_order')) throw new \RuntimeException('WooCommerce refund gateway verification is unavailable.');
+      $allowed = [];
+      foreach ($allowed_gateways as $gateway) {
+        if (!is_string($gateway) || !preg_match('/^[a-z0-9_-]{1,80}$/D', $gateway) || stripos($gateway, 'square') !== false) throw new \RuntimeException('WooCommerce refund gateway allow-list is invalid or overlaps Square collections.');
+        $allowed[$gateway] = true;
+      }
+    } else $allowed = null;
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $events = [];
     $seen = [];
@@ -313,6 +321,13 @@ final class WooRefundEvents {
       }
       $seen[$id] = true;
       if ($refund->get_refunded_payment() !== true) continue;
+      if ($allowed !== null) {
+        $parent = wc_get_order($order_id);
+        if (!is_object($parent) || !method_exists($parent, 'get_payment_method')) throw new \RuntimeException('WooCommerce could not verify the payment gateway for a refunded order.');
+        $gateway = $parent->get_payment_method();
+        if (!is_string($gateway) || $gateway === '') throw new \RuntimeException('WooCommerce refunded order has an invalid payment gateway.');
+        if (!isset($allowed[$gateway])) continue;
+      }
       if ($refund->get_currency() !== 'USD') throw new \RuntimeException('WooCommerce refund uses an unsupported currency.');
       $amount_cents = abs(self::amount_cents($refund->get_amount()));
       $created = $refund->get_date_created();
@@ -359,7 +374,7 @@ final class WooCollectionEvents {
     if (!self::is_list($orders) || !self::is_list($allowed_gateways) || !$allowed_gateways) throw new \RuntimeException('WooCommerce collection inputs are invalid.');
     $gateways = [];
     foreach ($allowed_gateways as $gateway) {
-      if (!is_string($gateway) || !preg_match('/^[a-z0-9_-]{1,80}$/D', $gateway) || isset($gateways[$gateway])) throw new \RuntimeException('WooCommerce collection gateway allow-list is invalid.');
+      if (!is_string($gateway) || !preg_match('/^[a-z0-9_-]{1,80}$/D', $gateway) || stripos($gateway, 'square') !== false || isset($gateways[$gateway])) throw new \RuntimeException('WooCommerce collection gateway allow-list is invalid or overlaps Square collections.');
       $gateways[$gateway] = true;
     }
     $timezone = new \DateTimeZone(Settings::get_report_timezone());

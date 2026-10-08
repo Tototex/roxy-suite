@@ -65,6 +65,7 @@ namespace {
     $pages = $GLOBALS['wc_page_counts'][$type] ?? 1;
     return (object) ['orders' => $rows, 'total_pages' => $pages];
   }
+  function wc_get_order(int $id) { return $GLOBALS['wc_parent_orders'][$id] ?? false; }
   function is_wp_error($value): bool { return false; }
 
   require_once __DIR__ . '/../includes/modules/grosses/includes/class-roxy-grosses-refund-snapshot.php';
@@ -80,12 +81,19 @@ namespace {
   ]];
   $GLOBALS['wc_pages'] = [
     'shop_order' => [1 => [new \RoxyGrosses\FakeOrder(21, 'stripe', '30.00', 'stripe-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z'))]],
-    'shop_order_refund' => [1 => [new \RoxyGrosses\FakeRefund(22, 21, '5.00', new \DateTimeImmutable('2026-10-03T04:00:00Z'))]],
+    'shop_order_refund' => [1 => [
+      new \RoxyGrosses\FakeRefund(22, 21, '5.00', new \DateTimeImmutable('2026-10-03T04:00:00Z')),
+      new \RoxyGrosses\FakeRefund(23, 99, '10.00', new \DateTimeImmutable('2026-10-03T05:00:00Z')),
+    ]],
+  ];
+  $GLOBALS['wc_parent_orders'] = [
+    21 => new \RoxyGrosses\FakeOrder(21, 'stripe', '30.00', 'stripe-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
+    99 => new \RoxyGrosses\FakeOrder(99, 'paypal', '20.00', 'paypal-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
   ];
   $GLOBALS['wc_page_counts'] = ['shop_order' => 1, 'shop_order_refund' => 1];
   $report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
   $assert($report['totals']['square_collected_cents'] === 1500 && $report['totals']['woocommerce_collected_cents'] === 3000, 'daily cashflow includes completed Square payment and allow-listed Woo paid amount, excluding non-completed payments');
-  $assert($report['totals']['square_refunded_cents'] === 200 && $report['totals']['woocommerce_refunded_cents'] === 500 && $report['totals']['net_cents'] === 3800, 'daily cashflow subtracts each provider refund on its refund date');
+  $assert($report['totals']['square_refunded_cents'] === 200 && $report['totals']['woocommerce_refunded_cents'] === 500 && $report['totals']['net_cents'] === 3800, 'daily cashflow subtracts approved-gateway provider refunds on their refund date and omits unapproved-gateway refunds');
   $assert($report['counts'] === ['square_collections'=>1,'woocommerce_collections'=>1,'square_refunds'=>1,'woocommerce_refunds'=>1], 'daily report counts only provider events attributed to selected local date');
   $assert($report['refund_date_bases']['square'] === ['square_updated_at_proxy'] && $report['refund_date_bases']['woocommerce'] === ['woocommerce_refund_creation_proxy'], 'daily report retains explicit refund-date provenance');
   $assert($GLOBALS['wc_queries'][0]['date_paid'] === '1790924400...1791010799' && $GLOBALS['wc_queries'][1]['date_created'] === '1790924400...1791010799', 'WooCommerce queries use exact UTC bounds for the report timezone day');
@@ -96,6 +104,10 @@ namespace {
   \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = 'stripe';
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-02-30'), 'invalid calendar date fails before provider reads');
   $assert(count(\RoxyGrosses\Square::$calls) === 2, 'invalid date and missing gateway configuration cause no additional provider reads');
+  \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = 'square_credit_card';
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'Square-backed Woo gateway cannot be added to separately reported Square collections');
+  $assert(count(\RoxyGrosses\Square::$calls) === 2, 'overlapping Square gateway configuration fails before provider reads');
+  \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = 'stripe';
 
   $GLOBALS['wc_queries'] = [];
   $page_one = [];

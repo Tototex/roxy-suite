@@ -71,6 +71,13 @@ final class CashflowReport {
     [$local_start, $local_end] = self::date_window($report_date);
     $gateways = Settings::line_list((string) Settings::get('cashflow_woo_gateways', ''));
     if (!$gateways) throw new \RuntimeException('Configure the WooCommerce online payment gateway IDs in Grosses settings before calculating a combined cashflow total.');
+    $seen_gateways = [];
+    foreach ($gateways as $gateway) {
+      if (!preg_match('/^[a-z0-9_-]{1,80}$/D', $gateway) || stripos($gateway, 'square') !== false || isset($seen_gateways[$gateway])) {
+        throw new \RuntimeException('WooCommerce gateway configuration is invalid or overlaps Square collections.');
+      }
+      $seen_gateways[$gateway] = true;
+    }
     $utc_start = $local_start->setTimezone(new \DateTimeZone('UTC'));
     $utc_end = $local_end->setTimezone(new \DateTimeZone('UTC'));
 
@@ -86,7 +93,7 @@ final class CashflowReport {
     $woo_orders = self::woo_objects('shop_order', 'date_paid', $start_timestamp, $end_timestamp);
     $woo_refund_rows = self::woo_objects('shop_order_refund', 'date_created', $start_timestamp, $end_timestamp);
     $woo_collections = WooCollectionEvents::from_orders($woo_orders, $gateways);
-    $woo_refunds = WooRefundEvents::from_order_refunds($woo_refund_rows);
+    $woo_refunds = WooRefundEvents::from_order_refunds($woo_refund_rows, $gateways);
 
     $days = CashflowProjection::daily_totals($square_collections, $woo_collections, $square_refunds, $woo_refunds);
     $totals = $days[$report_date] ?? [
