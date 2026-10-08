@@ -99,12 +99,15 @@ class Square {
                     $adjustment=$change['adjustment'];
                     $id=self::identity($adjustment['catalog_object_id']??null);
                     if (!in_array($id,$ids,true)) throw new \RuntimeException('Square returned an unrequested inventory adjustment.');
-                    $location=self::identity($adjustment['location_id']??null);
-                    if (!in_array($location,$locations,true)) throw new \RuntimeException('Square returned an adjustment for an unrequested location.');
                     $quantity=$adjustment['quantity']??null;
                     if (!is_string($quantity) || strlen($quantity)>26 || !preg_match('/^\\d+(?:\\.\\d{1,5})?$/D',$quantity) || !is_finite((float)$quantity)) throw new \RuntimeException('Square returned an invalid receipt quantity.');
                     $reason=$adjustment['reason_id']??null;
                     if (!is_array($reason) || ($reason['type']??'')!=='RECEIVED' || !in_array($adjustment['from_state']??'', ['NONE','UNLINKED_RETURN'], true) || ($adjustment['to_state']??'')!=='IN_STOCK' || (float)$quantity<=0) continue;
+                    // Square API versions from 2026-07-15 use explicit source/target locations.
+                    // For a receipt into IN_STOCK, the target location is the receiving site.
+                    $location_value=$adjustment['to_location_id']??($adjustment['location_id']??null);
+                    $location=self::identity($location_value);
+                    if (!in_array($location,$locations,true)) throw new \RuntimeException('Square returned a receipt for an unrequested location.');
                     $event_id=self::identity($adjustment['id']??null);
                     $created_at=$adjustment['created_at']??null; $occurred_at=$adjustment['occurred_at']??null;
                     $created_ts=is_string($created_at)?strtotime($created_at):false; $occurred_ts=is_string($occurred_at)?strtotime($occurred_at):false;

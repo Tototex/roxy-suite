@@ -94,6 +94,10 @@ T16 follow-up (2026-10-08): Product synchronization and public showing labels no
 
 Door ticket labels and the default door-showing picker now use strict local date parsing and compare real Unix timestamps; malformed ticket dates are omitted. Hosted run 37738884544 passes the full PHP matrix and isolated regression suite. Live/admin browser integration and the private WP-CLI duplicate fixture remain outstanding.
 
+## I4 live verification update — 2026-10-08
+
+This supersedes the earlier I4 note that the connected-account request was unverified. A guarded candidate read parsed 203 live catalog variations, made one receipt-history request for three actual ordered Inventory records, and matched before/after SHA-256 snapshots of the products, vendors, orders, and runs tables. It exposed Square's current API schema: from_location_id/to_location_id replaced location_id in version 2026-07-15. The candidate now uses the receipt destination and skips irrelevant sale adjustments before checking that destination. Fifty-eight focused checks pass against the candidate on host PHP 8.5; hosted cross-version/full-suite verification, release/deployment, and confirmation during the next actual delivery remain open. No live Inventory records or production code changed.
+
 ## Deferred opportunities
 
 - Advertising contracts/tracking on the website, monthly reporting, renewal management, and permission-based outreach: explicitly requested for follow-up after stability. Automatic renewal terms and payment authorization require a separate design review.
