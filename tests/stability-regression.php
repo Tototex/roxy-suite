@@ -44,7 +44,7 @@ $GLOBALS['shows'] = [1 => 'bad date'];
 check(roxy_eb_get_showing_blocks_for_range(new \DateTimeImmutable('2026-10-10'), new \DateTimeImmutable('2026-10-11')) === [], 'B1: malformed dates safely skipped');
 
 $rows = [];
-for ($id = 1; $id <= 500; $id++) $rows[$id] = ['vendor'=>'Vistar','pack_size'=>'12','reorder_point'=>'20','target_stock'=>'60','unit_cost'=>'1.53','override_qty'=>''];
+for ($id = 1; $id <= 500; $id++) $rows[$id] = ['vendor'=>'Vistar','pack_size'=>'12','reorder_point'=>'20','target_stock'=>'60','unit_cost'=>'1.53','unit_cost_status'=>'estimate','unit_cost_source'=>'legacy list','unit_cost_checked_at'=>'','supplier_sku'=>'','override_qty'=>''];
 $post = ['product_row_count'=>'500','product_rows_complete'=>'1','product_rows_json'=>json_encode($rows)];
 check(count(\RoxyInventory\Admin::product_rows_from_submission($post)) === 500, 'I1: 500 rows decoded from one form variable');
 unset($post['product_rows_complete']);
@@ -55,12 +55,12 @@ $post['product_row_count'] = '500'; unset($rows[500]['target_stock']); $post['pr
 check(\RoxyInventory\Admin::product_rows_from_submission($post) === null, 'I1: missing last-row field cannot become zero');
 $rows[500]['target_stock'] = '2.5'; $post['product_rows_json'] = json_encode($rows);
 check(\RoxyInventory\Admin::product_rows_from_submission($post) === null, 'I1: fractional quantity rejected');
-$fallback = ['product_row_count'=>'1','product_rows_complete'=>'1','vendor'=>[1=>'Vistar'],'pack_size'=>[1=>'12'],'reorder_point'=>[1=>'20'],'target_stock'=>[1=>'60'],'unit_cost'=>[1=>'1.53'],'override_qty'=>[1=>'']];
+$fallback = ['product_row_count'=>'1','product_rows_complete'=>'1','vendor'=>[1=>'Vistar'],'pack_size'=>[1=>'12'],'reorder_point'=>[1=>'20'],'target_stock'=>[1=>'60'],'unit_cost'=>[1=>'1.53'],'unit_cost_status'=>[1=>'estimate'],'unit_cost_source'=>[1=>'legacy list'],'unit_cost_checked_at'=>[1=>''],'supplier_sku'=>[1=>''],'override_qty'=>[1=>'']];
 check(count(\RoxyInventory\Admin::product_rows_from_submission($fallback)) === 1, 'I1: complete non-JavaScript fallback accepted');
 unset($fallback['target_stock']);
 check(\RoxyInventory\Admin::product_rows_from_submission($fallback) === null, 'I1: truncated fallback rejected');
 foreach(['bad_cost'=>['unit_cost'=>'1.555'],'overflow'=>['target_stock'=>'10000000000']]as$case=>$change){
-    $row=['vendor'=>'Vistar','pack_size'=>'12','reorder_point'=>'20','target_stock'=>'60','unit_cost'=>'1.50','override_qty'=>''];
+    $row=['vendor'=>'Vistar','pack_size'=>'12','reorder_point'=>'20','target_stock'=>'60','unit_cost'=>'1.50','unit_cost_status'=>'estimate','unit_cost_source'=>'legacy list','unit_cost_checked_at'=>'','supplier_sku'=>'','override_qty'=>''];
     $p=['product_rows_complete'=>'1','product_row_count'=>'1','product_rows_json'=>json_encode([1=>array_merge($row,$change)])];
     check(\RoxyInventory\Admin::product_rows_from_submission($p)===null,'I9: invalid rule '.$case.' rejected before writes');
 }

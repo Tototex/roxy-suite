@@ -79,7 +79,7 @@ if (($argv[1] ?? '') === '--worker') {
   $settings_post=static fn()=>['inventory_settings_complete'=>'1','jason_email'=>'manager@example.test','timezone'=>'America/Los_Angeles','schedule_time'=>'23:00','tripp_order_instructions'=>'Bottle instructions','odom_order_instructions'=>'Wine instructions'];
   switch($case) {
     case 'product_fail': case 'product_missing': case 'product_fraction': case 'product_bad_cost': case 'product_bad_vendor': case 'product_bad_id': case 'product_bad_status': case 'product_success': case 'product_untracked':
-      $_POST=['id'=>9,'vendor'=>'Fixture Vendor','pack_size'=>'12','reorder_point'=>'20','target_stock'=>'60','unit_cost'=>'1.50','override_qty'=>''];
+      $_POST=['id'=>9,'vendor'=>'Fixture Vendor','pack_size'=>'12','reorder_point'=>'20','target_stock'=>'60','unit_cost'=>'1.50','unit_cost_status'=>'estimate','unit_cost_source'=>'legacy estimate','unit_cost_checked_at'=>'','supplier_sku'=>'','override_qty'=>''];
       if($case==='product_missing')unset($_POST['target_stock']);
       if($case==='product_fraction')$_POST['pack_size']='1.5';
       if($case==='product_bad_cost')$_POST['unit_cost']='1.555';

@@ -191,6 +191,9 @@ namespace {
         check($direct['to'] === 'vendor@example.test', 'Direct order addressed to vendor');
         check(strpos($direct['body'], 'Manager review') === false, 'Direct email contains only vendor content');
     }
+    $priced_line=[['product'=>'Candy','quantity'=>1,'pack_size'=>12,'unit_cost'=>15.25,'unit_cost_status'=>'confirmed','unit_cost_source'=>'Vistar price book','unit_cost_checked_at'=>'2026-10-08','supplier_sku'=>'ABC123']];
+    $priced_email=\RoxyInventory\Admin::order_email($vendor,$priced_line,15.25,0,false);
+    check(strpos($priced_email['body'],'Supplier SKU: ABC123')!==false && strpos($priced_email['body'],'source: Vistar price book; checked: 2026-10-08')!==false,'Supplier SKU and quote provenance are included in forwarded order email');
     $wpdb->orders[1] = ['id' => 1, 'status' => 'pending_manager'];
     check(\RoxyInventory\Store::update_order_status(1, 'ordered'), 'Direct email marks order Ordered');
     check(\RoxyInventory\Settings::get('direct_vendor_sending_enabled') === '0', 'Approval remains enabled by default');

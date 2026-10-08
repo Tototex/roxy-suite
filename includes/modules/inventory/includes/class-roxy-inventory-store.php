@@ -120,6 +120,16 @@ class Store {
     public static function runs_table(): string { global $wpdb; return $wpdb->prefix . 'roxy_inventory_runs'; }
     public static function orders_table(): string { global $wpdb; return $wpdb->prefix . 'roxy_inventory_orders'; }
 
+    private static function ensure_product_column(string $name, string $definition): void {
+        global $wpdb;
+        $column = $wpdb->get_var($wpdb->prepare('SHOW COLUMNS FROM ' . self::products_table() . ' LIKE %s', $name));
+        self::checked_read();
+        if (!$column) self::checked_write($wpdb->query('ALTER TABLE ' . self::products_table() . ' ADD ' . $name . ' ' . $definition));
+        $column = $wpdb->get_var($wpdb->prepare('SHOW COLUMNS FROM ' . self::products_table() . ' LIKE %s', $name));
+        self::checked_read();
+        if (!$column) throw new \RuntimeException('Inventory product schema upgrade did not add the required ' . $name . ' field.');
+    }
+
     public static function install_schema(): void {
         global $wpdb; require_once ABSPATH . 'wp-admin/includes/upgrade.php'; $charset = $wpdb->get_charset_collate();
         dbDelta("CREATE TABLE " . self::products_table() . " (
@@ -128,6 +138,8 @@ class Store {
             vendor VARCHAR(100) NULL, tracking_status VARCHAR(20) NOT NULL DEFAULT 'tracked', active TINYINT(1) NOT NULL DEFAULT 1, on_hand DECIMAL(12,2) NOT NULL DEFAULT 0,
             pack_size DECIMAL(12,2) NOT NULL DEFAULT 1, reorder_point DECIMAL(12,2) NOT NULL DEFAULT 0,
             target_stock DECIMAL(12,2) NOT NULL DEFAULT 0, unit_cost DECIMAL(12,2) NOT NULL DEFAULT 0,
+            unit_cost_status VARCHAR(20) NOT NULL DEFAULT 'unknown', unit_cost_source VARCHAR(190) NULL,
+            unit_cost_checked_at DATE NULL, supplier_sku VARCHAR(190) NULL,
             override_qty DECIMAL(12,2) NULL, calculated_at DATETIME NULL, updated_at DATETIME NOT NULL,
             PRIMARY KEY (id), UNIQUE KEY square_variation_id (square_variation_id), KEY vendor (vendor), KEY active (active)
         ) $charset;");
@@ -148,8 +160,14 @@ class Store {
             payload LONGTEXT NULL, submission_key VARCHAR(64) NULL, created_at DATETIME NOT NULL,
             PRIMARY KEY (id), UNIQUE KEY submission_key (submission_key), KEY vendor (vendor), KEY created_at (created_at)
         ) $charset;");
-        if (!$wpdb->get_var("SHOW COLUMNS FROM " . self::products_table() . " LIKE 'tracking_status'")) {
-            self::checked_write($wpdb->query("ALTER TABLE " . self::products_table() . " ADD tracking_status VARCHAR(20) NOT NULL DEFAULT 'tracked' AFTER vendor"));
+        self::ensure_product_column('tracking_status', "VARCHAR(20) NOT NULL DEFAULT 'tracked' AFTER vendor");
+        self::ensure_product_column('unit_cost_status', "VARCHAR(20) NOT NULL DEFAULT 'unknown' AFTER unit_cost");
+        self::ensure_product_column('unit_cost_source', 'VARCHAR(190) NULL AFTER unit_cost_status');
+        self::ensure_product_column('unit_cost_checked_at', 'DATE NULL AFTER unit_cost_source');
+        self::ensure_product_column('supplier_sku', 'VARCHAR(190) NULL AFTER unit_cost_checked_at');
+        if (!get_option('roxy_inventory_cost_provenance_v1')) {
+            self::checked_write($wpdb->query("UPDATE " . self::products_table() . " SET unit_cost_status='estimate' WHERE unit_cost_status='unknown' AND unit_cost>0"));
+            if (!update_option('roxy_inventory_cost_provenance_v1', 1, false) && (int)get_option('roxy_inventory_cost_provenance_v1') !== 1) throw new \RuntimeException('Inventory cost provenance migration marker could not be saved.');
         }
         self::seed_vendors();
         if (!get_option('roxy_inventory_db_version')) self::apply_vendor_assignments();
@@ -236,6 +254,10 @@ class Store {
             $data['reorder_point'] = 0;
             $data['target_stock'] = 0;
             $data['unit_cost'] = 0;
+            $data['unit_cost_status'] = 'unknown';
+            $data['unit_cost_source'] = null;
+            $data['unit_cost_checked_at'] = null;
+            $data['supplier_sku'] = '';
             self::checked_write($wpdb->insert(self::products_table(), $data));
         }
     }
