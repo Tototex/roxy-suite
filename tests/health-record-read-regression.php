@@ -68,6 +68,20 @@ foreach (['count_error', 'lookup_error', 'throws'] as $fault) {
     $check($call('record_count_item', 'Records', 'wp_fixture')['status'] === 'warn', $fault . ' not green');
     $wpdb->$fault = false;
 }
+$table_item = new ReflectionMethod(\RoxySuite\Health::class, 'table_item');
+$wpdb->exists = true;
+$wpdb->lookup_error = false;
+$check($table_item->invoke(null, 'Fixture table', 'wp_fixture')['status'] === 'pass', 'existing table check is green only after verified lookup');
+$wpdb->lookup_error = true;
+$check($table_item->invoke(null, 'Fixture table', 'wp_fixture')['detail'] === 'Unavailable', 'table lookup failure is not reported as missing');
+$wpdb->lookup_error = false;
+$wpdb->exists = false;
+$check($table_item->invoke(null, 'Fixture table', 'wp_fixture')['status'] === 'fail', 'verified missing table remains a failure');
+$wpdb->exists = true;
+$check($table_item->invoke(null, 'Fixture table', 'wp_fixture;DROP')['status'] === 'warn', 'invalid table identity is unavailable');
+$wpdb->throws = true;
+$check($table_item->invoke(null, 'Fixture table', 'wp_fixture')['detail'] === 'Unavailable', 'thrown table lookup is unavailable');
+$wpdb->throws = false;
 $wpdb->exists = false;
 $check($call('record_count_item', 'Records', 'wp_fixture')['status'] === 'warn', 'missing table not empty');
 $wpdb->exists = true;

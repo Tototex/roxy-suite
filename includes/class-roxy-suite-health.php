@@ -139,12 +139,8 @@ class Health {
 
         global $wpdb;
         $table  = $wpdb->prefix . 'roxy_will_call_checkins';
-        $exists = self::table_exists($table);
-
         return self::module('Will Call', admin_url('admin.php?page=roxy-will-call'), [
-            self::item($table, $exists ? 'Exists' : 'Missing',
-                $exists ? self::PASS : self::FAIL,
-                $exists ? '' : 'Reactivate plugin to rebuild'),
+            self::table_item($table, $table, 'Reactivate plugin to rebuild'),
         ], 'will_call');
     }
 
@@ -155,13 +151,12 @@ class Health {
 
         global $wpdb;
         $table = $wpdb->prefix . 'roxy_requested_showing_backings';
-        $exists = self::table_exists($table);
         $cpt = post_type_exists('roxy_req_showing');
         $cron = (bool) wp_next_scheduled('roxy_rs_daily_review');
 
         return self::module('Requested Showings', admin_url('admin.php?page=roxy-requested-showings'), [
             self::item('roxy_req_showing CPT', $cpt ? 'Registered' : 'Missing', $cpt ? self::PASS : self::FAIL),
-            self::item($table, $exists ? 'Exists' : 'Missing', $exists ? self::PASS : self::FAIL),
+            self::table_item($table, $table),
             self::item('Daily review cron', $cron ? 'Scheduled' : 'Missing', $cron ? self::PASS : self::WARN),
         ], 'requested_showings');
     }
@@ -173,7 +168,6 @@ class Health {
 
         global $wpdb;
         $table  = $wpdb->prefix . 'roxy_member_scans';
-        $t_ok   = self::table_exists($table);
 
         // /member-check/ is a custom rewrite rule, not a real WP page
         $rules   = get_option('rewrite_rules', []);
@@ -182,8 +176,7 @@ class Health {
         $wcs = class_exists('WC_Subscriptions') || class_exists('WC_Subscriptions_Manager');
 
         return self::module('Member Check', admin_url('admin.php?page=roxy-scan-log'), [
-            self::item($table, $t_ok ? 'Exists' : 'Missing',
-                $t_ok ? self::PASS : self::FAIL),
+            self::table_item($table, $table),
             self::item('/member-check/ rewrite rule', $rule_ok ? 'Active' : 'Missing',
                 $rule_ok ? self::PASS : self::FAIL,
                 $rule_ok ? '' : 'Go to Settings → Permalinks and click Save Changes to flush rewrite rules'),
@@ -210,9 +203,9 @@ class Health {
         $product_ok  = $product_id > 0 && get_post($product_id) instanceof \WP_Post;
 
         return self::module('Event Booking', admin_url('admin.php?page=roxy-event-booking'), [
-            self::item($t_b,  self::table_exists($t_b)  ? 'Exists' : 'Missing', self::table_exists($t_b)  ? self::PASS : self::FAIL),
-            self::item($t_bl, self::table_exists($t_bl) ? 'Exists' : 'Missing', self::table_exists($t_bl) ? self::PASS : self::FAIL),
-            self::item($t_l,  self::table_exists($t_l)  ? 'Exists' : 'Missing', self::table_exists($t_l)  ? self::PASS : self::FAIL),
+            self::table_item($t_b, $t_b),
+            self::table_item($t_bl, $t_bl),
+            self::table_item($t_l, $t_l),
             self::item('Sling mode', ucfirst($sling_mode),
                 $sling_mode === 'disabled' ? self::WARN : self::PASS,
                 $sling_mode === 'disabled' ? 'Sling scheduling is off' : ''),
@@ -272,13 +265,11 @@ class Health {
 
         global $wpdb;
         $table           = $wpdb->prefix . 'roxy_arcade_scores';
-        $exists          = self::table_exists($table);
         $rewards_enabled = (bool) get_option('roxy_arcade_rewards_enabled', 0);
         $cron            = (bool) wp_next_scheduled('roxy_arcade_monthly_award');
 
         return self::module('Arcade', admin_url('admin.php?page=roxy-arcade-settings'), [
-            self::item($table, $exists ? 'Exists' : 'Missing',
-                $exists ? self::PASS : self::FAIL),
+            self::table_item($table, $table),
             self::item('Monthly award cron',
                 $cron ? 'Scheduled' : ($rewards_enabled ? 'Not scheduled' : 'Not needed (rewards off)'),
                 (!$cron && $rewards_enabled) ? self::WARN : self::PASS,
@@ -294,8 +285,6 @@ class Health {
         global $wpdb;
         $t_reports = $wpdb->prefix . 'roxy_grosses_reports';
         $t_logs = $wpdb->prefix . 'roxy_grosses_logs';
-        $t_r_ok    = self::table_exists($t_reports);
-        $t_l_ok    = self::table_exists($t_logs);
 
         $settings       = get_option('roxy_grosses_settings', []);
         $has_token      = !empty($settings['square_access_token']);
@@ -320,12 +309,8 @@ class Health {
         );
 
         return self::module('Grosses', admin_url('admin.php?page=roxy-grosses'), [
-            self::item($t_reports, $t_r_ok ? 'Exists' : 'Missing',
-                $t_r_ok ? self::PASS : self::FAIL,
-                $t_r_ok ? '' : 'Reactivate plugin to create table'),
-            self::item($t_logs, $t_l_ok ? 'Exists' : 'Missing',
-                $t_l_ok ? self::PASS : self::FAIL,
-                $t_l_ok ? '' : 'Reactivate plugin to create table'),
+            self::table_item($t_reports, $t_reports, 'Reactivate plugin to create table'),
+            self::table_item($t_logs, $t_logs, 'Reactivate plugin to create table'),
             self::item('Square access token', $has_token ? 'Configured' : 'Not set',
                 $has_token ? self::PASS : self::WARN,
                 $has_token ? '' : 'Add a Square token in Grosses → Settings'),
@@ -395,8 +380,7 @@ class Health {
         $items = [];
         foreach (['products', 'vendors', 'orders', 'runs'] as $suffix) {
             $table = $wpdb->prefix . 'roxy_inventory_' . $suffix;
-            $exists = self::table_exists($table);
-            $items[] = self::item($table, $exists ? 'Exists' : 'Missing', $exists ? self::PASS : self::FAIL);
+            $items[] = self::table_item($table, $table);
         }
         $enabled = (get_option('roxy_inventory_settings', [])['schedule_enabled'] ?? '1') === '1';
         $scheduled = wp_next_scheduled('roxy_inventory_nightly_pull');
@@ -410,8 +394,7 @@ class Health {
         if (!self::module_enabled('social_publisher')) return self::module('Social Publisher', $link, [], 'social_publisher');
         global $wpdb;
         $table = $wpdb->prefix . 'roxy_social_posts';
-        $exists = self::table_exists($table);
-        $items = [self::item($table, $exists ? 'Exists' : 'Missing', $exists ? self::PASS : self::FAIL)];
+        $items = [self::table_item($table, $table)];
         foreach (['roxy_social_publish_due', 'roxy_social_cleanup'] as $hook) {
             $scheduled = wp_next_scheduled($hook);
             $items[] = self::item($hook, $scheduled ? 'Scheduled' : 'Missing', $scheduled ? self::PASS : self::WARN);
@@ -875,6 +858,22 @@ class Health {
 
     private static function module_enabled(string $key): bool {
         return roxy_suite_module_enabled($key);
+    }
+
+    /** Distinguish a verified missing table from a failed existence query. */
+    private static function table_item(string $label, string $table, string $missing_note = ''): array {
+        global $wpdb;
+        try {
+            if (!preg_match('/^[a-zA-Z0-9_]+$/D', $table)) throw new \RuntimeException('Invalid table identity.');
+            $wpdb->last_error = '';
+            $exists = self::table_exists($table);
+            if ($wpdb->last_error !== '') throw new \RuntimeException('Table existence could not be verified.');
+            return $exists
+                ? self::item($label, 'Exists', self::PASS)
+                : self::item($label, 'Missing', self::FAIL, $missing_note);
+        } catch (\Throwable $error) {
+            return self::item($label, 'Unavailable', self::WARN, 'The database could not verify whether this table exists.');
+        }
     }
 
     private static function table_exists(string $table): bool {
