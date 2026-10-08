@@ -149,6 +149,9 @@ namespace {
   $assert(count($all_financial) === 1 && $all_financial[0]['refund_id'] === 'refund-unlinked' && $all_financial[0]['order_id'] === null, 'unlinked completed Square refund is retained as a financial event while pending refund is excluded');
   $assert($all_financial[0]['refund_date'] === '2026-08-14' && $all_financial[0]['amount_cents'] === 250, 'unlinked refund keeps exact cents and uses the Pacific date derived from updated_at');
   $expect_throw(static fn() => $snapshot_class::from_financial_refund_feed([$unlinked_refund, $unlinked_refund]), 'duplicate financial refund identities fail closed');
+  $expect_throw(static fn() => $snapshot_class::from_financial_refund_feed([array_replace($unlinked_refund, ['payment_id' => ''])])->completed_financial_refunds(), 'completed refund without a payment identity fails closed');
+  $expect_throw(static fn() => $snapshot_class::from_financial_refund_feed([array_replace($unlinked_refund, ['amount_money' => ['amount' => '250', 'currency' => 'USD']])])->completed_financial_refunds(), 'non-integer refund cents fail closed');
+  $expect_throw(static fn() => $snapshot_class::from_financial_refund_feed([array_replace($unlinked_refund, ['updated_at' => '2026-02-30T07:30:00Z'])])->completed_financial_refunds(), 'invalid unlinked refund timestamp fails closed');
   \RoxyGrosses\Square::$refunds['payment-financial_refund-financial']['updated_at'] = '2026-02-30T06:30:00Z';
   $expect_throw(static fn() => $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z'))->completed_return_financial_refunds(), 'invalid completed refund date must fail closed');
   \RoxyGrosses\Square::$refunds['payment-financial_refund-financial']['updated_at'] = '2026-08-14T06:30:00Z';
