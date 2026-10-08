@@ -47,6 +47,11 @@ namespace RoxyGrosses {
 namespace {
   if (!defined('ABSPATH')) define('ABSPATH', sys_get_temp_dir() . DIRECTORY_SEPARATOR);
   if (!defined('DAY_IN_SECONDS')) define('DAY_IN_SECONDS', 86400);
+  $private_content_dir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'roxy-advertiser-private-' . bin2hex(random_bytes(8));
+  if (!mkdir($private_content_dir, 0700)) throw new RuntimeException('Could not create private workbook test root.');
+  define('WP_CONTENT_DIR', $private_content_dir);
+  function trailingslashit($path): string { return rtrim((string) $path, '/\\') . DIRECTORY_SEPARATOR; }
+  function wp_mkdir_p($path): bool { return is_dir($path) || mkdir($path, 0700, true); }
   function wp_date($format, $timestamp = null, $timezone = null): string { return '2026-10-07 12:00:00'; }
   function is_email($email): bool { return filter_var($email, FILTER_VALIDATE_EMAIL) !== false; }
   function wp_mail($to, $subject, $body, $headers = [], $attachments = []): bool {
@@ -55,6 +60,7 @@ namespace {
     if (!is_file($attachment) || file_get_contents($attachment) !== 'private advertiser workbook fixture') {
       throw new RuntimeException('Unexpected advertiser attachment.');
     }
+    if (!empty($GLOBALS['advertiser_mail_throw'])) throw new RuntimeException('fixture mail transport exception');
     return (bool) ($GLOBALS['advertiser_mail_result'] ?? true);
   }
 
@@ -62,21 +68,18 @@ namespace {
   if (!is_file($candidate)) throw new RuntimeException('Workbook candidate is missing.');
   $source = file_get_contents($candidate);
   if (!is_string($source)) throw new RuntimeException('Could not read Workbook candidate.');
-  $start = strpos($source, 'private static function build_advertiser_workbook_file(');
-  if ($start === false) throw new RuntimeException('Advertiser workbook builder not found.');
+  $start = strpos($source, 'private static function write_simple_xlsx(');
+  if ($start === false) throw new RuntimeException('Advertiser workbook writer not found.');
   $next = preg_match('/\n  (?:public|private|protected) static function /', $source, $match, PREG_OFFSET_CAPTURE, $start + 1)
     ? $match[0][1] : strlen($source);
   $method = substr($source, $start, $next - $start);
   $brace = strpos($method, '{');
-  if ($brace === false) throw new RuntimeException('Advertiser workbook builder body not found.');
-  $method = substr($method, 0, $brace) . '{ return $GLOBALS[\'advertiser_fixture_file\']; }' . "\n";
+  if ($brace === false) throw new RuntimeException('Advertiser workbook writer body not found.');
+  $method = substr($method, 0, $brace) . '{ $GLOBALS[\'advertiser_fixture_files\'][] = $path; if (file_put_contents($path, \'private advertiser workbook fixture\') === false) throw new RuntimeException(\'Could not write advertiser fixture attachment.\'); }' . "\n";
   $source = substr_replace($source, $method, $start, $next - $start);
   eval('?>' . $source);
 
-  $GLOBALS['advertiser_fixture_file'] = tempnam(sys_get_temp_dir(), 'roxy-advertiser-fixture-');
-  if (!is_string($GLOBALS['advertiser_fixture_file']) || file_put_contents($GLOBALS['advertiser_fixture_file'], 'private advertiser workbook fixture') === false) {
-    throw new RuntimeException('Could not create the private fixture attachment.');
-  }
+  $GLOBALS['advertiser_fixture_files'] = [];
   $GLOBALS['advertiser_mail_calls'] = [];
   $GLOBALS['advertiser_mail_result'] = true;
   $checks = 0;
@@ -105,8 +108,23 @@ namespace {
     $blocked_retry = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 8, 'scheduled-advertiser', 2026, 8);
     $check(empty($uncertain['success']) && $uncertain_count === 3, 'unconfirmed advertiser mail outcome fails closed');
     $check(empty($blocked_retry['success']) && count($GLOBALS['advertiser_mail_calls']) === $uncertain_count, 'uncertain advertiser outcome blocks retry across modes');
+    $GLOBALS['advertiser_mail_result'] = true;
+    $GLOBALS['advertiser_mail_throw'] = true;
+    $thrown = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 8, 'manual-advertiser', 2026, 8, '123e4567-e89b-42d3-a456-426614174001', true);
+    unset($GLOBALS['advertiser_mail_throw']);
+    $check(empty($thrown['success']) && count($GLOBALS['advertiser_mail_calls']) === 4, 'thrown advertiser mail outcome is recorded as uncertain');
+    $attachment_paths = array_column($GLOBALS['advertiser_mail_calls'], 'attachment');
+    $check(count(array_unique($attachment_paths)) === count($attachment_paths), 'each advertiser send receives a distinct workbook attachment path');
+    $check(count(array_filter($attachment_paths, 'is_file')) === 0, 'private advertiser attachments are removed after each mail attempt');
     echo "Passed {$checks} advertiser email outbox checks; all mail was intercepted.\n";
   } finally {
-    if (is_file($GLOBALS['advertiser_fixture_file'])) unlink($GLOBALS['advertiser_fixture_file']);
+    foreach ($GLOBALS['advertiser_fixture_files'] as $fixture_file) if (is_file($fixture_file)) unlink($fixture_file);
+    $advertiser_dir = $private_content_dir . DIRECTORY_SEPARATOR . 'roxy-grosses-private' . DIRECTORY_SEPARATOR . 'advertiser';
+    foreach (['index.html', '.htaccess'] as $file) if (is_file($advertiser_dir . DIRECTORY_SEPARATOR . $file)) unlink($advertiser_dir . DIRECTORY_SEPARATOR . $file);
+    if (is_dir($advertiser_dir)) rmdir($advertiser_dir);
+    $private_root = dirname($advertiser_dir);
+    foreach (['index.html', '.htaccess'] as $file) if (is_file($private_root . DIRECTORY_SEPARATOR . $file)) unlink($private_root . DIRECTORY_SEPARATOR . $file);
+    if (is_dir($private_root)) rmdir($private_root);
+    if (is_dir($private_content_dir)) rmdir($private_content_dir);
   }
 }

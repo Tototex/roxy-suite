@@ -352,6 +352,7 @@ class Workbook {
       return ['success' => false, 'message' => $message];
     }
 
+    $workbook_path = '';
     try {
       $rows = self::advertiser_rows_for_period($year, $month, $end_year, $end_month);
       $period_totals = self::advertiser_totals_for_period($year, $month, $end_year, $end_month);
@@ -498,6 +499,10 @@ class Workbook {
       ]);
       Reporter::notify_admin_failure('Advertiser summary email failed', $report_date, $mode, $e->getMessage());
       return ['success' => false, 'message' => $e->getMessage()];
+    } finally {
+      if ($workbook_path !== '' && is_file($workbook_path) && !@unlink($workbook_path)) {
+        error_log('Roxy Grosses: unable to remove a private advertiser workbook attachment.');
+      }
     }
   }
 
@@ -1073,8 +1078,13 @@ class Workbook {
     if ($start_year !== $end_year || $start_month !== $end_month) {
       $range_suffix .= '-to-' . sprintf('%04d-%02d', $end_year, $end_month);
     }
-    $path = trailingslashit($dir) . 'advertiser-summary-' . $range_suffix . '.xlsx';
-    self::write_simple_xlsx($path, 'Advertiser Summary', $rows);
+    $path = trailingslashit($dir) . 'advertiser-summary-' . $range_suffix . '-' . self::new_send_request_id() . '.xlsx';
+    try {
+      self::write_simple_xlsx($path, 'Advertiser Summary', $rows);
+    } catch (\Throwable $error) {
+      if (is_file($path)) @unlink($path);
+      throw $error;
+    }
     return $path;
   }
 
