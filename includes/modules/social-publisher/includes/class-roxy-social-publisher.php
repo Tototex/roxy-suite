@@ -33,8 +33,15 @@ final class Publisher {
                 return self::save_result((int) $stale_id, 'needs_review', 'The publishing worker was interrupted. Review remote accounts before approving another attempt; recorded platform IDs have been retained.');
             });
         }
-        $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . Store::table_name() . ' WHERE ((status = %s) OR (status = %s AND instagram_media_id IS NULL AND last_error LIKE %s)) AND scheduled_for <= %s ORDER BY scheduled_for ASC, id ASC LIMIT 3', 'approved', 'failed', '%Media ID is not available%', current_time('mysql')), ARRAY_A) ?: [];
-        foreach ($rows as $row) self::queue_publish((int) $row['id']);
+        $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . Store::table_name() . ' WHERE ((status = %s) OR (status = %s AND instagram_media_id IS NULL AND (last_error LIKE %s OR last_error LIKE %s))) AND scheduled_for <= %s ORDER BY scheduled_for ASC, id ASC LIMIT 3', 'approved', 'failed', '%Instagram video is still processing%', '%Media ID is not available%', current_time('mysql')), ARRAY_A) ?: [];
+        foreach ($rows as $row) {
+            $attempt = 0;
+            if ((string) ($row['status'] ?? '') === 'failed' && stripos((string) ($row['last_error'] ?? ''), 'Instagram video is still processing') !== false) {
+                $attempt = 5;
+                if (preg_match('/status check ([0-4]) of 5/i', (string) ($row['last_error'] ?? ''), $match)) $attempt = (int) $match[1] + 1;
+            }
+            self::queue_publish((int) $row['id'], $attempt);
+        }
     }
 
     public static function queue_publish_now(int $id): bool {
@@ -64,6 +71,8 @@ final class Publisher {
         if (!$row || (string) ($row['status'] ?? '') !== 'failed'
             || empty($row['instagram_container_id']) || !empty($row['instagram_media_id'])
             || stripos((string) ($row['last_error'] ?? ''), 'Instagram video is still processing') === false) return false;
+        if (!preg_match('/status check ([0-4]) of 5/i', (string) ($row['last_error'] ?? ''), $match)
+            || $video_attempt !== (int) $match[1] + 1) return false;
         return self::queue_publish($id, $video_attempt);
     }
 
@@ -137,6 +146,7 @@ final class Publisher {
             $row['instagram_media_id']=(string)$instagram['id'];
         }
         if (!empty($instagram['error']) && stripos((string) $instagram['error'], 'Instagram video is still processing') !== false) {
+            $instagram['error'] = 'Instagram video is still processing (status check ' . $video_attempt . ' of 5).';
             if ($video_attempt >= 5) {
                 $instagram['error'] = 'Instagram video is still processing after five scheduled status checks. Review the container and retry manually.';
                 $instagram['ambiguous'] = true;

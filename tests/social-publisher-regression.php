@@ -42,7 +42,7 @@ namespace {
     final class PublisherFixtureDb {
         public function prepare($sql,...$args){return $sql;}
         public function get_col($sql){return [1];}
-        public function get_results($sql,$format){return [];}
+        public function get_results($sql,$format){return $GLOBALS['due_rows']??[];}
     }
     function esc_url_raw($s){return $s;}
     function sanitize_text_field($s){return $s;}
@@ -154,10 +154,17 @@ namespace {
         &&count($GLOBALS['calls'])===1,'already-published container without a saved media ID requires review and is not republished');
 
     reset_fixture('instagram','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['instagram_container_id']='slow-container';
-    \RoxySocial\Store::$row['last_error']='Instagram video is still processing';
+    \RoxySocial\Store::$row['last_error']='Instagram video is still processing (status check 4 of 5)';
     check(\RoxySocial\Publisher::queue_video_status_retry(1,5),'fifth video status check is queued with an explicit attempt count');
     $GLOBALS['responses']=[response(['status_code'=>'IN_PROGRESS'])];\RoxySocial\Publisher::process_queued(1,5);
     check(\RoxySocial\Store::$row['status']==='needs_review'
         &&!array_filter($GLOBALS['scheduled_events'],static fn($event)=>$event[1]==='roxy_social_video_status_retry'),
         'video remaining in progress after five scheduled checks stops automatic polling');
+
+    reset_fixture('instagram','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['instagram_container_id']='legacy-container';
+    \RoxySocial\Store::$row['last_error']='Instagram video is still processing; the old retry event did not run';
+    $GLOBALS['wpdb']=new PublisherFixtureDb();$GLOBALS['due_rows']=[\RoxySocial\Store::$row];\RoxySocial\Publisher::publish_due();
+    check(\RoxySocial\Store::$row['status']==='publishing'&&$GLOBALS['scheduled_events'][0][1]==='roxy_social_publish_single'
+        &&$GLOBALS['scheduled_events'][0][2]===[1,5],
+        'legacy stuck video receives one final status-check recovery instead of an unbounded retry loop');
 }
