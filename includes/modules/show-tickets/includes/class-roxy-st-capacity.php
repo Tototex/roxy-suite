@@ -85,6 +85,10 @@ class Capacity {
   }
 
   public static function validate_add_to_cart(bool $passed, int $product_id, int $quantity, int $variation_id = 0): bool {
+    // This is a validation filter: never undo a rejection made by WooCommerce
+    // or an earlier validation callback.
+    if (!$passed) return false;
+
     $sid = (int) get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true);
     if (!$sid) return $passed;
 

@@ -19,6 +19,7 @@ eval('namespace RoxyST;class Reservations{static function quantity_for_showing($
 $root=$argv[1]??dirname(__DIR__);require $root.'/includes/modules/show-tickets/includes/class-roxy-st-capacity.php';
 $cart=new TestCart();$GLOBALS['woo']=(object)['cart'=>$cart];$GLOBALS['meta']=[50=>['_roxy_capacity'=>5],10=>['_roxy_showing_id'=>50,'_roxy_ticket_type'=>'adult']];$GLOBALS['sold']=2;$GLOBALS['walkups']=2;$GLOBALS['user_walkups']=2;$GLOBALS['notices']=[];
 check(\RoxyST\Capacity::remaining_seats_for_showing(50)===1,'remaining seats subtract ticket reservations and walk-ups once');
+check(!\RoxyST\Capacity::validate_add_to_cart(false,10,1),'capacity filter preserves an earlier add-to-cart rejection');
 check(\RoxyST\Capacity::validate_add_to_cart(true,10,1),'last remaining seat can be added');
 check(!\RoxyST\Capacity::validate_add_to_cart(true,10,2),'add-to-cart cannot exceed walk-up-adjusted availability');
 $cart->rows=['row'=>['product_id'=>10,'quantity'=>1]];
