@@ -6,7 +6,7 @@ $source=str_replace('namespace RoxyGrosses;','namespace RoxyGrossesFixture37;',$
 $maps=['roxy_grosses_entries'=>'roxy_fixture37_entries','roxy_grosses_live_entries'=>'roxy_fixture37_live','roxy_grosses_rental_entries'=>'roxy_fixture37_rentals','roxy_grosses_legacy_weekly'=>'roxy_fixture37_legacy'];
 foreach($maps as $old=>$new)$source=str_replace("'".$old."'","'".$new."'",$source);
 $source=str_replace("'roxy_grosses_row_lock_schema'","'roxy_fixture37_row_lock_schema'",$source);
-eval('namespace RoxyGrossesFixture37; class Metadata { public static $replace=false; public static function enrich_movie_row(array $row):array {return self::$replace?array_merge($row,["studio"=>"New Studio","genre"=>"New Genre"]):$row;} }');
+eval('namespace RoxyGrossesFixture37; class Metadata { public static $replace=false; public static function enrich_movie_row(array $row, bool $force = false, bool $allow_remote = true):array {return self::$replace?array_merge($row,["studio"=>"New Studio","genre"=>"New Genre"]):$row;} public static function metadata_for_movie(string $title, int $year = 0, bool $force = false):array {return ["studio"=>"New Studio","genre"=>"New Genre"];} }');
 eval('?>'.$source);
 $class=RoxyGrossesFixture37\Store::class;
 $tables=[]; $count=0;

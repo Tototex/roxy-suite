@@ -25,6 +25,98 @@ class Store {
   public const SCHEMA_VERSION = 'verified-3';
   private static ?bool $refund_review_schema_exists = null;
   private static int $refund_review_lock_depth = 0;
+  private const METADATA_ENRICH_HOOK = 'roxy_grosses_enrich_movie_metadata';
+
+  public static function init_metadata_enrichment(): void {
+    add_action(self::METADATA_ENRICH_HOOK, [__CLASS__, 'handle_metadata_enrichment_job'], 10, 3);
+  }
+
+  private static function schedule_metadata_enrichment(array $row, int $after_id = 0): bool {
+    $title = sanitize_text_field((string) ($row['movie_title'] ?? ''));
+    $date = (string) ($row['report_date'] ?? '');
+    if ($title === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/D', $date)
+      || (trim((string) ($row['studio'] ?? '')) !== '' && trim((string) ($row['genre'] ?? '')) !== '')) return true;
+    $year = (int) substr($date, 0, 4);
+    $args = [$title, $year, max(0, $after_id)];
+    if (wp_next_scheduled(self::METADATA_ENRICH_HOOK, $args)) return true;
+    $scheduled = wp_schedule_single_event(time() + 60, self::METADATA_ENRICH_HOOK, $args);
+    if ($scheduled && !is_wp_error($scheduled)) return true;
+    if (!is_wp_error($scheduled) && wp_next_scheduled(self::METADATA_ENRICH_HOOK, $args)) return true;
+    error_log('Roxy Grosses could not queue movie metadata enrichment for report entry; the primary report save succeeded.');
+    return false;
+  }
+
+  /** Enrich missing labels outside the report save request, filling blanks only. */
+  public static function handle_metadata_enrichment_job($title = '', $year = 0, $after_id = 0): void {
+    if (!is_string($title) || !is_numeric($year) || !is_numeric($after_id)) {
+      error_log('Roxy Grosses ignored a malformed background metadata-enrichment job.');
+      return;
+    }
+    try {
+      self::run_metadata_enrichment_job($title, (int) $year, (int) $after_id);
+    } catch (\Throwable $error) {
+      error_log('Roxy Grosses background metadata enrichment failed; report data was not changed: ' . substr($error->getMessage(), 0, 1000));
+    }
+  }
+
+  /** Public worker body kept separately so database fault paths are testable. */
+  public static function run_metadata_enrichment_job(string $title, int $year, int $after_id = 0): array {
+    global $wpdb;
+    $title = sanitize_text_field($title);
+    $year = max(0, $year);
+    $after_id = max(0, $after_id);
+    if ($title === '' || $year < 1900 || $year > 2200) throw new \InvalidArgumentException('Invalid movie metadata enrichment identity.');
+    $normalized = self::normalize_title($title);
+    $from = sprintf('%04d-01-01', $year);
+    $through = sprintf('%04d-12-31', $year);
+    $wpdb->last_error = '';
+    $rows = $wpdb->get_results($wpdb->prepare(
+      'SELECT id, report_date, normalized_title, studio, genre FROM ' . self::entries_table_name()
+      . ' WHERE normalized_title = %s AND report_date >= %s AND report_date <= %s AND id > %d AND is_locked = 0'
+      . " AND (studio IS NULL OR studio = '' OR genre IS NULL OR genre = '') ORDER BY id ASC LIMIT 100",
+      $normalized, $from, $through, $after_id
+    ), ARRAY_A);
+    if ($wpdb->last_error !== '' || !is_array($rows)) throw new \RuntimeException('Movie metadata enrichment could not read candidate rows.');
+    if (!$rows) return ['processed' => 0, 'updated' => 0, 'scheduled' => false];
+
+    $metadata = Metadata::metadata_for_movie($title, $year);
+    $studio = sanitize_text_field((string) ($metadata['studio'] ?? ''));
+    $genre = sanitize_text_field((string) ($metadata['genre'] ?? ''));
+    if ($studio === '' && $genre === '') return ['processed' => count($rows), 'updated' => 0, 'scheduled' => false];
+
+    $updated = 0;
+    $now = current_time('mysql');
+    foreach ($rows as $row) {
+      if (!is_array($row) || (int) ($row['id'] ?? 0) <= 0) throw new \RuntimeException('Movie metadata enrichment received a malformed candidate row.');
+      $set = ['updated_at = %s'];
+      $params = [$now];
+      if ($studio !== '') {
+        $set[] = "studio = IF(studio IS NULL OR studio = '', %s, studio)";
+        $params[] = $studio;
+      }
+      if ($genre !== '') {
+        $set[] = "genre = IF(genre IS NULL OR genre = '', %s, genre)";
+        $params[] = $genre;
+      }
+      if (count($set) === 1) break;
+      array_push($params, (int) $row['id'], $normalized, $from, $through);
+      $wpdb->last_error = '';
+      $result = $wpdb->query($wpdb->prepare(
+        'UPDATE ' . self::entries_table_name() . ' SET ' . implode(', ', $set)
+        . ' WHERE id = %d AND normalized_title = %s AND report_date >= %s AND report_date <= %s AND is_locked = 0'
+        . " AND (studio IS NULL OR studio = '' OR genre IS NULL OR genre = '')",
+        ...$params
+      ));
+      if ($result === false || $wpdb->last_error !== '') throw new \RuntimeException('Movie metadata enrichment row update failed.');
+      if ($result > 0) $updated++;
+    }
+
+    $last_id = (int) ($rows[count($rows) - 1]['id'] ?? 0);
+    $has_more = count($rows) === 100 && $last_id > $after_id;
+    $scheduled = $has_more && self::schedule_metadata_enrichment(['movie_title' => $title, 'report_date' => $from, 'studio' => '', 'genre' => ''], $last_id);
+    if ($has_more && !$scheduled) throw new \RuntimeException('Movie metadata enrichment continuation could not be queued.');
+    return ['processed' => count($rows), 'updated' => $updated, 'scheduled' => $scheduled];
+  }
 
   /** PHP 8.0-compatible equivalent of array_is_list(). */
   private static function is_list(array $value): bool {
@@ -1167,7 +1259,7 @@ class Store {
         'movie_title' => $movie_title,
         'studio' => (string) ($row['studio'] ?? ($existing['studio'] ?? '')),
         'genre' => (string) ($row['genre'] ?? ($existing['genre'] ?? '')),
-      ]);
+      ], false, false);
 
       $payload = [
         'updated_at' => $now,
@@ -1205,6 +1297,7 @@ class Store {
         $ok = self::update_protected_row($table, $payload, (int)$existing['id']);
         if ($ok) {
           $updated++;
+          self::schedule_metadata_enrichment($payload);
         } else {
           if ($wpdb->last_error !== '') throw new \RuntimeException('Grosses update failed. Some earlier rows may have saved; retry after storage recovery.');
           $skipped++;
@@ -1216,6 +1309,7 @@ class Store {
       $ok = $wpdb->insert($table, $payload);
       if ($ok !== false) {
         $created++;
+        self::schedule_metadata_enrichment($payload);
       } else {
         throw new \RuntimeException('Grosses insert failed. Some earlier rows may have saved; retry after storage recovery.');
       }
@@ -1439,7 +1533,7 @@ class Store {
       'movie_title' => $movie_title,
       'studio' => (string) ($data['studio'] ?? $existing['studio'] ?? ''),
       'genre' => (string) ($data['genre'] ?? $existing['genre'] ?? ''),
-    ]);
+    ], false, false);
     $payload = [
       'updated_at' => current_time('mysql'),
       'report_date' => sanitize_text_field((string) ($data['report_date'] ?? $existing['report_date'])),
@@ -1459,7 +1553,9 @@ class Store {
     ];
 
     if ($manual) $payload['is_locked']=isset($data['is_locked']) ? (!empty($data['is_locked'])?1:0) : 1;
-    return self::update_protected_row(self::entries_table_name(), $payload, $entry_id, $manual);
+    $saved = self::update_protected_row(self::entries_table_name(), $payload, $entry_id, $manual);
+    if ($saved) self::schedule_metadata_enrichment($payload);
+    return $saved;
   }
 
   public static function entries_summary(array $filters = []): array {

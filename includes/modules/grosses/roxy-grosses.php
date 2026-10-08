@@ -23,6 +23,7 @@ add_action('plugins_loaded', function () {
 
     \RoxyGrosses\Settings::ensure_defaults();
     \RoxyGrosses\Store::maybe_upgrade_schema();
+    \RoxyGrosses\Store::init_metadata_enrichment();
     \RoxyGrosses\RefundWebhook::init();
     \RoxyGrosses\EmailOutbox::ensure_schema();
     \RoxyGrosses\Store::maybe_backfill_history();

@@ -58,7 +58,7 @@ try {
   foreach ($maps as $production_name => $fixture_name) $store_source = str_replace("'{$production_name}'", "'{$fixture_name}'", $store_source);
 
   eval('namespace ' . $namespace . '; function post_type_exists(string $type): bool { return false; } class Settings { public static function get_report_timezone(): string { return "America/Los_Angeles"; } }'
-    . ' class Metadata { public static function enrich_movie_row(array $row): array { return $row; } }'
+    . ' class Metadata { public static function enrich_movie_row(array $row, bool $force = false, bool $allow_remote = true): array { return $row; } public static function metadata_for_movie(string $title, int $year = 0, bool $force = false): array { return ["studio"=>"", "genre"=>""]; } }'
     . ' class Square {
       public static int $depth=0; public static array $calls=[];
       public static function with_sale_snapshot(callable $fn) { self::$depth++; try{return $fn();}finally{self::$depth--;} }

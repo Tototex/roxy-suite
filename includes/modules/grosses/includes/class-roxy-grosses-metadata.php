@@ -10,7 +10,7 @@ class Metadata {
   private const CACHE_PREFIX = 'roxy_grosses_meta_';
   private const CACHE_VERSION = 'v3';
 
-  public static function enrich_movie_row(array $row, bool $force = false): array {
+  public static function enrich_movie_row(array $row, bool $force = false, bool $allow_remote = true): array {
     $title = trim((string) ($row['movie_title'] ?? $row['film_title'] ?? ''));
     if ($title === '') {
       return $row;
@@ -24,7 +24,9 @@ class Metadata {
 
     $report_date = (string) ($row['report_date'] ?? '');
     $year = preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date) ? (int) substr($report_date, 0, 4) : 0;
-    $metadata = self::metadata_for_movie($title, $year, $force);
+    $metadata = $allow_remote
+      ? self::metadata_for_movie($title, $year, $force)
+      : self::local_metadata_for_movie($title, $year);
 
     if (($force || $studio === '') && !empty($metadata['studio'])) {
       $row['studio'] = (string) $metadata['studio'];
@@ -34,6 +36,24 @@ class Metadata {
     }
 
     return $row;
+  }
+
+  /** Resolve cached/curated metadata only; safe to use in report persistence paths. */
+  private static function local_metadata_for_movie(string $title, int $year): array {
+    $normalized_title = Store::normalize_title($title);
+    if ($normalized_title === '') return self::empty_metadata();
+    $cache_key = self::CACHE_PREFIX . self::CACHE_VERSION . '_' . md5($normalized_title . '|' . $year);
+    $cached = get_transient($cache_key);
+    if (is_array($cached)) return wp_parse_args($cached, self::empty_metadata());
+
+    foreach (self::candidate_titles($title, $year) as $candidate_title) {
+      $override = self::known_metadata_override($candidate_title, $year);
+      if (!empty($override['studio']) || !empty($override['genre'])) return $override;
+    }
+    $result = self::empty_metadata();
+    $studio = self::studio_override($title);
+    if ($studio !== '') $result['studio'] = $studio;
+    return $result;
   }
 
   public static function metadata_for_movie(string $title, int $year = 0, bool $force = false): array {

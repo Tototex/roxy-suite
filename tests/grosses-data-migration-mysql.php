@@ -7,7 +7,7 @@ $source=str_replace('namespace RoxyGrosses;',"namespace $namespace;",$source);
 $maps=['roxy_grosses_reports'=>'roxy_fixture38_reports','roxy_grosses_history'=>'roxy_fixture38_history','roxy_grosses_entries'=>'roxy_fixture38_entries'];
 foreach($maps as $old=>$new)$source=str_replace("'".$old."'","'".$new."'",$source);
 foreach(['roxy_grosses_history_backfilled','roxy_grosses_entries_migrated','roxy_grosses_migration_'] as $name)$source=str_replace("'".$name."'","'".str_replace('roxy_grosses','roxy_fixture38',$name)."'",$source);
-eval('namespace '.$namespace.'; class Metadata {public static function enrich_movie_row(array $row):array{return $row;}}');
+eval('namespace '.$namespace.'; class Metadata {public static function enrich_movie_row(array $row, bool $force = false, bool $allow_remote = true):array{return $row;}}');
 eval('?>'.$source);
 $store=$namespace.'\\Store'; $tables=[]; $options=[]; $checks=0;
 $assert=static function($ok,$label)use(&$checks){if(!$ok)throw new RuntimeException($label);echo "PASS: $label\n";$checks++;};
