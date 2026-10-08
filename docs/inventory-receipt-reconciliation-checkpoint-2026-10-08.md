@@ -30,3 +30,9 @@ Hosted workflow [37758734972](https://github.com/Tototex/roxy-suite/actions/runs
 - This is an audit-branch change only. No production code or order data was changed, and no vendor message was sent.
 - The connected account and candidate API path have now been tested read-only, but production still runs the prior parser. Hosted CI, release, deployment, and next-real-delivery confirmation remain outstanding.
 - Confirm employee Receive Stock workflow in Square during the next real delivery. A physical count/recount is intentionally not treated as proof of receipt.
+
+### Production parity and schedule verification — 2026-10-08
+
+The later full runtime parity refresh confirms the receipt parser and all other tracked plugin runtime files are byte-for-byte equal to production; this supersedes the earlier “production still runs the prior parser” note. A production read-only Square call through the deployed parser processed 203 catalog variations and receipt history. A before/after digest confirmed the products, vendors, orders, and pull-run datasets did not change, and no mail was sent.
+
+WP-CLI confirms Inventory auto-pull is enabled at 23:00 in `America/Los_Angeles`, direct vendor sending is disabled, and the next single event is scheduled for 2026-10-09 06:00 UTC (23:00 PDT on October 8). The cron hook calls the Square pull; there is no mail-send function in the Inventory module's pull/scheduler path. The event was inspected, not executed. Next real delivery using Square's Receive Stock action remains the final end-to-end receipt confirmation.
