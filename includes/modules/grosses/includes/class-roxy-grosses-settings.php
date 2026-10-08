@@ -282,7 +282,7 @@ class Settings {
 
   private static function render_cashflow_tab(string $default_date): void {
     $date = isset($_GET['cashflow_date']) ? sanitize_text_field(wp_unslash((string) $_GET['cashflow_date'])) : $default_date;
-    echo '<h2>Daily financial cashflow</h2><p>Read-only provider snapshot. This is separate from Hollywood's nominal ticket gross and does not alter saved reports, history, or send email.</p>';
+    echo '<h2>Daily financial cashflow</h2><p>Read-only provider snapshot. This is separate from Hollywood&#8217;s nominal ticket gross and does not alter saved reports, history, or send email.</p>';
     echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'">';
     echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="cashflow"><input type="hidden" name="cashflow_load" value="1">';
     wp_nonce_field('roxy_grosses_cashflow_' . $date);
