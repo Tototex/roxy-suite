@@ -24,8 +24,13 @@ namespace RoxySocial {
     function add_query_arg($args, $url) { return $url . '?' . http_build_query($args); }
     function set_transient($key, $value, $expiration) { $GLOBALS['hangar_fixture']['cache'][$key] = $value; }
     function get_transient($key) { return $GLOBALS['hangar_fixture']['cache'][$key] ?? false; }
-    function update_post_meta($id, $key, $value) { $GLOBALS['hangar_fixture']['meta'][$id][$key] = $value; return true; }
-    function wp_upload_dir() { return ['path' => $GLOBALS['hangar_fixture']['upload_dir'], 'url' => 'https://fixture.invalid/uploads']; }
+    function update_post_meta($id, $key, $value) {
+        if (($GLOBALS['hangar_fixture']['fail_meta_key'] ?? '') === $key) return false;
+        $GLOBALS['hangar_fixture']['meta'][$id][$key] = $value; return true;
+    }
+    function get_post_meta($id, $key, $single = false) { return $GLOBALS['hangar_fixture']['meta'][$id][$key] ?? ''; }
+    function delete_post_meta($id, $key) { unset($GLOBALS['hangar_fixture']['meta'][$id][$key]); return true; }
+    function wp_upload_dir() { return ['path' => $GLOBALS['hangar_fixture']['upload_dir'], 'basedir' => $GLOBALS['hangar_fixture']['upload_dir'], 'url' => 'https://fixture.invalid/uploads']; }
     function wp_mkdir_p($path) { return is_dir($path) || mkdir($path, 0777, true); }
     function wp_unique_filename($dir, $filename) { return $filename; }
     function trailingslashit($path) { return rtrim($path, '/\\') . '/'; }
@@ -109,6 +114,16 @@ namespace RoxySocial {
     $poster_bytes = file_get_contents($poster_path);
     $poster_url = $GLOBALS['hangar_fixture']['meta'][501]['_roxy_social_video_poster_url'] ?? '';
     $check($poster_bytes === $png && $poster_url === 'https://fixture.invalid/uploads/movie-poster.png', 'poster bytes and metadata match validated image (bytes=' . strlen((string) $poster_bytes) . ', expected=' . strlen($png) . ', url=' . $poster_url . ')');
+    $collision_path = $upload_dir . DIRECTORY_SEPARATOR . 'movie-poster.png';
+    $check(file_put_contents($collision_path, 'do-not-overwrite') !== false, 'prepare poster-name collision fixture');
+    $before_collision_meta = $GLOBALS['hangar_fixture']['meta'][503] ?? [];
+    $save_poster->invoke(null, 503, 31, 'movie.mp4');
+    $check(file_get_contents($collision_path) === 'do-not-overwrite' && $before_collision_meta === ($GLOBALS['hangar_fixture']['meta'][503] ?? []), 'poster filename collision never overwrites an existing file');
+    unlink($collision_path);
+    $GLOBALS['hangar_fixture']['fail_meta_key'] = '_roxy_social_video_poster_file';
+    $save_poster->invoke(null, 504, 31, 'failed-meta.mp4');
+    unset($GLOBALS['hangar_fixture']['fail_meta_key']);
+    $check(empty($GLOBALS['hangar_fixture']['meta'][504]) && !is_file($upload_dir . DIRECTORY_SEPARATOR . 'failed-meta-poster.png'), 'failed poster metadata write rolls back metadata and removes only its new file');
     $before_files = count(glob($upload_dir . DIRECTORY_SEPARATOR . '*') ?: []);
     $before_meta = $GLOBALS['hangar_fixture']['meta'][501];
     $GLOBALS['hangar_fixture']['cache']['roxy_social_hangar_thumb_32'] = '/posters/bad.png';
@@ -116,6 +131,18 @@ namespace RoxySocial {
     $save_poster->invoke(null, 502, 32, 'bad-video.mp4');
     $check(count(glob($upload_dir . DIRECTORY_SEPARATOR . '*') ?: []) === $before_files && !isset($GLOBALS['hangar_fixture']['meta'][502]), 'rejected SVG poster produces no file or metadata writes');
     $check($GLOBALS['hangar_fixture']['meta'][501] === $before_meta, 'rejected poster leaves prior metadata untouched');
+
+    $outside_path = $upload_dir . '-outside-poster.png';
+    file_put_contents($outside_path, 'keep-outside-file');
+    $GLOBALS['hangar_fixture']['meta'][505]['_roxy_social_video_poster_file'] = $outside_path;
+    Hangar::delete_video_thumbnail(505);
+    $check(is_file($outside_path) && !isset($GLOBALS['hangar_fixture']['meta'][505]['_roxy_social_video_poster_file']), 'attachment cleanup cannot unlink a poster path outside the uploads directory');
+    unlink($outside_path);
+    $owned_path = $upload_dir . DIRECTORY_SEPARATOR . 'owned-poster.png';
+    file_put_contents($owned_path, $png);
+    $GLOBALS['hangar_fixture']['meta'][506]['_roxy_social_video_poster_file'] = $owned_path;
+    Hangar::delete_video_thumbnail(506);
+    $check(!file_exists($owned_path), 'attachment cleanup removes a plugin-named poster within uploads');
 
     $GLOBALS['hangar_fixture']['response'] = ['response' => ['code' => 200], 'headers' => ['content-type' => 'image/png'], 'body' => $png];
     $GLOBALS['hangar_fixture']['search_body'] = json_encode([

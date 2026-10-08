@@ -97,16 +97,57 @@ final class Hangar {
         $image = self::fetch_thumbnail($thumbnail, 5 * 1024 * 1024);
         if (!$image) return;
         $uploads = wp_upload_dir();
-        if (!empty($uploads['error']) || !wp_mkdir_p($uploads['path'])) return;
-        $poster_name = wp_unique_filename($uploads['path'], sanitize_file_name(pathinfo($filename, PATHINFO_FILENAME) . '-poster.' . $image['extension']));
-        if (false === file_put_contents(trailingslashit($uploads['path']) . $poster_name, $image['body'])) return;
-        update_post_meta($attachment_id, '_roxy_social_video_poster_url', trailingslashit($uploads['url']) . $poster_name);
-        update_post_meta($attachment_id, '_roxy_social_video_poster_file', trailingslashit($uploads['path']) . $poster_name);
+        if (!empty($uploads['error']) || empty($uploads['path']) || empty($uploads['basedir']) || empty($uploads['url']) || !wp_mkdir_p($uploads['path'])) return;
+        $base_name = sanitize_file_name(pathinfo($filename, PATHINFO_FILENAME) . '-poster.' . $image['extension']);
+        $poster_name = wp_unique_filename($uploads['path'], $base_name);
+        $poster_path = trailingslashit($uploads['path']) . $poster_name;
+
+        // wp_unique_filename() is a check-then-use operation. Open exclusively
+        // so a concurrent upload or pre-existing file can never be overwritten.
+        $handle = @fopen($poster_path, 'x+b');
+        if (!is_resource($handle)) return;
+        $written = 0;
+        $length = strlen($image['body']);
+        while ($written < $length) {
+            $count = @fwrite($handle, substr($image['body'], $written));
+            if ($count === false || $count === 0) break;
+            $written += $count;
+        }
+        $flushed = $written === $length && @fflush($handle);
+        $closed = @fclose($handle);
+        if (!$flushed || !$closed) {
+            @unlink($poster_path);
+            return;
+        }
+
+        $poster_url = trailingslashit($uploads['url']) . $poster_name;
+        $old_url = get_post_meta($attachment_id, '_roxy_social_video_poster_url', true);
+        $old_file = get_post_meta($attachment_id, '_roxy_social_video_poster_file', true);
+        update_post_meta($attachment_id, '_roxy_social_video_poster_url', $poster_url);
+        update_post_meta($attachment_id, '_roxy_social_video_poster_file', $poster_path);
+        if ((string) get_post_meta($attachment_id, '_roxy_social_video_poster_url', true) !== $poster_url
+            || (string) get_post_meta($attachment_id, '_roxy_social_video_poster_file', true) !== $poster_path) {
+            // Restore the prior pair; do not leave metadata pointing at a
+            // partial replacement when the database write fails.
+            if ($old_url === '' || $old_url === null) delete_post_meta($attachment_id, '_roxy_social_video_poster_url');
+            else update_post_meta($attachment_id, '_roxy_social_video_poster_url', $old_url);
+            if ($old_file === '' || $old_file === null) delete_post_meta($attachment_id, '_roxy_social_video_poster_file');
+            else update_post_meta($attachment_id, '_roxy_social_video_poster_file', $old_file);
+            @unlink($poster_path);
+        }
     }
 
     public static function delete_video_thumbnail(int $attachment_id): void {
         $file = (string) get_post_meta($attachment_id, '_roxy_social_video_poster_file', true);
-        if ($file !== '' && is_file($file)) @unlink($file);
+        $uploads = wp_upload_dir();
+        $upload_root = !empty($uploads['basedir']) ? realpath($uploads['basedir']) : false;
+        $poster_realpath = $file !== '' ? realpath($file) : false;
+        $upload_prefix = $upload_root !== false ? rtrim($upload_root, '/\\') . DIRECTORY_SEPARATOR : '';
+        if ($upload_root !== false && $poster_realpath !== false && is_file($poster_realpath)
+            && strpos($poster_realpath, $upload_prefix) === 0
+            && preg_match('/-poster\.[A-Za-z0-9]+$/', basename($poster_realpath))) {
+            @unlink($poster_realpath);
+        }
         delete_post_meta($attachment_id, '_roxy_social_video_poster_url');
         delete_post_meta($attachment_id, '_roxy_social_video_poster_file');
     }
