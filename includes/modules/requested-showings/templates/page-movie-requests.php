@@ -52,7 +52,7 @@ get_header();
                 </div>
             </div>
             <div class="roxy-rs-policy-box">
-                <p><strong>Current default goal:</strong> $300 pledged or one sponsor.</p>
+                <p><strong>Current default goal:</strong> $300 in contributions or one sponsor.</p>
                 <p><strong>Best chance of approval:</strong> choose a target date at least 30 days out. We usually need about 2 weeks after backing comes in to secure and schedule the film.</p>
                 <p><strong>No refunds after scheduling:</strong> once the showing is confirmed and charges go through, tickets are final.</p>
             </div>

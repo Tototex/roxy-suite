@@ -18,7 +18,7 @@ class Admin {
     private static function dashboard(): void {
         $last_pull = Store::latest_run('pull');
         $pull_text = $last_pull ? $last_pull['created_at'] . ' — ' . ucfirst((string) $last_pull['status']) . ': ' . $last_pull['message'] : 'No Square pull has run yet.';
-        echo '<p>Pull Square inventory, review suggested quantities, then open a vendor order for final edits. Orders already submitted or ordered cannot be submitted again until Square reports a stock increase.</p><p><strong>Last Square pull:</strong> ' . esc_html($pull_text) . '</p><form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">' . wp_nonce_field('roxy_inventory_pull','_wpnonce',true,false) . '<input type="hidden" name="action" value="roxy_inventory_pull">' . get_submit_button('Pull Inventory from Square','primary','submit',false) . '</form>';
+        echo '<p>Pull Square inventory, review suggested quantities, then open a vendor order for final edits. To release an ordered vendor for reordering, employees should record deliveries with Square’s Receive Stock action. Sales, recounts, and manual corrections will not release the order.</p><p><strong>Last Square pull:</strong> ' . esc_html($pull_text) . '</p><form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">' . wp_nonce_field('roxy_inventory_pull','_wpnonce',true,false) . '<input type="hidden" name="action" value="roxy_inventory_pull">' . get_submit_button('Pull Inventory from Square','primary','submit',false) . '</form>';
         $vendors = Store::vendors(); $products = Store::products();
         echo '<h2>Suggested orders</h2><table class="widefat striped"><thead><tr><th>Vendor</th><th>Items</th><th>Estimated total</th><th>Minimum</th><th>Status</th><th>Action</th></tr></thead><tbody>';
         foreach ($vendors as $vendor) {
@@ -47,7 +47,7 @@ class Admin {
         if ($open) {
             $status = (string) $open['status'];
             $status_text = $status === 'pending_manager' ? 'Submission awaiting review' : ($status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'ordered' ? 'Ordered' : 'Order in review'));
-            echo '<div class="notice notice-warning inline"><p>This vendor already has an open order: <strong>' . esc_html($status_text) . '</strong>. A new order cannot be submitted until a stock increase is detected.</p><p><a class="button" href="' . esc_url(add_query_arg(['tab'=>'history','order_id'=>(int) $open['id']], self::url('history'))) . '">View existing order</a></p></div>';
+            echo '<div class="notice notice-warning inline"><p>This vendor already has an open order: <strong>' . esc_html($status_text) . '</strong>. A new order cannot be submitted until Square records a received-stock adjustment for one of the ordered items.</p><p><a class="button" href="' . esc_url(add_query_arg(['tab'=>'history','order_id'=>(int) $open['id']], self::url('history'))) . '">View existing order</a></p></div>';
         }
         echo '<h2>' . esc_html($name) . ' order review</h2><p>Edit quantities before submitting. Quantities must be whole order units, and the vendor minimum must be met.</p>';
         $direct = Settings::get('direct_vendor_sending_enabled') === '1' && $vendor['order_method'] === 'email';
@@ -64,11 +64,11 @@ class Admin {
         echo wp_nonce_field('roxy_inventory_send_draft','_wpnonce',true,false) . '<input type="hidden" name="action" value="roxy_inventory_send_draft"><input type="hidden" name="vendor" value="' . esc_attr($name) . '">';
         $review_products = array_column($rows, 'product');
         echo '<input type="hidden" name="review_token" value="' . esc_attr(self::review_token($vendor,$review_products)) . '"><input type="hidden" name="submission_key" value="' . esc_attr(hash('sha256',wp_generate_uuid4())) . '">';
-        echo '<p>All tracked vendor items are shown. Set an item to zero to skip it, or increase a zero quantity to add it intentionally. A zero unit cost is treated as unknown, so add a verified positive purchase cost before ordering that item.</p>';
+        echo '<p>All tracked vendor items are shown. Set an item to zero to skip it, or increase a zero quantity to add it intentionally. Unknown costs block ordering; estimates are not verified supplier quotes. Confirmed quotes and free items must include their source and checked date.</p>';
         echo '<table class="widefat striped" id="roxy-inventory-vendor-review"><thead><tr><th>Product</th><th>On hand</th><th>Pack</th><th>Order qty</th><th>Unit cost</th><th>Line total</th></tr></thead><tbody>';
         foreach ($rows as $row) {
-            $p = $row['product']; $id = (int) $p['id']; $qty = (int) $row['qty']; $raw_cost = $p['unit_cost'] ?? null; $known = self::verified_positive_cost($raw_cost); $cost = $known ? (float)$raw_cost : 0.0;
-            $cost_label = $known ? '$' . number_format($cost,2) : 'Unknown';
+            $p = $row['product']; $id = (int) $p['id']; $qty = (int) $row['qty']; $known = self::cost_is_known($p); $cost = $known ? (float)$p['unit_cost'] : 0.0;
+            $cost_label = ($p['unit_cost_status'] ?? '') === 'free' ? 'Free' : ($known ? '$' . number_format($cost,2) . ' (' . ucfirst((string)($p['unit_cost_status'] ?? 'estimate')) . ')' : 'Unknown');
             $line_label = $known ? '$' . number_format($qty * $cost,2) : ($qty === 0 ? '$0.00' : 'Unknown');
             echo '<tr><td>' . esc_html($p['name']) . '</td><td>' . esc_html(number_format((float) $p['on_hand'],0)) . '</td><td>' . esc_html(number_format((float) $p['pack_size'],0)) . '</td><td><input class="roxy-order-qty" data-cost="' . esc_attr($known ? $cost : '') . '" name="order_qty[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($qty) . '" style="width:90px"' . ($open ? ' disabled' : '') . '></td><td>' . esc_html($cost_label) . '</td><td class="roxy-order-line-total">' . esc_html($line_label) . '</td></tr>';
         }
@@ -122,10 +122,11 @@ class Admin {
             $quantity = (float) ($line['quantity'] ?? 0);
             $unit_cost = (float) ($line['unit_cost'] ?? 0);
             $checked = !empty($line['added_to_cart']);
-            if (!empty($line['stock_increase_detected_at'])) echo '<tr><td colspan="6"><small>Stock increase observed for '.esc_html((string)($line['product']??'')).': '.esc_html((string)$line['stock_increase_from']).' → '.esc_html((string)$line['stock_increase_to']).' at '.esc_html((string)$line['stock_increase_detected_at']).'. This unlocks reordering; it does not confirm the whole order arrived.</small></td></tr>';
+            if (!empty($line['square_receipt_event_id'])) echo '<tr><td colspan="6"><small>Square recorded a receipt of '.esc_html((string)($line['square_receipt_quantity']??'')).' units for '.esc_html((string)($line['product']??'')).' at '.esc_html((string)($line['square_receipt_created_at']??$line['stock_increase_detected_at']??'')).'. This receipt released the vendor for a new order; it does not confirm the whole order arrived.</small></td></tr>';
+            elseif (!empty($line['stock_increase_detected_at'])) echo '<tr><td colspan="6"><small>Legacy stock increase observed for '.esc_html((string)($line['product']??'')).': '.esc_html((string)($line['stock_increase_from']??'')).' → '.esc_html((string)($line['stock_increase_to']??'')).' at '.esc_html((string)$line['stock_increase_detected_at']).'. This unlocks reordering; it does not confirm the whole order arrived.</small></td></tr>';
             if (!empty($line['cart_progress_at'])) echo '<tr><td colspan="6"><small>Cart progress last changed at '.esc_html((string)$line['cart_progress_at']).' by user #'.esc_html((string)($line['cart_progress_by']??'')).'.</small></td></tr>';
-            $cost_known = self::verified_positive_cost($line['unit_cost'] ?? null);
-            $cost_label = $cost_known ? '$' . number_format($unit_cost,2) : 'Unknown';
+            $cost_known = self::cost_is_known($line);
+            $cost_label = ($line['unit_cost_status'] ?? '') === 'free' ? 'Free' : ($cost_known ? '$' . number_format($unit_cost,2) . ' (' . ucfirst((string)($line['unit_cost_status'] ?? 'estimate')) . ')' : 'Unknown');
             $line_total_label = !$cost_known ? ($quantity > 0 ? 'Unknown' : '$0.00') : '$' . number_format((float) ($line['line_total'] ?? ($quantity * $unit_cost)), 2);
             echo '<tr><td><input type="checkbox" name="added_to_cart[' . esc_attr((int) $index) . ']" value="1" ' . checked($checked, true, false) . ' aria-label="Added to cart: ' . esc_attr((string) ($line['product'] ?? '')) . '"></td><td>' . esc_html((string) ($line['product'] ?? '')) . '</td><td>' . esc_html(number_format($quantity, 0, '.', '')) . '</td><td>' . esc_html(number_format((float) ($line['pack_size'] ?? 0), 0, '.', '')) . '</td><td>' . esc_html($cost_label) . '</td><td>' . esc_html($line_total_label) . '</td></tr>';
         }
@@ -137,13 +138,23 @@ class Admin {
     public static function verified_positive_cost($value): bool {
         return is_numeric($value) && is_finite((float)$value) && (float)$value > 0;
     }
+    public static function cost_is_known(array $record): bool {
+        $status = $record['unit_cost_status'] ?? null;
+        $cost = $record['unit_cost'] ?? null;
+        if ($status === 'free') return is_numeric($cost) && (float)$cost === 0.0 && !empty($record['unit_cost_source']) && !empty($record['unit_cost_checked_at']);
+        if ($status === 'confirmed') return self::verified_positive_cost($cost) && !empty($record['unit_cost_source']) && !empty($record['unit_cost_checked_at']);
+        if ($status === 'estimate') return self::verified_positive_cost($cost);
+        // Older saved order lines have no provenance fields; retain their historical estimate semantics.
+        return $status === null && self::verified_positive_cost($cost);
+    }
     public static function cost_summary(array $rows): array {
         $known_total = 0.0; $incomplete = false;
         foreach ($rows as $row) {
             $quantity = max(0, (float) ($row['qty'] ?? $row['quantity'] ?? 0));
             if ($quantity <= 0) continue;
-            $cost = (float) ($row['product']['unit_cost'] ?? $row['unit_cost'] ?? 0);
-            if (!self::verified_positive_cost($row['product']['unit_cost'] ?? $row['unit_cost'] ?? null)) { $incomplete = true; continue; }
+            $record = is_array($row['product'] ?? null) ? $row['product'] : $row;
+            $cost = (float) ($record['unit_cost'] ?? 0);
+            if (!self::cost_is_known($record)) { $incomplete = true; continue; }
             $known_total += $quantity * $cost;
         }
         return ['known_total'=>round($known_total,2),'incomplete'=>$incomplete];
@@ -182,7 +193,7 @@ class Admin {
         check_admin_referer('roxy_inventory_save_product');
         try {
             $id=self::record_id($_POST['id']??null); $row=[];
-            foreach(['vendor','pack_size','reorder_point','target_stock','unit_cost','override_qty'] as $field) {
+            foreach(['vendor','pack_size','reorder_point','target_stock','unit_cost','unit_cost_status','unit_cost_source','unit_cost_checked_at','supplier_sku','override_qty'] as $field) {
                 if(!array_key_exists($field,$_POST))throw new \RuntimeException('Incomplete product changes. Refresh before saving.');
                 $row[$field]=$_POST[$field];
             }
@@ -326,7 +337,7 @@ class Admin {
         $state = [];
         foreach ($products as $p) {
             $row=[];
-            foreach (['id','square_variation_id','name','vendor','on_hand','pack_size','reorder_point','target_stock','unit_cost','override_qty'] as $field) $row[$field]=$p[$field] ?? null;
+            foreach (['id','square_variation_id','name','vendor','on_hand','pack_size','reorder_point','target_stock','unit_cost','unit_cost_status','unit_cost_source','unit_cost_checked_at','supplier_sku','override_qty'] as $field) $row[$field]=$p[$field] ?? null;
             $state[(int)$p['id']]=$row;
         }
         ksort($state);
@@ -343,9 +354,9 @@ class Admin {
             $raw=$quantities[$p['id']] ?? null;
             if (!is_scalar($raw) || !preg_match('/^\d+$/D',(string)$raw) || (float)$raw>1000000) throw new \RuntimeException('Use nonnegative whole quantities for every reviewed item.');
             $q=(int)$raw; if ($q===0) continue;
-            if (!self::verified_positive_cost($p['unit_cost'] ?? null)) throw new \RuntimeException('A positive finite verified unit cost is required for every ordered item. Zero or invalid unit cost is treated as unknown.');
+            if (!self::cost_is_known($p)) throw new \RuntimeException('Set a positive estimate/confirmed cost or explicitly mark the item Free before ordering.');
             $line_total=round($q*(float)$p['unit_cost'],2);
-            $lines[]=['product'=>(string)$p['name'],'square_variation_id'=>(string)$p['square_variation_id'],'on_hand'=>(float)$p['on_hand'],'quantity'=>$q,'pack_size'=>(float)$p['pack_size'],'unit_cost'=>(float)$p['unit_cost'],'line_total'=>$line_total];
+            $lines[]=['product'=>(string)$p['name'],'square_variation_id'=>(string)$p['square_variation_id'],'on_hand'=>(float)$p['on_hand'],'quantity'=>$q,'pack_size'=>(float)$p['pack_size'],'unit_cost'=>(float)$p['unit_cost'],'unit_cost_status'=>(string)($p['unit_cost_status']??'estimate'),'unit_cost_source'=>(string)($p['unit_cost_source']??''),'unit_cost_checked_at'=>(string)($p['unit_cost_checked_at']??''),'supplier_sku'=>(string)($p['supplier_sku']??''),'line_total'=>$line_total];
             $total+=$line_total;
         }
         $total=round($total,2);
@@ -360,7 +371,14 @@ class Admin {
         $rows = [];
         foreach ($lines as $line) {
             $row = (int) $line['quantity'] . ' units — ' . $line['product'];
+            if (!empty($line['supplier_sku'])) $row .= ' (Supplier SKU: ' . (string)$line['supplier_sku'] . ')';
             if ($instructions === '') $row .= ' (pack size ' . (int) $line['pack_size'] . ')';
+            if (!empty($line['unit_cost_source']) || !empty($line['unit_cost_checked_at'])) {
+                $row .= ' [Cost ' . ucfirst((string)($line['unit_cost_status'] ?? 'estimate'));
+                if (!empty($line['unit_cost_source'])) $row .= '; source: ' . (string)$line['unit_cost_source'];
+                if (!empty($line['unit_cost_checked_at'])) $row .= '; checked: ' . (string)$line['unit_cost_checked_at'];
+                $row .= ']';
+            }
             $rows[] = $row;
         }
         $body = ($instructions !== '' ? $instructions . "\n\n" : '') . "Newport Roxy order #{$order_id} — {$name}\n\n" . implode("\n", $rows) . "\n\nEstimated total: $" . number_format($total, 2);
@@ -480,7 +498,7 @@ class Admin {
         echo '<form id="roxy-inventory-products" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">' . wp_nonce_field('roxy_inventory_products_bulk_save','_wpnonce',true,false);
         $products = Store::products();
         echo '<input type="hidden" name="product_row_count" value="' . count($products) . '"><input type="hidden" name="product_rows_json" value="">';
-        echo '<input type="hidden" name="action" value="roxy_inventory_products_bulk_save"><table class="widefat striped"><thead><tr><th>Product</th><th>On hand</th><th>Vendor</th><th>Pack</th><th>Reorder</th><th>Target</th><th>Cost</th><th>Override</th><th>Suggested</th></tr></thead><tbody>';
+        echo '<input type="hidden" name="action" value="roxy_inventory_products_bulk_save"><table class="widefat striped"><thead><tr><th>Product</th><th>On hand</th><th>Vendor</th><th>Pack</th><th>Reorder</th><th>Target</th><th>Unit cost</th><th>Confidence</th><th>Source</th><th>Checked</th><th>Supplier SKU</th><th>Override</th><th>Suggested</th></tr></thead><tbody>';
         foreach ($products as $product) {
             $id = (int) $product['id'];
             $on_hand = number_format((float) $product['on_hand'], 0, '.', '');
@@ -489,11 +507,18 @@ class Admin {
             $target = number_format((float) $product['target_stock'], 0, '.', '');
             $cost = number_format((float) $product['unit_cost'], 2, '.', '');
             $override = ($product['override_qty'] === null || $product['override_qty'] === '') ? '' : number_format((float) $product['override_qty'], 0, '.', '');
+            $cost_status = (string)($product['unit_cost_status'] ?? 'unknown');
+            $cost_source = (string)($product['unit_cost_source'] ?? '');
+            $cost_checked = (string)($product['unit_cost_checked_at'] ?? '');
+            $supplier_sku = (string)($product['supplier_sku'] ?? '');
             echo '<tr><td>' . esc_html($product['name']) . '</td><td>' . esc_html($on_hand) . '</td><td><select name="vendor[' . $id . ']"><option value="">Unassigned</option>';
             foreach ($vendors as $vendor) echo '<option value="' . esc_attr($vendor['name']) . '"' . selected($product['vendor'],$vendor['name'],false) . '>' . esc_html($vendor['name']) . '</option>';
-            echo '</select></td><td><input name="pack_size[' . $id . ']" type="number" min="1" step="1" value="' . esc_attr($pack) . '"></td><td><input name="reorder_point[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($reorder) . '"></td><td><input name="target_stock[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($target) . '"></td><td><input name="unit_cost[' . $id . ']" type="number" min="0" step="0.01" value="' . esc_attr($cost) . '"></td><td><input name="override_qty[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($override) . '" placeholder="auto"></td><td>' . esc_html(number_format((float) self::qty($product), 0, '.', '')) . '</td></tr>';
+            echo '</select></td><td><input name="pack_size[' . $id . ']" type="number" min="1" step="1" value="' . esc_attr($pack) . '"></td><td><input name="reorder_point[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($reorder) . '"></td><td><input name="target_stock[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($target) . '"></td><td><input name="unit_cost[' . $id . ']" type="number" min="0" step="0.01" value="' . esc_attr($cost) . '"></td>';
+            echo '<td><select name="unit_cost_status[' . $id . ']">';
+            foreach (['unknown'=>'Unknown','estimate'=>'Estimate','confirmed'=>'Confirmed quote','free'=>'Free'] as $value=>$label) echo '<option value="' . esc_attr($value) . '"' . selected($cost_status,$value,false) . '>' . esc_html($label) . '</option>';
+            echo '</select></td><td><input name="unit_cost_source[' . $id . ']" maxlength="190" value="' . esc_attr($cost_source) . '" placeholder="Supplier / list"></td><td><input name="unit_cost_checked_at[' . $id . ']" type="date" value="' . esc_attr($cost_checked) . '"></td><td><input name="supplier_sku[' . $id . ']" maxlength="190" value="' . esc_attr($supplier_sku) . '"></td><td><input name="override_qty[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($override) . '" placeholder="auto"></td><td>' . esc_html(number_format((float) self::qty($product), 0, '.', '')) . '</td></tr>';
         }
-        echo '</tbody></table><p class="description">A unit cost of 0 means unknown; the system cannot distinguish an unknown cost from a genuinely free item.</p><input type="hidden" name="product_rows_complete" value="1"><p>' . get_submit_button('Save all product changes','primary','submit',false) . '</p></form>';
+        echo '</tbody></table><p class="description">Unknown costs block ordering. Estimates are configured values, not verified quotes. Confirmed quotes and Free items require a source and checked date. Supplier SKU is kept separate from Square’s SKU.</p><input type="hidden" name="product_rows_complete" value="1"><p>' . get_submit_button('Save all product changes','primary','submit',false) . '</p></form>';
         // Send the table as one variable, avoiding PHP max_input_vars truncation.
         // The complete marker still rejects an incomplete non-JavaScript submission.
         echo <<<'JS'
@@ -502,14 +527,14 @@ document.getElementById('roxy-inventory-products').addEventListener('submit', fu
     var rows = {};
     var fields = this.querySelectorAll('select[name], input[name]');
     fields.forEach(function (field) {
-        var match = field.name.match(/^(vendor|pack_size|reorder_point|target_stock|unit_cost|override_qty)\[(\d+)\]$/);
+        var match = field.name.match(/^(vendor|pack_size|reorder_point|target_stock|unit_cost|unit_cost_status|unit_cost_source|unit_cost_checked_at|supplier_sku|override_qty)\[(\d+)\]$/);
         if (!match) return;
         if (!rows[match[2]]) rows[match[2]] = {};
         rows[match[2]][match[1]] = field.value;
     });
     this.elements.product_rows_json.value = JSON.stringify(rows);
     fields.forEach(function (field) {
-        if (/^(vendor|pack_size|reorder_point|target_stock|unit_cost|override_qty)\[/.test(field.name)) field.removeAttribute('name');
+        if (/^(vendor|pack_size|reorder_point|target_stock|unit_cost|unit_cost_status|unit_cost_source|unit_cost_checked_at|supplier_sku|override_qty)\[/.test(field.name)) field.removeAttribute('name');
     });
 });
 </script>
@@ -525,7 +550,7 @@ JS;
             if (!is_array($rows)) return null;
         } else {
             foreach ((array) ($post['vendor'] ?? []) as $id => $vendor) {
-                foreach (['vendor','pack_size','reorder_point','target_stock','unit_cost','override_qty'] as $field) {
+                foreach (['vendor','pack_size','reorder_point','target_stock','unit_cost','unit_cost_status','unit_cost_source','unit_cost_checked_at','supplier_sku','override_qty'] as $field) {
                     if (!isset($post[$field]) || !is_array($post[$field]) || !array_key_exists($id, $post[$field])) return null;
                     $rows[$id][$field] = $post[$field][$id];
                 }
@@ -534,14 +559,26 @@ JS;
         if (count($rows) !== (int) $post['product_row_count']) return null;
         foreach ($rows as $id => $row) {
             if (!ctype_digit((string) $id) || (int) $id < 1 || (string)(int)$id!==(string)$id || !is_array($row)) return null;
-            foreach (['vendor','pack_size','reorder_point','target_stock','unit_cost','override_qty'] as $field) {
+            foreach (['vendor','pack_size','reorder_point','target_stock','unit_cost','unit_cost_status','unit_cost_source','unit_cost_checked_at','supplier_sku','override_qty'] as $field) {
                 if (!array_key_exists($field, $row) || !is_scalar($row[$field])) return null;
                 if ($field === 'vendor' || ($field === 'override_qty' && $row[$field] === '')) continue;
+                if (in_array($field,['unit_cost_status','unit_cost_source','unit_cost_checked_at','supplier_sku'],true)) {
+                    $value=(string)$row[$field];
+                    if ($field==='unit_cost_status' && !in_array($value,['unknown','estimate','confirmed','free'],true)) return null;
+                    if ($field==='unit_cost_source' && strlen($value)>190) return null;
+                    if ($field==='supplier_sku' && strlen($value)>190) return null;
+                    if ($field==='unit_cost_checked_at' && $value!=='' && (!preg_match('/^\d{4}-\d{2}-\d{2}$/D',$value) || !checkdate((int)substr($value,5,2),(int)substr($value,8,2),(int)substr($value,0,4)))) return null;
+                    continue;
+                }
                 if (!is_numeric($row[$field]) || !is_finite((float) $row[$field]) || (float) $row[$field] < 0 || (float)$row[$field]>9999999999.99) return null;
                 if ($field === 'unit_cost' && round((float)$row[$field],2)!==(float)$row[$field]) return null;
                 if ($field !== 'unit_cost' && floor((float) $row[$field]) !== (float) $row[$field]) return null;
                 if ($field === 'pack_size' && (float) $row[$field] < 1) return null;
             }
+            $status=(string)$row['unit_cost_status']; $cost=(float)$row['unit_cost'];
+            if (in_array($status,['unknown','free'],true) && $cost!==0.0) return null;
+            if (in_array($status,['estimate','confirmed'],true) && $cost<=0) return null;
+            if (in_array($status,['confirmed','free'],true) && ((string)$row['unit_cost_source']==='' || (string)$row['unit_cost_checked_at']==='')) return null;
         }
         return $rows;
     }
@@ -557,7 +594,7 @@ JS;
         throw new \RuntimeException('This vendor no longer exists. Refresh before saving.');
     }
     private static function product_changes(array $row,array $names): array {
-        return ['vendor'=>self::validated_vendor($row['vendor'],$names),'pack_size'=>(float)$row['pack_size'],'reorder_point'=>(float)$row['reorder_point'],'target_stock'=>(float)$row['target_stock'],'unit_cost'=>(float)$row['unit_cost'],'override_qty'=>$row['override_qty']===''?null:(float)$row['override_qty']];
+        return ['vendor'=>self::validated_vendor($row['vendor'],$names),'pack_size'=>(float)$row['pack_size'],'reorder_point'=>(float)$row['reorder_point'],'target_stock'=>(float)$row['target_stock'],'unit_cost'=>(float)$row['unit_cost'],'unit_cost_status'=>(string)$row['unit_cost_status'],'unit_cost_source'=>sanitize_text_field(wp_unslash((string)$row['unit_cost_source'])),'unit_cost_checked_at'=>(string)$row['unit_cost_checked_at']!==''?(string)$row['unit_cost_checked_at']:null,'supplier_sku'=>sanitize_text_field(wp_unslash((string)$row['supplier_sku'])),'override_qty'=>$row['override_qty']===''?null:(float)$row['override_qty']];
     }
     public static function products_bulk_save(): void {
         self::guard(); check_admin_referer('roxy_inventory_products_bulk_save');

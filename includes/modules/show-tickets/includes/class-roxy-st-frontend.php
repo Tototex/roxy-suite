@@ -189,10 +189,10 @@ class Frontend {
       setup_postdata($post);
       $sid = $post->ID;
       $title = get_the_title();
-      $start = get_post_meta($sid, '_roxy_start', true);
+      $start_timestamp = Eligibility::showing_start_timestamp((int) $sid);
       $profile = get_post_meta($sid, '_roxy_pricing_profile', true) ?: 'movie_evening';
 
-      $date_label = $start ? date_i18n('l, F j · g:ia', strtotime($start)) : '';
+      $date_label = $start_timestamp !== null ? wp_date('l, F j · g:ia', $start_timestamp) : '';
 
       $img = '';
       $permalink = get_permalink($sid);
@@ -373,10 +373,11 @@ class Frontend {
       return '';
     }
 
-    $change_ts = strtotime($change_at);
-    if (!$change_ts) return '';
+    $change_datetime = Products::parse_live_price_change_at($change_at);
+    if (!$change_datetime) return '';
 
-    $delta = max(0, $change_ts - current_time('timestamp'));
+    $now = function_exists('current_datetime') ? current_datetime() : new \DateTimeImmutable('now', function_exists('wp_timezone') ? wp_timezone() : new \DateTimeZone('UTC'));
+    $delta = max(0, $change_datetime->getTimestamp() - $now->getTimestamp());
     if ($delta <= 0) return '';
 
     if ($delta >= DAY_IN_SECONDS) {
@@ -453,12 +454,9 @@ class Frontend {
 
   private static function meta_title(int $showing_id): string {
     $title = trim((string) get_the_title($showing_id));
-    $start = (string) get_post_meta($showing_id, '_roxy_start', true);
-    if ($start !== '') {
-      $ts = strtotime($start);
-      if ($ts) {
-        $title .= ' — ' . date_i18n('l, F j \a\t g:ia', $ts);
-      }
+    $start_timestamp = Eligibility::showing_start_timestamp($showing_id);
+    if ($start_timestamp !== null) {
+      $title .= ' — ' . wp_date('l, F j \a\t g:ia', $start_timestamp);
     }
     return $title;
   }
@@ -619,7 +617,7 @@ class Frontend {
     }
 
     $title = get_the_title($showing_id);
-    $start = (string) get_post_meta($showing_id, '_roxy_start', true);
+    $start_timestamp = Eligibility::showing_start_timestamp($showing_id);
     $profile = (string) get_post_meta($showing_id, '_roxy_pricing_profile', true);
     $trailer_url = (string) get_post_meta($showing_id, '_roxy_trailer_url', true);
     if ($profile === '') {
@@ -635,8 +633,8 @@ class Frontend {
     $hero .= '<div class="roxy-st-single-panel">';
     $hero .= '<div class="roxy-st-single-kicker">Now at the Newport Roxy</div>';
     $hero .= '<h1>' . esc_html($title) . '</h1>';
-    if ($start !== '') {
-      $hero .= '<div class="roxy-st-single-meta">' . esc_html(date_i18n('l, F j · g:ia', strtotime($start))) . '</div>';
+    if ($start_timestamp !== null) {
+      $hero .= '<div class="roxy-st-single-meta">' . esc_html(wp_date('l, F j · g:ia', $start_timestamp)) . '</div>';
     }
     if (is_int($remaining) && $remaining > 0 && $remaining <= 50) {
       $hero .= '<div class="roxy-st-single-low">Only ' . esc_html($remaining) . ' seats remaining</div>';

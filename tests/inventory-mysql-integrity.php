@@ -1,0 +1,90 @@
+<?php
+// Real MySQL verification in connection-local TEMPORARY tables only.
+// Does not send email, call Square, change WordPress options, or modify live rows.
+if (!defined('WP_CLI') || !WP_CLI) exit('WP-CLI only');
+global $wpdb;
+$source=$args[0] ?? '';
+if (!is_file($source)) throw new RuntimeException('Supply the staged Store source');
+$code=file_get_contents($source);
+$code=preg_replace('/^<\?php\s*namespace RoxyInventory;/', 'namespace RoxyInventoryFixture;', $code, 1);
+eval($code);
+$check=static function($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS_MYSQL: $label\n";};
+$original_prefix=$wpdb->prefix;
+$fixture_prefix=$original_prefix.'stability_fixture_'.bin2hex(random_bytes(4)).'_';
+$tables=[];
+$before_hash=hash('sha256',wp_json_encode($wpdb->get_results('SELECT * FROM '.$original_prefix.'roxy_inventory_orders ORDER BY id',ARRAY_A)));
+$errors=$wpdb->suppress_errors(true);
+try {
+    foreach(['products','orders','runs','vendors'] as $type) {
+        $table=$fixture_prefix.'roxy_inventory_'.$type;
+        $tables[]=$table;
+        $check($wpdb->query("CREATE TEMPORARY TABLE `$table` LIKE `{$original_prefix}roxy_inventory_$type`")!==false, 'temporary '.$type.' fixture created');
+    }
+    $orders=$fixture_prefix.'roxy_inventory_orders';
+    $wpdb->prefix=$fixture_prefix;
+    $store='RoxyInventoryFixture\\Store';
+    $store::upgrade_submission_identity();
+    $store::upgrade_submission_identity();
+    $check((bool)$wpdb->get_var("SHOW COLUMNS FROM `$orders` LIKE 'submission_key'"), 'production upgrade creates submission identity and is repeatable');
+    $line=['product'=>'Fixture candy','square_variation_id'=>'fixture-v','on_hand'=>40,'quantity'=>12];
+    $id=$store::create_order('TEST ONLY',[$line],18,12,'pending_manager',str_repeat('a',64));
+    $check($id>0 && $store::order_for_submission(str_repeat('a',64))['id']==$id,'real submission identity stored');
+    $blocked=false;try{$store::create_order('TEST ONLY',[$line],18,12);}catch(Throwable $e){$blocked=true;}
+    $check($blocked,'duplicate open vendor order blocked');
+    $check($store::update_order_status($id,'ordered'),'real conditional order transition');
+    $products=$fixture_prefix.'roxy_inventory_products';
+    $check($wpdb->insert($products,['square_variation_id'=>'fixture-v','name'=>'Fixture candy','on_hand'=>25,'updated_at'=>current_time('mysql')])===1,'fixture product stored');
+    $product_id=(int)$wpdb->insert_id;
+    $failed=false;try{$store::update_product(999999999,['on_hand'=>99]);}catch(Throwable $e){$failed=true;}
+    $check($failed,'missing product update cannot report a successful save');
+    $vendors=$fixture_prefix.'roxy_inventory_vendors';
+    $check($wpdb->insert($vendors,['name'=>'TEMPORARY VENDOR','order_method'=>'manual','updated_at'=>current_time('mysql')])===1,'temporary vendor stored');
+    $vendor_id=(int)$wpdb->insert_id;$store::update_vendor($vendor_id,['minimum_amount'=>25]);
+    $check((float)$wpdb->get_var("SELECT minimum_amount FROM `$vendors` WHERE id=$vendor_id")===25.0,'existing vendor saves under ownership');
+    $failed=false;try{$store::update_vendor(999999999,['minimum_amount'=>99]);}catch(Throwable $e){$failed=true;}
+    $check($failed,'missing vendor update cannot report a successful save');
+    $receipt_time=(new DateTimeImmutable(current_time('mysql'),wp_timezone()))->modify('+1 minute')->format('c');
+    $receipt=['id'=>'fixture-receipt','quantity'=>5,'from_state'=>'NONE','to_state'=>'IN_STOCK','reason_type'=>'RECEIVED','created_at'=>$receipt_time,'occurred_at'=>$receipt_time];
+    $check($store::mark_stock_increases(['fixture-v'=>20])===0 && $store::order($id)['status']==='ordered','real order is not reset by a net stock increase alone');
+    $check($store::mark_stock_increases(['fixture-v'=>20],['fixture-v'=>$receipt])===1 && $store::order($id)['status']==='stock_increased','real explicit partial Square receipt releases order');
+    $prior=$store::order($id)['payload'];
+    $check(!$store::update_order_payload($id,[$line],'stale'),'real stale progress rejected');
+    $failed=false;
+    try {$store::transaction(static function()use($store,$product_id){$store::update_product($product_id,['on_hand'=>99]);$store::update_product($product_id,['nonexistent_fixture_column'=>1]);});}catch(Throwable $e){$failed=true;}
+    $stock=(float)$wpdb->get_var("SELECT on_hand FROM `$products` WHERE id=$product_id");
+    $check($failed && $stock===25.0,'real failed later write rolls back earlier stock change');
+    $runs=$fixture_prefix.'roxy_inventory_runs';
+    $check($store::log('pull','success','Temporary fixture'),'activity insert succeeds in temporary table');
+    $check($store::latest_run('pull')['message']==='Temporary fixture','latest activity reads stored result');
+    $check($wpdb->query("DROP TEMPORARY TABLE `$runs`")!==false,'activity failure fixture removes only temporary table');
+    // Shadow the now-missing temporary table name with an impossible schema:
+    // the random prefix cannot resolve to any production activity table.
+    $failed=false;
+    try {$store::transaction(static function()use($store,$product_id){
+        $store::update_product($product_id,['on_hand'=>99]);
+        if(!$store::log('pull','success','Must fail'))throw new RuntimeException('Activity write failed');
+    });}catch(Throwable $e){$failed=true;}
+    $check($failed && (float)$wpdb->get_var("SELECT on_hand FROM `$products` WHERE id=$product_id")===25.0,'actual failed activity rolls back stock change');
+    $check($store::log('approval_email','success','No real email')===false,'actual post-email activity failure is nonthrowing');
+    $failed=false;try{$store::latest_run('pull');}catch(Throwable $e){$failed=true;}
+    $check($failed,'activity read error is not mistaken for no previous pull');
+    $primary=$wpdb;
+    $second=new wpdb(DB_USER,DB_PASSWORD,DB_NAME,DB_HOST);
+    $second->prefix=$fixture_prefix;
+    $store::with_lock('isolated-concurrency',static function()use($store,$primary,$second,$check){
+        global $wpdb;$wpdb=$second;$blocked=false;
+        try{$store::with_lock('isolated-concurrency',static fn()=>null);}catch(Throwable $e){$blocked=true;}
+        finally{$wpdb=$primary;}
+        $check($blocked,'second actual database connection cannot acquire first connection claim');
+    });
+    $second->close();
+    for($i=0;$i<102;$i++)if($wpdb->insert($orders,['vendor'=>'ARCHIVE TEST','status'=>'cancelled','estimated_total'=>0,'minimum_amount'=>0,'item_count'=>0,'payload'=>'[]','created_at'=>current_time('mysql')])!==1)throw new RuntimeException('Could not create temporary archive fixture');
+    $check($store::order_count()===103 && count($store::orders(1))===50 && count($store::orders(2))===50 && count($store::orders(3))===3,'history pagination retains more than 100 orders');
+    $check($store::order_count('ARCHIVE')===102 && $store::order_count('%')===0,'vendor search and literal percent escaping');
+} finally {
+    $wpdb->prefix=$original_prefix;
+    foreach($tables as $table)$wpdb->query("DROP TEMPORARY TABLE IF EXISTS `$table`");
+    $wpdb->suppress_errors($errors);
+}
+$after_hash=hash('sha256',wp_json_encode($wpdb->get_results('SELECT * FROM '.$original_prefix.'roxy_inventory_orders ORDER BY id',ARRAY_A)));
+$check(hash_equals($before_hash,$after_hash),'all live vendor-order rows unchanged');

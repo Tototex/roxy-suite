@@ -375,20 +375,37 @@ class CPT {
     if (self::$is_generating_schedule) return;
     if (!isset($_POST['roxy_showing_nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash((string) $_POST['roxy_showing_nonce'])), 'roxy_showing_save')) return;
     if (!current_user_can('edit_post', $post_id)) return;
+    foreach (['roxy_live_change_at_1', 'roxy_live_change_at_2'] as $change_field) {
+      if (isset($_POST[$change_field]) && !is_scalar($_POST[$change_field])) {
+        set_transient('roxy_st_invalid_start_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+        return;
+      }
+    }
 
-    $capacity = isset($_POST['roxy_capacity']) ? (int) $_POST['roxy_capacity'] : Settings::get_default_capacity();
+    $capacity_raw = array_key_exists('roxy_capacity', $_POST)
+      ? wp_unslash($_POST['roxy_capacity'])
+      : get_post_meta($post_id, '_roxy_capacity', true);
+    if ($capacity_raw === '' || $capacity_raw === null) $capacity_raw = Settings::get_default_capacity();
+    $capacity_text = is_scalar($capacity_raw) ? trim((string) $capacity_raw) : '';
+    $capacity = preg_match('/^(?:0|[1-9][0-9]*)$/D', $capacity_text)
+      ? filter_var($capacity_text, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]])
+      : false;
+    if ($capacity === false) {
+      set_transient('roxy_st_capacity_conflict_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+      return;
+    }
     $default_profile = isset($_POST['roxy_pricing_profile']) ? sanitize_key($_POST['roxy_pricing_profile']) : 'movie_evening';
 
     $shared_meta = [
-      '_roxy_capacity' => max(0, $capacity),
+      '_roxy_capacity' => $capacity,
       '_roxy_live_label_1' => sanitize_text_field($_POST['roxy_live_label_1'] ?? 'General Admission'),
       '_roxy_live_price_1' => sanitize_text_field($_POST['roxy_live_price_1'] ?? ''),
       '_roxy_live_label_2' => sanitize_text_field($_POST['roxy_live_label_2'] ?? 'VIP'),
       '_roxy_live_price_2' => sanitize_text_field($_POST['roxy_live_price_2'] ?? ''),
       '_roxy_live_future_price_1' => sanitize_text_field($_POST['roxy_live_future_price_1'] ?? ''),
-      '_roxy_live_change_at_1' => sanitize_text_field($_POST['roxy_live_change_at_1'] ?? ''),
+      '_roxy_live_change_at_1' => isset($_POST['roxy_live_change_at_1']) && is_scalar($_POST['roxy_live_change_at_1']) ? sanitize_text_field(wp_unslash((string) $_POST['roxy_live_change_at_1'])) : '',
       '_roxy_live_future_price_2' => sanitize_text_field($_POST['roxy_live_future_price_2'] ?? ''),
-      '_roxy_live_change_at_2' => sanitize_text_field($_POST['roxy_live_change_at_2'] ?? ''),
+      '_roxy_live_change_at_2' => isset($_POST['roxy_live_change_at_2']) && is_scalar($_POST['roxy_live_change_at_2']) ? sanitize_text_field(wp_unslash((string) $_POST['roxy_live_change_at_2'])) : '',
       '_roxy_trailer_url' => esc_url_raw($_POST['roxy_trailer_url'] ?? ''),
     ];
 
@@ -414,31 +431,98 @@ class CPT {
       }
     }
 
+    $use_schedule_builder = !empty($_POST['roxy_use_schedule_builder']);
+    $schedule_rows = null;
+    $start = '';
+    foreach (['_roxy_live_change_at_1', '_roxy_live_change_at_2'] as $change_key) {
+      if ($shared_meta[$change_key] === '') continue;
+      $shared_meta[$change_key] = self::validated_local_datetime($shared_meta[$change_key]);
+      if ($shared_meta[$change_key] === null) {
+        set_transient('roxy_st_invalid_start_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+        return;
+      }
+    }
+    if ($use_schedule_builder) {
+      $schedule_rows = self::sanitize_schedule_rows($_POST, $default_profile);
+      if ($schedule_rows === false) {
+        set_transient('roxy_st_invalid_start_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+        return;
+      }
+    } else {
+      $start = isset($_POST['roxy_start']) ? sanitize_text_field(wp_unslash($_POST['roxy_start'])) : '';
+      if ($start !== '') {
+        $start = self::validated_local_datetime($start);
+        if ($start === null) {
+          set_transient('roxy_st_invalid_start_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+          return;
+        }
+      }
+    }
+
+    if (!self::save_capacity_with_seat_lock($post_id, (int) $shared_meta['_roxy_capacity'])) {
+      set_transient('roxy_st_capacity_conflict_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+      return;
+    }
+    unset($shared_meta['_roxy_capacity']);
     foreach ($shared_meta as $meta_key => $meta_value) {
       update_post_meta($post_id, $meta_key, $meta_value);
     }
 
-    $use_schedule_builder = !empty($_POST['roxy_use_schedule_builder']);
     if ($use_schedule_builder) {
-      $schedule_rows = self::sanitize_schedule_rows($_POST, $default_profile);
       if (!empty($schedule_rows)) {
         $first = array_shift($schedule_rows);
-        update_post_meta($post_id, '_roxy_start', $first['start']);
-        update_post_meta($post_id, '_roxy_pricing_profile', $first['profile']);
+        $saved = self::save_start_with_room_lock($post_id, (string) $first['start'], static function () use ($post_id, $first, $post, $schedule_rows, $shared_meta) {
+          update_post_meta($post_id, '_roxy_start', $first['start']);
+          update_post_meta($post_id, '_roxy_pricing_profile', $first['profile']);
+          if ((string) get_post_meta($post_id, '_roxy_start', true) !== (string) $first['start']) return new \WP_Error('showing_start_write', 'The first scheduled showing time could not be verified.');
 
-        if ((string) get_post_meta($post_id, '_roxy_schedule_generated', true) !== '1') {
-          $created = self::create_additional_showings_from_schedule($post_id, $post, $schedule_rows, $shared_meta);
-          if (is_wp_error($created)) return;
-          update_post_meta($post_id, '_roxy_schedule_generated', '1');
-        }
+          if ((string) get_post_meta($post_id, '_roxy_schedule_generated', true) !== '1') {
+            $created = self::create_additional_showings_from_schedule($post_id, $post, $schedule_rows, $shared_meta);
+            if (is_wp_error($created)) return $created;
+            update_post_meta($post_id, '_roxy_schedule_generated', '1');
+            if ((string) get_post_meta($post_id, '_roxy_schedule_generated', true) !== '1') return new \WP_Error('showing_schedule_write', 'The generated schedule could not be verified.');
+          }
+          return true;
+        });
+        if (!$saved) return;
         return;
       }
     }
 
     delete_post_meta($post_id, '_roxy_schedule_generated');
-    $start = isset($_POST['roxy_start']) ? sanitize_text_field($_POST['roxy_start']) : '';
-    update_post_meta($post_id, '_roxy_start', $start);
-    update_post_meta($post_id, '_roxy_pricing_profile', $default_profile);
+    $write_start = static function () use ($post_id, $start, $default_profile) {
+      update_post_meta($post_id, '_roxy_start', $start);
+      update_post_meta($post_id, '_roxy_pricing_profile', $default_profile);
+      return (string) get_post_meta($post_id, '_roxy_start', true) === $start;
+    };
+    if ($start === '') $write_start();
+    else self::save_start_with_room_lock($post_id, $start, $write_start);
+  }
+
+  private static function save_start_with_room_lock(int $post_id, string $start, callable $write): bool {
+    if (!function_exists('roxy_eb_with_showing_time_lock')) return $write() === true;
+    $result = roxy_eb_with_showing_time_lock($start, $post_id, $write);
+    if (is_wp_error($result)) {
+      set_transient('roxy_st_room_conflict_' . get_current_user_id(), $result->get_error_message(), MINUTE_IN_SECONDS);
+      return false;
+    }
+    return $result === true;
+  }
+
+  /** Serialize capacity edits with checkout and refuse limits below current occupancy. */
+  private static function save_capacity_with_seat_lock(int $showing_id, int $capacity): bool {
+    if ($showing_id <= 0 || $capacity < 0 || !class_exists(Issuance::class) || !class_exists(Reservations::class)) return false;
+    try {
+      return (new Issuance([], 'walkup:' . $showing_id))->run(static function (Issuance $writer) use ($showing_id, $capacity): bool {
+        $reserved = Reservations::quantity_for_showing($showing_id);
+        $walkups = $writer->member_walkup_quantity($showing_id);
+        if ($reserved < 0 || $walkups < 0 || $reserved > PHP_INT_MAX - $walkups || $capacity < $reserved + $walkups) return false;
+        $writer->post_meta($showing_id, '_roxy_capacity', $capacity);
+        return (string) $writer->post_meta_value($showing_id, '_roxy_capacity') === (string) $capacity;
+      }) === true;
+    } catch (\Throwable $error) {
+      return false;
+    }
   }
 
 
@@ -558,9 +642,22 @@ class CPT {
 
   public static function duration_input_notice(): void {
     $user_id = get_current_user_id();
-    if ($user_id <= 0 || !get_transient('roxy_st_invalid_duration_' . $user_id)) return;
-    delete_transient('roxy_st_invalid_duration_' . $user_id);
-    echo '<div class="notice notice-error"><p>Duration must be a whole number from 1 to 10,080 minutes. The submitted value was rejected; any previously saved duration was preserved.</p></div>';
+    if ($user_id <= 0) return;
+    $duration_invalid = (bool) get_transient('roxy_st_invalid_duration_' . $user_id);
+    $start_invalid = (bool) get_transient('roxy_st_invalid_start_' . $user_id);
+    $room_conflict = (string) get_transient('roxy_st_room_conflict_' . $user_id);
+    $capacity_conflict = (bool) get_transient('roxy_st_capacity_conflict_' . $user_id);
+    if (!$duration_invalid && !$start_invalid && $room_conflict === '' && !$capacity_conflict) return;
+    if ($duration_invalid) delete_transient('roxy_st_invalid_duration_' . $user_id);
+    if ($start_invalid) delete_transient('roxy_st_invalid_start_' . $user_id);
+    if ($room_conflict !== '') delete_transient('roxy_st_room_conflict_' . $user_id);
+    if ($capacity_conflict) delete_transient('roxy_st_capacity_conflict_' . $user_id);
+    echo '<div class="notice notice-error"><p>';
+    if ($capacity_conflict) echo 'Capacity could not be saved because current reservations or walk-up admissions could not be verified, or the new capacity is below seats already committed. No other settings from this submission were saved. ';
+    if ($duration_invalid) echo 'Duration must be a whole number from 1 to 10,080 minutes. The submitted value was rejected; any previously saved duration was preserved. ';
+    if ($start_invalid) echo 'Each showing must use a valid local calendar date and 24-hour time. The schedule was not saved; previously saved showing dates and shared settings were preserved.';
+    if ($room_conflict !== '') echo esc_html($room_conflict);
+    echo '</p></div>';
   }
 
   public static function admin_columns(array $columns): array {
@@ -583,8 +680,13 @@ class CPT {
     }
 
     if ($column === 'roxy_start') {
-      $start = (string) get_post_meta($post_id, '_roxy_start', true);
-      echo $start ? esc_html(date_i18n('M j, Y g:ia', strtotime($start))) : '&mdash;';
+      $start = self::validated_local_datetime((string) get_post_meta($post_id, '_roxy_start', true));
+      if ($start === null) {
+        echo '&mdash;';
+      } else {
+        $timestamp = (new \DateTimeImmutable($start, wp_timezone()))->getTimestamp();
+        echo esc_html(date_i18n('M j, Y g:ia', $timestamp));
+      }
       return;
     }
 
@@ -655,7 +757,7 @@ class CPT {
     return $html;
   }
 
-  private static function sanitize_schedule_rows(array $source, string $fallback_profile): array {
+  private static function sanitize_schedule_rows(array $source, string $fallback_profile): array|false {
     $dates = isset($source['roxy_schedule_date']) && is_array($source['roxy_schedule_date']) ? $source['roxy_schedule_date'] : [];
     $times = isset($source['roxy_schedule_time']) && is_array($source['roxy_schedule_time']) ? $source['roxy_schedule_time'] : [];
     $profiles = isset($source['roxy_schedule_profile']) && is_array($source['roxy_schedule_profile']) ? $source['roxy_schedule_profile'] : [];
@@ -663,16 +765,19 @@ class CPT {
     $rows = [];
     $count = max(count($dates), count($times), count($profiles));
     for ($i = 0; $i < $count; $i++) {
+      if (isset($dates[$i]) && !is_scalar($dates[$i])) return false;
+      if (isset($times[$i]) && !is_scalar($times[$i])) return false;
+      if (isset($profiles[$i]) && !is_scalar($profiles[$i])) return false;
       $date = sanitize_text_field((string) ($dates[$i] ?? ''));
       $time = sanitize_text_field((string) ($times[$i] ?? ''));
       $profile = sanitize_key((string) ($profiles[$i] ?? $fallback_profile));
-      if ($date === '' || $time === '') {
+      if ($date === '' && $time === '') {
         continue;
       }
-      $start = $date . 'T' . $time;
-      if (!strtotime($start)) {
-        continue;
-      }
+      if ($date === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/D', $date)
+        || !preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/D', $time)) return false;
+      $start = self::validated_local_datetime($date . 'T' . $time);
+      if ($start === null) return false;
       if (!in_array($profile, ['movie_evening', 'movie_matinee', 'live_event', 'free_event'], true)) {
         $profile = $fallback_profile;
       }
@@ -685,6 +790,27 @@ class CPT {
     }
 
     return $rows;
+  }
+
+  private static function validated_local_datetime(string $value): ?string {
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d$/D', $value)) return null;
+    try { $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d\\TH:i', $value, wp_timezone()); }
+    catch (\Throwable $error) { return null; }
+    $errors = \DateTimeImmutable::getLastErrors();
+    if (!$parsed || ($errors && ($errors['warning_count'] || $errors['error_count']))
+      || $parsed->format('Y-m-d\\TH:i') !== $value) return null;
+    return $value;
+  }
+
+  private static function shift_local_datetime_days(string $value, int $days): ?string {
+    $value = self::validated_local_datetime($value);
+    if ($value === null || $days < 0 || $days > 3660) return null;
+    try {
+      $shifted = (new \DateTimeImmutable($value, wp_timezone()))->modify('+' . $days . ' days');
+    } catch (\Throwable $error) {
+      return null;
+    }
+    return self::validated_local_datetime($shifted->format('Y-m-d\\TH:i'));
   }
 
   private static function create_additional_showings_from_schedule(int $source_post_id, $post, array $schedule_rows, array $shared_meta) {
@@ -700,14 +826,32 @@ class CPT {
     self::$is_generating_schedule = true;
     try {
       foreach ($schedule_rows as $row) {
-        $new_post_id = wp_insert_post([
-          'post_type' => self::POST_TYPE,
-          'post_status' => $child_status,
-          'post_title' => (string) $post->post_title,
-          'post_content' => (string) $post->post_content,
-          'post_excerpt' => (string) $post->post_excerpt,
-          'post_author' => (int) $post->post_author,
-        ], true);
+        $create_child = static function () use ($row, $child_status, $post, $shared_meta, $taxonomy_terms, $thumbnail_id) {
+          $new_post_id = wp_insert_post([
+            'post_type' => self::POST_TYPE,
+            'post_status' => $child_status,
+            'post_title' => (string) $post->post_title,
+            'post_content' => (string) $post->post_content,
+            'post_excerpt' => (string) $post->post_excerpt,
+            'post_author' => (int) $post->post_author,
+          ], true);
+          if (is_wp_error($new_post_id) || !$new_post_id) return is_wp_error($new_post_id) ? $new_post_id : new \WP_Error('schedule_child_insert_failed', 'A scheduled showing could not be created.');
+
+          $new_post_id = (int) $new_post_id;
+          foreach ($shared_meta as $meta_key => $meta_value) update_post_meta($new_post_id, $meta_key, $meta_value);
+          update_post_meta($new_post_id, '_roxy_start', $row['start']);
+          update_post_meta($new_post_id, '_roxy_pricing_profile', $row['profile']);
+          update_post_meta($new_post_id, '_roxy_schedule_generated', '1');
+          update_post_meta($new_post_id, '_roxy_generated_from_builder', '1');
+          if ((string) get_post_meta($new_post_id, '_roxy_start', true) !== (string) $row['start']) return new \WP_Error('schedule_child_time_write', 'A scheduled showing time could not be verified.');
+
+          if (!empty($taxonomy_terms) && !is_wp_error($taxonomy_terms)) wp_set_object_terms($new_post_id, $taxonomy_terms, 'roxy_show_type', false);
+          if ($thumbnail_id) set_post_thumbnail($new_post_id, $thumbnail_id);
+          return $new_post_id;
+        };
+        $new_post_id = function_exists('roxy_eb_with_showing_time_lock')
+          ? roxy_eb_with_showing_time_lock((string) $row['start'], 0, $create_child, true)
+          : $create_child();
 
         if (is_wp_error($new_post_id) || !$new_post_id) {
           foreach ($created_ids as $created_id) wp_delete_post($created_id, true);
@@ -718,18 +862,6 @@ class CPT {
 
         $new_post_id = (int) $new_post_id;
         $created_ids[] = $new_post_id;
-        foreach ($shared_meta as $meta_key => $meta_value) {
-          update_post_meta($new_post_id, $meta_key, $meta_value);
-        }
-        update_post_meta($new_post_id, '_roxy_start', $row['start']);
-        update_post_meta($new_post_id, '_roxy_pricing_profile', $row['profile']);
-        update_post_meta($new_post_id, '_roxy_schedule_generated', '1');
-        update_post_meta($new_post_id, '_roxy_generated_from_builder', '1');
-
-        if (!empty($taxonomy_terms) && !is_wp_error($taxonomy_terms)) {
-          wp_set_object_terms($new_post_id, $taxonomy_terms, 'roxy_show_type', false);
-        }
-        if ($thumbnail_id) set_post_thumbnail($new_post_id, $thumbnail_id);
       }
     } finally {
       self::$is_generating_schedule = false;
@@ -755,9 +887,8 @@ class CPT {
 
 
   private static function weekend_anchor_from_start(string $start): ?\DateTimeImmutable {
-    if ($start === '') {
-      return null;
-    }
+    $start = self::validated_local_datetime($start);
+    if ($start === null) return null;
     try {
       $dt = (new \DateTimeImmutable($start, wp_timezone()))->setTimezone(wp_timezone())->setTime(0, 0);
     } catch (\Exception $e) {
@@ -806,57 +937,61 @@ class CPT {
       return 0;
     }
 
-    $start = (string) get_post_meta($source_post_id, '_roxy_start', true);
-    if ($start === '') {
-      return 0;
-    }
-    try {
-      $start_dt = new \DateTimeImmutable($start, wp_timezone());
-    } catch (\Exception $e) {
-      return 0;
-    }
+    $start = self::validated_local_datetime((string) get_post_meta($source_post_id, '_roxy_start', true));
+    if ($start === null) return 0;
+    try { $start_dt = new \DateTimeImmutable($start, wp_timezone()); }
+    catch (\Throwable $e) { return 0; }
     $new_start = $start_dt->modify('+7 days')->format('Y-m-d\TH:i');
-
-    $new_post_id = wp_insert_post([
-      'post_type' => self::POST_TYPE,
-      'post_status' => self::generated_post_status($source),
-      'post_title' => (string) $source->post_title,
-      'post_content' => (string) $source->post_content,
-      'post_excerpt' => (string) $source->post_excerpt,
-      'post_author' => (int) $source->post_author,
-    ], true);
-
-    if (is_wp_error($new_post_id) || !$new_post_id) {
-      return 0;
-    }
-
-    $all_meta = get_post_meta($source_post_id);
-    $excluded = [
-      '_roxy_pid_adult', '_roxy_pid_discount', '_roxy_pid_matinee', '_roxy_pid_live1', '_roxy_pid_live2', '_roxy_pid_subscriber',
-      '_roxy_sales_stats', '_roxy_schedule_generated', '_roxy_generated_from_builder', '_edit_lock', '_edit_last', '_thumbnail_id',
-      '_roxy_legacy_product_ids', '_roxy_rs_request_id',
-    ];
-    foreach ($all_meta as $meta_key => $values) {
-      if (in_array($meta_key, $excluded, true)) {
+    $shifted_change_dates = [];
+    foreach (['_roxy_live_change_at_1', '_roxy_live_change_at_2'] as $change_key) {
+      $change_at = get_post_meta($source_post_id, $change_key, true);
+      if ($change_at === '' || $change_at === null) {
+        $shifted_change_dates[$change_key] = '';
         continue;
       }
-      delete_post_meta($new_post_id, $meta_key);
-      foreach ((array) $values as $value) {
-        add_post_meta($new_post_id, $meta_key, maybe_unserialize($value));
+      if (!is_string($change_at)) return 0;
+      $shifted_change_dates[$change_key] = self::shift_local_datetime_days($change_at, 7);
+      if ($shifted_change_dates[$change_key] === null) return 0;
+    }
+
+    $create = static function () use ($source, $source_post_id, $new_start, $shifted_change_dates) {
+      $new_post_id = wp_insert_post([
+        'post_type' => self::POST_TYPE,
+        'post_status' => self::generated_post_status($source),
+        'post_title' => (string) $source->post_title,
+        'post_content' => (string) $source->post_content,
+        'post_excerpt' => (string) $source->post_excerpt,
+        'post_author' => (int) $source->post_author,
+      ], true);
+      if (is_wp_error($new_post_id) || !$new_post_id) return new \WP_Error('duplicate_showing_insert_failed', 'The duplicated showing could not be created.');
+
+      $all_meta = get_post_meta($source_post_id);
+      $excluded = [
+        '_roxy_pid_adult', '_roxy_pid_discount', '_roxy_pid_matinee', '_roxy_pid_live1', '_roxy_pid_live2', '_roxy_pid_subscriber',
+        '_roxy_sales_stats', '_roxy_schedule_generated', '_roxy_generated_from_builder', '_edit_lock', '_edit_last', '_thumbnail_id',
+        '_roxy_legacy_product_ids', '_roxy_rs_request_id',
+      ];
+      foreach ($all_meta as $meta_key => $values) {
+        if (in_array($meta_key, $excluded, true) || array_key_exists($meta_key, $shifted_change_dates)) continue;
+        delete_post_meta((int) $new_post_id, $meta_key);
+        foreach ((array) $values as $value) add_post_meta((int) $new_post_id, $meta_key, maybe_unserialize($value));
       }
-    }
 
-    update_post_meta($new_post_id, '_roxy_start', $new_start);
+      update_post_meta((int) $new_post_id, '_roxy_start', $new_start);
+      foreach ($shifted_change_dates as $change_key => $change_at) if ($change_at !== '') update_post_meta((int) $new_post_id, $change_key, $change_at);
+      if ((string) get_post_meta((int) $new_post_id, '_roxy_start', true) !== $new_start) return new \WP_Error('duplicate_showing_time_write', 'The duplicated showing date could not be verified.');
 
-    $taxonomy_terms = wp_get_object_terms($source_post_id, 'roxy_show_type', ['fields' => 'ids']);
-    if (!empty($taxonomy_terms) && !is_wp_error($taxonomy_terms)) {
-      wp_set_object_terms($new_post_id, $taxonomy_terms, 'roxy_show_type', false);
-    }
+      $taxonomy_terms = wp_get_object_terms($source_post_id, 'roxy_show_type', ['fields' => 'ids']);
+      if (!empty($taxonomy_terms) && !is_wp_error($taxonomy_terms)) wp_set_object_terms((int) $new_post_id, $taxonomy_terms, 'roxy_show_type', false);
+      $thumbnail_id = get_post_thumbnail_id($source_post_id);
+      if ($thumbnail_id) set_post_thumbnail((int) $new_post_id, $thumbnail_id);
+      return (int) $new_post_id;
+    };
 
-    $thumbnail_id = get_post_thumbnail_id($source_post_id);
-    if ($thumbnail_id) {
-      set_post_thumbnail($new_post_id, $thumbnail_id);
-    }
+    $new_post_id = function_exists('roxy_eb_with_showing_time_lock')
+      ? roxy_eb_with_showing_time_lock($new_start, 0, $create, true)
+      : $create();
+    if (is_wp_error($new_post_id) || !$new_post_id) return 0;
 
     if (class_exists(__NAMESPACE__ . '\Products')) {
       Products::ensure_products_for_showing((int) $new_post_id);

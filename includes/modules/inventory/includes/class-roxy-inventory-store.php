@@ -120,6 +120,16 @@ class Store {
     public static function runs_table(): string { global $wpdb; return $wpdb->prefix . 'roxy_inventory_runs'; }
     public static function orders_table(): string { global $wpdb; return $wpdb->prefix . 'roxy_inventory_orders'; }
 
+    private static function ensure_product_column(string $name, string $definition): void {
+        global $wpdb;
+        $column = $wpdb->get_var($wpdb->prepare('SHOW COLUMNS FROM ' . self::products_table() . ' LIKE %s', $name));
+        self::checked_read();
+        if (!$column) self::checked_write($wpdb->query('ALTER TABLE ' . self::products_table() . ' ADD ' . $name . ' ' . $definition));
+        $column = $wpdb->get_var($wpdb->prepare('SHOW COLUMNS FROM ' . self::products_table() . ' LIKE %s', $name));
+        self::checked_read();
+        if (!$column) throw new \RuntimeException('Inventory product schema upgrade did not add the required ' . $name . ' field.');
+    }
+
     public static function install_schema(): void {
         global $wpdb; require_once ABSPATH . 'wp-admin/includes/upgrade.php'; $charset = $wpdb->get_charset_collate();
         dbDelta("CREATE TABLE " . self::products_table() . " (
@@ -128,6 +138,8 @@ class Store {
             vendor VARCHAR(100) NULL, tracking_status VARCHAR(20) NOT NULL DEFAULT 'tracked', active TINYINT(1) NOT NULL DEFAULT 1, on_hand DECIMAL(12,2) NOT NULL DEFAULT 0,
             pack_size DECIMAL(12,2) NOT NULL DEFAULT 1, reorder_point DECIMAL(12,2) NOT NULL DEFAULT 0,
             target_stock DECIMAL(12,2) NOT NULL DEFAULT 0, unit_cost DECIMAL(12,2) NOT NULL DEFAULT 0,
+            unit_cost_status VARCHAR(20) NOT NULL DEFAULT 'unknown', unit_cost_source VARCHAR(190) NULL,
+            unit_cost_checked_at DATE NULL, supplier_sku VARCHAR(190) NULL,
             override_qty DECIMAL(12,2) NULL, calculated_at DATETIME NULL, updated_at DATETIME NOT NULL,
             PRIMARY KEY (id), UNIQUE KEY square_variation_id (square_variation_id), KEY vendor (vendor), KEY active (active)
         ) $charset;");
@@ -148,13 +160,16 @@ class Store {
             payload LONGTEXT NULL, submission_key VARCHAR(64) NULL, created_at DATETIME NOT NULL,
             PRIMARY KEY (id), UNIQUE KEY submission_key (submission_key), KEY vendor (vendor), KEY created_at (created_at)
         ) $charset;");
-        if (!$wpdb->get_var("SHOW COLUMNS FROM " . self::products_table() . " LIKE 'tracking_status'")) {
-            self::checked_write($wpdb->query("ALTER TABLE " . self::products_table() . " ADD tracking_status VARCHAR(20) NOT NULL DEFAULT 'tracked' AFTER vendor"));
-        }
+        self::ensure_product_column('tracking_status', "VARCHAR(20) NOT NULL DEFAULT 'tracked' AFTER vendor");
+        self::ensure_product_column('unit_cost_status', "VARCHAR(20) NOT NULL DEFAULT 'unknown' AFTER unit_cost");
+        self::ensure_product_column('unit_cost_source', 'VARCHAR(190) NULL AFTER unit_cost_status');
+        self::ensure_product_column('unit_cost_checked_at', 'DATE NULL AFTER unit_cost_source');
+        self::ensure_product_column('supplier_sku', 'VARCHAR(190) NULL AFTER unit_cost_checked_at');
+        self::migrate_cost_provenance();
         self::seed_vendors();
         if (!get_option('roxy_inventory_db_version')) self::apply_vendor_assignments();
         self::upgrade_submission_identity();
-        update_option('roxy_inventory_db_version', defined('ROXY_INVENTORY_VER') ? ROXY_INVENTORY_VER : '0.1.0');
+        self::save_schema_version();
     }
 
     public static function maybe_upgrade_schema(): void {
@@ -167,6 +182,21 @@ class Store {
         }
     }
 
+    private static function migrate_cost_provenance(): void {
+        global $wpdb;
+        if (get_option('roxy_inventory_cost_provenance_v1')) return;
+        self::checked_write($wpdb->query("UPDATE " . self::products_table() . " SET unit_cost_status='estimate' WHERE unit_cost_status='unknown' AND unit_cost>0"));
+        if (!update_option('roxy_inventory_cost_provenance_v1', 1, false) && (int)get_option('roxy_inventory_cost_provenance_v1') !== 1) {
+            throw new \RuntimeException('Inventory cost provenance migration marker could not be saved.');
+        }
+    }
+
+    private static function save_schema_version(): void {
+        $version = defined('ROXY_INVENTORY_VER') ? ROXY_INVENTORY_VER : '0.1.0';
+        if (!update_option('roxy_inventory_db_version', $version) && (string)get_option('roxy_inventory_db_version', '') !== (string)$version) {
+            throw new \RuntimeException('Inventory schema version could not be saved. The upgrade will retry; do not submit orders until the upgrade notice clears.');
+        }
+    }
     public static function upgrade_submission_identity(): void {
         global $wpdb;
         $table = self::orders_table();
@@ -236,6 +266,10 @@ class Store {
             $data['reorder_point'] = 0;
             $data['target_stock'] = 0;
             $data['unit_cost'] = 0;
+            $data['unit_cost_status'] = 'unknown';
+            $data['unit_cost_source'] = null;
+            $data['unit_cost_checked_at'] = null;
+            $data['supplier_sku'] = '';
             self::checked_write($wpdb->insert(self::products_table(), $data));
         }
     }
@@ -297,6 +331,9 @@ class Store {
         self::checked_read();
         return is_array($row) ? $row : null;
     }
+    public static function orders_waiting_for_receipt(): array {
+        return self::rows("SELECT id,payload,created_at FROM " . self::orders_table() . " WHERE status='ordered' ORDER BY id");
+    }
 
     public static function update_order_status(int $id, string $status): bool {
         global $wpdb;
@@ -329,12 +366,12 @@ class Store {
         return is_array($row) ? $row : null;
     }
 
-    public static function mark_stock_increases(array $previous_stock = []): int {
-        return self::transaction(static function () use ($previous_stock) { return self::mark_stock_increases_locked($previous_stock); });
+    public static function mark_stock_increases(array $previous_stock = [], array $receipt_events = []): int {
+        return self::transaction(static function () use ($previous_stock,$receipt_events) { return self::mark_stock_increases_locked($previous_stock,$receipt_events); });
     }
-    private static function mark_stock_increases_locked(array $previous_stock): int {
+    private static function mark_stock_increases_locked(array $previous_stock,array $receipt_events): int {
         global $wpdb;
-$products = self::rows("SELECT square_variation_id,name,on_hand FROM " . self::products_table());
+        $products = self::rows("SELECT square_variation_id,name,on_hand FROM " . self::products_table());
         $current = [];
         $by_name = [];
         foreach ($products as $product) {
@@ -343,11 +380,13 @@ $products = self::rows("SELECT square_variation_id,name,on_hand FROM " . self::p
             if (array_key_exists($name_key,$by_name)) $by_name[$name_key]=null; // Ambiguous names cannot establish receipt identity.
             else $by_name[$name_key] = ['square_variation_id' => (string) $product['square_variation_id'], 'on_hand' => (float) $product['on_hand']];
         }
-        $orders = self::rows("SELECT id,payload FROM " . self::orders_table() . " WHERE status='ordered'");
+        $orders = self::rows("SELECT id,payload,created_at FROM " . self::orders_table() . " WHERE status='ordered'");
         $marked = 0;
         foreach ($orders as $order) {
             $lines = json_decode((string) ($order['payload'] ?? ''), true);
             if (!is_array($lines)) continue;
+            try { $order_created_ts=(new \DateTimeImmutable((string)($order['created_at']??''),wp_timezone()))->getTimestamp(); }
+            catch (\Throwable $e) { $order_created_ts=PHP_INT_MAX; }
             $increased = false; $changed = false;
             foreach ($lines as &$line) {
                 $variation_id = (string) ($line['square_variation_id'] ?? '');
@@ -362,11 +401,28 @@ $products = self::rows("SELECT square_variation_id,name,on_hand FROM " . self::p
                 }
                 if ($variation_id !== '' && array_key_exists($variation_id, $current) && array_key_exists('on_hand', $line)) {
                     $before = $previous_stock[$variation_id] ?? ($line['last_observed_on_hand'] ?? $line['on_hand']);
-                    if ($current[$variation_id] > (float) $before) {
+                    $receipt = $receipt_events[$variation_id] ?? null;
+                    $receipt_created_at = is_array($receipt) ? ($receipt['created_at'] ?? null) : null;
+                    $receipt_occurred_at = is_array($receipt) ? ($receipt['occurred_at'] ?? null) : null;
+                    if (is_array($receipt)
+                        && in_array($receipt['from_state'] ?? '', ['NONE','UNLINKED_RETURN'], true)
+                        && ($receipt['to_state'] ?? '') === 'IN_STOCK'
+                        && ($receipt['reason_type'] ?? '') === 'RECEIVED'
+                        && is_numeric($receipt['quantity'] ?? null) && is_finite((float)$receipt['quantity']) && (float)$receipt['quantity'] > 0
+                        && is_string($receipt['id'] ?? null) && $receipt['id'] !== ''
+                        && is_string($receipt_created_at) && strtotime($receipt_created_at)!==false
+                        && is_string($receipt_occurred_at) && strtotime($receipt_occurred_at)!==false
+                        && strtotime($receipt_created_at)>=$order_created_ts
+                        && strtotime($receipt_occurred_at)>=$order_created_ts) {
                         $increased = true;
-                        $line['stock_increase_detected_at'] = current_time('mysql');
+                        $line['stock_increase_detected_at'] = $receipt_created_at;
                         $line['stock_increase_from'] = (float) $before;
                         $line['stock_increase_to'] = $current[$variation_id];
+                        $line['square_receipt_event_id'] = (string)$receipt['id'];
+                        $line['square_receipt_quantity'] = (float)$receipt['quantity'];
+                        $line['square_receipt_created_at'] = $receipt_created_at;
+                        $line['square_receipt_occurred_at'] = $receipt_occurred_at;
+                        $line['square_receipt_reason'] = 'RECEIVED';
                     }
                     $line['last_observed_on_hand'] = $current[$variation_id];
                     $changed = true;

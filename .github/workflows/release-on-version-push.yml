@@ -14,11 +14,11 @@ concurrency:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -53,6 +53,7 @@ jobs:
           echo "version=$HEADER_VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$HEADER_VERSION" >> "$GITHUB_OUTPUT"
           echo "zip_name=roxy-suite-$HEADER_VERSION.zip" >> "$GITHUB_OUTPUT"
+          echo "manifest_name=roxy-suite-$HEADER_VERSION.manifest.json" >> "$GITHUB_OUTPUT"
 
       - name: Check latest release tag
         id: latest
@@ -108,6 +109,23 @@ jobs:
         run: |
           echo "No release created. Plugin version was not higher than the latest GitHub release."
 
+      - name: Reject an already-used version tag
+        if: steps.compare.outputs.should_release == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = "${{ steps.version.outputs.tag }}";
+            try {
+              await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `tags/${tag}`
+              });
+              throw new Error(`Refusing to reuse existing release tag ${tag}.`);
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
       - name: Build plugin zip
         if: steps.compare.outputs.should_release == 'true'
         shell: bash
@@ -123,19 +141,66 @@ jobs:
           rsync -av \
             --exclude='.git' \
             --exclude='.github' \
+            --exclude='/.gitignore' \
             --exclude='build' \
+            --exclude='/tests/' \
+            --exclude='/docs/' \
+            --exclude='/tools/' \
+            --exclude='/RoxyEdit.md' \
             --exclude='.DS_Store' \
             ./ "$STAGE_DIR"/
 
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$GITHUB_SHA")"
+          export TZ=UTC
+          find "$STAGE_DIR" -type f -exec touch -d "@$SOURCE_DATE_EPOCH" {} +
+
           (
             cd build
-            zip -r "${{ steps.version.outputs.zip_name }}" roxy-suite >/dev/null
+            find roxy-suite -type f -print | LC_ALL=C sort | zip -X "${{ steps.version.outputs.zip_name }}" -@ >/dev/null
           )
 
           if [[ ! -f "$ZIP_PATH" ]]; then
             echo "Zip was not created."
             exit 1
           fi
+
+          SOURCE_SHA="$GITHUB_SHA" \
+          RELEASE_VERSION="${{ steps.version.outputs.version }}" \
+          ZIP_NAME="${{ steps.version.outputs.zip_name }}" \
+          MANIFEST_NAME="${{ steps.version.outputs.manifest_name }}" \
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+          const root = path.resolve('build/roxy-suite');
+          const files = [];
+          function walk(dir) {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+              const full = path.join(dir, entry.name);
+              if (entry.isDirectory()) walk(full);
+              else if (entry.isFile()) {
+                const relative = path.relative(path.resolve('build'), full).split(path.sep).join('/');
+                files.push({ path: relative, sha256: crypto.createHash('sha256').update(fs.readFileSync(full)).digest('hex') });
+              } else {
+                throw new Error(`Unsupported package entry: ${full}`);
+              }
+            }
+          }
+          walk(root);
+          files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+          const archivePath = path.resolve('build', process.env.ZIP_NAME);
+          const manifest = {
+            format_version: 1,
+            source_sha: process.env.SOURCE_SHA,
+            version: process.env.RELEASE_VERSION,
+            archive: {
+              file: process.env.ZIP_NAME,
+              sha256: crypto.createHash('sha256').update(fs.readFileSync(archivePath)).digest('hex')
+            },
+            files
+          };
+          fs.writeFileSync(path.resolve('build', process.env.MANIFEST_NAME), JSON.stringify(manifest, null, 2) + '\n');
+          NODE
 
       - name: Create Git tag
         if: steps.compare.outputs.should_release == 'true'
@@ -151,7 +216,7 @@ jobs:
                 repo: context.repo.repo,
                 ref: `tags/${tag}`
               });
-              core.info(`Tag ${tag} already exists. Skipping tag creation.`);
+              throw new Error(`Refusing to reuse existing release tag ${tag}.`);
             } catch (error) {
               if (error.status !== 404) throw error;
 
@@ -169,6 +234,8 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: Roxy Suite ${{ steps.version.outputs.version }}
-          files: build/${{ steps.version.outputs.zip_name }}
+          files: |
+            build/${{ steps.version.outputs.zip_name }}
+            build/${{ steps.version.outputs.manifest_name }}
           generate_release_notes: true
           fail_on_unmatched_files: true

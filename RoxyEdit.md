@@ -59,19 +59,19 @@ Example backup pattern:
 
 ## Asset and cache rules
 
-The public site currently serves event-booking assets from the top-level plugin asset directory:
-
-```text
-/home1/anrvxfmy/public_html/wp-content/plugins/roxy-suite/assets/event-booking/
-```
-
-The module directory also contains a fallback/source copy:
+The canonical served booking assets are now in the module directory (Suite and standalone use the same loader):
 
 ```text
 /home1/anrvxfmy/public_html/wp-content/plugins/roxy-suite/includes/modules/event-booking/assets/
 ```
 
-When changing the booking frontend, keep both copies synchronized. Verify the top-level `assets/event-booking/` copy because that is the actively served copy. Bump the event-booking version when an asset change must invalidate browser/CDN caches.
+The top-level directory retains compatibility copies for cached pages referencing old URLs:
+
+```text
+/home1/anrvxfmy/public_html/wp-content/plugins/roxy-suite/assets/event-booking/
+```
+
+Edit the canonical module assets and mirror compatibility copies mechanically. `tests/booking-assets-regression.cjs` rejects drift. Verify the served module URLs; asset versions use file modification times for browser/CDN cache invalidation. Do not delete compatibility URLs until cached pages have expired or been purged.
 
 Calendar availability requests must remain non-cacheable POST requests. Do not restore cacheable GET requests for date-range availability.
 

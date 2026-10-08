@@ -82,7 +82,7 @@ define('ROXY_GROSSES_PATH', ROXY_SUITE_PATH . 'includes/modules/grosses/');
 define('ROXY_GROSSES_URL',  ROXY_SUITE_URL  . 'includes/modules/grosses/');
 
 // Inventory module
-define('ROXY_INVENTORY_VER', '0.1.15');
+define('ROXY_INVENTORY_VER', '0.1.16');
 define('ROXY_INVENTORY_PATH', ROXY_SUITE_PATH . 'includes/modules/inventory/');
 define('ROXY_INVENTORY_URL',  ROXY_SUITE_URL  . 'includes/modules/inventory/');
 
@@ -398,6 +398,9 @@ register_deactivation_hook(__FILE__, function () {
         wp_unschedule_event($social_ts, 'roxy_social_cleanup');
         $social_ts = wp_next_scheduled('roxy_social_cleanup');
     }
+    // Clear every paged continuation regardless of its cursor/upper-ID args.
+    wp_unschedule_hook('roxy_social_cleanup_page');
+    wp_unschedule_hook('roxy_social_cleanup_media_page');
     wp_clear_scheduled_hook('roxy_eb_prune_sling_logs_daily');
     wp_clear_scheduled_hook('roxy_eb_daily_health_check');
     flush_rewrite_rules();

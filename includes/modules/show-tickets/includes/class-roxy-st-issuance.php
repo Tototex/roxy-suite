@@ -181,6 +181,38 @@ final class Issuance {
     return ['visit_before'=>$row,'quantity_after'=>(int)$after['quantity'],'undone_at'=>current_time('mysql'),'undone_by'=>get_current_user_id()];
   }
 
+  /** Undo one person from an exact walk-up record without guessing its identity. */
+  public function undo_member_walkup(int $visit_id,int $subscription_id,int $showing_id): array {
+    global $wpdb;
+    $this->assert_owner();$table=$wpdb->prefix.'roxy_member_scans';
+    if($visit_id<=0 || $subscription_id<=0 || $showing_id<=0)throw new \RuntimeException('Member walk-up identity missing');
+    if($wpdb->get_var($wpdb->prepare('SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s',$table))!=='InnoDB')throw new \RuntimeException('Transactional membership log storage required');
+    $row=$wpdb->get_row($wpdb->prepare("SELECT * FROM `$table` WHERE id=%d FOR UPDATE",$visit_id),ARRAY_A);
+    $walkup_sources=['manual_admit_walkup'=>'manual_undo_walkup','nfc_admit_walkup'=>'nfc_undo_walkup'];
+    if($wpdb->last_error || !is_array($row) || (int)$row['subscription_id']!==$subscription_id || (int)$row['showing_id']!==$showing_id || (int)$row['is_active']!==1 || (int)$row['quantity']<1 || !isset($walkup_sources[(string)$row['source']]))throw new \RuntimeException('Member walk-up changed or requires historical review');
+    $this->assert_owner();$guard=$this->predicate();
+    if($this->write($wpdb->prepare("UPDATE `$table` SET is_active=0 WHERE id=%d AND subscription_id=%d AND showing_id=%d AND quantity=%d AND is_active=1 AND $guard",$visit_id,$subscription_id,$showing_id,(int)$row['quantity']))!==1)throw new \RuntimeException('Member walk-up Undo was not saved');
+    $remaining=(int)$row['quantity']-1;
+    $replacement_id=0;
+    if($remaining>0) {
+      $replacement=$row;
+      unset($replacement['id']);
+      $replacement['quantity']=$remaining;
+      if(!$this->member_visit($replacement))throw new \RuntimeException('Remaining member arrivals were not preserved');
+      $replacement_id=$this->member_visit_id();
+    }
+    $audit=$row;
+    unset($audit['id']);
+    $audit['scanned_at']=current_time('mysql');
+    $audit['is_active']=0;
+    $audit['status']='undo:' . $visit_id . ';r:' . $replacement_id;
+    $audit['source']=$walkup_sources[(string)$row['source']];
+    $audit['quantity']=1;
+    if(!$this->member_visit($audit))throw new \RuntimeException('Member walk-up Undo audit was not saved');
+    $this->assert_owner();
+    return ['visit_before'=>$row,'quantity_after'=>$remaining,'replacement_visit_id'=>$replacement_id,'undo_audit_id'=>$this->member_visit_id(),'undone_at'=>current_time('mysql'),'undone_by'=>get_current_user_id()];
+  }
+
   private function write(string $sql): int {
     global $wpdb;
     $this->assert_owner();

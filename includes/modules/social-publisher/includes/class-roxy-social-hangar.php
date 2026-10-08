@@ -79,16 +79,28 @@ final class Hangar {
         require_once ABSPATH . 'wp-admin/includes/image.php';
         $attachment_id = media_handle_sideload(['name' => sanitize_file_name($filename), 'tmp_name' => $tmp], $post_id);
         if (is_wp_error($attachment_id)) { @unlink($tmp); return 0; }
-        if (!Store::update_imported_media($draft_id, (int) $attachment_id, in_array($extension, ['mp4', 'mov', 'm4v'], true) ? 'video' : 'image', self::cleanup_time($draft), $asset_id, $filename, $draft)) {
+        $attachment_id = (int) $attachment_id;
+        if ($attachment_id <= 0) { @unlink($tmp); return 0; }
+        $is_video = in_array($extension, ['mp4', 'mov', 'm4v'], true);
+        if (!self::tag_imported_attachment($attachment_id, $asset_id, $is_video)
+            || !Store::update_imported_media($draft_id, $attachment_id, $is_video ? 'video' : 'image', self::cleanup_time($draft), $asset_id, $filename, $draft)) {
             // This new upload was never assigned. Do not touch the previously
             // selected media or any approved publication on a stale response.
-            wp_delete_attachment((int) $attachment_id, true);
+            wp_delete_attachment($attachment_id, true);
             return 0;
         }
-        update_post_meta((int) $attachment_id, '_roxy_social_temporary', in_array($extension, ['mp4', 'mov', 'm4v'], true) ? '1' : '0');
-        update_post_meta((int) $attachment_id, '_roxy_hangar_asset_id', $asset_id);
-        if (in_array($extension, ['mp4', 'mov', 'm4v'], true)) self::save_video_thumbnail((int) $attachment_id, $asset_id, $filename);
-        return (int) $attachment_id;
+        if ($is_video) self::save_video_thumbnail($attachment_id, $asset_id, $filename);
+        return $attachment_id;
+    }
+
+    /** Mark an imported attachment before a draft starts referencing it. */
+    private static function tag_imported_attachment(int $attachment_id, int $asset_id, bool $temporary): bool {
+        if ($attachment_id <= 0 || $asset_id <= 0) return false;
+        $temporary_value = $temporary ? '1' : '0';
+        update_post_meta($attachment_id, '_roxy_social_temporary', $temporary_value);
+        update_post_meta($attachment_id, '_roxy_hangar_asset_id', $asset_id);
+        return (string) get_post_meta($attachment_id, '_roxy_social_temporary', true) === $temporary_value
+            && (int) get_post_meta($attachment_id, '_roxy_hangar_asset_id', true) === $asset_id;
     }
 
     private static function save_video_thumbnail(int $attachment_id, int $asset_id, string $filename): void {
@@ -97,16 +109,65 @@ final class Hangar {
         $image = self::fetch_thumbnail($thumbnail, 5 * 1024 * 1024);
         if (!$image) return;
         $uploads = wp_upload_dir();
-        if (!empty($uploads['error']) || !wp_mkdir_p($uploads['path'])) return;
-        $poster_name = wp_unique_filename($uploads['path'], sanitize_file_name(pathinfo($filename, PATHINFO_FILENAME) . '-poster.' . $image['extension']));
-        if (false === file_put_contents(trailingslashit($uploads['path']) . $poster_name, $image['body'])) return;
-        update_post_meta($attachment_id, '_roxy_social_video_poster_url', trailingslashit($uploads['url']) . $poster_name);
-        update_post_meta($attachment_id, '_roxy_social_video_poster_file', trailingslashit($uploads['path']) . $poster_name);
+        if (!empty($uploads['error']) || empty($uploads['path']) || empty($uploads['basedir']) || empty($uploads['url']) || !wp_mkdir_p($uploads['path'])) return;
+        $base_name = sanitize_file_name(pathinfo($filename, PATHINFO_FILENAME) . '-poster.' . $image['extension']);
+        $poster_name = wp_unique_filename($uploads['path'], $base_name);
+        $poster_path = trailingslashit($uploads['path']) . $poster_name;
+
+        // wp_unique_filename() is a check-then-use operation. Open exclusively
+        // so a concurrent upload or pre-existing file can never be overwritten.
+        $handle = @fopen($poster_path, 'x+b');
+        if (!is_resource($handle)) return;
+        $written = 0;
+        $length = strlen($image['body']);
+        while ($written < $length) {
+            $count = @fwrite($handle, substr($image['body'], $written));
+            if ($count === false || $count === 0) break;
+            $written += $count;
+        }
+        $flushed = $written === $length && @fflush($handle);
+        $closed = @fclose($handle);
+        if (!$flushed || !$closed) {
+            @unlink($poster_path);
+            return;
+        }
+
+        $poster_url = trailingslashit($uploads['url']) . $poster_name;
+        $old_url = get_post_meta($attachment_id, '_roxy_social_video_poster_url', true);
+        $old_file = get_post_meta($attachment_id, '_roxy_social_video_poster_file', true);
+        update_post_meta($attachment_id, '_roxy_social_video_poster_url', $poster_url);
+        update_post_meta($attachment_id, '_roxy_social_video_poster_file', $poster_path);
+        if ((string) get_post_meta($attachment_id, '_roxy_social_video_poster_url', true) !== $poster_url
+            || (string) get_post_meta($attachment_id, '_roxy_social_video_poster_file', true) !== $poster_path) {
+            // Restore the prior pair; do not leave metadata pointing at a
+            // partial replacement when the database write fails.
+            if ($old_url === '' || $old_url === null) delete_post_meta($attachment_id, '_roxy_social_video_poster_url');
+            else update_post_meta($attachment_id, '_roxy_social_video_poster_url', $old_url);
+            if ($old_file === '' || $old_file === null) delete_post_meta($attachment_id, '_roxy_social_video_poster_file');
+            else update_post_meta($attachment_id, '_roxy_social_video_poster_file', $old_file);
+            @unlink($poster_path);
+            return;
+        }
+        if (is_string($old_file) && $old_file !== '' && $old_file !== $poster_path && !self::delete_owned_video_thumbnail_file($old_file)) {
+            error_log('Roxy Social could not remove a replaced Hangar video poster file.');
+        }
+    }
+
+    private static function delete_owned_video_thumbnail_file(string $file): bool {
+        if ($file === '') return true;
+        $uploads = wp_upload_dir();
+        $upload_root = !empty($uploads['basedir']) ? realpath($uploads['basedir']) : false;
+        $poster_realpath = realpath($file);
+        $upload_prefix = $upload_root !== false ? rtrim($upload_root, '/\\') . DIRECTORY_SEPARATOR : '';
+        if ($upload_root === false || $poster_realpath === false || !is_file($poster_realpath)
+            || strpos($poster_realpath, $upload_prefix) !== 0
+            || !preg_match('/-poster(?:-[0-9]+)?\.[A-Za-z0-9]+$/', basename($poster_realpath))) return true;
+        return @unlink($poster_realpath) || !file_exists($poster_realpath);
     }
 
     public static function delete_video_thumbnail(int $attachment_id): void {
         $file = (string) get_post_meta($attachment_id, '_roxy_social_video_poster_file', true);
-        if ($file !== '' && is_file($file)) @unlink($file);
+        self::delete_owned_video_thumbnail_file($file);
         delete_post_meta($attachment_id, '_roxy_social_video_poster_url');
         delete_post_meta($attachment_id, '_roxy_social_video_poster_file');
     }
@@ -207,7 +268,7 @@ final class Hangar {
         $body = wp_remote_retrieve_body($response);
         if ($body === '' || strlen($body) > 25 * 1024 * 1024) return 0;
         $tmp = wp_tempnam($filename);
-        if (!$tmp || false === file_put_contents($tmp, $body)) return 0;
+        if (!$tmp || !self::write_download_temp_file($tmp, $body)) return 0;
         require_once ABSPATH . 'wp-admin/includes/file.php';
         require_once ABSPATH . 'wp-admin/includes/media.php';
         require_once ABSPATH . 'wp-admin/includes/image.php';
@@ -216,9 +277,47 @@ final class Hangar {
             @unlink($tmp);
             return 0;
         }
-        set_post_thumbnail($post_id, (int) $attachment_id);
-        update_post_meta((int) $attachment_id, '_roxy_hangar_asset_id', $asset_id);
+        $attachment_id = (int) $attachment_id;
+        if ($attachment_id <= 0 || !self::assign_featured_image($post_id, $attachment_id, $asset_id)) {
+            // The new file was not successfully attached to this post. Keep
+            // the existing featured image and remove only this request's file.
+            if ($attachment_id > 0 && (int) get_post_thumbnail_id($post_id) !== $attachment_id) wp_delete_attachment($attachment_id, true);
+            return 0;
+        }
         return (int) $attachment_id;
+    }
+
+    /** Persist and read back the asset identity and featured-image assignment. */
+    private static function assign_featured_image(int $post_id, int $attachment_id, int $asset_id): bool {
+        if ($post_id <= 0 || $attachment_id <= 0 || $asset_id <= 0) return false;
+        $previous_id = (int) get_post_thumbnail_id($post_id);
+        $saved = update_post_meta($attachment_id, '_roxy_hangar_asset_id', $asset_id);
+        if ($saved === false && (int) get_post_meta($attachment_id, '_roxy_hangar_asset_id', true) !== $asset_id) return false;
+
+        try { set_post_thumbnail($post_id, $attachment_id); } catch (\Throwable $error) { return false; }
+        $current_id = (int) get_post_thumbnail_id($post_id);
+        if ($current_id === $attachment_id) return true;
+
+        // A failed setter should leave the old image alone. If a hook changed
+        // it anyway, make a best-effort restoration before reporting failure.
+        if ($current_id !== $previous_id) {
+            if ($previous_id > 0) set_post_thumbnail($post_id, $previous_id);
+            elseif (function_exists('delete_post_thumbnail')) delete_post_thumbnail($post_id);
+        }
+        return false;
+    }
+
+    private static function write_download_temp_file(string $path, string $body): bool {
+        if ($path === '' || !is_file($path) || $body === '') {
+            if ($path !== '' && is_file($path)) @unlink($path);
+            return false;
+        }
+        $written = @file_put_contents($path, $body);
+        if ($written !== strlen($body)) {
+            @unlink($path);
+            return false;
+        }
+        return true;
     }
 
     public static function download_url(int $asset_id): string {
@@ -226,18 +325,26 @@ final class Hangar {
     }
 
     private static function login_cookies(): array {
+        static $request_cache = [];
+        $user = (string) get_option(self::USER_OPTION, '');
         $password=self::decrypt((string)get_option(self::PASS_OPTION,''));
-        if ($password==='') return [];
+        if ($user === '' || $password==='') return [];
+        $cache_key = hash('sha256', $user . "\0" . $password);
+        if (array_key_exists($cache_key, $request_cache)) return $request_cache[$cache_key];
         $login = wp_remote_post(self::BASE_URL . 'login.php', [
             'timeout' => 20,
             'redirection' => 0,
             'body' => [
-                'user' => (string) get_option(self::USER_OPTION, ''),
+                'user' => $user,
                 'pass' => $password,
             ],
         ]);
-        if (is_wp_error($login) || !in_array((int) wp_remote_retrieve_response_code($login), [200, 302], true)) return [];
-        return wp_remote_retrieve_cookies($login);
+        $cookies = !is_wp_error($login) && in_array((int) wp_remote_retrieve_response_code($login), [200, 302], true)
+            ? wp_remote_retrieve_cookies($login)
+            : [];
+        if (!is_array($cookies)) $cookies = [];
+        $request_cache[$cache_key] = $cookies;
+        return $cookies;
     }
 
     private static function encrypt(string $value): string {

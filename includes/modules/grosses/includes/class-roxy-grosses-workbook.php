@@ -7,6 +7,10 @@ class Workbook {
   private const SNAPSHOT_OPTION = 'roxy_grosses_workbook_snapshots';
   private const TEMPLATE_KEY = 'workbook_template_upload';
   private const PRIVATE_ROOT_DIR = 'roxy-grosses-private';
+  private const MAX_TEMPLATE_ARCHIVE_BYTES = 26214400;
+  private const MAX_TEMPLATE_EXPANDED_BYTES = 104857600;
+  private const MAX_TEMPLATE_ENTRIES = 2048;
+  private const MAX_TEMPLATE_XML_BYTES = 8388608;
 
   public static function init(): void {
     add_action('admin_post_roxy_grosses_upload_template', [__CLASS__, 'handle_upload_template']);
@@ -36,18 +40,43 @@ class Workbook {
       self::redirect_with_notice('error', (string) $uploaded['error'], null, 'workbook');
     }
 
-    $original_name = sanitize_file_name((string) ($_FILES['workbook_template']['name'] ?? basename((string) ($uploaded['file'] ?? 'template.xlsx'))));
-    $private_path = self::move_file_to_private_storage(
-      (string) ($uploaded['file'] ?? ''),
-      self::private_templates_dir(),
-      $original_name
-    );
+    $temporary_path = (string) ($uploaded['file'] ?? '');
+    $original_name = sanitize_file_name((string) ($_FILES['workbook_template']['name'] ?? basename($temporary_path ?: 'template.xlsx')));
+    try {
+      self::validate_template_package($temporary_path, $original_name);
+      $private_path = self::move_file_to_private_storage(
+        $temporary_path,
+        self::private_templates_dir(),
+        $original_name
+      );
+    } catch (\Throwable $error) {
+      // wp_handle_upload has already placed this request's file under uploads;
+      // never leave a rejected workbook in a public URL directory.
+      $cleanup_failed = $temporary_path !== '' && is_file($temporary_path) && !@unlink($temporary_path);
+      if ($cleanup_failed) error_log('Roxy Grosses: unable to remove a rejected workbook upload from temporary storage.');
+      $message = 'Workbook template was not accepted: ' . $error->getMessage();
+      if ($cleanup_failed) $message .= ' The rejected upload could not be removed automatically; remove it from the WordPress uploads folder.';
+      self::redirect_with_notice('error', $message, null, 'workbook');
+    }
 
-    self::set_uploaded_template([
+    $saved_template = self::set_uploaded_template([
       'path' => $private_path,
       'name' => $original_name,
       'uploaded_at' => wp_date('Y-m-d H:i:s', null, new \DateTimeZone(Settings::get_report_timezone())),
     ]);
+    if ($saved_template !== true) {
+      $current_template = self::uploaded_template();
+      $still_referenced = (string) ($current_template['path'] ?? '') === $private_path;
+      $cleanup_failed = $saved_template === false && !$still_referenced && is_file($private_path) && !@unlink($private_path);
+      if ($cleanup_failed) error_log('Roxy Grosses: unable to remove an unreferenced workbook template after settings-save failure.');
+      $message = $saved_template === false
+        ? ($still_referenced
+          ? 'The uploaded template path is saved, but the complete settings record did not verify. The referenced private file was preserved; review the workbook template setting.'
+          : 'Workbook template was copied privately, but its settings could not be verified; the existing template setting was retained.')
+        : 'Workbook template settings could not be read back, so the private copy was retained for safety. Retry or check the workbook setting before uploading again.';
+      if ($cleanup_failed) $message .= ' The unused private copy could not be removed automatically.';
+      self::redirect_with_notice('error', $message, null, 'workbook');
+    }
 
     Store::insert_log('upload_workbook_template', 'manual-template', null, null, true, 'Workbook template uploaded.', [
       'path' => $private_path,
@@ -141,7 +170,10 @@ class Workbook {
     [$start_year, $start_month, $end_year, $end_month] = self::normalized_period($start_year, $start_month, $end_year, $end_month);
 
     $mode = !empty($_POST['test_send']) ? 'manual-advertiser-test' : 'manual-advertiser';
-    $result = self::send_advertiser_summary($start_year, $start_month, $mode, $end_year, $end_month);
+    $send_request_id = isset($_POST['send_request_id']) ? sanitize_text_field(wp_unslash((string) $_POST['send_request_id'])) : '';
+    $intentional_resend = !empty($_POST['intentional_resend']);
+    if ($intentional_resend && !self::valid_send_request_id($send_request_id)) wp_die('A deliberate advertiser resend needs a fresh request identifier. Reopen the page and try again.');
+    $result = self::send_advertiser_summary($start_year, $start_month, $mode, $end_year, $end_month, $send_request_id, $intentional_resend);
     self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], $start_year, $return_tab);
   }
 
@@ -315,7 +347,7 @@ class Workbook {
     return array_values($grouped);
   }
 
-  public static function send_advertiser_summary(int $year, int $month, string $mode = 'scheduled-advertiser', ?int $end_year = null, ?int $end_month = null): array {
+  public static function send_advertiser_summary(int $year, int $month, string $mode = 'scheduled-advertiser', ?int $end_year = null, ?int $end_month = null, string $send_request_id = '', bool $intentional_resend = false): array {
     $is_test_send = $mode === 'manual-advertiser-test';
     $to = $is_test_send ? self::test_email_list() : Settings::advertiser_email_list();
     $end_year = $end_year ?? $year;
@@ -333,6 +365,7 @@ class Workbook {
       return ['success' => false, 'message' => $message];
     }
 
+    $workbook_path = '';
     try {
       $rows = self::advertiser_rows_for_period($year, $month, $end_year, $end_month);
       $period_totals = self::advertiser_totals_for_period($year, $month, $end_year, $end_month);
@@ -415,9 +448,50 @@ class Workbook {
         }
       }
 
-      $sent = wp_mail($mail_to, $subject, $body, $headers, [$workbook_path]);
+      $request_id = self::valid_send_request_id($send_request_id) ? $send_request_id : self::new_send_request_id();
+      $outbox_key = $intentional_resend
+        ? 'advertiser-resend:' . $month_key . ':' . $end_month_key . ':' . $request_id
+        : ($is_test_send
+        ? 'advertiser-test:' . $month_key . ':' . $end_month_key . ':' . $request_id
+        : 'advertiser-summary:' . $month_key . ':' . $end_month_key);
+      try {
+        $claim = EmailOutbox::claim($outbox_key, 'advertiser_summary', 0, $report_date, [
+          'to' => $mail_to,
+          'headers' => $headers,
+          'subject' => $subject,
+          'body' => $body,
+          'attachment_name' => basename($workbook_path),
+          'attachment_sha256' => is_file($workbook_path) ? hash_file('sha256', $workbook_path) : '',
+        ], ['mode' => $mode, 'request_id' => $request_id, 'start_month' => $month_key, 'end_month' => $end_month_key]);
+      } catch (\Throwable $error) {
+        throw new \RuntimeException('Email was not attempted because the durable send guard is unavailable: ' . $error->getMessage(), 0, $error);
+      }
+      if (empty($claim['claimed'])) {
+        $state = (string) ($claim['status'] ?? 'unknown');
+        if ($state === 'accepted') {
+          $message = $intentional_resend
+            ? 'This deliberate advertiser resend was already accepted by WordPress for sending; no duplicate was sent.'
+            : 'This advertiser summary range was already accepted by WordPress for sending; no duplicate was sent.';
+          Store::insert_log('send_advertiser_summary', $mode, null, $report_date, true, $message, ['month' => $month_key, 'end_month' => $end_month_key, 'duplicate_suppressed' => true]);
+          return ['success' => true, 'message' => $message, 'duplicate_suppressed' => true];
+        }
+        throw new \RuntimeException($state === 'accepted'
+          ? 'This advertiser summary range was already accepted by WordPress for sending; it was not sent again.'
+          : 'A prior advertiser email attempt is ' . $state . '. It was not sent again; review the outbox/logs before acting.');
+      }
+
+      try {
+        $sent = wp_mail($mail_to, $subject, $body, $headers, [$workbook_path]);
+      } catch (\Throwable $error) {
+        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail threw: ' . substr($error->getMessage(), 0, 1500));
+        throw new \RuntimeException('Mail handling ended unexpectedly. The send is marked uncertain and will not be retried automatically; review the outbox before acting.', 0, $error);
+      }
       if (!$sent) {
-        throw new \RuntimeException('WordPress could not send the advertiser summary email.');
+        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail returned false; delivery outcome may be ambiguous.');
+        throw new \RuntimeException('WordPress did not confirm the advertiser email. The attempt is marked uncertain and will not be retried automatically.');
+      }
+      if (!EmailOutbox::finish((int) $claim['id'], 'accepted')) {
+        throw new \RuntimeException('WordPress accepted the advertiser email, but the outbox could not record that result. Do not resend; review the outbox before acting.');
       }
 
       $message = 'Advertiser summary sent to ' . implode(', ', $to) . ' for ' . $period_label . '.';
@@ -438,7 +512,24 @@ class Workbook {
       ]);
       Reporter::notify_admin_failure('Advertiser summary email failed', $report_date, $mode, $e->getMessage());
       return ['success' => false, 'message' => $e->getMessage()];
+    } finally {
+      if ($workbook_path !== '' && is_file($workbook_path) && !@unlink($workbook_path)) {
+        error_log('Roxy Grosses: unable to remove a private advertiser workbook attachment.');
+      }
     }
+  }
+
+  private static function valid_send_request_id(string $request_id): bool {
+    return (bool) preg_match('/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i', $request_id);
+  }
+
+  private static function new_send_request_id(): string {
+    if (function_exists('wp_generate_uuid4')) return (string) wp_generate_uuid4();
+    $bytes = random_bytes(16);
+    $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
+    $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
+    $hex = bin2hex($bytes);
+    return substr($hex, 0, 8) . '-' . substr($hex, 8, 4) . '-' . substr($hex, 12, 4) . '-' . substr($hex, 16, 4) . '-' . substr($hex, 20);
   }
 
   private static function test_email_list(): array {
@@ -467,16 +558,30 @@ class Workbook {
 
     $dir = self::private_workbooks_dir();
     $output_path = trailingslashit($dir) . 'roxy-box-office-' . $year . '.xlsx';
-    if (!copy($template, $output_path)) {
-      throw new \RuntimeException('The workbook template could not be copied for generation.');
+    $temporary_path = '';
+    for ($attempt = 0; $attempt < 5; $attempt++) {
+      $candidate = trailingslashit($dir) . '.roxy-box-office-' . $year . '-' . self::new_send_request_id() . '.tmp.xlsx';
+      $reserved = @fopen($candidate, 'x');
+      if ($reserved === false) continue;
+      if (!fclose($reserved)) { @unlink($candidate); continue; }
+      $temporary_path = $candidate;
+      break;
     }
+    if ($temporary_path === '') throw new \RuntimeException('A unique private workbook generation path could not be reserved.');
 
-    $zip = new \ZipArchive();
-    if ($zip->open($output_path) !== true) {
-      throw new \RuntimeException('The generated workbook could not be opened.');
-    }
-
+    $zip = null;
+    $zip_open = false;
     try {
+      if (!copy($template, $temporary_path)) {
+        throw new \RuntimeException('The workbook template could not be copied for generation.');
+      }
+
+      $zip = new \ZipArchive();
+      if ($zip->open($temporary_path) !== true) {
+        throw new \RuntimeException('The generated workbook could not be opened.');
+      }
+      $zip_open = true;
+
       $sheet3 = $zip->getFromName('xl/worksheets/sheet3.xml');
       $sheet4 = $zip->getFromName('xl/worksheets/sheet4.xml');
       $workbook = $zip->getFromName('xl/workbook.xml');
@@ -484,14 +589,28 @@ class Workbook {
         throw new \RuntimeException('The workbook template is missing required worksheets.');
       }
 
-      $zip->addFromString('xl/worksheets/sheet3.xml', self::populate_weekly_log_sheet((string) $sheet3, $weekly_rows));
-      $zip->addFromString('xl/worksheets/sheet4.xml', self::populate_setup_sheet((string) $sheet4, $year));
-      $zip->addFromString('xl/workbook.xml', self::force_recalculate_workbook((string) $workbook));
+      if (!$zip->addFromString('xl/worksheets/sheet3.xml', self::populate_weekly_log_sheet((string) $sheet3, $weekly_rows))
+        || !$zip->addFromString('xl/worksheets/sheet4.xml', self::populate_setup_sheet((string) $sheet4, $year))
+        || !$zip->addFromString('xl/workbook.xml', self::force_recalculate_workbook((string) $workbook))) {
+        throw new \RuntimeException('The generated workbook sheets could not be updated.');
+      }
+      if (!$zip->close()) {
+        throw new \RuntimeException('The generated workbook could not be finalized.');
+      }
+      $zip_open = false;
+      if (!@rename($temporary_path, $output_path)) {
+        throw new \RuntimeException('The completed workbook could not replace the saved snapshot.');
+      }
+      $temporary_path = '';
+      return $output_path;
     } finally {
-      $zip->close();
+      if ($zip_open && $zip instanceof \ZipArchive) {
+        try { $zip->close(); } catch (\Throwable $close_error) { error_log('Roxy Grosses: temporary workbook archive close failed.'); }
+      }
+      if ($temporary_path !== '' && is_file($temporary_path) && !@unlink($temporary_path)) {
+        error_log('Roxy Grosses: temporary workbook generation file could not be removed.');
+      }
     }
-
-    return $output_path;
   }
 
   public static function get_snapshot_status(int $year): array {
@@ -648,17 +767,21 @@ class Workbook {
     return is_array($template) ? $template : [];
   }
 
-  private static function set_uploaded_template(array $template): void {
+  private static function set_uploaded_template(array $template): ?bool {
     $settings = get_option(Settings::OPTION_KEY, []);
     if (!is_array($settings)) {
       $settings = [];
     }
-    $settings[self::TEMPLATE_KEY] = [
+    $saved_template = [
       'path' => sanitize_text_field((string) ($template['path'] ?? '')),
       'name' => sanitize_file_name((string) ($template['name'] ?? '')),
       'uploaded_at' => sanitize_text_field((string) ($template['uploaded_at'] ?? '')),
     ];
+    $settings[self::TEMPLATE_KEY] = $saved_template;
     update_option(Settings::OPTION_KEY, $settings);
+    $verified = get_option(Settings::OPTION_KEY, null);
+    if (!is_array($verified)) return null;
+    return ($verified[self::TEMPLATE_KEY] ?? null) === $saved_template;
   }
 
   private static function resolve_template_path(int $year): string {
@@ -674,6 +797,78 @@ class Workbook {
     }
 
     return str_replace('{year}', (string) $year, $template);
+  }
+
+  /** Validate the OOXML package shape without extracting untrusted archive paths. */
+  private static function validate_template_package(string $path, string $original_name): void {
+    if (strtolower(pathinfo($original_name, PATHINFO_EXTENSION)) !== 'xlsx') {
+      throw new \RuntimeException('Choose a genuine .xlsx workbook file.');
+    }
+    if (!is_file($path) || !is_readable($path)) {
+      throw new \RuntimeException('The uploaded workbook could not be read.');
+    }
+    $archive_bytes = filesize($path);
+    if (!is_int($archive_bytes) || $archive_bytes < 1 || $archive_bytes > self::MAX_TEMPLATE_ARCHIVE_BYTES) {
+      throw new \RuntimeException('The workbook file is empty or exceeds the 25 MB upload safety limit.');
+    }
+    if (!class_exists('ZipArchive')) {
+      throw new \RuntimeException('ZipArchive is required to validate workbook templates.');
+    }
+
+    $zip = new \ZipArchive();
+    if (@$zip->open($path, \ZipArchive::RDONLY) !== true) {
+      throw new \RuntimeException('The uploaded file is not a readable Excel workbook archive.');
+    }
+
+    $required = [
+      '[Content_Types].xml',
+      '_rels/.rels',
+      'xl/workbook.xml',
+      'xl/worksheets/sheet3.xml',
+      'xl/worksheets/sheet4.xml',
+    ];
+    $seen = [];
+    $expanded_bytes = 0;
+    try {
+      if ($zip->numFiles < count($required) || $zip->numFiles > self::MAX_TEMPLATE_ENTRIES) {
+        throw new \RuntimeException('The workbook archive has an unexpected number of files.');
+      }
+      for ($index = 0; $index < $zip->numFiles; $index++) {
+        $stat = $zip->statIndex($index);
+        if (!is_array($stat) || !isset($stat['name'], $stat['size']) || !is_string($stat['name']) || !is_int($stat['size']) || $stat['size'] < 0) {
+          throw new \RuntimeException('The workbook archive contains an unreadable entry.');
+        }
+        $name = $stat['name'];
+        if (isset($seen[$name])) {
+          throw new \RuntimeException('The workbook archive contains duplicate file names.');
+        }
+        $seen[$name] = true;
+        if ($stat['size'] > self::MAX_TEMPLATE_EXPANDED_BYTES - $expanded_bytes) {
+          throw new \RuntimeException('The workbook expands beyond the 100 MB safety limit.');
+        }
+        $expanded_bytes += $stat['size'];
+      }
+
+      foreach ($required as $entry) {
+        $stat = $zip->statName($entry);
+        if (!is_array($stat) || !isset($stat['size']) || !is_int($stat['size'])
+          || $stat['size'] < 1 || $stat['size'] > self::MAX_TEMPLATE_XML_BYTES) {
+          throw new \RuntimeException('The workbook is missing a required worksheet or package manifest.');
+        }
+        $xml = $zip->getFromName($entry);
+        if (!is_string($xml) || strlen($xml) !== $stat['size'] || !self::is_well_formed_workbook_xml($xml)) {
+          throw new \RuntimeException('A required workbook XML file is invalid or unreadable.');
+        }
+      }
+    } finally {
+      $zip->close();
+    }
+  }
+
+  private static function is_well_formed_workbook_xml(string $xml): bool {
+    if (!class_exists('DOMDocument')) return false;
+    $document = new \DOMDocument();
+    return @$document->loadXML($xml, LIBXML_NONET | LIBXML_COMPACT | LIBXML_NOERROR | LIBXML_NOWARNING);
   }
 
   private static function populate_weekly_log_sheet(string $xml, array $weekly_rows): string {
@@ -928,8 +1123,22 @@ class Workbook {
     if ($start_year !== $end_year || $start_month !== $end_month) {
       $range_suffix .= '-to-' . sprintf('%04d-%02d', $end_year, $end_month);
     }
-    $path = trailingslashit($dir) . 'advertiser-summary-' . $range_suffix . '.xlsx';
-    self::write_simple_xlsx($path, 'Advertiser Summary', $rows);
+    $path = '';
+    for ($attempt = 0; $attempt < 5; $attempt++) {
+      $candidate = trailingslashit($dir) . 'advertiser-summary-' . $range_suffix . '-' . self::new_send_request_id() . '.xlsx';
+      $reserved = @fopen($candidate, 'x');
+      if ($reserved === false) continue;
+      if (!fclose($reserved)) { @unlink($candidate); continue; }
+      $path = $candidate;
+      break;
+    }
+    if ($path === '') throw new \RuntimeException('A unique private advertiser workbook path could not be reserved.');
+    try {
+      self::write_simple_xlsx($path, 'Advertiser Summary', $rows);
+    } catch (\Throwable $error) {
+      if (is_file($path)) @unlink($path);
+      throw $error;
+    }
     return $path;
   }
 
@@ -1052,36 +1261,94 @@ class Workbook {
 
   private static function protect_directory(string $dir): void {
     $index = trailingslashit($dir) . 'index.html';
-    if (!file_exists($index)) {
-      file_put_contents($index, '');
+    if (!is_file($index) && @file_put_contents($index, '') === false) {
+      throw new \RuntimeException('Could not create the private workbook directory index.');
+    }
+    if (!is_file($index) || !is_readable($index)) {
+      throw new \RuntimeException('The private workbook directory index could not be verified.');
     }
 
     $htaccess = trailingslashit($dir) . '.htaccess';
-    if (!file_exists($htaccess)) {
-      file_put_contents($htaccess, "Require all denied\nDeny from all\n");
+    $rules = "<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n";
+    $contents = is_file($htaccess) ? @file_get_contents($htaccess) : false;
+    if (!is_string($contents) || $contents !== $rules) {
+      if (@file_put_contents($htaccess, $rules) === false) {
+        throw new \RuntimeException('Could not write private workbook directory access rules.');
+      }
+      $contents = @file_get_contents($htaccess);
+    }
+    if (!is_file($htaccess) || !is_readable($htaccess) || !is_string($contents) || $contents !== $rules) {
+      throw new \RuntimeException('Private workbook directory access rules could not be verified.');
     }
   }
 
-  private static function move_file_to_private_storage(string $source_path, string $target_dir, string $preferred_name): string {
+  private static function move_file_to_private_storage(string $source_path, string $target_dir, string $preferred_name, bool $remove_source = true): string {
     $source_path = trim($source_path);
     if ($source_path === '' || !is_readable($source_path)) {
       throw new \RuntimeException('The uploaded workbook template could not be read.');
     }
 
     self::ensure_private_directory($target_dir);
-    $filename = wp_unique_filename($target_dir, $preferred_name !== '' ? $preferred_name : basename($source_path));
-    $target_path = trailingslashit($target_dir) . $filename;
-
-    $moved = @rename($source_path, $target_path);
-    if (!$moved) {
-      $moved = @copy($source_path, $target_path);
-      if ($moved) {
-        @unlink($source_path);
+    $preferred_name = $preferred_name !== '' ? $preferred_name : basename($source_path);
+    $target_path = '';
+    $target = false;
+    for ($attempt = 0; $attempt < 8; $attempt++) {
+      $filename = wp_unique_filename($target_dir, $preferred_name);
+      $candidate = trailingslashit($target_dir) . $filename;
+      $target = @fopen($candidate, 'x+b');
+      if (is_resource($target)) {
+        $target_path = $candidate;
+        break;
       }
+      if (!file_exists($candidate)) break;
+    }
+    if (!is_resource($target) || $target_path === '') {
+      throw new \RuntimeException('A unique private workbook destination could not be created.');
     }
 
-    if (!$moved || !is_readable($target_path)) {
-      throw new \RuntimeException('The workbook file could not be moved into private storage.');
+    $source = @fopen($source_path, 'rb');
+    if (!is_resource($source)) {
+      @fclose($target);
+      @unlink($target_path);
+      throw new \RuntimeException('The uploaded workbook template could not be opened.');
+    }
+
+    $copied = 0;
+    $source_stat = @fstat($source);
+    $expected_size = is_array($source_stat) && isset($source_stat['size']) ? (int) $source_stat['size'] : -1;
+    $copy_ok = $expected_size >= 0;
+    try {
+      while ($copy_ok && !feof($source)) {
+        $chunk = @fread($source, 65536);
+        if (!is_string($chunk) || ($chunk === '' && !feof($source))) {
+          $copy_ok = false;
+          break;
+        }
+        $offset = 0;
+        $length = strlen($chunk);
+        while ($offset < $length) {
+          $written = @fwrite($target, substr($chunk, $offset));
+          if (!is_int($written) || $written <= 0) {
+            $copy_ok = false;
+            break 2;
+          }
+          $offset += $written;
+          $copied += $written;
+        }
+      }
+      $copy_ok = $copy_ok && $copied === $expected_size && @fflush($target);
+      $target_stat = @fstat($target);
+      $target_size = is_array($target_stat) && isset($target_stat['size']) ? (int) $target_stat['size'] : -1;
+      $copy_ok = $copy_ok && is_int($target_size) && $target_size === $expected_size;
+    } catch (\Throwable $error) {
+      $copy_ok = false;
+    }
+    $source_closed = @fclose($source);
+    $target_closed = @fclose($target);
+    $copy_ok = $copy_ok && $source_closed && $target_closed && is_readable($target_path);
+    if (!$copy_ok || ($remove_source && is_file($source_path) && !@unlink($source_path))) {
+      @unlink($target_path);
+      throw new \RuntimeException('The workbook file could not be moved completely into private storage.');
     }
 
     return $target_path;
@@ -1097,14 +1364,29 @@ class Workbook {
     $migrated_path = self::move_file_to_private_storage(
       $path,
       self::private_templates_dir(),
-      sanitize_file_name((string) ($uploaded['name'] ?? basename($path)))
+      sanitize_file_name((string) ($uploaded['name'] ?? basename($path))),
+      false
     );
 
     $uploaded['path'] = $migrated_path;
     if (empty($uploaded['name'])) {
       $uploaded['name'] = basename($migrated_path);
     }
-    self::set_uploaded_template($uploaded);
+    $saved_template = self::set_uploaded_template($uploaded);
+    if ($saved_template === false) {
+      $current_template = self::uploaded_template();
+      if ((string) ($current_template['path'] ?? '') === $migrated_path) {
+        error_log('Roxy Grosses: migrated workbook path is saved but the complete settings record did not verify.');
+        return $current_template;
+      }
+      if (is_file($migrated_path) && !@unlink($migrated_path)) error_log('Roxy Grosses: unable to remove an unreferenced migrated workbook template.');
+      throw new \RuntimeException('The private workbook path could not be saved; the existing uploaded template was preserved.');
+    }
+    if ($saved_template === null) {
+      error_log('Roxy Grosses: migrated workbook setting could not be verified; both source and private copy were preserved.');
+      throw new \RuntimeException('The private workbook setting could not be verified; both template files were preserved.');
+    }
+    if (is_file($path) && !@unlink($path)) error_log('Roxy Grosses: migrated workbook is private but its former public copy could not be removed.');
 
     return $uploaded;
   }

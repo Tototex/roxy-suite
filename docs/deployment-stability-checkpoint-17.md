@@ -1,0 +1,29 @@
+# Canonical Social showtime checkpoint
+
+Selectively deployed Campaigns, AI and Publisher. All three live normalized Git blob IDs matched the prior checkpoint before overwrite; original files retained in `/home1/anrvxfmy/deploy-backups/roxy-suite-stability-20261003-054238/checkpoint17`. Final live SHA-256 values match local files exactly. No schema/credential changes.
+
+## Corrections
+
+- Campaign Saturday/Sunday filtering uses each showing's calendar date, not its position in a list. All same-day showings are retained; empty Sunday promotions are not generated. Existing weekend campaign scope remains unchanged; this is not a new weekday campaign feature.
+- AI uses referenced, published `roxy_showing` records, strict site-timezone date parsing and chronological ordering. Caption text is not the source of schedule truth. Removed invented Friday/Saturday/Sunday fallback times and contradictory hardcoded AI schedule instructions. Footer includes actual year and configured local ticket URL.
+- Missing/unpublished/invalid/mixed-film references and absent remaining showings require review before AI is contacted. Date or title changes during generation invalidate the result. Generated time lines, including non-weekend and unlabeled clocks, are removed before the canonical footer is appended.
+- Future Social publication timestamps are not future showing facts. Optional next-film tease omitted until separately verified showing context is supplied.
+- Auto-approval and the worker immediately before provider work check that the caption schedule matches canonical records, with no extra/assumed lines. Stale approved captions enter Needs Review without being rewritten. Partial retry keeps already recorded platform IDs and sends no new provider request when schedule verification fails. Unlinked manual announcements remain available; managers remain responsible for their factual content.
+- Actual live verification initially found campaign generation missing for October 30: WordPress's filtered display title differed from its stored canonical title. Source/matching now consistently use the canonical title; regression and actual WordPress rerun pass. No production campaign was created during verification: writes were intercepted by an in-memory sink.
+
+## Verification
+
+- Lint and diff checks pass. 25 deterministic schedule assertions include multiple Friday shows, Saturday-only, absent Sunday, weekday holiday/year rollover, strict invalid dates, changed dates/titles during generation, stale approval/publication payloads, manual announcements, automatic approval and display-title transformations.
+- 35 isolated actual Publisher checks and 12 actual AI-worker snapshot checks pass. Provider responses are fixtures; no actual AI/Meta publication/deletion requests issued.
+- Actual WordPress read-only check validates two upcoming published records (October 4 and October 30), captures three October 30 campaign drafts in memory, and validates each caption/reference pair plus approval/publication schedule gate. Original full Social-row hash unchanged. The original check failed because of the title mismatch; after repair it passes, including the generator branch (not a skipped test).
+- Actual temporary-table Store/Campaign snapshot suite: 32 checks pass; its independent snapshot tests stub schedule verification explicitly, while the separate schedule suite exercises the actual gate. 18 publish Store SQL checks, four review permission/nonce/SQL checks and actual renderer checks pass. No production post rows changed.
+- Fifteen standalone suites rerun against deployed source with zero exits, including Social, Square/Grosses, Inventory, ticket eligibility, Will Call, member Door Mode, core stability and requested-showing privacy. Five WordPress-backed suites rerun with zero exits. Private result logs retained under checkpoint17.
+- Live browser Social page refresh: ten original rows, no fatal/critical error. Public Tickets page renders MOVIES & EVENTS normally. This does not claim the previously tracked Elementor compatibility issue is resolved or that checkout was retested for these Social-only changes.
+
+Risk: medium. Deliberately stricter verification can stop legacy/manager-edited showing captions that omit real schedule lines or add unverified times; they require correction and reapproval rather than automatic publication. No old public post modified, no existing media deleted, and no real orders/emails/reports sent. S7 ownership/retention and S10 resumable jobs/query bounds remain open. Core MyISAM conversion still awaits explicit approval.
+
+## Follow-up audit repair
+
+Reviewing the real Store class exposed a private-helper access error in the newly added automatic schedule-rejection branch. The deterministic Store double exposed that helper publicly and the SQL snapshot suite initially forced schedule verification true, so neither covered this cross-class failure. Fixed with public `review_snapshot`, which delegates internally to the existing lock/revision guard and only permits a current Draft snapshot. Campaigns now uses that public operation. Selective Store/Campaigns originals retained under `checkpoint17-repair`; hashes matched before overwrite.
+
+The WordPress SQL suite now explicitly drives the actual Campaigns-to-Store rejection branch, with a false schedule-verification fixture, plus stale-result and already-approved rejection safeguards. All 35 assertions pass using temporary rows; production hash remains unchanged. Four WordPress-backed and four isolated affected suites pass again against repaired deployed source. This repair is necessary for the preceding schedule finding's resolved state; the initial checkpoint17 tests alone did not verify this branch adequately. No real schedule-rejection error was intentionally triggered on production posts.

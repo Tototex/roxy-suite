@@ -134,7 +134,7 @@ class Frontend {
             ? 'Funding temporarily unavailable.'
             : ($totals['has_sponsor']
                 ? 'Sponsored'
-                : wp_strip_all_tags(wc_price(((int) $totals['charge_total']) / 100)) . ' / ' . wp_strip_all_tags(wc_price($goal / 100)) . ' pledged');
+                : wp_strip_all_tags(wc_price(((int) $totals['charge_total']) / 100)) . ' / ' . wp_strip_all_tags(wc_price($goal / 100)) . ' contributed');
 
         ob_start();
         echo '<article class="roxy-rs-card">';
@@ -204,7 +204,7 @@ class Frontend {
             echo '<p><a href="' . esc_url($trailer_url) . '" target="_blank" rel="noopener">Watch trailer</a></p>';
         }
         echo '<div class="roxy-rs-progress"><div class="roxy-rs-progress-bar" style="width:' . esc_attr((string) min(100, round(($goal > 0 ? (((int) $totals['charge_total']) / $goal) * 100 : 0), 1))) . '%"></div></div>';
-        echo '<p class="roxy-rs-help-text">' . wp_kses_post(wc_price(((int) $totals['charge_total']) / 100)) . ' pledged of ' . wp_kses_post(wc_price($goal / 100)) . ', '
+        echo '<p class="roxy-rs-help-text">' . wp_kses_post(wc_price(((int) $totals['charge_total']) / 100)) . ' contributed of ' . wp_kses_post(wc_price($goal / 100)) . ', '
             . esc_html(number_format_i18n((int) $totals['support_qty'])) . ' paid backer tickets, '
             . esc_html(number_format_i18n((int) $totals['subscriber_qty'])) . ' subscriber reservations. '
             . (!empty($totals['has_sponsor']) ? 'A sponsor has already satisfied the goal. ' : '')
@@ -353,7 +353,7 @@ class Frontend {
             wp_die('Login required.');
         }
         if (defined('ROXY_RS_SCHEMA_READY') && !ROXY_RS_SCHEMA_READY) {
-            self::redirect_request_notice((int) ($_POST['request_id'] ?? 0), 'error', 'Pledges are temporarily unavailable while the request data store is repaired. No backing was saved.');
+            self::redirect_request_notice((int) ($_POST['request_id'] ?? 0), 'error', 'Backing is temporarily unavailable while the request data store is repaired. No backing was saved.');
         }
 
         $request_id = (int) ($_POST['request_id'] ?? 0);
@@ -420,7 +420,7 @@ class Frontend {
             self::redirect_request_notice($request_id, 'success', 'We already saved that backing request. Please refresh the page to see the latest progress.');
         }
 
-        // Capture a complete price book at pledge time so conversion cannot
+        // Capture a complete price book at backing time so conversion cannot
         // silently adopt prices edited after the customer made this backing.
         $prices = self::ticket_prices($request_id);
         if (is_wp_error($prices)) {

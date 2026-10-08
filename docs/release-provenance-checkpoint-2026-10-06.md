@@ -1,0 +1,15 @@
+# Release provenance safeguards — 2026-10-06
+
+The master-only release workflow now refuses an already-used version tag, including a race at tag creation. It attaches a version/source-SHA manifest with sorted packaged-file SHA-256 values and the final archive hash. ZIP inputs are sorted, timestamps use the source commit and extra ZIP attributes are suppressed. Root tests, audit documents and RoxyEdit.md are excluded from runtime packages.
+
+Main review of the smaller-model implementation: 13 local assertions execute the exact embedded tag guard and manifest programs against private mocked GitHub/filesystem fixtures. Existing tag, absent tag, authorization failure, creation race, source/version identity, sorted paths and file/archive hashes pass. No real release/tag/provider action was performed. Initial test runner did not normalize Windows line endings; corrected and rerun. No YAML parser was present in the available local runtimes; full YAML/hosted GitHub Actions and actual ZIP reproducibility are not certified. Existing workflow structure is preserved.
+
+C2 remains in progress: the updater does not validate manifests; actual release/archive reproducibility remains unverified. This branch does not trigger master release publication. No dependency upgrades or production code changes belong to this checkpoint.
+
+## Full live-source comparison after checkpoint 60
+
+Read-only committed-tree manifest tools exclude uncommitted/untracked code and compare raw hashes separately from CRLF-only differences. At source `5b18ec2f103cc413c31007a704b62eee2d7ccea2` all 90 packaged runtime files exist with matching content: 68 exact byte matches, 22 line-ending-only differences, zero missing files and zero substantive mismatches. This is source-tree consistency, not a claim the website was installed from a particular release ZIP. Four repository-only maintenance helpers intentionally were never deployed; those tools and `.gitignore` are now excluded from future public runtime packages. No active Suite source was overwritten by this comparison.
+
+The checker correctly exits nonzero because it also detects 14 unexpected deployed files: legacy root Social PHP, two old picker JavaScript copies, ten old `.bak-*` copies and an error log. They remain untouched pending reference/recovery review. A HEAD-only public check of the exact error-log URL returned 404; log contents were not fetched or exposed. No blanket server cleanup or formatting rewrite was performed.
+
+Seven actual PHP 8.3 comparator-process fixtures cover exact/CRLF matches, missing files, substantive drift, extra-file preservation, traversal and duplicate paths. Fifteen local release guard/manifest checks now cover exclusion of maintenance tools/ignore metadata. The first comparison deliberately matched the original workflow's packaging set and flagged the repository-only tools and `.gitignore`; after tightening the package exclusions the runtime subset passes content comparison, while the unexpected-file gate remains explicit. Hosted release/YAML execution, actual ZIP reproducibility and updater validation remain open.

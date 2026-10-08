@@ -25,6 +25,7 @@ class Roxy_Sub_Check {
 
     add_action('add_meta_boxes', [__CLASS__, 'add_subscription_photo_metabox']);
     add_action('save_post', [__CLASS__, 'save_subscription_photo_metabox'], 10, 2);
+    add_action('admin_notices', [__CLASS__, 'subscription_photo_save_notice']);
     add_action('admin_enqueue_scripts', [__CLASS__, 'admin_enqueue_media']);
 
     if (!defined('ROXY_SUITE_VERSION')) {
@@ -344,7 +345,7 @@ class Roxy_Sub_Check {
       $out['next_payment'] = date_i18n(get_option('date_format'), strtotime($next));
     }
 
-    $photo_id = absint(get_post_meta($sub_id, self::META_PHOTO_ID, true));
+    $photo_id = method_exists($sub, 'get_meta') ? absint($sub->get_meta(self::META_PHOTO_ID, true)) : 0;
     if ($photo_id) {
       $img = wp_get_attachment_image_src($photo_id, 'medium');
       if (is_array($img) && !empty($img[0])) {
@@ -428,92 +429,73 @@ class Roxy_Sub_Check {
 
   private static function search_member_subscription_ids(string $term, int $limit): array {
     global $wpdb;
-
-    $posts_table = $wpdb->posts;
-    $postmeta_table = $wpdb->postmeta;
-    $users_table = $wpdb->users;
-    $usermeta_table = $wpdb->usermeta;
-
+    if (!isset($wpdb->posts, $wpdb->postmeta, $wpdb->users, $wpdb->usermeta)
+      || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'get_col') || !method_exists($wpdb, 'esc_like')) {
+      throw new \RuntimeException('Member search storage is unavailable.');
+    }
+    $limit = max(1, min(50, $limit));
     $like = '%' . $wpdb->esc_like($term) . '%';
-    $status_placeholders = implode(',', array_fill(0, 2, '%s'));
-    $params = [
-      'shop_subscription',
-      'wc-active',
-      'wc-pending-cancel',
-      '_customer_user',
-      'first_name',
-      'last_name',
-      '_billing_email',
-      '_billing_first_name',
-      '_billing_last_name',
-      $like,
-      $like,
-      $like,
-      $like,
-      $like,
-      $like,
-      $like,
-      $like,
-      $limit,
-    ];
-
-    $sql = "
-      SELECT DISTINCT p.ID
-      FROM {$posts_table} p
-      LEFT JOIN {$postmeta_table} pm_user
-        ON pm_user.post_id = p.ID AND pm_user.meta_key = %s
-      LEFT JOIN {$users_table} u
-        ON u.ID = CAST(pm_user.meta_value AS UNSIGNED)
-      LEFT JOIN {$usermeta_table} umf
-        ON umf.user_id = u.ID AND umf.meta_key = %s
-      LEFT JOIN {$usermeta_table} uml
-        ON uml.user_id = u.ID AND uml.meta_key = %s
-      LEFT JOIN {$postmeta_table} pm_email
-        ON pm_email.post_id = p.ID AND pm_email.meta_key = %s
-      LEFT JOIN {$postmeta_table} pm_bfirst
-        ON pm_bfirst.post_id = p.ID AND pm_bfirst.meta_key = %s
-      LEFT JOIN {$postmeta_table} pm_blast
-        ON pm_blast.post_id = p.ID AND pm_blast.meta_key = %s
-      WHERE p.post_type = %s
-        AND p.post_status IN ({$status_placeholders})
+    // Do the selective lookup in SQL and hydrate only the bounded matches via
+    // wcs_get_subscription() in search_members(). Walking every active
+    // subscription through wcs_get_subscriptions() makes a no-match search
+    // unbounded. This query intentionally uses post storage: the Suite
+    // declares HPOS unsupported until its order paths are fully certified.
+    $sql = "SELECT p.ID
+      FROM {$wpdb->posts} p
+      WHERE p.post_type = 'shop_subscription'
+        AND p.post_status IN ('wc-active', 'wc-pending-cancel')
         AND (
           CAST(p.ID AS CHAR) LIKE %s
-          OR u.user_email LIKE %s
-          OR u.display_name LIKE %s
-          OR umf.meta_value LIKE %s
-          OR uml.meta_value LIKE %s
-          OR CONCAT_WS(' ', umf.meta_value, uml.meta_value) LIKE %s
-          OR pm_email.meta_value LIKE %s
-          OR CONCAT_WS(' ', pm_bfirst.meta_value, pm_blast.meta_value) LIKE %s
+          OR EXISTS (
+            SELECT 1
+            FROM {$wpdb->postmeta} customer_meta
+            INNER JOIN {$wpdb->users} u
+              ON u.ID = CAST(customer_meta.meta_value AS UNSIGNED)
+            WHERE customer_meta.post_id = p.ID
+              AND customer_meta.meta_key = '_customer_user'
+              AND (
+                u.user_email LIKE %s
+                OR u.display_name LIKE %s
+                OR EXISTS (
+                  SELECT 1 FROM {$wpdb->usermeta} first_name
+                  WHERE first_name.user_id = u.ID AND first_name.meta_key = 'first_name'
+                    AND first_name.meta_value LIKE %s
+                )
+                OR EXISTS (
+                  SELECT 1 FROM {$wpdb->usermeta} last_name
+                  WHERE last_name.user_id = u.ID AND last_name.meta_key = 'last_name'
+                    AND last_name.meta_value LIKE %s
+                )
+                OR EXISTS (
+                  SELECT 1
+                  FROM {$wpdb->usermeta} first_full
+                  LEFT JOIN {$wpdb->usermeta} last_full
+                    ON last_full.user_id = first_full.user_id AND last_full.meta_key = 'last_name'
+                  WHERE first_full.user_id = u.ID AND first_full.meta_key = 'first_name'
+                    AND CONCAT_WS(' ', first_full.meta_value, last_full.meta_value) LIKE %s
+                )
+              )
+          )
         )
       ORDER BY p.ID DESC
-      LIMIT %d
-    ";
-
-    $prepared = $wpdb->prepare(
-      $sql,
-      $params[3],
-      $params[4],
-      $params[5],
-      $params[6],
-      $params[7],
-      $params[8],
-      $params[0],
-      $params[1],
-      $params[2],
-      $params[9],
-      $params[10],
-      $params[11],
-      $params[12],
-      $params[13],
-      $params[14],
-      $params[15],
-      $params[16],
-      $params[17]
-    );
-
+      LIMIT %d";
+    $prepared = $wpdb->prepare($sql, $like, $like, $like, $like, $like, $like, $limit);
     $ids = $wpdb->get_col($prepared);
-    return array_values(array_filter(array_map('intval', (array) $ids)));
+    if ((isset($wpdb->last_error) && (string) $wpdb->last_error !== '') || !is_array($ids)
+      || (function_exists('is_wp_error') && is_wp_error($ids))) {
+      throw new \RuntimeException('Member search could not read subscription records.');
+    }
+    $matches = [];
+    foreach ($ids as $id) {
+      if (!is_numeric($id) || (float) $id <= 0 || (float) $id !== (float) (int) $id) {
+        throw new \RuntimeException('Member search returned an invalid subscription identity.');
+      }
+      $matches[] = (int) $id;
+    }
+    if (count($matches) !== count(array_unique($matches))) {
+      throw new \RuntimeException('Member search returned duplicate subscription identities.');
+    }
+    return $matches;
   }
 
   public static function showing_admit_rows(int $showing_id): array {
@@ -795,33 +777,118 @@ class Roxy_Sub_Check {
     global $wpdb;
     $table = self::table_name();
 
-    $maximum=(int)$wpdb->get_var("SELECT COALESCE(MAX(id),0) FROM {$table}");
-    if ($wpdb->last_error) wp_die('Could not read scan log for export.');
+    $maximum_raw=$wpdb->get_var("SELECT COALESCE(MAX(id),0) FROM {$table}");
+    if ($wpdb->last_error || (!is_int($maximum_raw) && !is_string($maximum_raw)) || !preg_match('/^(?:0|[1-9]\d*)$/D',(string)$maximum_raw)) wp_die('Could not read scan log for export.');
+    $maximum=(int)$maximum_raw;
+
+    $columns=['scanned_at','subscription_id','is_active','status','user_id','ip','user_agent','showing_id','source','quantity'];
+    $directory = $path = null;
+    $out = null;
+    try {
+      [$directory, $path, $out] = self::open_private_scan_export();
+      self::put_private_scan_export_row($out, $columns);
+      $last=0;
+      while($last<$maximum) {
+        $sql="SELECT id," . implode(',',$columns) . " FROM {$table} WHERE id>%d AND id<=%d";
+        $params=[$last,$maximum];
+        if($filter_sub){$sql.=' AND subscription_id=%d';$params[]=$filter_sub;}
+        $rows=$wpdb->get_results($wpdb->prepare($sql.' ORDER BY id ASC LIMIT 500',...$params),ARRAY_A);
+        if($wpdb->last_error || !is_array($rows)) throw new \RuntimeException('A scan-log export page could not be read.');
+        if(!$rows)break;
+        foreach($rows as $r){
+          $row_id=$r['id']??null;
+          if((!is_int($row_id)&&!is_string($row_id))||!preg_match('/^[1-9]\d*$/D',(string)$row_id)||(int)$row_id<=$last||(int)$row_id>$maximum) throw new \RuntimeException('A scan-log export page had an invalid row boundary.');
+          $values=[];
+          foreach($columns as $column){$value=(string)($r[$column]??'');$values[]=preg_match('/^[=+@\-\t\r]/',$value)?"'".$value:$value;}
+          self::put_private_scan_export_row($out, $values);
+          $last=(int)$row_id;
+        }
+      }
+      if (!@fflush($out)) throw new \RuntimeException('Scan-log export could not be finalized.');
+      if (!@fclose($out)) throw new \RuntimeException('Scan-log export could not be closed.');
+      $out = null;
+    } catch (\Throwable $error) {
+      if (is_resource($out)) fclose($out);
+      self::remove_private_scan_export($directory, $path);
+      wp_die('Could not complete the scan log export. No partial CSV was sent; retry after storage or database recovery.');
+    }
 
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename=roxy-scan-log.csv');
     header('Cache-Control: no-store');
     header('X-Content-Type-Options: nosniff');
+    $sent = @readfile($path);
+    self::remove_private_scan_export($directory, $path);
+    if ($sent === false) wp_die('The completed scan log export could not be delivered.');
+  }
 
-    $out = fopen('php://output', 'w');
-    $columns=['scanned_at','subscription_id','is_active','status','user_id','ip','user_agent','showing_id','source','quantity'];
-    fputcsv($out,$columns,',','"','');
-    $last=0;
-    while($last<$maximum) {
-      $sql="SELECT id," . implode(',',$columns) . " FROM {$table} WHERE id>%d AND id<=%d";
-      $params=[$last,$maximum];
-      if($filter_sub){$sql.=' AND subscription_id=%d';$params[]=$filter_sub;}
-      $rows=$wpdb->get_results($wpdb->prepare($sql.' ORDER BY id ASC LIMIT 500',...$params),ARRAY_A);
-      if($wpdb->last_error || !is_array($rows)){fputcsv($out,['EXPORT_INCOMPLETE','Database read failed; retry export.'],',','"','');break;}
-      if(!$rows)break;
-      foreach($rows as $r){
-        $values=[];
-        foreach($columns as $column){$value=(string)($r[$column]??'');$values[]=preg_match('/^[=+@\-\t\r]/',$value)?"'".$value:$value;}
-        fputcsv($out,$values,',','"','');$last=(int)$r['id'];
-      }
+  private static function put_private_scan_export_row($handle, array $row): void {
+    $buffer = @fopen('php://temp', 'w+b');
+    if (!is_resource($buffer)) throw new \RuntimeException('CSV row buffer could not be created.');
+    try {
+      $length = fputcsv($buffer, $row, ',', '"', '');
+      $position = ftell($buffer);
+      if (!is_int($length) || !is_int($position) || $position !== $length || !rewind($buffer)) throw new \RuntimeException('CSV row could not be serialized completely.');
+      $csv = stream_get_contents($buffer);
+      if (!is_string($csv) || strlen($csv) !== $length) throw new \RuntimeException('CSV row could not be buffered completely.');
+    } finally {
+      @fclose($buffer);
     }
+    $offset = 0;
+    $csv_length = strlen($csv);
+    while ($offset < $csv_length) {
+      $written = @fwrite($handle, substr($csv, $offset));
+      if (!is_int($written) || $written <= 0) throw new \RuntimeException('A scan-log export row could not be written completely.');
+      $offset += $written;
+    }
+  }
 
-    fclose($out);
+  private static function scan_export_temp_is_private(string $temp): bool {
+    $roots = [ABSPATH, defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : ABSPATH, $_SERVER['DOCUMENT_ROOT'] ?? ''];
+    if (defined('WP_PLUGIN_DIR')) $roots[] = WP_PLUGIN_DIR;
+    $normalize = static function (string $path): string {
+      return rtrim(str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $path), DIRECTORY_SEPARATOR);
+    };
+    $temp = $normalize($temp);
+    foreach ($roots as $web_root) {
+      if (!is_string($web_root) || $web_root === '') continue;
+      $root = realpath($web_root);
+      if ($root === false) continue;
+      $root = $normalize($root);
+      $prefix = $root . DIRECTORY_SEPARATOR;
+      $inside = DIRECTORY_SEPARATOR === '\\'
+        ? (strtolower($temp) === strtolower($root) || str_starts_with(strtolower($temp . DIRECTORY_SEPARATOR), strtolower($prefix)))
+        : ($temp === $root || str_starts_with($temp . DIRECTORY_SEPARATOR, $prefix));
+      if ($inside) return false;
+    }
+    return true;
+  }
+
+  private static function open_private_scan_export(): array {
+    $temp = realpath(sys_get_temp_dir());
+    if ($temp === false || !is_dir($temp) || !is_writable($temp)) throw new \RuntimeException('Private temporary storage is unavailable.');
+    if (!self::scan_export_temp_is_private($temp)) throw new \RuntimeException('Private temporary storage must be outside the website.');
+    $directory = $temp . DIRECTORY_SEPARATOR . 'roxy-scan-export-' . bin2hex(random_bytes(16));
+    if (!@mkdir($directory, 0700) || !@chmod($directory, 0700)) {
+      if (is_dir($directory)) @rmdir($directory);
+      throw new \RuntimeException('Private scan-log storage could not be created.');
+    }
+    $path = $directory . DIRECTORY_SEPARATOR . 'scan-log.csv';
+    $handle = @fopen($path, 'x+b');
+    if ($handle === false || !@chmod($path, 0600)) {
+      if (is_resource($handle)) fclose($handle);
+      self::remove_private_scan_export($directory, $path);
+      throw new \RuntimeException('Private scan-log file could not be created.');
+    }
+    register_shutdown_function(static function () use ($directory, $path): void {
+      self::remove_private_scan_export($directory, $path);
+    });
+    return [$directory, $path, $handle];
+  }
+
+  private static function remove_private_scan_export($directory, $path): void {
+    if (is_string($path) && is_file($path) && !@unlink($path)) error_log('Roxy Member Check: private scan export cleanup failed.');
+    if (is_string($directory) && is_dir($directory) && !@rmdir($directory)) error_log('Roxy Member Check: private scan export directory cleanup failed.');
   }
 
   public static function render_myaccount_photo_uploader($subscription) {
@@ -834,7 +901,7 @@ class Roxy_Sub_Check {
     $owner = $subscription->get_user_id();
     if ((int)$owner !== (int)$current_user_id) return;
 
-    $photo_id = absint(get_post_meta($sub_id, self::META_PHOTO_ID, true));
+    $photo_id = method_exists($subscription, 'get_meta') ? absint($subscription->get_meta(self::META_PHOTO_ID, true)) : 0;
     $photo_url = '';
     if ($photo_id) {
       $img = wp_get_attachment_image_src($photo_id, 'medium');
@@ -909,7 +976,67 @@ class Roxy_Sub_Check {
       return;
     }
 
-    update_post_meta($sub_id, self::META_PHOTO_ID, (int)$attachment_id);
+    $attachment_id = absint($attachment_id);
+    if (!$attachment_id) return;
+    $previous_photo_id = method_exists($sub, 'get_meta') ? absint($sub->get_meta(self::META_PHOTO_ID, true)) : 0;
+    $metadata_saved = false;
+
+    if (method_exists($sub, 'update_meta_data') && method_exists($sub, 'save') && method_exists($sub, 'get_meta')) {
+      try {
+        $sub->update_meta_data(self::META_PHOTO_ID, $attachment_id);
+        $metadata_saved = (bool)$sub->save();
+        if ($metadata_saved) {
+          $verified_sub = wcs_get_subscription($sub_id);
+          $metadata_saved = is_object($verified_sub)
+            && method_exists($verified_sub, 'get_meta')
+            && absint($verified_sub->get_meta(self::META_PHOTO_ID, true)) === $attachment_id;
+        }
+      } catch (Throwable $error) {
+        $metadata_saved = false;
+      }
+    }
+
+    if (!$metadata_saved) {
+      // Restore and verify the previous reference before removing the new file.
+      // If rollback cannot be verified, preserve both files rather than risk
+      // leaving subscription metadata pointing at a deleted attachment.
+      $rollback_verified = false;
+      if (method_exists($sub, 'update_meta_data') && method_exists($sub, 'delete_meta_data') && method_exists($sub, 'save')) {
+        try {
+          if ($previous_photo_id) $sub->update_meta_data(self::META_PHOTO_ID, $previous_photo_id);
+          else $sub->delete_meta_data(self::META_PHOTO_ID);
+          $sub->save();
+          $restored_sub = wcs_get_subscription($sub_id);
+          $rollback_verified = is_object($restored_sub)
+            && method_exists($restored_sub, 'get_meta')
+            && absint($restored_sub->get_meta(self::META_PHOTO_ID, true)) === $previous_photo_id;
+        } catch (Throwable $error) {
+          $rollback_verified = false;
+        }
+      }
+      if (!$rollback_verified) {
+        try {
+          $restored_sub = wcs_get_subscription($sub_id);
+          $rollback_verified = is_object($restored_sub)
+            && method_exists($restored_sub, 'get_meta')
+            && absint($restored_sub->get_meta(self::META_PHOTO_ID, true)) === $previous_photo_id;
+        } catch (Throwable $error) {
+          $rollback_verified = false;
+        }
+      }
+      if (!$rollback_verified) {
+        error_log('Roxy Member Check: photo metadata rollback could not be verified; preserving uploaded attachment.');
+      } elseif ($attachment_id !== $previous_photo_id && function_exists('wp_delete_attachment')) {
+        try {
+          if (!wp_delete_attachment($attachment_id, true)) {
+            error_log('Roxy Member Check: failed to delete an unreferenced uploaded photo attachment.');
+          }
+        } catch (Throwable $error) {
+          error_log('Roxy Member Check: failed to delete an unreferenced uploaded photo attachment.');
+        }
+      }
+      return;
+    }
 
     wp_safe_redirect(wp_get_referer() ?: wc_get_account_endpoint_url('subscriptions'));
     exit;
@@ -978,7 +1105,8 @@ class Roxy_Sub_Check {
   public static function render_subscription_photo_metabox($post) {
     wp_nonce_field('roxy_member_photo_save', 'roxy_member_photo_nonce');
 
-    $photo_id = absint(get_post_meta($post->ID, self::META_PHOTO_ID, true));
+    $subscription = function_exists('wcs_get_subscription') ? wcs_get_subscription((int)$post->ID) : false;
+    $photo_id = is_object($subscription) && method_exists($subscription, 'get_meta') ? absint($subscription->get_meta(self::META_PHOTO_ID, true)) : 0;
     $photo_url = '';
     if ($photo_id) {
       $img = wp_get_attachment_image_src($photo_id, 'medium');
@@ -1002,7 +1130,7 @@ class Roxy_Sub_Check {
   }
 
   public static function save_subscription_photo_metabox($post_id, $post) {
-    if ($post->post_type !== 'shop_subscription') return;
+    if (!is_object($post) || ($post->post_type ?? '') !== 'shop_subscription') return;
     if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
     if (!current_user_can('edit_post', $post_id)) return;
 
@@ -1010,12 +1138,51 @@ class Roxy_Sub_Check {
       return;
     }
 
-    $photo_id = isset($_POST['roxy_member_photo_id']) ? absint($_POST['roxy_member_photo_id']) : 0;
+    $raw_photo_id = $_POST['roxy_member_photo_id'] ?? 0;
+    if (!is_scalar($raw_photo_id)) {
+      set_transient('roxy_member_photo_save_' . get_current_user_id(), 0, MINUTE_IN_SECONDS);
+      return;
+    }
+    $photo_id = absint(wp_unslash($raw_photo_id));
 
-    if ($photo_id > 0) {
-      update_post_meta($post_id, self::META_PHOTO_ID, $photo_id);
+    $subscription = function_exists('wcs_get_subscription') ? wcs_get_subscription((int)$post_id) : false;
+    if (!is_object($subscription) || !method_exists($subscription, 'get_meta') || !method_exists($subscription, 'save')
+      || ($photo_id > 0 && !method_exists($subscription, 'update_meta_data'))
+      || ($photo_id <= 0 && !method_exists($subscription, 'delete_meta_data'))) {
+      set_transient('roxy_member_photo_save_' . get_current_user_id(), 0, MINUTE_IN_SECONDS);
+      return;
+    }
+    try {
+      if ($photo_id > 0) $subscription->update_meta_data(self::META_PHOTO_ID, $photo_id);
+      else $subscription->delete_meta_data(self::META_PHOTO_ID);
+      $saved_id = $subscription->save();
+      $saved = (int) $saved_id === (int) $post_id;
+      if ($saved && function_exists('wcs_get_subscription')) {
+        $verified = wcs_get_subscription((int) $post_id);
+        $saved = is_object($verified) && method_exists($verified, 'get_meta')
+          && absint($verified->get_meta(self::META_PHOTO_ID, true)) === $photo_id;
+      } else {
+        $saved = false;
+      }
+      set_transient('roxy_member_photo_save_' . get_current_user_id(), $saved ? 1 : 0, MINUTE_IN_SECONDS);
+    } catch (\Throwable $error) {
+      set_transient('roxy_member_photo_save_' . get_current_user_id(), 0, MINUTE_IN_SECONDS);
+    }
+  }
+
+  public static function subscription_photo_save_notice(): void {
+    $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+    if (!$screen || ($screen->post_type ?? '') !== 'shop_subscription' || !function_exists('get_current_user_id')) return;
+    $user_id = (int) get_current_user_id();
+    if ($user_id <= 0) return;
+    $key = 'roxy_member_photo_save_' . $user_id;
+    $result = get_transient($key);
+    if ($result === false) return;
+    delete_transient($key);
+    if ((string) $result === '1') {
+      echo '<div class="notice notice-success is-dismissible"><p>Member photo updated.</p></div>';
     } else {
-      delete_post_meta($post_id, self::META_PHOTO_ID);
+      echo '<div class="notice notice-error"><p>Member photo could not be verified as saved. Reopen the subscription and check the photo before relying on the card display.</p></div>';
     }
   }
 }

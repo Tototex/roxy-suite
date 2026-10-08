@@ -18,6 +18,7 @@ class Conversion {
         add_action('admin_post_roxy_rs_approve_request', [__CLASS__, 'handle_approve_request']);
         add_action('admin_post_roxy_rs_fail_request', [__CLASS__, 'handle_fail_request']);
         add_action('post_submitbox_misc_actions', [__CLASS__, 'render_submitbox_actions']);
+        add_action('add_meta_boxes_shop_order', [__CLASS__, 'register_payment_review_metabox']);
         add_filter('woocommerce_order_formatted_line_subtotal', [__CLASS__, 'format_agreed_gross_line'], 10, 3);
         add_filter('woocommerce_get_order_item_totals', [__CLASS__, 'format_agreed_gross_totals'], 10, 3);
         add_filter('woocommerce_get_formatted_order_total', [__CLASS__, 'format_agreed_gross_order_total'], 10, 4);
@@ -102,6 +103,71 @@ class Conversion {
         echo '<div class="misc-pub-section">';
         echo self::actions_markup((int) $post->ID);
         echo '</div>';
+    }
+
+    /** Add a read-only reconciliation panel to Requested Showing WooCommerce orders. */
+    public static function register_payment_review_metabox(): void {
+        add_meta_box(
+            'roxy_rs_payment_review',
+            'Requested Showing Payment Review',
+            [__CLASS__, 'render_payment_review_metabox'],
+            'shop_order',
+            'side',
+            'high'
+        );
+    }
+
+    public static function render_payment_review_metabox($post): void {
+        $order_id = is_object($post) && isset($post->ID) ? (int) $post->ID : 0;
+        if ($order_id <= 0 || !current_user_can('edit_shop_order', $order_id) || !function_exists('wc_get_order')) return;
+        $order = wc_get_order($order_id);
+        if (!$order instanceof \WC_Order || $order->get_created_via() !== 'roxy_requested_showings') return;
+
+        $attempt_raw = $order->get_meta('_roxy_rs_payment_attempt', true);
+        $result_raw = $order->get_meta('_roxy_rs_payment_result', true);
+        $review = (string) $order->get_meta('_roxy_seat_review', true) === '1';
+        if (!$review && $attempt_raw === '' && $result_raw === '') return;
+
+        if ($review || !$order->is_paid()) {
+            echo '<p><strong>Payment may need manual reconciliation.</strong></p>';
+            echo '<p>This panel is read-only. Do not retry conversion or manually mark this order paid. Verify the PaymentIntent in Stripe using the order ID, amount, currency, and customer before taking any action.</p>';
+        } else {
+            echo '<p>Payment attempt details are shown for audit. WooCommerce records this order as paid.</p>';
+        }
+        echo '<p><strong>Woo order:</strong> #' . esc_html((string) $order->get_order_number()) . ' (ID ' . esc_html((string) $order->get_id()) . ')<br>';
+        echo '<strong>Amount:</strong> ' . wp_kses_post(wc_price((float) $order->get_total(), ['currency' => $order->get_currency()])) . '<br>';
+        echo '<strong>Currency:</strong> ' . esc_html(strtoupper((string) $order->get_currency())) . '<br>';
+        echo '<strong>Order status:</strong> ' . esc_html(wc_get_order_status_name($order->get_status())) . '</p>';
+
+        $attempt = self::decode_review_metadata($attempt_raw);
+        if ($attempt) {
+            echo '<p><strong>Attempt started (UTC):</strong> ' . esc_html((string) ($attempt['started_at'] ?? 'Unknown')) . '<br>';
+            echo '<strong>Request / backing:</strong> ' . esc_html((string) ($attempt['request_id'] ?? 'Unknown')) . ' / ' . esc_html((string) ($attempt['backing_id'] ?? 'Unknown')) . '</p>';
+        } else {
+            echo '<p><strong>Attempt marker:</strong> missing or unreadable; investigate before any payment action.</p>';
+        }
+
+        $result = self::decode_review_metadata($result_raw);
+        $result_statuses = ['succeeded', 'processing', 'requires_capture', 'requires_action', 'requires_payment_method', 'requires_confirmation', 'canceled'];
+        $result_matches_attempt = $attempt
+            && is_string($attempt['key'] ?? null) && is_string($attempt['hash'] ?? null)
+            && is_string($result['key'] ?? null) && is_string($result['hash'] ?? null)
+            && hash_equals($attempt['key'], $result['key']) && hash_equals($attempt['hash'], $result['hash']);
+        if ($result_matches_attempt && in_array((string) ($result['status'] ?? ''), $result_statuses, true)
+            && preg_match('/^pi_[A-Za-z0-9]+$/D', (string) ($result['intent_id'] ?? ''))) {
+            echo '<p><strong>Saved PaymentIntent:</strong> <code>' . esc_html((string) $result['intent_id']) . '</code><br>';
+            echo '<strong>Saved provider status:</strong> ' . esc_html((string) ($result['status'] ?? 'Unknown')) . '</p>';
+        } else {
+            echo '<p><strong>Saved provider result:</strong> none verified. Search Stripe by the Woo order ID and requested-showing order description.</p>';
+        }
+    }
+
+    /** Parse only the JSON receipt fields needed for a manager's read-only review. */
+    private static function decode_review_metadata($value): array {
+        if (!is_string($value) || $value === '') return [];
+        $data = json_decode($value, true);
+        if (!is_array($data)) return [];
+        return $data;
     }
 
     public static function actions_markup(int $request_id): string {
@@ -253,37 +319,44 @@ class Conversion {
         }
         $lease->assert_owner();
         $showing_id = (int) get_post_meta($request_id, CPT::META_APPROVED_SHOWING_ID, true);
-        if ($showing_id <= 0 || get_post_type($showing_id) !== \RoxyST\CPT::POST_TYPE) {
-            // A missing prior showing must not be silently replaced.
-            if ($showing_id > 0) return new \WP_Error('showing_review_required', 'The linked showing is missing. Reconcile it before creating another.');
-            ConversionClaims::begin_creation($request_id, 'showing');
-            $lease->assert_owner();
-            $showing_id = wp_insert_post([
-                'post_type' => \RoxyST\CPT::POST_TYPE,
-                'post_status' => 'publish',
-                'post_title' => $post->post_title,
-                'post_content' => $post->post_content,
-                'post_excerpt' => CPT::public_excerpt((string) $post->post_excerpt),
-            ], true);
-            if (is_wp_error($showing_id)) {
-                return $showing_id;
+        $write_showing = static function () use ($request_id, $post, $target_at, &$showing_id, $lease) {
+            if ($showing_id <= 0 || get_post_type($showing_id) !== \RoxyST\CPT::POST_TYPE) {
+                // A missing prior showing must not be silently replaced.
+                if ($showing_id > 0) return new \WP_Error('showing_review_required', 'The linked showing is missing. Reconcile it before creating another.');
+                ConversionClaims::begin_creation($request_id, 'showing');
+                $lease->assert_owner();
+                $created = wp_insert_post([
+                    'post_type' => \RoxyST\CPT::POST_TYPE,
+                    'post_status' => 'publish',
+                    'post_title' => $post->post_title,
+                    'post_content' => $post->post_content,
+                    'post_excerpt' => CPT::public_excerpt((string) $post->post_excerpt),
+                ], true);
+                if (is_wp_error($created) || !$created) return is_wp_error($created) ? $created : new \WP_Error('showing_create_failed', 'The showing could not be created.');
+                $showing_id = (int) $created;
+                $lease->assert_owner();
+                update_post_meta($request_id, CPT::META_APPROVED_SHOWING_ID, $showing_id);
+                wp_cache_delete($request_id, 'post_meta');
+                if ((int) get_post_meta($request_id, CPT::META_APPROVED_SHOWING_ID, true) !== $showing_id) {
+                    return new \WP_Error('showing_link_failed', 'The showing link could not be verified. Review it before retrying.');
+                }
+                update_post_meta($showing_id, '_roxy_rs_request_id', $request_id);
+                $thumbnail_id = get_post_thumbnail_id($request_id);
+                if ($thumbnail_id) set_post_thumbnail($showing_id, $thumbnail_id);
             }
-            $lease->assert_owner();
-            update_post_meta($request_id, CPT::META_APPROVED_SHOWING_ID, $showing_id);
-            wp_cache_delete($request_id, 'post_meta');
-            if ((int) get_post_meta($request_id, CPT::META_APPROVED_SHOWING_ID, true) !== (int) $showing_id) {
-                return new \WP_Error('showing_link_failed', 'The showing link could not be verified. Review it before retrying.');
-            }
-            update_post_meta($showing_id, '_roxy_rs_request_id', $request_id);
-            $thumbnail_id = get_post_thumbnail_id($request_id);
-            if ($thumbnail_id) {
-                set_post_thumbnail($showing_id, $thumbnail_id);
-            }
-        }
 
-        update_post_meta($showing_id, '_roxy_start', $target_at);
-        update_post_meta($showing_id, '_roxy_pricing_profile', (string) get_post_meta($request_id, CPT::META_PRICING_PROFILE, true) ?: 'movie_evening');
-        update_post_meta($showing_id, '_roxy_trailer_url', (string) get_post_meta($request_id, CPT::META_TRAILER_URL, true));
+            update_post_meta($showing_id, '_roxy_start', $target_at);
+            update_post_meta($showing_id, '_roxy_pricing_profile', (string) get_post_meta($request_id, CPT::META_PRICING_PROFILE, true) ?: 'movie_evening');
+            update_post_meta($showing_id, '_roxy_trailer_url', (string) get_post_meta($request_id, CPT::META_TRAILER_URL, true));
+            if ((string) get_post_meta($showing_id, '_roxy_start', true) !== $target_at) return new \WP_Error('showing_time_write', 'The showing date could not be verified. Review it before retrying.');
+            return true;
+        };
+        $showing_write_result = function_exists('roxy_eb_with_showing_time_lock')
+            ? roxy_eb_with_showing_time_lock($target_at, $showing_id, $write_showing)
+            : $write_showing();
+        if (is_wp_error($showing_write_result)) return $showing_write_result;
+
+        $lease->assert_owner();
 
         \RoxyST\Products::ensure_products_for_showing($showing_id);
 
@@ -294,14 +367,24 @@ class Conversion {
             $result = self::convert_backing_to_order($request_id, $showing_id, $backing);
             if (is_wp_error($result)) {
                 $needs_review = true;
+                $backing_id = (int) ($backing['id'] ?? 0);
                 roxy_rs_repo_update_backing((int) $backing['id'], [
                     'status' => 'approved',
                     'approved_showing_id' => $showing_id,
                     'admin_note' => $result->get_error_message(),
                 ]);
+                $review_backing = roxy_rs_repo_get_backing($backing_id);
+                $review_order_id = (int) ($review_backing['woo_order_id'] ?? 0);
+                $review_order = $review_order_id > 0 && function_exists('wc_get_order') ? wc_get_order($review_order_id) : false;
+                $order_review_line = '';
+                if ($review_order instanceof \WC_Order
+                    && (int) $review_order->get_meta('_roxy_rs_request_id', true) === $request_id
+                    && (int) $review_order->get_meta('_roxy_rs_backing_id', true) === $backing_id) {
+                    $order_review_line = "\nWoo order ID: " . $review_order_id . "\nReview order: " . admin_url('post.php?post=' . $review_order_id . '&action=edit');
+                }
                 self::email_admin(
                     sprintf('Requested showing approval needs attention: %s', get_the_title($request_id)),
-                    "Approval created the showing, but one backing could not be charged automatically.\n\nRequest: " . get_the_title($request_id) . "\nBacking ID: " . (int) $backing['id'] . "\nError: " . $result->get_error_message()
+                    "Approval created the showing, but one backing could not be charged automatically.\n\nRequest: " . get_the_title($request_id) . "\nBacking ID: " . $backing_id . $order_review_line . "\nError: " . $result->get_error_message()
                 );
                 continue;
             }
@@ -309,11 +392,45 @@ class Conversion {
 
         $lease->assert_owner();
         if ($needs_review) return new \WP_Error('backing_review_required', 'The showing exists, but one or more backings require review. Customer payment confirmation was not sent.');
-        update_post_meta($request_id, CPT::META_STATUS, 'approved');
-        wp_update_post([
-            'ID' => $request_id,
-            'post_status' => 'publish',
-        ]);
+        try {
+            // update_post_meta() can return false both for a failed write and
+            // when the stored value is already unchanged; the uncached readback
+            // is the authoritative test of final state.
+            update_post_meta($request_id, CPT::META_STATUS, 'approved');
+            wp_cache_delete($request_id, 'post_meta');
+            if (get_post_meta($request_id, CPT::META_STATUS, true) !== 'approved') {
+                self::restore_conversion_review_status($request_id, true);
+                return new \WP_Error('approval_state_review_required', 'The request approval status could not be saved. Review the request, showing and backing/order records before retrying. Customer confirmation was not sent.');
+            }
+
+            $publish_write = wp_update_post([
+                'ID' => $request_id,
+                'post_status' => 'publish',
+            ], true);
+            if (is_wp_error($publish_write) || (int) $publish_write !== $request_id) {
+                self::restore_conversion_review_status($request_id, true);
+                return new \WP_Error('approval_state_review_required', 'The request could not be published. Review the request, showing and backing/order records before retrying. Customer confirmation was not sent.');
+            }
+
+            // Read from WordPress again after invalidating both caches. A successful
+            // write return value alone does not prove that the final request state
+            // persisted, so never send customer confirmation until both values match.
+            wp_cache_delete($request_id, 'post_meta');
+            if (function_exists('clean_post_cache')) {
+                clean_post_cache($request_id);
+            } else {
+                wp_cache_delete($request_id, 'posts');
+            }
+            $saved_status = get_post_meta($request_id, CPT::META_STATUS, true);
+            $saved_post = get_post($request_id);
+            if ($saved_status !== 'approved' || !$saved_post || $saved_post->post_status !== 'publish') {
+                self::restore_conversion_review_status($request_id, true);
+                return new \WP_Error('approval_state_review_required', 'The final request approval state could not be verified. Review the request, showing and backing/order records before retrying. Customer confirmation was not sent.');
+            }
+        } catch (\Throwable $error) {
+            self::restore_conversion_review_status($request_id, true);
+            return new \WP_Error('approval_state_review_required', 'The final request approval state could not be saved or verified. Review the request, showing and backing/order records before retrying. Customer confirmation was not sent.');
+        }
 
         $emails = self::request_recipient_emails($request_id, $backings);
         if ($emails) {
@@ -327,6 +444,24 @@ class Conversion {
         }
 
         return $showing_id;
+    }
+
+    /** Best-effort fail-safe when final approval persistence cannot be proven. */
+    private static function restore_conversion_review_status(int $request_id, bool $unpublish = false): void {
+        try {
+            update_post_meta($request_id, CPT::META_STATUS, 'conversion_review');
+            wp_cache_delete($request_id, 'post_meta');
+            if ($unpublish) {
+                wp_update_post(['ID' => $request_id, 'post_status' => 'draft'], true);
+                if (function_exists('clean_post_cache')) {
+                    clean_post_cache($request_id);
+                } else {
+                    wp_cache_delete($request_id, 'posts');
+                }
+            }
+        } catch (\Throwable $error) {
+            // Keep the original review-required failure; reconciliation is manual.
+        }
     }
 
     public static function run_daily_review(): void {
@@ -832,8 +967,9 @@ class Conversion {
         } else {
             $order->set_payment_method('');
             $order->set_payment_method_title('No charge');
-            $order->save();
-            $order->payment_complete('roxy-rs-nocharge-' . $backing_id);
+            if (!self::complete_order_and_verify_payment($order, 'roxy-rs-nocharge-' . $backing_id, 0, strtoupper((string) $order->get_currency()))) {
+                return new \WP_Error('nocharge_completion_unverified', 'The no-charge WooCommerce order could not be confirmed as paid. Review the saved order and backing before retrying.');
+            }
             $lease->assert_owner();
             $recorded = roxy_rs_repo_update_backing($backing_id, [
                 'status' => 'charged',
@@ -1146,12 +1282,38 @@ class Conversion {
             $order->set_payment_method('stripe');
             $order->set_payment_method_title('Credit / Debit Card');
             $order->set_transaction_id($intent->id);
-            $order->save();
-            $order->payment_complete($intent->id);
+            if (!self::complete_order_and_verify_payment($order, $intent->id, $amount, strtoupper($request['currency']))) {
+                return new \WP_Error('payment_completion_unverified', 'The provider confirmed payment, but WooCommerce did not confirm the paid order state. Review the saved order and provider intent; do not charge again.');
+            }
             $order->add_order_note('Requested showing backing charged off-session from saved payment method.');
             return ['intent_id' => $intent->id];
         } catch (\Throwable $error) {
             return new \WP_Error('payment_review_required', 'Payment requires reconciliation. Review the saved order and provider records before any further payment attempt.');
+        }
+    }
+
+    /** Persist payment completion and verify the durable Woo order before linking a charged backing. */
+    private static function complete_order_and_verify_payment(\WC_Order $order, string $transaction_id, int $expected_amount_cents, string $expected_currency): bool {
+        if ($transaction_id === '' || !method_exists($order, 'get_id') || !method_exists($order, 'save')
+            || !method_exists($order, 'payment_complete') || !method_exists($order, 'get_total')
+            || !method_exists($order, 'get_currency') || !function_exists('wc_get_order')
+            || $expected_amount_cents < 0 || !preg_match('/^[A-Z]{3}$/D', $expected_currency)) return false;
+        $order_id = (int) $order->get_id();
+        if ($order_id <= 0) return false;
+        try {
+            if (self::money_to_cents($order->get_total()) !== $expected_amount_cents
+                || strtoupper((string) $order->get_currency()) !== $expected_currency) return false;
+            if ((int) $order->save() !== $order_id || $order->payment_complete($transaction_id) !== true) return false;
+            $saved = wc_get_order($order_id);
+            if (!$saved instanceof \WC_Order || !method_exists($saved, 'get_id') || (int) $saved->get_id() !== $order_id
+                || !method_exists($saved, 'is_paid') || !method_exists($saved, 'get_transaction_id')
+                || !method_exists($saved, 'get_date_paid') || !method_exists($saved, 'get_total') || !method_exists($saved, 'get_currency')
+                || $saved->is_paid() !== true || self::money_to_cents($saved->get_total()) !== $expected_amount_cents
+                || strtoupper((string) $saved->get_currency()) !== $expected_currency
+                || !hash_equals($transaction_id, (string) $saved->get_transaction_id())) return false;
+            return $saved->get_date_paid() instanceof \DateTimeInterface;
+        } catch (\Throwable $error) {
+            return false;
         }
     }
 

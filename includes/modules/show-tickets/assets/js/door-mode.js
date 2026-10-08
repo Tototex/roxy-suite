@@ -147,7 +147,7 @@
       const nextPay = payload.next_payment ? `<div class="roxy-door-meta"><strong>Next payment:</strong> ${escapeHtml(payload.next_payment)}</div>` : '';
       const statusLabel = payload.status_label ? `<div class="roxy-door-meta"><strong>Status:</strong> ${escapeHtml(payload.status_label)}</div>` : '';
       const admitSource = payload.admit_source ? `<div class="roxy-door-meta"><strong>Admission:</strong> ${escapeHtml(payload.admit_source.replace(/_/g, ' '))}${payload.showing_title ? ' to ' + escapeHtml(payload.showing_title) : ''}</div>` : '';
-      return `<div class="roxy-door-state roxy-door-state-${active ? 'valid' : 'invalid'}"><div class="roxy-door-kicker">${admitted ? 'Member Admitted' : (alreadyAdmitted ? 'Already Admitted' : (active ? 'Member Verified' : 'Membership Needs Review'))}</div><div class="roxy-door-title" id="roxy-door-modal-title">${escapeHtml(admitted ? 'Subscriber admitted' : (alreadyAdmitted ? 'Subscriber already arrived' : (payload.headline || 'Membership')))}</div><p>${escapeHtml(admitted ? 'This subscriber has been logged for the selected showing.' : (alreadyAdmitted ? (payload.admit_error || 'This subscriber is already marked arrived for the selected showing.') : (payload.subline || '')))}</p>${photo}<dl class="roxy-door-details"><div><dt>Member</dt><dd>${escapeHtml(payload.member_name || payload.customer_name || 'Unknown')}</dd></div><div><dt>Subscription</dt><dd>#${escapeHtml(payload.subscription_id || '')}</dd></div>${qty}${admitQty}</dl>${admitSource}${statusLabel}${since}${lastVisit}${nextPay}<div class="roxy-door-token">${escapeHtml(payload.member_check_url || payload.token || '')}</div><div class="roxy-door-result-actions"><button type="button" class="button button-primary roxy-door-rescan">Done / Next Scan</button>${payload.member_check_url ? `<a href="${escapeHtml(payload.member_check_url)}" target="_blank" rel="noopener" class="button">Open Member Check</a>` : ''}</div></div>`;
+      return `<div class="roxy-door-state roxy-door-state-${active ? 'valid' : 'invalid'}"><div class="roxy-door-kicker">${admitted ? 'Member Admitted' : (alreadyAdmitted ? 'Already Admitted' : (active ? 'Member Verified' : 'Membership Needs Review'))}</div><div class="roxy-door-title" id="roxy-door-modal-title">${escapeHtml(admitted ? 'Subscriber admitted' : (alreadyAdmitted ? 'Subscriber already arrived' : (payload.headline || 'Membership')))}</div><p>${escapeHtml(admitted ? 'This subscriber has been logged for the selected showing.' : (alreadyAdmitted ? (payload.admit_error || 'This subscriber is already marked arrived for the selected showing.') : (payload.subline || '')))}</p>${photo}<dl class="roxy-door-details"><div><dt>Member</dt><dd>${escapeHtml(payload.member_name || payload.customer_name || 'Unknown')}</dd></div><div><dt>Subscription</dt><dd>#${escapeHtml(payload.subscription_id || '')}</dd></div>${qty}${admitQty}</dl>${admitSource}${statusLabel}${since}${lastVisit}${nextPay}<div class="roxy-door-token">${escapeHtml(payload.member_check_url || payload.token || '')}</div><div class="roxy-door-result-actions">${admitted && payload.walkup_visit_id ? `<button type="button" class="button roxy-door-walkup-undo">Undo one walk-up arrival</button>` : ''}<button type="button" class="button button-primary roxy-door-rescan">Done / Next Scan</button>${payload.member_check_url ? `<a href="${escapeHtml(payload.member_check_url)}" target="_blank" rel="noopener" class="button">Open Member Check</a>` : ''}</div></div>`;
     }
     if (!payload || payload.found === false || (payload.status === 'invalid' && !payload.ticket_id)) {
       const token = escapeHtml((payload && payload.token) || '');
@@ -216,6 +216,8 @@
     if (admit) admit.addEventListener('click', () => doCheckin(admit.dataset.ticketId, false, true));
     const undo = resultEl.querySelector('.roxy-door-undo');
     if (undo) undo.addEventListener('click', () => doCheckin(undo.dataset.ticketId, true, false));
+    const walkupUndo = resultEl.querySelector('.roxy-door-walkup-undo');
+    if (walkupUndo) walkupUndo.addEventListener('click', () => doMemberWalkupUndo(payload));
   }
   async function post(data){ const body = new URLSearchParams(data); const r = await fetch(cfg.ajaxUrl, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'}, body: body.toString(), credentials:'same-origin'}); return r.json(); }
   async function doMemberAdmission(subscriptionId){
@@ -232,6 +234,22 @@
       setNote('Member admitted. Tap Done / Next Scan for the next guest.');
     } catch (e) { setNote(e.message || 'Member admission failed'); triggerFlash('invalid'); }
     finally { busy = false; }
+  }
+  async function doMemberWalkupUndo(payload){
+    if(busy || !payload || !payload.walkup_visit_id || !payload.subscription_id || !payload.admit_showing_id)return;
+    if(!window.confirm('Undo one person from this exact member walk-up admission?'))return;
+    busy=true;setNote('Undoing member walk-up…');
+    try{
+      const json=await post({action:'roxy_st_member_walkup_undo',nonce:cfg.checkInNonce,visit_id:String(payload.walkup_visit_id),subscription_id:String(payload.subscription_id),showing_id:String(payload.admit_showing_id)});
+      if(!json || !json.success)throw new Error((json&&json.data&&json.data.message)||'Walk-up Undo failed');
+      payload.admit_quantity=Math.max(0,Number(payload.admit_quantity||1)-1);
+      if(json.data.audit.replacement_visit_id)payload.walkup_visit_id=json.data.audit.replacement_visit_id;else delete payload.walkup_visit_id;
+      payload.admitted=payload.admit_quantity>0;
+      if(json.data.attendance)payload.attendance=json.data.attendance;
+      render(payload);showModal();if(payload.attendance)renderAttendance(payload.attendance);
+      setNote(payload.admit_quantity?'One arrival undone. The remaining arrival can be undone if needed.':'Member walk-up undone.');
+    }catch(e){setNote(e.message||'Walk-up Undo failed');triggerFlash('invalid');}
+    finally{busy=false;}
   }
   async function validateToken(token){
     if (!token || busy) return;
@@ -253,7 +271,7 @@
         triggerFlash(activeMember ? 'valid' : 'invalid');
         playSound(activeMember ? 'valid' : 'invalid');
         if (payload.attendance) renderAttendance(payload.attendance);
-        if (activeMember && autoResumeEnabled()) {
+        if (activeMember && autoResumeEnabled() && !payload.walkup_visit_id) {
           setOverlay(payload.admitted ? 'Member admitted' : (payload.already_admitted ? 'Already admitted' : 'Member verified'));
           setNote((payload.admitted ? 'Member admitted. ' : (payload.already_admitted ? 'Already admitted. ' : 'Membership verified. ')) + 'Returning to scan mode…');
           window.setTimeout(() => { idle(); resumeScanning(); }, 3000);

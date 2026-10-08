@@ -64,11 +64,12 @@ class Reporter {
       $return_tab = 'database';
     }
     $mode = !empty($_POST['test_send']) ? 'manual-test' : 'manual';
+    $send_request_id = isset($_POST['send_request_id']) ? sanitize_text_field(wp_unslash((string) $_POST['send_request_id'])) : '';
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date)) {
       self::redirect_with_notice('error', 'Choose a valid report date in YYYY-MM-DD format.', $return_tab);
     }
 
-    $result = self::send_report($report_date, $mode);
+    $result = self::send_report($report_date, $mode, $send_request_id);
     self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], $return_tab);
   }
 
@@ -83,6 +84,7 @@ class Reporter {
     $mode = !empty($_POST['test_send']) ? 'manual-live-test' : 'manual-live-email';
     $recipients = $mode === 'manual-live-test' ? self::test_email_list() : Settings::live_email_list();
     $include_concessions = !empty($_POST['include_concessions']);
+    $send_request_id = isset($_POST['send_request_id']) ? sanitize_text_field(wp_unslash((string) $_POST['send_request_id'])) : '';
 
     if ($entry_id <= 0) {
       self::redirect_with_notice('error', 'Choose a live show to email.', 'settings');
@@ -96,7 +98,7 @@ class Reporter {
       self::redirect_with_notice('error', 'Could not find that live show row.', 'settings');
     }
 
-    $result = self::send_live_grosses_email($row, $recipients, $include_concessions, $mode);
+    $result = self::send_live_grosses_email($row, $recipients, $include_concessions, $mode, $send_request_id);
     self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'settings');
   }
 
@@ -132,7 +134,12 @@ class Reporter {
       self::redirect_with_notice('error', 'Missing saved report ID.', 'database');
     }
 
-    $result = self::send_saved_report($report_id);
+    $intentional_resend = !empty($_POST['intentional_resend']);
+    $send_request_id = isset($_POST['send_request_id']) ? sanitize_text_field(wp_unslash((string) $_POST['send_request_id'])) : '';
+    if ($intentional_resend && !self::valid_send_request_id($send_request_id)) {
+      wp_die('A deliberate resend needs a fresh request identifier. Reopen the report and try again.');
+    }
+    $result = self::send_saved_report($report_id, $send_request_id, $intentional_resend);
     self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], 'database', ['report_id' => $report_id]);
   }
 
@@ -320,12 +327,12 @@ class Reporter {
     self::redirect_with_notice(!empty($result['success']) ? 'success' : 'error', (string) ($result['message'] ?? 'Automation run finished.'), 'settings');
   }
 
-  public static function send_report(string $report_date, string $mode = 'scheduled'): array {
-    try { return Square::with_sale_snapshot(static fn() => Store::with_refund_review_lock(static fn() => self::send_report_locked($report_date, $mode))); }
+  public static function send_report(string $report_date, string $mode = 'scheduled', string $send_request_id = ''): array {
+    try { return Square::with_sale_snapshot(static fn() => Store::with_refund_review_lock(static fn() => self::send_report_locked($report_date, $mode, $send_request_id))); }
     catch (\Throwable $error) { return ['success' => false, 'message' => $error->getMessage()]; }
   }
 
-  private static function send_report_locked(string $report_date, string $mode): array {
+  private static function send_report_locked(string $report_date, string $mode, string $send_request_id = ''): array {
     try {
       $reports = self::build_reports($report_date);
       if (in_array($mode, ['scheduled', 'scheduled-provisional'], true)) {
@@ -343,15 +350,55 @@ class Reporter {
       // not replace cross-category concession allocations with movie-only ones.
 
       Store::assert_refund_review_lock();
-      $send = self::send_email($reports, $summary, $mode);
+      $daily_key = 'daily-grosses:' . $report_date;
+      if (in_array($mode, ['manual', 'scheduled', 'scheduled-provisional'], true)) {
+        try {
+          $prior_attempt = EmailOutbox::find($daily_key);
+          if ($prior_attempt !== null) {
+            $prior_report_id = max(0, (int) ($prior_attempt['source_id'] ?? 0));
+            $prior_report = $prior_report_id > 0 ? Store::get_report($prior_report_id) : null;
+            if (!$prior_report) throw new \RuntimeException('A prior daily email attempt exists but its saved snapshot is missing. Review the Email Send Guard before proceeding.');
+            $same_snapshot = ($prior_report['summary'] ?? null) === $summary && ($prior_report['rows'] ?? null) === $reports;
+            if ($same_snapshot) {
+              if (($prior_attempt['status'] ?? '') === 'accepted') {
+                $marked = Store::mark_emailed($prior_report_id);
+                $message = 'This logical report was already accepted by WordPress for sending; no duplicate was sent.';
+                if (!$marked) $message .= ' The saved report status could not be reconciled; review report #' . $prior_report_id . ' and the Email Send Guard.';
+                Store::insert_log('send_report', $mode, $prior_report_id, $report_date, true, $message, ['duplicate_suppressed' => true]);
+                return ['success' => true, 'message' => $message, 'rows' => $reports, 'summary' => $summary, 'report_id' => $prior_report_id, 'duplicate_suppressed' => true];
+              }
+              throw new \RuntimeException('A prior email attempt is ' . (string) ($prior_attempt['status'] ?? 'unknown') . ' for this unchanged report. It was not resent; verify the mail-provider outcome.');
+            }
+          }
+        } catch (\Throwable $error) {
+          Store::insert_log('send_report', $mode, null, $report_date, false, $error->getMessage());
+          return ['success' => false, 'message' => $error->getMessage()];
+        }
+      }
+      // Persist the exact snapshot before crossing the mail boundary. If PHP
+      // stops after WordPress accepts the message, the manager can still review it.
+      $report_id = Store::create_report($report_date, max(0, (int) Settings::get('lookback_days', '0')), $mode, 'draft', $summary, $reports);
+      if ($report_id <= 0) throw new \RuntimeException('The report snapshot could not be saved; no email was attempted.');
+      $send = self::send_email($reports, $summary, $mode, null, 'daily-grosses', $report_id, $report_date, $send_request_id);
       if (!$send['success']) {
         throw new \RuntimeException($send['message']);
       }
-
-      $report_id = Store::create_report($report_date, max(0, (int) Settings::get('lookback_days', '0')), $mode, 'emailed', $summary, $reports);
-      if ($report_id > 0) {
-        Store::upsert_history_rows($reports, $mode, $report_id);
+      if (!empty($send['already_accepted'])) {
+        $message = $send['message'] . ' The reviewed snapshot remains saved as draft #' . $report_id . '.';
+        Store::insert_log('send_report', $mode, $report_id, $report_date, true, $message, ['row_count' => count($reports), 'duplicate_suppressed' => true]);
+        Settings::set_status([
+          'sent_at' => wp_date('Y-m-d H:i:s', null, new \DateTimeZone(Settings::get_report_timezone())),
+          'report_date' => $report_date,
+          'mode' => $mode,
+          'message' => $message,
+          'row_count' => count($reports),
+          'gross_total' => (float) ($summary['gross_total'] ?? 0),
+        ]);
+        return ['success' => true, 'message' => $message, 'rows' => $reports, 'summary' => $summary, 'report_id' => $report_id, 'duplicate_suppressed' => true];
       }
+
+      if (!Store::mark_emailed($report_id)) throw new \RuntimeException('WordPress accepted the email, but could not mark the saved report as emailed. Do not resend; review the email outbox and saved report.');
+      Store::upsert_history_rows($reports, $mode, $report_id);
 
       $message = $send['message'];
       if ($report_id > 0) {
@@ -653,12 +700,16 @@ class Reporter {
   }
 
   public static function backfill_free_tickets(array $filters = [], string $mode = 'manual-free-backfill'): array {
-    $dates = Store::distinct_entry_dates(array_filter([
-      'search' => (string) ($filters['search'] ?? ''),
-      'year' => !empty($filters['year']) ? (int) $filters['year'] : null,
-      'month' => (string) ($filters['month'] ?? ''),
-      'day' => (string) ($filters['day'] ?? ''),
-    ]));
+    try {
+      $dates = Store::distinct_entry_dates(array_filter([
+        'search' => (string) ($filters['search'] ?? ''),
+        'year' => !empty($filters['year']) ? (int) $filters['year'] : null,
+        'month' => (string) ($filters['month'] ?? ''),
+        'day' => (string) ($filters['day'] ?? ''),
+      ]));
+    } catch (\Throwable $error) {
+      return ['success' => false, 'message' => 'Could not read movie dates from storage. No rows were changed.'];
+    }
 
     if (!$dates) {
       return [
@@ -726,12 +777,16 @@ class Reporter {
   }
 
   public static function backfill_movie_concessions(array $filters = [], string $mode = 'manual-concessions-backfill'): array {
-    $dates = Store::distinct_entry_dates(array_filter([
-      'search' => (string) ($filters['search'] ?? ''),
-      'year' => !empty($filters['year']) ? (int) $filters['year'] : null,
-      'month' => (string) ($filters['month'] ?? ''),
-      'day' => (string) ($filters['day'] ?? ''),
-    ]));
+    try {
+      $dates = Store::distinct_entry_dates(array_filter([
+        'search' => (string) ($filters['search'] ?? ''),
+        'year' => !empty($filters['year']) ? (int) $filters['year'] : null,
+        'month' => (string) ($filters['month'] ?? ''),
+        'day' => (string) ($filters['day'] ?? ''),
+      ]));
+    } catch (\Throwable $error) {
+      return ['success' => false, 'message' => 'Could not read movie dates from storage. No rows were changed.'];
+    }
 
     if (!$dates) {
       return ['success' => false, 'message' => 'No movie database dates matched the current filters.'];
@@ -794,12 +849,16 @@ class Reporter {
   }
 
   public static function backfill_live_concessions(array $filters = [], string $mode = 'manual-live-concessions-backfill'): array {
-    $dates = Store::distinct_live_entry_dates(array_filter([
-      'search' => (string) ($filters['search'] ?? ''),
-      'year' => !empty($filters['year']) ? (int) $filters['year'] : null,
-      'month' => (string) ($filters['month'] ?? ''),
-      'day' => (string) ($filters['day'] ?? ''),
-    ]));
+    try {
+      $dates = Store::distinct_live_entry_dates(array_filter([
+        'search' => (string) ($filters['search'] ?? ''),
+        'year' => !empty($filters['year']) ? (int) $filters['year'] : null,
+        'month' => (string) ($filters['month'] ?? ''),
+        'day' => (string) ($filters['day'] ?? ''),
+      ]));
+    } catch (\Throwable $error) {
+      return ['success' => false, 'message' => 'Could not read live-show dates from storage. No rows were changed.'];
+    }
 
     if (!$dates) {
       return ['success' => false, 'message' => 'No live show dates matched the current filters.'];
@@ -1060,12 +1119,12 @@ class Reporter {
     }
   }
 
-  public static function send_saved_report(int $report_id): array {
-    try { return Store::with_refund_review_lock(static fn() => self::send_saved_report_locked($report_id)); }
+  public static function send_saved_report(int $report_id, string $send_request_id = '', bool $intentional_resend = false): array {
+    try { return Store::with_refund_review_lock(static fn() => self::send_saved_report_locked($report_id, $send_request_id, $intentional_resend)); }
     catch (\Throwable $error) { return ['success' => false, 'message' => $error->getMessage()]; }
   }
 
-  private static function send_saved_report_locked(int $report_id): array {
+  private static function send_saved_report_locked(int $report_id, string $send_request_id = '', bool $intentional_resend = false): array {
     $saved = Store::get_report($report_id);
     if (!$saved) {
       Store::insert_log('send_saved_report', 'saved-report', $report_id, null, false, 'Saved report not found.');
@@ -1089,16 +1148,37 @@ class Reporter {
     }
 
     Store::assert_refund_review_lock();
-    $send = self::send_email($rows, $summary, 'saved-report');
+    if ($intentional_resend && !self::valid_send_request_id($send_request_id)) {
+      return ['success' => false, 'message' => 'A deliberate resend needs a fresh request identifier. Reopen the report and try again.'];
+    }
+    if (!$intentional_resend && ($saved['status'] ?? '') === 'emailed') {
+      return ['success' => false, 'message' => 'This report was already emailed. Create and review a fresh draft for a correction, or use the deliberate resend control.'];
+    }
+    if (!$intentional_resend && !empty($saved['report_end_date'])) {
+      try {
+        $daily_attempt = EmailOutbox::find('daily-grosses:' . (string) $saved['report_end_date']);
+        if ($daily_attempt !== null) {
+          return ['success' => false, 'message' => 'A daily email attempt already exists for this report date (' . (string) ($daily_attempt['status'] ?? 'unknown') . '). It was not sent again. Use the deliberate resend control only after reviewing the prior attempt.'];
+        }
+      } catch (\Throwable $error) {
+        return ['success' => false, 'message' => 'The email outbox could not be checked; the report was not sent.'];
+      }
+    }
+    $outbox_key = $intentional_resend ? 'saved-report-resend:' . $report_id . ':' . $send_request_id : 'saved-report:' . $report_id;
+    $send = self::send_email($rows, $summary, $intentional_resend ? 'saved-report-resend' : 'saved-report', $outbox_key, 'saved-report', $report_id, (string) ($saved['report_end_date'] ?? ''), $send_request_id);
     if (!$send['success']) {
       Store::insert_log('send_saved_report', 'saved-report', $report_id, (string) ($saved['report_end_date'] ?? ''), false, $send['message']);
       self::notify_admin_failure('Saved grosses report failed', (string) ($saved['report_end_date'] ?? ''), 'saved-report', $send['message']);
       return $send;
     }
 
-    Store::mark_emailed($report_id);
+    if (!Store::mark_emailed($report_id)) {
+      return ['success' => false, 'message' => 'WordPress accepted the saved report email, but its status could not be updated. Do not resend; review the email outbox.'];
+    }
 
-    $message = 'Saved report #' . $report_id . ' emailed to ' . implode(', ', Settings::email_list()) . '.';
+    $message = !empty($send['already_accepted'])
+      ? 'Saved report #' . $report_id . ' was already accepted by WordPress for sending; it was not sent again.'
+      : 'Saved report #' . $report_id . ' emailed to ' . implode(', ', Settings::email_list()) . '.';
     Store::insert_log('send_saved_report', 'saved-report', $report_id, (string) ($saved['report_end_date'] ?? ''), true, $message, [
       'row_count' => count($rows),
       'gross_total' => (float) ($summary['gross_total'] ?? 0),
@@ -1632,9 +1712,12 @@ class Reporter {
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date)) {
       return ['rows' => 0, 'updated' => 0, 'concessions_total' => 0.0];
     }
+    return Store::with_concession_allocation_lock($report_date, static fn(): array => self::rebalance_concessions_for_date_locked($report_date));
+  }
 
+  private static function rebalance_concessions_for_date_locked(string $report_date): array {
     $reports = [];
-    foreach (Store::list_entries(['day' => $report_date], 1000, 0) as $row) {
+    foreach (Store::list_all_entries_for_rebalance('movie', $report_date) as $row) {
       $entry_id = (int) ($row['id'] ?? 0);
       if ($entry_id <= 0) {
         continue;
@@ -1648,11 +1731,11 @@ class Reporter {
         'discount_qty' => max(0, (int) ($row['discount_qty'] ?? 0)),
         'group_qty' => max(0, (int) ($row['group_qty'] ?? 0)),
         '_is_locked' => !empty($row['is_locked']),
-        'concessions_total' => 0.0,
+        'concessions_total' => !empty($row['is_locked']) ? round((float) ($row['concessions_total'] ?? 0), 2) : 0.0,
       ];
     }
 
-    foreach (Store::list_live_entries(['day' => $report_date], 1000, 0) as $row) {
+    foreach (Store::list_all_entries_for_rebalance('live', $report_date) as $row) {
       $entry_id = (int) ($row['id'] ?? 0);
       if ($entry_id <= 0) {
         continue;
@@ -1667,11 +1750,11 @@ class Reporter {
         'door_qty' => max(0, (int) ($row['door_qty'] ?? 0)),
         'group_sub_qty' => max(0, (int) ($row['group_sub_qty'] ?? 0)),
         '_is_locked' => !empty($row['is_locked']),
-        'concessions_total' => 0.0,
+        'concessions_total' => !empty($row['is_locked']) ? round((float) ($row['concessions_total'] ?? 0), 2) : 0.0,
       ];
     }
 
-    foreach (Store::list_rental_entries(['day' => $report_date], 1000, 0) as $row) {
+    foreach (Store::list_all_entries_for_rebalance('rental', $report_date) as $row) {
       $entry_id = (int) ($row['id'] ?? 0);
       if ($entry_id <= 0) {
         continue;
@@ -1681,52 +1764,55 @@ class Reporter {
         '_entry_id' => $entry_id,
         '_start_at' => self::start_at_for_entry_row($report_date, (string) ($row['show_time'] ?? '')),
         'show_time' => (string) ($row['show_time'] ?? ''),
-        'concessions_total' => 0.0,
+        'concessions_total' => !empty($row['is_locked']) ? round((float) ($row['concessions_total'] ?? 0), 2) : 0.0,
         '_is_locked' => !empty($row['is_locked']),
       ];
     }
 
-    if (!$reports) {
-      return ['rows' => 0, 'updated' => 0, 'concessions_total' => 0.0];
-    }
-
     self::apply_concessions_to_reports($reports, $report_date, self::showings_for_date($report_date, 'live'));
 
-    $updated = 0;
-    $concessions_total = 0.0;
-    foreach ($reports as $report) {
-      $entry_id = (int) ($report['_entry_id'] ?? 0);
-      $kind = (string) ($report['_entry_kind'] ?? '');
-      $concessions = round((float) ($report['concessions_total'] ?? 0), 2);
-      if ($entry_id <= 0) {
-        continue;
+    return Store::with_concession_allocation_transaction(static function () use ($reports, $report_date): array {
+      $updated = 0;
+      $concessions_total = 0.0;
+      foreach ($reports as $report) {
+        $entry_id = (int) ($report['_entry_id'] ?? 0);
+        $kind = (string) ($report['_entry_kind'] ?? '');
+        $concessions = round((float) ($report['concessions_total'] ?? 0), 2);
+        if ($entry_id <= 0) continue;
+        if (!empty($report['_is_locked'])) {
+          $concessions_total += $concessions;
+          continue;
+        }
+        $saved = $kind === 'movie'
+          ? Store::update_entry($entry_id, ['concessions_total' => $concessions])
+          : ($kind === 'live'
+            ? Store::update_live_entry($entry_id, ['concessions_total' => $concessions])
+            : Store::update_rental_entry($entry_id, ['concessions_total' => $concessions]));
+        if (!$saved) throw new \RuntimeException('Could not save the concessions allocation for ' . $report_date . '. The report refresh was not completed.');
+        $updated++;
+        $concessions_total += $concessions;
       }
-
-      if (!empty($report['_is_locked'])) continue;
-      $saved = $kind === 'movie'
-        ? Store::update_entry($entry_id, ['concessions_total' => $concessions])
-        : ($kind === 'live'
-          ? Store::update_live_entry($entry_id, ['concessions_total' => $concessions])
-          : Store::update_rental_entry($entry_id, ['concessions_total' => $concessions]));
-      if (!$saved) throw new \RuntimeException('Could not save the concessions allocation for ' . $report_date . '. The report refresh was not completed.');
-      $updated++;
-      $concessions_total += $concessions;
-    }
-
-    return [
-      'rows' => count($reports),
-      'updated' => $updated,
-      'concessions_total' => round($concessions_total, 2),
-    ];
+      return ['rows' => count($reports), 'updated' => $updated, 'concessions_total' => round($concessions_total, 2)];
+    });
   }
 
   private static function apply_concessions_to_reports(array &$reports, string $report_date, array $showings = []): void {
-    if (!$reports) {
-      return;
-    }
-
     $orders = Square::fetch_orders_for_date($report_date);
     $catalog_object_ids = [];
+    $provisional = [];
+    $eligible_cents = 0;
+    $locked_cents = 0;
+    $unmatched_lines = 0;
+    $unmatched_cents = 0;
+    $unmatched_items = [];
+    foreach ($reports as $entry_id => $report) {
+      if (!empty($report['_is_locked'])) {
+        $fixed = round((float) ($report['concessions_total'] ?? 0) * 100);
+        if (!is_finite((float) ($report['concessions_total'] ?? 0)) || $fixed < 0 || $fixed > PHP_INT_MAX - $locked_cents) throw new \RuntimeException('A locked concessions amount is invalid; review this report day manually.');
+        $locked_cents += (int) $fixed;
+      } else $reports[$entry_id]['concessions_total'] = 0.0;
+    }
+
     foreach ($orders as $order) {
       foreach ((array) ($order['line_items'] ?? []) as $line_item) {
         $catalog_object_id = trim((string) ($line_item['catalog_object_id'] ?? ''));
@@ -1739,7 +1825,7 @@ class Reporter {
 
     foreach ($orders as $order) {
       $order_closed_at = self::order_closed_at($order);
-      foreach ((array) ($order['line_items'] ?? []) as $line_item) {
+      foreach ((array) ($order['line_items'] ?? []) as $line_index => $line_item) {
         if (!self::is_concession_line_item($line_item, $showings, $category_map)) {
           continue;
         }
@@ -1751,16 +1837,77 @@ class Reporter {
 
         $candidate_ids = $order_closed_at ? self::matching_entry_ids_for_order_time($order_closed_at, $reports) : [];
         if (!$candidate_ids) {
+          if ($line_total_cents > PHP_INT_MAX - $unmatched_cents) throw new \RuntimeException('Unmatched Square concessions exceed the supported amount range.');
+          $unmatched_lines++;
+          $unmatched_cents += $line_total_cents;
+          $order_id = trim((string) ($order['id'] ?? ''));
+          $line_uid = trim((string) ($line_item['uid'] ?? ''));
+          // Square normally supplies an order ID. If not, hash the complete
+          // provider object (store only the hash) to avoid colliding distinct
+          // same-time orders that share a total.
+          $encoded_order = $order_id !== '' ? '' : wp_json_encode($order);
+          if ($order_id === '' && (!is_string($encoded_order) || $encoded_order === '')) throw new \RuntimeException('An unmatched Square order has no stable identity; review the provider response before refreshing.');
+          $order_identity = $order_id !== '' ? $order_id : hash('sha256', $encoded_order);
+          $identity = $line_uid !== ''
+            ? ['date' => $report_date, 'order' => $order_identity, 'line_uid' => $line_uid]
+            : ['date' => $report_date, 'order' => $order_identity, 'line_index' => (int) $line_index, 'catalog_object_id' => $catalog_object_id, 'name' => (string) ($line_item['name'] ?? ''), 'quantity' => (string) ($line_item['quantity'] ?? ''), 'amount_cents' => $line_total_cents];
+          $encoded_identity = wp_json_encode($identity);
+          if (!is_string($encoded_identity) || $encoded_identity === '') throw new \RuntimeException('An unmatched Square concession line could not be assigned a stable review identity.');
+          $unmatched_items[] = [
+            'fingerprint' => hash('sha256', $encoded_identity),
+            'square_order_id' => $order_id,
+            'square_line_uid' => $line_uid,
+            'catalog_object_id' => $catalog_object_id,
+            'item_name' => (string) ($line_item['name'] ?? ''),
+            'closed_at' => $order_closed_at ? $order_closed_at->format(DATE_ATOM) : (string) ($order['closed_at'] ?? $order['created_at'] ?? ''),
+            'amount_cents' => $line_total_cents,
+          ];
           continue;
         }
-
+        if ($line_total_cents > PHP_INT_MAX - $eligible_cents) throw new \RuntimeException('Daily concessions exceed the supported allocation range.');
+        $eligible_cents += $line_total_cents;
+        $candidate_ids = array_values(array_filter($candidate_ids, static fn(int $entry_id): bool => empty($reports[$entry_id]['_is_locked'])));
+        if (!$candidate_ids) continue;
         foreach (self::distribute_amount_cents_across_rows($line_total_cents, $candidate_ids, $reports) as $entry_id => $allocated_cents) {
-          if ($allocated_cents <= 0 || !isset($reports[$entry_id])) {
-            continue;
-          }
-          $reports[$entry_id]['concessions_total'] = round((float) ($reports[$entry_id]['concessions_total'] ?? 0) + ($allocated_cents / 100), 2);
+          if ($allocated_cents <= 0 || !isset($reports[$entry_id])) continue;
+          if ($allocated_cents > PHP_INT_MAX - ($provisional[$entry_id] ?? 0)) throw new \RuntimeException('A concessions allocation exceeds the supported amount range.');
+          $provisional[$entry_id] = ($provisional[$entry_id] ?? 0) + $allocated_cents;
         }
       }
+    }
+
+    if ($unmatched_lines > 0) {
+      Store::record_unmatched_concession_lines($report_date, $unmatched_items);
+      throw new \RuntimeException(sprintf(
+        '%d eligible Square concession line(s), totaling $%s, could not be matched to a report row within the show-time window. They were saved to the Grosses Logs unmatched-sales review queue; review this date before refreshing.',
+        $unmatched_lines,
+        number_format($unmatched_cents / 100, 2, '.', ',')
+      ));
+    }
+    if ($locked_cents > $eligible_cents) throw new \RuntimeException('Locked concessions exceed the matching Square total; review the protected rows before refreshing.');
+    if ($eligible_cents <= 0) return;
+    $remaining_cents = $eligible_cents - $locked_cents;
+    if ($remaining_cents === 0) return;
+    $provisional_total = array_sum($provisional);
+    if ($provisional_total !== $eligible_cents || !$provisional) throw new \RuntimeException('Concessions could not be fully matched to editable report rows; review this date manually.');
+    $assigned = 0;
+    $remainders = [];
+    $allocated = [];
+    foreach ($provisional as $entry_id => $cents) {
+      $exact = ($cents / $provisional_total) * $remaining_cents;
+      $whole = (int) floor($exact);
+      $allocated[$entry_id] = $whole;
+      $assigned += $whole;
+      $remainders[$entry_id] = $exact - $whole;
+    }
+    arsort($remainders, SORT_NUMERIC);
+    foreach (array_keys($remainders) as $entry_id) {
+      if ($assigned >= $remaining_cents) break;
+      $allocated[$entry_id]++;
+      $assigned++;
+    }
+    foreach ($allocated as $entry_id => $cents) {
+      $reports[$entry_id]['concessions_total'] = round((float) ($cents / 100), 2);
     }
   }
 
@@ -1988,7 +2135,7 @@ class Reporter {
     return $entries;
   }
 
-  private static function send_email(array $reports, array $summary, string $mode = 'scheduled'): array {
+  private static function send_email(array $reports, array $summary, string $mode = 'scheduled', ?string $send_key = null, string $kind = 'daily-grosses', int $source_id = 0, ?string $report_date = null, string $send_request_id = ''): array {
     $attachment = self::write_csv($reports);
     try {
       $is_test_send = $mode === 'manual-test';
@@ -2031,13 +2178,51 @@ class Reporter {
           );
         }
 
-      $sent = wp_mail($to, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
+      $request_id = self::valid_send_request_id($send_request_id) ? $send_request_id : self::new_send_request_id();
+      if ($send_key === null) {
+        if (in_array($mode, ['manual', 'scheduled', 'scheduled-provisional'], true)
+          && preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $report_date)) {
+          // Manual and scheduled sends for one reporting date share one durable key.
+          $send_key = 'daily-grosses:' . $report_date;
+        } else {
+          // Tests and ad-hoc non-production modes remain independently runnable.
+          $send_key = 'daily-grosses:' . $mode . ':' . $request_id;
+        }
+      }
+      try {
+        $claim = EmailOutbox::claim($send_key, $kind, $source_id, $report_date, [
+          'to' => $to,
+          'subject' => $subject,
+          'body' => $body,
+          'attachment_name' => basename($attachment),
+          'attachment_sha256' => is_file($attachment) ? hash_file('sha256', $attachment) : '',
+        ], ['mode' => $mode, 'request_id' => $request_id]);
+      } catch (\Throwable $error) {
+        return ['success' => false, 'message' => 'Email was not attempted because the durable send guard is unavailable: ' . $error->getMessage()];
+      }
+      if (empty($claim['claimed'])) {
+        $state = (string) ($claim['status'] ?? 'unknown');
+        return $state === 'accepted'
+          ? ['success' => true, 'already_accepted' => true, 'message' => 'This logical report was already accepted by WordPress for sending; no duplicate was sent.']
+          : ['success' => false, 'message' => 'A prior send attempt is ' . $state . '. It was not sent again; review the outbox/logs before taking action.'];
+      }
+
+      try {
+        $sent = wp_mail($to, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
+      } catch (\Throwable $error) {
+        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail threw: ' . substr($error->getMessage(), 0, 1500));
+        return ['success' => false, 'message' => 'Mail handling ended unexpectedly. The send is marked uncertain and will not be retried automatically. Review the outbox before acting.'];
+      }
 
       if (!$sent) {
+        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail returned false; delivery outcome may be ambiguous.');
         return [
           'success' => false,
-          'message' => 'WordPress could not send the grosses email.',
+          'message' => 'WordPress did not confirm the grosses email. The attempt is marked uncertain and will not be retried automatically.',
         ];
+      }
+      if (!EmailOutbox::finish((int) $claim['id'], 'accepted')) {
+        return ['success' => false, 'message' => 'WordPress accepted the email, but the outbox could not record that result. Do not resend; review the outbox before acting.'];
       }
 
       return [
@@ -2049,6 +2234,19 @@ class Reporter {
     }
   }
 
+  private static function valid_send_request_id(string $request_id): bool {
+    return (bool) preg_match('/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i', $request_id);
+  }
+
+  private static function new_send_request_id(): string {
+    if (function_exists('wp_generate_uuid4')) return (string) wp_generate_uuid4();
+    $bytes = random_bytes(16);
+    $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
+    $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
+    $hex = bin2hex($bytes);
+    return substr($hex, 0, 8) . '-' . substr($hex, 8, 4) . '-' . substr($hex, 12, 4) . '-' . substr($hex, 16, 4) . '-' . substr($hex, 20);
+  }
+
   private static function test_email_list(): array {
     $admin_email = Settings::admin_email();
     if ($admin_email === '') {
@@ -2058,7 +2256,7 @@ class Reporter {
     return [$admin_email];
   }
 
-  private static function send_live_grosses_email(array $row, array $recipients, bool $include_concessions, string $mode = 'manual-live-email'): array {
+  private static function send_live_grosses_email(array $row, array $recipients, bool $include_concessions, string $mode = 'manual-live-email', string $send_request_id = ''): array {
     $attachment = self::write_live_csv($row, $include_concessions);
     try {
       $show_title = (string) ($row['show_title'] ?? 'Live Show');
@@ -2092,9 +2290,41 @@ class Reporter {
       }
       $body .= "\nGenerated automatically by the Roxy Grosses plugin.";
 
-      $sent = wp_mail($recipients, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
+      $request_id = self::valid_send_request_id($send_request_id) ? $send_request_id : self::new_send_request_id();
+      $entry_id = max(0, (int) ($row['id'] ?? 0));
+      $row_fingerprint = hash('sha256', (string) json_encode([$row, $include_concessions, $recipients], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+      $send_key = $is_test_send
+        ? 'live-grosses-test:' . $entry_id . ':' . $request_id
+        : 'live-grosses:' . $entry_id . ':' . $row_fingerprint;
+      try {
+        $claim = EmailOutbox::claim($send_key, 'live_grosses', $entry_id, $report_date, [
+          'to' => $recipients,
+          'subject' => $subject,
+          'body' => $body,
+          'attachment_name' => basename($attachment),
+          'attachment_sha256' => is_file($attachment) ? hash_file('sha256', $attachment) : '',
+        ], ['mode' => $mode, 'request_id' => $request_id, 'include_concessions' => $include_concessions]);
+      } catch (\Throwable $error) {
+        return ['success' => false, 'message' => 'Email was not attempted because the durable send guard is unavailable: ' . $error->getMessage()];
+      }
+      if (empty($claim['claimed'])) {
+        $state = (string) ($claim['status'] ?? 'unknown');
+        if ($state === 'accepted') {
+          $message = 'This live report was already accepted by WordPress for sending; no duplicate was sent.';
+          Store::insert_log('send_live_grosses', $mode, null, $report_date, true, $message, ['live_entry_id' => $entry_id, 'duplicate_suppressed' => true]);
+          return ['success' => true, 'message' => $message, 'duplicate_suppressed' => true];
+        }
+        return ['success' => false, 'message' => 'A prior live email attempt is ' . $state . '. It was not sent again; review the outbox/logs before acting.'];
+      }
+      try {
+        $sent = wp_mail($recipients, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
+      } catch (\Throwable $error) {
+        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail threw: ' . substr($error->getMessage(), 0, 1500));
+        return ['success' => false, 'message' => 'Mail handling ended unexpectedly. The send is marked uncertain and will not be retried automatically. Review the outbox before acting.'];
+      }
 
       if (!$sent) {
+        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail returned false; delivery outcome may be ambiguous.');
         Store::insert_log('send_live_grosses', $mode, null, $report_date, false, 'WordPress could not send the live grosses email.', [
           'live_entry_id' => (int) ($row['id'] ?? 0),
           'include_concessions' => $include_concessions,
@@ -2103,6 +2333,9 @@ class Reporter {
           'success' => false,
           'message' => 'WordPress could not send the live grosses email.',
         ];
+      }
+      if (!EmailOutbox::finish((int) $claim['id'], 'accepted')) {
+        return ['success' => false, 'message' => 'WordPress accepted the live email, but the outbox could not record that result. Do not resend; review the outbox before acting.'];
       }
 
       Store::insert_log('send_live_grosses', $mode, null, $report_date, true, 'Live grosses email sent to ' . implode(', ', $recipients) . '.', [
@@ -2285,17 +2518,33 @@ class Reporter {
       return [];
     }
 
+    foreach ([$date_from, $date_to] as $date) {
+      $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+      $errors = \DateTimeImmutable::getLastErrors();
+      if (!$parsed || ($errors && ($errors['warning_count'] || $errors['error_count'])) || $parsed->format('Y-m-d') !== $date) {
+        return [];
+      }
+    }
+
     $start = new \DateTimeImmutable($date_from . ' 00:00:00', new \DateTimeZone(Settings::get_report_timezone()));
     $end = new \DateTimeImmutable($date_to . ' 00:00:00', new \DateTimeZone(Settings::get_report_timezone()));
     if ($end < $start) {
       [$start, $end] = [$end, $start];
     }
 
-    $assigned = Store::concessions_by_date($start->format('Y-m-d'), $end->format('Y-m-d'));
+    $date_from = $start->format('Y-m-d');
+    $date_to = $end->format('Y-m-d');
+    $assigned = Store::concessions_by_date($date_from, $date_to);
+    $square_totals = self::square_in_store_purchase_totals_for_range(
+      Square::fetch_orders_for_range($date_from, $date_to),
+      $date_from,
+      $date_to,
+      Settings::get_report_timezone()
+    );
     $rows = [];
     for ($cursor = $start; $cursor <= $end; $cursor = $cursor->modify('+1 day')) {
       $date_key = $cursor->format('Y-m-d');
-      $square_total = self::square_in_store_purchase_total_for_date($date_key);
+      $square_total = $square_totals[$date_key] ?? 0.0;
       $assigned_row = $assigned[$date_key] ?? ['movies' => 0.0, 'live' => 0.0, 'rentals' => 0.0, 'assigned_total' => 0.0];
       $difference = round($square_total - (float) ($assigned_row['assigned_total'] ?? 0), 2);
 
@@ -2319,6 +2568,53 @@ class Reporter {
     });
 
     return $rows;
+  }
+
+  /** Group a complete Square range by local sale date; malformed/incomplete orders fail closed. */
+  private static function square_in_store_purchase_totals_for_range(array $orders, string $date_from, string $date_to, string $timezone): array {
+    $report_timezone = new \DateTimeZone($timezone);
+    $range_start = \DateTimeImmutable::createFromFormat('!Y-m-d', $date_from, $report_timezone);
+    $range_end = \DateTimeImmutable::createFromFormat('!Y-m-d', $date_to, $report_timezone)->modify('+1 day');
+    if (!$range_start || !$range_end) throw new \RuntimeException('Invalid reconciliation range.');
+    $catalog_ids = [];
+    $dated_orders = [];
+    foreach ($orders as $order) {
+      $closed_at_raw = is_array($order) ? ($order['closed_at'] ?? null) : null;
+      if (!is_string($closed_at_raw) || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/', $closed_at_raw)) {
+        throw new \RuntimeException('Square returned an order without a valid close timestamp. Reconciliation stopped without partial totals.');
+      }
+      try {
+        $closed_at = new \DateTimeImmutable($closed_at_raw);
+      } catch (\Throwable $error) {
+        throw new \RuntimeException('Square returned an invalid order close timestamp. Reconciliation stopped without partial totals.', 0, $error);
+      }
+      $date_errors = \DateTimeImmutable::getLastErrors();
+      if ($date_errors && ($date_errors['warning_count'] || $date_errors['error_count'])) {
+        throw new \RuntimeException('Square returned an invalid order close timestamp. Reconciliation stopped without partial totals.');
+      }
+      $date = $closed_at->setTimezone($report_timezone)->format('Y-m-d');
+      if ($closed_at < $range_start || $closed_at >= $range_end || $date < $date_from || $date > $date_to) {
+        throw new \RuntimeException('Square returned an order outside the requested reconciliation range. No partial totals were returned.');
+      }
+      $dated_orders[$date][] = $order;
+      foreach ((array) ($order['line_items'] ?? []) as $line_item) {
+        $catalog_object_id = (string) ($line_item['catalog_object_id'] ?? '');
+        if ($catalog_object_id !== '') $catalog_ids[] = $catalog_object_id;
+      }
+    }
+
+    $category_map = Square::concession_reporting_categories($catalog_ids);
+    $totals_cents = [];
+    foreach ($dated_orders as $date => $date_orders) {
+      foreach ($date_orders as $order) {
+        foreach ((array) ($order['line_items'] ?? []) as $line_item) {
+          $catalog_object_id = (string) ($line_item['catalog_object_id'] ?? '');
+          if ($catalog_object_id === '' || !Square::is_in_store_purchase_item($catalog_object_id, $category_map)) continue;
+          $totals_cents[$date] = ($totals_cents[$date] ?? 0) + self::square_line_item_concession_cents($line_item);
+        }
+      }
+    }
+    return array_map(static fn(int $cents): float => round($cents / 100, 2), $totals_cents);
   }
 
   private static function redirect_with_notice(string $status, string $message, string $tab = 'database', array $extra = []): void {

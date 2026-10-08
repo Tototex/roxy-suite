@@ -8,6 +8,7 @@ class Products {
     add_action('save_post_' . CPT::POST_TYPE, [__CLASS__, 'on_showing_saved'], 20, 2);
     add_action('transition_post_status', [__CLASS__, 'on_status_changed'], 20, 3);
     add_action('before_delete_post', [__CLASS__, 'on_showing_deleted'], 20, 2);
+    add_action('roxy_st_sync_products_retry', [__CLASS__, 'retry_product_sync'], 10, 2);
     add_action('pre_get_posts', [__CLASS__, 'hide_ticket_products_from_admin_list']);
     add_action('views_edit-product', [__CLASS__, 'add_ticket_product_views']);
   }
@@ -127,21 +128,41 @@ class Products {
     ));
   }
 
-  public static function ensure_products_for_showing(int $showing_id): void {
+  public static function ensure_products_for_showing(int $showing_id, int $retry_attempt = 0): void {
     if (!self::showing_is_ready_for_products($showing_id)) {
       return;
     }
 
-    if (!self::acquire_sync_lock($showing_id)) {
+    if (!class_exists(Issuance::class)) return;
+    $seat_lease = new Issuance([], 'walkup:' . $showing_id);
+    try {
+      $seat_lease->acquire_lease();
+    } catch (\Throwable $error) {
+      self::schedule_product_sync_retry($showing_id, $retry_attempt);
       return;
     }
 
+    $sync_lock_acquired = false;
     try {
+      // The showing could have changed between the initial readiness check and
+      // obtaining the shared seat lease. Recheck while coordinated with saves.
+      clean_post_cache($showing_id);
+      if (!self::showing_is_ready_for_products($showing_id)) return;
+
+      if (!self::acquire_sync_lock($showing_id)) {
+        self::schedule_product_sync_retry($showing_id, $retry_attempt);
+        return;
+      }
+      $sync_lock_acquired = true;
+
+      $seat_lease->assert_owner();
       $profile = get_post_meta($showing_id, '_roxy_pricing_profile', true) ?: 'movie_evening';
 
     $title = trim((string) get_the_title($showing_id));
-    $start = get_post_meta($showing_id, '_roxy_start', true);
-    $start_label = $start ? date_i18n('D n/j g:ia', strtotime($start)) : '';
+    $start_timestamp = Eligibility::showing_start_timestamp($showing_id);
+    // The readiness check rejects invalid dates; keep labels on the same strict,
+    // site-local interpretation instead of letting strtotime normalize bad data.
+    $start_label = $start_timestamp !== null ? wp_date('D n/j g:ia', $start_timestamp) : '';
 
     $thumb_id = get_post_thumbnail_id($showing_id);
 
@@ -172,9 +193,12 @@ class Products {
       $existing = self::canonical_product_id($showing_id, $type, $existing);
 
       $prod_title = trim($title . ($start_label ? " — {$start_label}" : '') . " ({$cfg['label']})");
+      $seat_lease->assert_owner();
       $product_id = self::upsert_product($existing, $prod_title, $cfg['price'], $showing_id, $type, $thumb_id);
+      $seat_lease->assert_owner();
       if ($product_id) {
         update_post_meta($showing_id, $meta_key, (int) $product_id);
+        $seat_lease->assert_owner();
       }
     }
 
@@ -182,6 +206,7 @@ class Products {
     foreach ($all_types as $t) {
       if (!isset($need[$t])) {
         $k = self::type_to_meta_key($t);
+        $seat_lease->assert_owner();
         $existing = (int) get_post_meta($showing_id, $k, true);
         if ($existing > 0 && get_post_type($existing) === 'product' && get_post_status($existing) !== 'trash') {
           wp_trash_post($existing);
@@ -191,11 +216,36 @@ class Products {
             wp_trash_post($extra_id);
           }
         }
+        $seat_lease->assert_owner();
         delete_post_meta($showing_id, $k);
+        $seat_lease->assert_owner();
       }
     }
+    } catch (\Throwable $error) {
+      Log::warn('ticket product synchronization failed', ['showing_id'=>$showing_id, 'attempt'=>$retry_attempt + 1, 'exception_type'=>get_class($error)]);
+      self::schedule_product_sync_retry($showing_id, $retry_attempt);
     } finally {
-      self::release_sync_lock($showing_id);
+      if ($sync_lock_acquired) self::release_sync_lock($showing_id);
+      $seat_lease->release_lease();
+    }
+  }
+
+  public static function retry_product_sync($showing_id, $attempt): void {
+    self::ensure_products_for_showing((int) $showing_id, (int) $attempt);
+  }
+
+  private static function schedule_product_sync_retry(int $showing_id, int $attempt): void {
+    $next_attempt = $attempt + 1;
+    if ($showing_id <= 0) return;
+    if ($next_attempt > 5) {
+      Log::warn('ticket product synchronization exhausted retries', ['showing_id'=>$showing_id]);
+      return;
+    }
+    $args = [$showing_id, $next_attempt];
+    if (wp_next_scheduled('roxy_st_sync_products_retry', $args)) return;
+    $scheduled = wp_schedule_single_event(time() + 60, 'roxy_st_sync_products_retry', $args);
+    if ($scheduled === false || is_wp_error($scheduled)) {
+      Log::warn('ticket product synchronization retry could not be scheduled', ['showing_id'=>$showing_id, 'attempt'=>$next_attempt]);
     }
   }
 
@@ -220,12 +270,42 @@ class Products {
       return (float) $base;
     }
 
-    $change_ts = strtotime($change_at);
-    if (!$change_ts) {
+    $change_at_local = self::parse_live_price_change_at($change_at);
+    if (!$change_at_local) {
       return (float) $base;
     }
 
-    return current_time('timestamp') >= $change_ts ? (float) $future : (float) $base;
+    $now = function_exists('current_datetime') ? current_datetime() : new \DateTimeImmutable('now', self::site_timezone());
+    return $now >= $change_at_local ? (float) $future : (float) $base;
+  }
+
+  /** Parse saved wall-clock prices in the WordPress site timezone, not the PHP process timezone. */
+  public static function parse_live_price_change_at(string $raw): ?\DateTimeImmutable {
+    $raw = trim($raw);
+    if ($raw === '') return null;
+    $timezone = self::site_timezone();
+    foreach ([['!Y-m-d\\TH:i', 'Y-m-d\\TH:i'], ['!Y-m-d H:i:s', 'Y-m-d H:i:s'], ['!Y-m-d H:i', 'Y-m-d H:i']] as [$format, $round_trip]) {
+      $value = \DateTimeImmutable::createFromFormat($format, $raw, $timezone);
+      $errors = \DateTimeImmutable::getLastErrors();
+      if ($value && (!$errors || (!$errors['warning_count'] && !$errors['error_count'])) && $value->format($round_trip) === $raw) return $value;
+    }
+    // Legacy records can contain an explicit timezone suffix. Honor it instead of
+    // reinterpreting those values as site-local wall time.
+    if (!preg_match('/(?:Z|UTC|[+-]\d{2}:?\d{2})$/i', $raw)) return null;
+    try {
+      $value = new \DateTimeImmutable($raw);
+      $errors = \DateTimeImmutable::getLastErrors();
+      return (!$errors || (!$errors['warning_count'] && !$errors['error_count'])) ? $value : null;
+    } catch (\Throwable $error) {
+      return null;
+    }
+  }
+
+  private static function site_timezone(): \DateTimeZone {
+    if (function_exists('wp_timezone')) return wp_timezone();
+    $name = (string) get_option('timezone_string');
+    try { return new \DateTimeZone($name !== '' ? $name : 'UTC'); }
+    catch (\Throwable $error) { return new \DateTimeZone('UTC'); }
   }
 
   public static function get_live_tier_display_price(int $showing_id, int $tier): array {
@@ -233,14 +313,17 @@ class Products {
     $future = (float) get_post_meta($showing_id, '_roxy_live_future_price_' . $tier, true);
     $change_at = (string) get_post_meta($showing_id, '_roxy_live_change_at_' . $tier, true);
     $active = self::get_live_tier_active_price($showing_id, $tier);
+    $change_datetime = self::parse_live_price_change_at($change_at);
+    $now = function_exists('current_datetime') ? current_datetime() : new \DateTimeImmutable('now', self::site_timezone());
+    $has_future_price = $future_raw = get_post_meta($showing_id, '_roxy_live_future_price_' . $tier, true);
 
     return [
       'active' => $active,
       'base' => $base,
       'future' => $future,
       'change_at' => $change_at,
-      'is_scheduled' => (($future_raw = get_post_meta($showing_id, '_roxy_live_future_price_' . $tier, true)) !== '' && $change_at !== '' && strtotime($change_at)),
-      'is_future_active' => (($future_raw = get_post_meta($showing_id, '_roxy_live_future_price_' . $tier, true)) !== '' && (float) $active === (float) $future && $change_at !== '' && current_time('timestamp') >= strtotime($change_at)),
+      'is_scheduled' => ($has_future_price !== '' && $change_datetime instanceof \DateTimeImmutable),
+      'is_future_active' => ($has_future_price !== '' && $change_datetime instanceof \DateTimeImmutable && $now >= $change_datetime),
     ];
   }
 
@@ -254,8 +337,7 @@ class Products {
     $title = trim((string) get_the_title($showing_id));
     if ($title === '' || stripos($title, 'Auto Draft') === 0) return false;
 
-    $start = (string) get_post_meta($showing_id, '_roxy_start', true);
-    if ($start === '' || !strtotime($start)) return false;
+    if (!class_exists(Eligibility::class) || Eligibility::showing_start_timestamp($showing_id) === null) return false;
 
     return true;
   }

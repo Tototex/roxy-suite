@@ -91,15 +91,21 @@ function roxy_will_call_showing_label(int $showing_id): string {
 }
 
 function roxy_will_call_parse_showing_start(string $start): ?DateTimeImmutable {
-  if ($start === '') {
-    return null;
+  if ($start === '') return null;
+  $timezone = wp_timezone();
+  foreach ([
+    ['!Y-m-d\\TH:i', 'Y-m-d\\TH:i'],
+    ['!Y-m-d\\TH:i:s', 'Y-m-d\\TH:i:s'],
+    ['!Y-m-d H:i', 'Y-m-d H:i'],
+    ['!Y-m-d H:i:s', 'Y-m-d H:i:s'],
+  ] as [$format, $expected]) {
+    try { $parsed = DateTimeImmutable::createFromFormat($format, $start, $timezone); }
+    catch (Throwable $error) { return null; }
+    $errors = DateTimeImmutable::getLastErrors();
+    if ($parsed && ($errors === false || ($errors['warning_count'] === 0 && $errors['error_count'] === 0))
+      && $parsed->format($expected) === $start) return $parsed;
   }
-
-  try {
-    return new DateTimeImmutable($start, wp_timezone());
-  } catch (Exception $e) {
-    return null;
-  }
+  return null;
 }
 
 function roxy_will_call_showing_is_archived(int $showing_id): bool {
@@ -111,6 +117,18 @@ function roxy_will_call_showing_is_archived(int $showing_id): bool {
 
   $cutoff = current_datetime()->setTime(0, 0);
   return $start_dt->getTimestamp() < $cutoff->getTimestamp();
+}
+
+function roxy_will_call_archive_page_from_request(array $query, bool $show_archived): int {
+  $max_page = 1000;
+  $raw_page = $query['archive_page'] ?? 0;
+  $page = is_scalar($raw_page) && preg_match('/\A\d+\z/', (string) $raw_page)
+    ? (int) $raw_page
+    : 0;
+  $page = max(0, min($max_page, $page));
+  if ($show_archived && isset($query['archive_page_next']) && $page < $max_page) $page++;
+  if ($show_archived && isset($query['archive_page_prev'])) $page = max(0, $page - 1);
+  return $page;
 }
 
 function roxy_will_call_customer_key(string $name, string $email): string {
@@ -166,6 +184,7 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
   $selected_product_id = isset($_GET['product_id']) ? absint($_GET['product_id']) : 0;
   $selected_showing_id = isset($_GET['showing_id']) ? absint($_GET['showing_id']) : 0;
   $show_archived = !empty($_GET['show_archived']);
+  $archive_page = roxy_will_call_archive_page_from_request($_GET, $show_archived);
   $page_slug = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : 'roxy-will-call';
   $tab_slug = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : '';
   if ($wrap) {
@@ -181,6 +200,9 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
       <?php if ($tab_slug !== ''): ?>
         <input type="hidden" name="tab" value="<?php echo esc_attr($tab_slug); ?>" />
       <?php endif; ?>
+      <?php if ($show_archived): ?>
+        <input type="hidden" name="archive_page" value="<?php echo esc_attr($archive_page); ?>" />
+      <?php endif; ?>
       <div>
         <label for="mode"><strong>Mode</strong></label><br />
         <select name="mode" id="mode">
@@ -190,7 +212,7 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
       </div>
       <div class="roxy-wc-mode roxy-wc-mode-showing" <?php if ($mode !== 'showing') echo 'style="display:none"'; ?>>
         <label for="showing_id"><strong>Select showing:</strong></label><br />
-        <?php echo roxy_will_call_showing_dropdown($selected_showing_id, $show_archived); ?>
+        <?php echo roxy_will_call_showing_dropdown($selected_showing_id, $show_archived, $archive_page); ?>
       </div>
       <div class="roxy-wc-mode roxy-wc-mode-product" <?php if ($mode !== 'product') echo 'style="display:none"'; ?>>
         <label for="product_id"><strong>Select ticket product:</strong></label><br />
@@ -211,14 +233,18 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
     </form>
 
     <?php
-      if ($mode === 'showing' && $selected_showing_id) {
-        $result = roxy_will_call_get_showing_list($selected_showing_id);
-        roxy_will_call_render_table('showing', $selected_showing_id, $result['rows'], $result['totals']);
-      } elseif ($mode === 'product' && $selected_product_id) {
-        $result = roxy_will_call_get_list([$selected_product_id]);
-        roxy_will_call_render_table('product', $selected_product_id, $result['rows'], $result['totals']);
-      } else {
-        echo '<p>Select a showing or product to generate the list.</p>';
+      try {
+        if ($mode === 'showing' && $selected_showing_id) {
+          $result = roxy_will_call_get_showing_list($selected_showing_id);
+          roxy_will_call_render_table('showing', $selected_showing_id, $result['rows'], $result['totals']);
+        } elseif ($mode === 'product' && $selected_product_id) {
+          $result = roxy_will_call_get_list([$selected_product_id]);
+          roxy_will_call_render_table('product', $selected_product_id, $result['rows'], $result['totals']);
+        } else {
+          echo '<p>Select a showing or product to generate the list.</p>';
+        }
+      } catch (\Throwable $e) {
+        echo '<div class="notice notice-error"><p>Will Call could not verify the complete paid-ticket list. No partial list was shown; try again or contact the administrator.</p></div>';
       }
     ?>
   <style>
@@ -731,12 +757,15 @@ function roxy_will_call_product_dropdown($selected) {
   return $html;
 }
 
-function roxy_will_call_showing_dropdown($selected, bool $show_archived = false) {
+function roxy_will_call_showing_dropdown($selected, bool $show_archived = false, int $archive_page = 0) {
+  $archive_page = max(0, min(1000, $archive_page));
+  $page_size = 200;
   $posts = get_posts([
     'post_type' => 'roxy_showing',
     'post_status' => ['publish', 'private', 'draft', 'future'],
-    'numberposts' => 200,
-    'orderby' => 'meta_value',
+    'numberposts' => $show_archived ? $page_size + 1 : $page_size,
+    'offset' => $show_archived ? $archive_page * $page_size : 0,
+    'orderby' => ['meta_value' => $show_archived ? 'DESC' : 'ASC', 'ID' => $show_archived ? 'DESC' : 'ASC'],
     'meta_key' => '_roxy_start',
     'order' => $show_archived ? 'DESC' : 'ASC',
     'meta_query' => [[
@@ -745,6 +774,8 @@ function roxy_will_call_showing_dropdown($selected, bool $show_archived = false)
       'value' => $show_archived ? '' : wp_date('Y-m-d'),
     ]],
   ]);
+  $has_next_page = $show_archived && count($posts) > $page_size;
+  if ($has_next_page) $posts = array_slice($posts, 0, $page_size);
 
   $html = '<select name="showing_id" id="showing_id" style="min-width:420px;">';
   $html .= '<option value="0">— Select Showing —</option>';
@@ -761,6 +792,17 @@ function roxy_will_call_showing_dropdown($selected, bool $show_archived = false)
     $html .= '<option value="' . esc_attr($id) . '" ' . $sel . '>' . esc_html($label) . '</option>';
   }
   $html .= '</select>';
+  if ($show_archived) {
+    $html .= '<span class="roxy-wc-archive-pages" style="display:inline-flex;gap:6px;align-items:center;margin-left:8px;">';
+    $html .= '<span>Archive page ' . esc_html((string) ($archive_page + 1)) . '</span>';
+    if ($archive_page > 0) {
+      $html .= '<button class="button" type="submit" name="archive_page_prev" value="1">Newer showings</button>';
+    }
+    if ($has_next_page) {
+      $html .= '<button class="button" type="submit" name="archive_page_next" value="1">Older showings</button>';
+    }
+    $html .= '</span>';
+  }
   return $html;
 }
 
@@ -798,89 +840,137 @@ function roxy_will_call_get_list($product_ids, array $ticket_type_labels = [], b
   }
 
   $statuses = ['wc-processing', 'wc-completed'];
-  $order_ids = wc_get_orders([
-    'type' => 'shop_order',
-    'status' => $statuses,
-    'limit' => -1,
-    'return' => 'ids',
-    'date_created' => '>' . (new DateTime('-18 months'))->format('Y-m-d'),
-  ]);
-
+  $page_size = 200;
+  $page = 1;
+  $expected_total = null;
+  $expected_pages = null;
+  $last_order_id = 0;
+  $processed_order_count = 0;
   $product_lookup = array_fill_keys($product_ids, true);
   $agg = [];
   $total_qty = 0;
   $total_revenue = 0.0;
-  $matching_order_ids = [];
-
-  foreach ($order_ids as $oid) {
-    $order = wc_get_order($oid);
-    if (!$order) continue;
-    if (class_exists('WC_Order_Refund') && ($order instanceof WC_Order_Refund)) continue;
-    if (!($order instanceof WC_Order)) continue;
-
-    $matched_this_order = false;
-
-    foreach ($order->get_items('line_item') as $item) {
-      $pid = (int) $item->get_product_id();
-      $vid = (int) $item->get_variation_id();
-      $matches = isset($product_lookup[$pid]) || isset($product_lookup[$vid]);
-      if (!$matches) continue;
-
-      $qty = max(0, (int) $item->get_quantity() - (int) ceil(abs((float) $order->get_qty_refunded_for_item($item->get_id()))));
-      if ($qty <= 0) continue;
-      $matched_this_order = true;
-      $total_qty += $qty;
-
-      $line_total = (float) $item->get_total() - abs((float) $order->get_total_refunded_for_item($item->get_id()));
-      $line_tax = (float) $item->get_total_tax();
-      foreach ((array) ($item->get_taxes()['total'] ?? []) as $tax_id => $tax_amount) $line_tax -= abs((float) $order->get_tax_refunded_for_item($item->get_id(), $tax_id));
-      $total_revenue += ($line_total + $line_tax);
-
-      $first = trim((string) $order->get_billing_first_name());
-      $last = trim((string) $order->get_billing_last_name());
-      $email = strtolower(trim((string) $order->get_billing_email()));
-      $name = trim($first . ' ' . $last);
-      if ($name === '') $name = 'Unknown Name';
-      if ($email === '') $email = 'unknown-email';
-      $customer_key = roxy_will_call_customer_key($name, $email);
-
-      if (!isset($agg[$customer_key])) {
-        $agg[$customer_key] = [
-          'customer_key' => $customer_key,
-          'name' => $name,
-          'email' => $email,
-          'qty' => 0,
-          'ticket_types' => [],
-          'orders' => [],
-          'latest_order_ts' => 0,
-        ];
-      }
-
-      $agg[$customer_key]['qty'] += $qty;
-      $matched_product_id = isset($product_lookup[$pid]) ? $pid : $vid;
-      if ($matched_product_id <= 0) {
-        $matched_product_id = $pid;
-      }
-      $type_label = isset($ticket_type_labels[$matched_product_id]) ? (string) $ticket_type_labels[$matched_product_id] : '';
-      if ($type_label === '') {
-        $product = wc_get_product($matched_product_id);
-        $type_label = $product ? (string) $product->get_name() : 'Ticket';
-      }
-      if (!isset($agg[$customer_key]['ticket_types'][$type_label])) {
-        $agg[$customer_key]['ticket_types'][$type_label] = 0;
-      }
-      $agg[$customer_key]['ticket_types'][$type_label] += $qty;
-      $date_created = $order->get_date_created();
-      $ts = $date_created ? $date_created->getTimestamp() : 0;
-      $agg[$customer_key]['orders'][(int) $oid] = $date_created ? $date_created->date('Y-m-d H:i:s') : '';
-      if ($ts > (int) $agg[$customer_key]['latest_order_ts']) {
-        $agg[$customer_key]['latest_order_ts'] = $ts;
-      }
+  $matching_order_count = 0;
+  do {
+    $page_result = wc_get_orders([
+      'type' => 'shop_order',
+      'status' => $statuses,
+      'limit' => $page_size,
+      'paged' => $page,
+      'paginate' => true,
+      'return' => 'ids',
+      'orderby' => 'ID',
+      'order' => 'ASC',
+      'date_created' => '>' . (new DateTime('-18 months'))->format('Y-m-d'),
+    ]);
+    global $wpdb;
+    if ((function_exists('is_wp_error') && is_wp_error($page_result))
+      || (isset($wpdb->last_error) && (string) $wpdb->last_error !== '')
+      || !is_object($page_result) || !isset($page_result->orders, $page_result->total, $page_result->max_num_pages)
+      || !is_array($page_result->orders) || !is_numeric($page_result->total) || !is_numeric($page_result->max_num_pages)
+      || (float) $page_result->total < 0 || (float) $page_result->total !== (float) (int) $page_result->total
+      || (float) $page_result->max_num_pages < 0 || (float) $page_result->max_num_pages !== (float) (int) $page_result->max_num_pages) {
+      throw new \RuntimeException('Will Call could not load the complete order list. No partial list was cached.');
     }
-
-    if ($matched_this_order) {
-      $matching_order_ids[(int) $oid] = true;
+    $total = (int) $page_result->total;
+    $pages = (int) $page_result->max_num_pages;
+    if ($page === 1) {
+      $expected_total = $total;
+      $expected_pages = $pages;
+      if ($pages > 10000 || ($total === 0 && $pages !== 0) || ($total > 0 && $pages < 1)) {
+        throw new \RuntimeException('Will Call order pagination could not be verified. No partial list was cached.');
+      }
+    } elseif ($total !== $expected_total || $pages !== $expected_pages) {
+      throw new \RuntimeException('The paid order list changed while it was loading. Refresh before using Will Call.');
     }
+    if (count($page_result->orders) > $page_size || ($page <= $pages && !$page_result->orders)) {
+      throw new \RuntimeException('Will Call order pagination returned an incomplete page. No partial list was cached.');
+    }
+    foreach ($page_result->orders as $order_id) {
+      if (!is_numeric($order_id) || (float) $order_id <= 0 || (float) $order_id !== (float) (int) $order_id) {
+        throw new \RuntimeException('Will Call order pagination returned an invalid order identity. No partial list was cached.');
+      }
+      $order_id = (int) $order_id;
+      if ($order_id <= $last_order_id) {
+        throw new \RuntimeException('Will Call order pagination returned duplicate or out-of-order records. Refresh before using Will Call.');
+      }
+      $last_order_id = $order_id;
+      $processed_order_count++;
+
+      $order = wc_get_order($order_id);
+      if (!is_object($order) || !($order instanceof WC_Order) || (isset($wpdb->last_error) && (string) $wpdb->last_error !== '')) {
+        throw new \RuntimeException('A paid order could not be read completely. Refresh before using Will Call.');
+      }
+      $items = $order->get_items('line_item');
+      if (!is_array($items) || (function_exists('is_wp_error') && is_wp_error($items))
+        || (isset($wpdb->last_error) && (string) $wpdb->last_error !== '')) {
+        throw new \RuntimeException('A paid order returned incomplete ticket items. Refresh before using Will Call.');
+      }
+      $matched_this_order = false;
+      foreach ($items as $item) {
+        if (!is_object($item) || !method_exists($item, 'get_product_id') || !method_exists($item, 'get_variation_id')
+          || !method_exists($item, 'get_quantity') || !method_exists($item, 'get_id') || !method_exists($item, 'get_total')
+          || !method_exists($item, 'get_total_tax') || !method_exists($item, 'get_taxes')) {
+          throw new \RuntimeException('A paid order returned incomplete ticket item data. Refresh before using Will Call.');
+        }
+        $pid = (int) $item->get_product_id();
+        $vid = (int) $item->get_variation_id();
+        if (!isset($product_lookup[$pid]) && !isset($product_lookup[$vid])) continue;
+
+        $qty = max(0, (int) $item->get_quantity() - (int) ceil(abs((float) $order->get_qty_refunded_for_item($item->get_id()))));
+        if ($qty <= 0) continue;
+        $matched_this_order = true;
+        $total_qty += $qty;
+
+        $line_total = (float) $item->get_total() - abs((float) $order->get_total_refunded_for_item($item->get_id()));
+        $line_tax = (float) $item->get_total_tax();
+        foreach ((array) ($item->get_taxes()['total'] ?? []) as $tax_id => $tax_amount) $line_tax -= abs((float) $order->get_tax_refunded_for_item($item->get_id(), $tax_id));
+        $total_revenue += ($line_total + $line_tax);
+
+        $first = trim((string) $order->get_billing_first_name());
+        $last = trim((string) $order->get_billing_last_name());
+        $email = strtolower(trim((string) $order->get_billing_email()));
+        $name = trim($first . ' ' . $last);
+        if ($name === '') $name = 'Unknown Name';
+        if ($email === '') $email = 'unknown-email';
+        $customer_key = roxy_will_call_customer_key($name, $email);
+
+        if (!isset($agg[$customer_key])) {
+          $agg[$customer_key] = [
+            'customer_key' => $customer_key,
+            'name' => $name,
+            'email' => $email,
+            'qty' => 0,
+            'ticket_types' => [],
+            'orders' => [],
+            'latest_order_ts' => 0,
+          ];
+        }
+
+        $agg[$customer_key]['qty'] += $qty;
+        $matched_product_id = isset($product_lookup[$pid]) ? $pid : $vid;
+        if ($matched_product_id <= 0) $matched_product_id = $pid;
+        $type_label = isset($ticket_type_labels[$matched_product_id]) ? (string) $ticket_type_labels[$matched_product_id] : '';
+        if ($type_label === '') {
+          $product = wc_get_product($matched_product_id);
+          $type_label = $product ? (string) $product->get_name() : 'Ticket';
+        }
+        if (!isset($agg[$customer_key]['ticket_types'][$type_label])) $agg[$customer_key]['ticket_types'][$type_label] = 0;
+        $agg[$customer_key]['ticket_types'][$type_label] += $qty;
+        $date_created = $order->get_date_created();
+        $ts = $date_created ? $date_created->getTimestamp() : 0;
+        $agg[$customer_key]['orders'][$order_id] = $date_created ? $date_created->date('Y-m-d H:i:s') : '';
+        if ($ts > (int) $agg[$customer_key]['latest_order_ts']) $agg[$customer_key]['latest_order_ts'] = $ts;
+      }
+      if (isset($wpdb->last_error) && (string) $wpdb->last_error !== '') {
+        throw new \RuntimeException('A paid order could not be fully reconciled. Refresh before using Will Call.');
+      }
+      if ($matched_this_order) $matching_order_count++;
+    }
+    $page++;
+  } while ($page <= $expected_pages);
+  if ($processed_order_count !== $expected_total) {
+    throw new \RuntimeException('Will Call could not verify the complete order list. No partial list was cached.');
   }
 
   $rows = array_values($agg);
@@ -888,18 +978,18 @@ function roxy_will_call_get_list($product_ids, array $ticket_type_labels = [], b
     return strcasecmp($a['name'], $b['name']);
   });
 
-  $result = roxy_will_call_cacheable_list_result($rows, (int) $total_qty, (float) $total_revenue, $matching_order_ids);
+  $result = roxy_will_call_cacheable_list_result($rows, (int) $total_qty, (float) $total_revenue, $matching_order_count);
   set_transient($cache_key, $result, ROXY_WC_CACHE_TTL);
   return $result;
 }
 
-function roxy_will_call_cacheable_list_result(array $rows, int $total_qty, float $total_revenue, array $matching_order_ids): array {
+function roxy_will_call_cacheable_list_result(array $rows, int $total_qty, float $total_revenue, int $order_count): array {
   return [
     'rows' => $rows,
     'totals' => [
       'total_qty' => (int) $total_qty,
       'total_revenue' => (float) $total_revenue,
-      'order_count' => (int) count($matching_order_ids),
+      'order_count' => max(0, $order_count),
     ],
   ];
 }
@@ -1227,7 +1317,9 @@ add_action('wp_ajax_roxy_will_call_save', function () {
   $ticket_ids = roxy_will_call_ticket_ids_for_customer($context_id, $customer_key);
   $mode=roxy_will_call_context_mode($context_id); $object_id=roxy_will_call_context_object_id($context_id);
   $products=$mode==='showing' ? roxy_will_call_showing_product_ids($object_id) : [$object_id];
-  $fresh=roxy_will_call_get_list($products,[],true); $matching=null;
+  try { $fresh=roxy_will_call_get_list($products,[],true); }
+  catch (Throwable $e) { wp_send_json_error(['message'=>'Will Call could not verify the complete paid-ticket list. No attendance was changed; refresh and try again.','conflict'=>true]); return; }
+  $matching=null;
   foreach($fresh['rows'] as $row) if($row['customer_key']===$customer_key) $matching=$row;
   if(!$matching || $used_qty > (int)$matching['qty']) wp_send_json_error(['message'=>'Customer or paid ticket quantity changed. Refresh the list.','conflict'=>true]);
   $current_map=roxy_will_call_authoritative_checkins($context_id,roxy_will_call_get_checkins_map($context_id));

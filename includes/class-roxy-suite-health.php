@@ -139,12 +139,8 @@ class Health {
 
         global $wpdb;
         $table  = $wpdb->prefix . 'roxy_will_call_checkins';
-        $exists = self::table_exists($table);
-
         return self::module('Will Call', admin_url('admin.php?page=roxy-will-call'), [
-            self::item($table, $exists ? 'Exists' : 'Missing',
-                $exists ? self::PASS : self::FAIL,
-                $exists ? '' : 'Reactivate plugin to rebuild'),
+            self::table_item($table, $table, 'Reactivate plugin to rebuild'),
         ], 'will_call');
     }
 
@@ -155,13 +151,12 @@ class Health {
 
         global $wpdb;
         $table = $wpdb->prefix . 'roxy_requested_showing_backings';
-        $exists = self::table_exists($table);
         $cpt = post_type_exists('roxy_req_showing');
         $cron = (bool) wp_next_scheduled('roxy_rs_daily_review');
 
         return self::module('Requested Showings', admin_url('admin.php?page=roxy-requested-showings'), [
             self::item('roxy_req_showing CPT', $cpt ? 'Registered' : 'Missing', $cpt ? self::PASS : self::FAIL),
-            self::item($table, $exists ? 'Exists' : 'Missing', $exists ? self::PASS : self::FAIL),
+            self::table_item($table, $table),
             self::item('Daily review cron', $cron ? 'Scheduled' : 'Missing', $cron ? self::PASS : self::WARN),
         ], 'requested_showings');
     }
@@ -173,7 +168,6 @@ class Health {
 
         global $wpdb;
         $table  = $wpdb->prefix . 'roxy_member_scans';
-        $t_ok   = self::table_exists($table);
 
         // /member-check/ is a custom rewrite rule, not a real WP page
         $rules   = get_option('rewrite_rules', []);
@@ -182,8 +176,7 @@ class Health {
         $wcs = class_exists('WC_Subscriptions') || class_exists('WC_Subscriptions_Manager');
 
         return self::module('Member Check', admin_url('admin.php?page=roxy-scan-log'), [
-            self::item($table, $t_ok ? 'Exists' : 'Missing',
-                $t_ok ? self::PASS : self::FAIL),
+            self::table_item($table, $table),
             self::item('/member-check/ rewrite rule', $rule_ok ? 'Active' : 'Missing',
                 $rule_ok ? self::PASS : self::FAIL,
                 $rule_ok ? '' : 'Go to Settings → Permalinks and click Save Changes to flush rewrite rules'),
@@ -210,9 +203,9 @@ class Health {
         $product_ok  = $product_id > 0 && get_post($product_id) instanceof \WP_Post;
 
         return self::module('Event Booking', admin_url('admin.php?page=roxy-event-booking'), [
-            self::item($t_b,  self::table_exists($t_b)  ? 'Exists' : 'Missing', self::table_exists($t_b)  ? self::PASS : self::FAIL),
-            self::item($t_bl, self::table_exists($t_bl) ? 'Exists' : 'Missing', self::table_exists($t_bl) ? self::PASS : self::FAIL),
-            self::item($t_l,  self::table_exists($t_l)  ? 'Exists' : 'Missing', self::table_exists($t_l)  ? self::PASS : self::FAIL),
+            self::table_item($t_b, $t_b),
+            self::table_item($t_bl, $t_bl),
+            self::table_item($t_l, $t_l),
             self::item('Sling mode', ucfirst($sling_mode),
                 $sling_mode === 'disabled' ? self::WARN : self::PASS,
                 $sling_mode === 'disabled' ? 'Sling scheduling is off' : ''),
@@ -272,13 +265,11 @@ class Health {
 
         global $wpdb;
         $table           = $wpdb->prefix . 'roxy_arcade_scores';
-        $exists          = self::table_exists($table);
         $rewards_enabled = (bool) get_option('roxy_arcade_rewards_enabled', 0);
         $cron            = (bool) wp_next_scheduled('roxy_arcade_monthly_award');
 
         return self::module('Arcade', admin_url('admin.php?page=roxy-arcade-settings'), [
-            self::item($table, $exists ? 'Exists' : 'Missing',
-                $exists ? self::PASS : self::FAIL),
+            self::table_item($table, $table),
             self::item('Monthly award cron',
                 $cron ? 'Scheduled' : ($rewards_enabled ? 'Not scheduled' : 'Not needed (rewards off)'),
                 (!$cron && $rewards_enabled) ? self::WARN : self::PASS,
@@ -294,8 +285,6 @@ class Health {
         global $wpdb;
         $t_reports = $wpdb->prefix . 'roxy_grosses_reports';
         $t_logs = $wpdb->prefix . 'roxy_grosses_logs';
-        $t_r_ok    = self::table_exists($t_reports);
-        $t_l_ok    = self::table_exists($t_logs);
 
         $settings       = get_option('roxy_grosses_settings', []);
         $has_token      = !empty($settings['square_access_token']);
@@ -320,12 +309,8 @@ class Health {
         );
 
         return self::module('Grosses', admin_url('admin.php?page=roxy-grosses'), [
-            self::item($t_reports, $t_r_ok ? 'Exists' : 'Missing',
-                $t_r_ok ? self::PASS : self::FAIL,
-                $t_r_ok ? '' : 'Reactivate plugin to create table'),
-            self::item($t_logs, $t_l_ok ? 'Exists' : 'Missing',
-                $t_l_ok ? self::PASS : self::FAIL,
-                $t_l_ok ? '' : 'Reactivate plugin to create table'),
+            self::table_item($t_reports, $t_reports, 'Reactivate plugin to create table'),
+            self::table_item($t_logs, $t_logs, 'Reactivate plugin to create table'),
             self::item('Square access token', $has_token ? 'Configured' : 'Not set',
                 $has_token ? self::PASS : self::WARN,
                 $has_token ? '' : 'Add a Square token in Grosses → Settings'),
@@ -395,8 +380,7 @@ class Health {
         $items = [];
         foreach (['products', 'vendors', 'orders', 'runs'] as $suffix) {
             $table = $wpdb->prefix . 'roxy_inventory_' . $suffix;
-            $exists = self::table_exists($table);
-            $items[] = self::item($table, $exists ? 'Exists' : 'Missing', $exists ? self::PASS : self::FAIL);
+            $items[] = self::table_item($table, $table);
         }
         $enabled = (get_option('roxy_inventory_settings', [])['schedule_enabled'] ?? '1') === '1';
         $scheduled = wp_next_scheduled('roxy_inventory_nightly_pull');
@@ -410,8 +394,7 @@ class Health {
         if (!self::module_enabled('social_publisher')) return self::module('Social Publisher', $link, [], 'social_publisher');
         global $wpdb;
         $table = $wpdb->prefix . 'roxy_social_posts';
-        $exists = self::table_exists($table);
-        $items = [self::item($table, $exists ? 'Exists' : 'Missing', $exists ? self::PASS : self::FAIL)];
+        $items = [self::table_item($table, $table)];
         foreach (['roxy_social_publish_due', 'roxy_social_cleanup'] as $hook) {
             $scheduled = wp_next_scheduled($hook);
             $items[] = self::item($hook, $scheduled ? 'Scheduled' : 'Missing', $scheduled ? self::PASS : self::WARN);
@@ -530,19 +513,29 @@ class Health {
     private static function functional_show_tickets(): array {
         if (!self::module_enabled('show_tickets')) return [];
 
+        global $wpdb;
         $items = [];
 
-        $now  = wp_date('Y-m-d\TH:i', null, wp_timezone());
-        $upcoming = get_posts([
-            'post_type'      => 'roxy_showing',
-            'post_status'    => 'publish',
-            'posts_per_page' => 10,
-            'meta_key'       => '_roxy_start',
-            'meta_value'     => $now,
-            'meta_compare'   => '>=',
-            'orderby'        => 'meta_value',
-            'order'          => 'ASC',
-        ]);
+        try {
+            $wpdb->last_error = '';
+            $now  = wp_date('Y-m-d\TH:i', null, wp_timezone());
+            $upcoming = get_posts([
+                'post_type'      => 'roxy_showing',
+                'post_status'    => 'publish',
+                'posts_per_page' => 10,
+                'meta_key'       => '_roxy_start',
+                'meta_value'     => $now,
+                'meta_compare'   => '>=',
+                'orderby'        => 'meta_value',
+                'order'          => 'ASC',
+            ]);
+            if ($wpdb->last_error !== '' || !is_array($upcoming)) {
+                throw new \RuntimeException('Upcoming show query could not be verified.');
+            }
+        } catch (\Throwable $error) {
+            return [self::item('Upcoming shows', 'Unavailable', self::WARN,
+                'The published-show query could not be verified; this is not an empty schedule.')];
+        }
 
         $count   = count($upcoming);
         $items[] = self::item(
@@ -565,7 +558,16 @@ class Health {
             );
 
             if ($has_product && class_exists('\RoxyST\Sales')) {
-                $sold    = \RoxyST\Sales::sold_qty_for_showing($next_id);
+                try {
+                    $sold = \RoxyST\Sales::sold_qty_for_showing($next_id);
+                    if (!is_int($sold) || $sold < 0 || $sold === PHP_INT_MAX) {
+                        throw new \RuntimeException('Ticket sales count could not be verified.');
+                    }
+                } catch (\Throwable $error) {
+                    $items[] = self::item('Tickets sold (next show)', 'Unavailable', self::WARN,
+                        'The ticket sales query could not be verified; this is not a ticket count.');
+                    return $items;
+                }
                 $items[] = self::item(
                     'Tickets sold (next show)',
                     "$sold sold — $next_title",
@@ -586,11 +588,23 @@ class Health {
         if (!function_exists('roxy_eb_table_bookings')) return $items;
 
         $table = roxy_eb_table_bookings();
-        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $count = (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM `{$table}` WHERE status IN ('confirmed','pending','pending_invoice') AND doors_open_at >= %s",
-            current_time('mysql')
-        ));
+        try {
+            $wpdb->last_error = '';
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $raw_count = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM `{$table}` WHERE status IN ('confirmed','pending','pending_invoice') AND doors_open_at >= %s",
+                current_time('mysql')
+            ));
+            if ($wpdb->last_error !== '' || !(is_int($raw_count) || is_string($raw_count))
+                || !preg_match('/^(0|[1-9][0-9]*)$/D', (string) $raw_count)) {
+                throw new \RuntimeException('Upcoming booking count could not be verified.');
+            }
+            $count = filter_var($raw_count, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+            if ($count === false) throw new \RuntimeException('Upcoming booking count is outside the supported range.');
+        } catch (\Throwable $error) {
+            return [self::item('Upcoming confirmed bookings', 'Unavailable', self::WARN,
+                'The booking count could not be verified; this is not a zero-booking result.')];
+        }
 
         $items[] = self::item(
             'Upcoming confirmed bookings',
@@ -679,7 +693,12 @@ class Health {
         $t_reports = $wpdb->prefix . 'roxy_grosses_reports';
         $t_logs = $wpdb->prefix . 'roxy_grosses_logs';
 
-        if (!self::table_exists($t_reports)) {
+        $wpdb->last_error = '';
+        $reports_exist = self::table_exists($t_reports);
+        if ($wpdb->last_error !== '') {
+            return [self::item('Report table', 'Unavailable', self::WARN, 'The saved-report table could not be checked because the database read failed.')];
+        }
+        if (!$reports_exist) {
             return [self::item('Report table', 'Missing — run activation', self::FAIL)];
         }
 
@@ -695,31 +714,58 @@ class Health {
         $advertiser_hook = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::advertiser_hook() : 'roxy_grosses_monthly_advertiser_send';
         $next_local  = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::scheduled_time_local($report_hook) : '';
         $next_advertiser_local = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::scheduled_time_local($advertiser_hook) : '';
-        $last_auto_date = (string) get_option('roxy_grosses_last_auto_date', '');
+        $last_auto_value = get_option('roxy_grosses_last_auto_date', '');
+        $last_auto_invalid = !is_string($last_auto_value);
+        $last_auto_date = $last_auto_invalid ? '' : trim($last_auto_value);
         $stale_status = self::PASS;
-        $stale_detail = $last_auto_date ?: 'Never';
+        $stale_detail = $last_auto_invalid ? 'Invalid marker' : ($last_auto_date ?: 'Never');
         $stale_note = '';
         $latest_log_detail = 'No logs found';
         $latest_log_status = self::WARN;
         $latest_log_note = '';
 
-        if (self::table_exists($t_logs)) {
-            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            $latest_log = $wpdb->get_row("SELECT event_type, mode, success, created_at, message FROM `{$t_logs}` ORDER BY id DESC LIMIT 1", ARRAY_A);
-            if (is_array($latest_log) && $latest_log) {
+        try {
+            $wpdb->last_error = '';
+            $logs_exist = self::table_exists($t_logs);
+            if ($wpdb->last_error !== '') throw new \RuntimeException('Grosses log table could not be checked.');
+            if ($logs_exist) {
+                $wpdb->last_error = '';
+                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $latest_log = $wpdb->get_row("SELECT event_type, mode, success, created_at, message FROM `{$t_logs}` ORDER BY id DESC LIMIT 1", ARRAY_A);
+                if ($wpdb->last_error !== '' || (!is_array($latest_log) && $latest_log !== null)) {
+                    throw new \RuntimeException('Grosses log history could not be read.');
+                }
+            }
+            if (isset($latest_log)) {
+                $required_log_fields = ['event_type', 'mode', 'success', 'created_at', 'message'];
+                foreach ($required_log_fields as $field) {
+                    if (!array_key_exists($field, $latest_log) || !is_string($latest_log[$field]) && $field !== 'success') {
+                        throw new \RuntimeException('Grosses log row is incomplete.');
+                    }
+                }
+                if (!in_array($latest_log['success'], [0, 1, '0', '1'], true)) {
+                    throw new \RuntimeException('Grosses log outcome is malformed.');
+                }
                 $latest_log_detail = trim(sprintf(
                     '%s (%s) at %s',
-                    (string) ($latest_log['event_type'] ?? 'log'),
-                    (string) ($latest_log['mode'] ?? 'n/a'),
-                    (string) ($latest_log['created_at'] ?? 'unknown time')
+                    $latest_log['event_type'],
+                    $latest_log['mode'],
+                    $latest_log['created_at']
                 ));
-                $latest_log_status = !empty($latest_log['success']) ? self::PASS : self::WARN;
-                $latest_log_note = (string) ($latest_log['message'] ?? '');
+                $latest_log_status = in_array($latest_log['success'], [1, '1'], true) ? self::PASS : self::WARN;
+                $latest_log_note = $latest_log['message'];
             }
+        } catch (\Throwable $error) {
+            $latest_log_detail = 'Log history unavailable';
+            $latest_log_status = self::WARN;
+            $latest_log_note = 'The latest Grosses log result could not be verified; this is not an empty or successful log history.';
         }
 
         if ($sched_enabled) {
-            if ($last_auto_date === '') {
+            if ($last_auto_invalid) {
+                $stale_status = self::WARN;
+                $stale_note = 'The saved automatic Grosses date is not a valid text date.';
+            } elseif ($last_auto_date === '') {
                 $stale_status = self::WARN;
                 $stale_note = 'Automatic grosses are enabled, but no successful automatic run has been recorded yet.';
             } else {
@@ -727,10 +773,18 @@ class Health {
                     $timezone = class_exists('\\RoxyGrosses\\Settings')
                         ? new \DateTimeZone(\RoxyGrosses\Settings::get_report_timezone())
                         : wp_timezone();
-                    $last_auto = new \DateTimeImmutable($last_auto_date . ' 00:00:00', $timezone);
+                    $last_auto = \DateTimeImmutable::createFromFormat('!Y-m-d', $last_auto_date, $timezone);
+                    $date_errors = \DateTimeImmutable::getLastErrors();
+                    if (!$last_auto || ($date_errors && ($date_errors['warning_count'] || $date_errors['error_count']))
+                        || $last_auto->format('Y-m-d') !== $last_auto_date) {
+                        throw new \RuntimeException('Automatic Grosses date is invalid.');
+                    }
                     $today = new \DateTimeImmutable('today', $timezone);
                     $days = (int) $last_auto->diff($today)->format('%r%a');
-                    if ($days >= 2) {
+                    if ($days < 0) {
+                        $stale_status = self::WARN;
+                        $stale_note = 'The saved automatic Grosses date is in the future.';
+                    } elseif ($days >= 2) {
                         $stale_status = self::FAIL;
                         $stale_note = 'The automatic grosses run is stale. Cron may have stopped firing.';
                     } elseif ($days >= 1) {
@@ -818,6 +872,22 @@ class Health {
 
     private static function module_enabled(string $key): bool {
         return roxy_suite_module_enabled($key);
+    }
+
+    /** Distinguish a verified missing table from a failed existence query. */
+    private static function table_item(string $label, string $table, string $missing_note = ''): array {
+        global $wpdb;
+        try {
+            if (!preg_match('/^[a-zA-Z0-9_]+$/D', $table)) throw new \RuntimeException('Invalid table identity.');
+            $wpdb->last_error = '';
+            $exists = self::table_exists($table);
+            if ($wpdb->last_error !== '') throw new \RuntimeException('Table existence could not be verified.');
+            return $exists
+                ? self::item($label, 'Exists', self::PASS)
+                : self::item($label, 'Missing', self::FAIL, $missing_note);
+        } catch (\Throwable $error) {
+            return self::item($label, 'Unavailable', self::WARN, 'The database could not verify whether this table exists.');
+        }
     }
 
     private static function table_exists(string $table): bool {

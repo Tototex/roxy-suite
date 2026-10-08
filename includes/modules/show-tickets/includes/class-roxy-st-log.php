@@ -11,31 +11,42 @@ class Log {
     $up = wp_upload_dir(null, false);
     $base = isset($up['basedir']) ? $up['basedir'] : WP_CONTENT_DIR . '/uploads';
     $dir = rtrim($base, '/').'/roxy-st-logs';
-    self::ensure_log_directory($dir);
+    if (!self::ensure_log_directory($dir)) return '';
     return $dir . '/roxy-st.log';
   }
 
-  private static function ensure_log_directory(string $dir): void {
+  private static function ensure_log_directory(string $dir): bool {
     if (!is_dir($dir)) {
       wp_mkdir_p($dir);
     }
+    if (!is_dir($dir) || !is_writable($dir)) return false;
 
     $index = $dir . '/index.html';
-    if (!file_exists($index)) {
-      @file_put_contents($index, '');
+    if (!is_file($index) && @file_put_contents($index, '') === false) {
+      return false;
     }
+    if (!is_file($index) || !is_readable($index)) return false;
 
     $htaccess = $dir . '/.htaccess';
-    if (!file_exists($htaccess)) {
-      @file_put_contents($htaccess, "Require all denied\nDeny from all\n");
+    $rules = "<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n";
+    $contents = is_file($htaccess) ? @file_get_contents($htaccess) : false;
+    if (!is_string($contents) || $contents !== $rules) {
+      if (@file_put_contents($htaccess, $rules) === false) return false;
+      $contents = @file_get_contents($htaccess);
     }
+    return is_file($htaccess) && is_readable($htaccess) && is_string($contents) && $contents === $rules;
   }
 
   private static function write_file(string $level, string $message): void {
     $path = self::uploads_log_path();
+    if ($path === '') return;
     $line = gmdate('Y-m-d\TH:i:sP') . ' ' . $level . ' ' . $message . "\n";
-    // Best-effort; never fatal.
-    @file_put_contents($path, $line, FILE_APPEND);
+    // Best-effort; never fatal, but do not silently report a persisted fallback
+    // log line when the append failed or was short.
+    $written = @file_put_contents($path, $line, FILE_APPEND | LOCK_EX);
+    if ($written !== strlen($line)) {
+      error_log('Roxy Show Tickets could not append to its protected fallback log.');
+    }
   }
 
   public static function info(string $message, array $context = []): void {

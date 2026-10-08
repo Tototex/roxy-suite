@@ -1,0 +1,360 @@
+name: PHP compatibility
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+permissions:
+  contents: read
+
+jobs:
+  requested-showings-private-lifecycle:
+    name: Requested Showings private WordPress/Woo lifecycle
+    runs-on: ubuntu-24.04
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: roxy_requested_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mysqli, zip
+          coverage: none
+      - name: Install WP-CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o "$RUNNER_TEMP/wp-cli.phar"
+          php "$RUNNER_TEMP/wp-cli.phar" --info
+      - name: Create disposable WordPress and WooCommerce site
+        shell: bash
+        run: |
+          set -euo pipefail
+          wp_path="$RUNNER_TEMP/roxy-requested-wp"
+          mkdir -p "$wp_path"
+          php "$RUNNER_TEMP/wp-cli.phar" core download --path="$wp_path" --skip-content
+          php "$RUNNER_TEMP/wp-cli.phar" config create --path="$wp_path" --dbname=roxy_requested_test --dbuser=root --dbpass=root --dbhost=127.0.0.1 --skip-check
+          php "$RUNNER_TEMP/wp-cli.phar" core install --path="$wp_path" --url=http://roxy-requested-test.invalid --title='Private Requested Showings fixture' --admin_user=fixture --admin_password=fixture-password --admin_email=fixture@example.invalid
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin install woocommerce --activate
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" option update woocommerce_custom_orders_table_enabled no
+          mkdir -p "$wp_path/wp-content/plugins"
+          ln -s "$GITHUB_WORKSPACE" "$wp_path/wp-content/plugins/roxy-suite"
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" eval '$flags = array_fill_keys(["arcade","sub_check","will_call","show_tickets","requested_showings","event_booking","grosses","inventory","social_publisher"], false); $flags["show_tickets"] = true; $flags["requested_showings"] = true; update_option("roxy_suite_modules", $flags);'
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin activate roxy-suite/roxy-suite.php
+          echo "R2_WP_PATH=$wp_path" >> "$GITHUB_ENV"
+      - name: Run private authenticated entitlement-to-conversion fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/requested-lifecycle-output.txt"
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/requested-entitlement-lifecycle-wordpress.php" "$GITHUB_WORKSPACE" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 50 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Requested Showings lifecycle fixture failed::$details"
+            exit "$status"
+          fi
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/requested-entitlement-mysql.php" "$GITHUB_WORKSPACE/includes/modules/requested-showings/includes/repository.php" "$GITHUB_WORKSPACE/includes/modules/requested-showings/includes/class-roxy-rs-conversion-claims.php" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 50 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Requested Showings private SQL fixture failed::$details"
+            exit "$status"
+          fi
+
+  social-database-fixtures:
+    name: Social lifecycle private-MySQL fixtures
+    runs-on: ubuntu-24.04
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: roxy_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mysqli, zip
+          coverage: none
+      - name: Install WP-CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o "$RUNNER_TEMP/wp-cli.phar"
+          php "$RUNNER_TEMP/wp-cli.phar" --info
+      - name: Create disposable WordPress database
+        shell: bash
+        run: |
+          set -euo pipefail
+          wp_path="$RUNNER_TEMP/wordpress"
+          mkdir -p "$wp_path"
+          php "$RUNNER_TEMP/wp-cli.phar" core download --path="$wp_path" --skip-content
+          php "$RUNNER_TEMP/wp-cli.phar" config create --path="$wp_path" --dbname=roxy_test --dbuser=root --dbpass=root --dbhost=127.0.0.1 --skip-check
+          php "$RUNNER_TEMP/wp-cli.phar" core install --path="$wp_path" --url=http://roxy-test.invalid --title='Roxy fixture' --admin_user=fixture --admin_password=fixture-password --admin_email=fixture@example.invalid
+          echo "WP_PATH=$wp_path" >> "$GITHUB_ENV"
+      - name: Create isolated production-schema baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$WP_PATH" eval 'require_once getenv("GITHUB_WORKSPACE") . "/includes/modules/social-publisher/includes/class-roxy-social-store.php"; if (!\RoxySocial\Store::install_schema()) { throw new RuntimeException("Could not create empty Social schema baseline."); }'
+      - name: Run actual private-MySQL Social lifecycle fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_fixture() {
+            fixture="$1"
+            shift
+            output="$RUNNER_TEMP/social-fixture-output.txt"
+            if php "$RUNNER_TEMP/wp-cli.phar" --path="$WP_PATH" eval-file "$fixture" "$@" >"$output" 2>&1; then
+              cat "$output"
+            else
+              status=$?
+              details="$(tail -n 35 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+              echo "::error title=Private-MySQL fixture failed::$details"
+              exit "$status"
+            fi
+          }
+          run_fixture "$GITHUB_WORKSPACE/tests/social-cleanup-mysql.php" "$GITHUB_WORKSPACE/includes/modules/social-publisher/includes/class-roxy-social-store.php"
+          run_fixture "$GITHUB_WORKSPACE/tests/social-publish-store-mysql.php" "$GITHUB_WORKSPACE"
+          run_fixture "$GITHUB_WORKSPACE/tests/member-search-mysql.php" "$GITHUB_WORKSPACE"
+          run_fixture "$GITHUB_WORKSPACE/tests/member-walkup-undo-mysql.php" "$GITHUB_WORKSPACE"
+          ROXY_SUITE_FIXTURE_ROOT="$GITHUB_WORKSPACE" run_fixture "$GITHUB_WORKSPACE/tests/ticket-weekend-duplicate-wordpress.php"
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$WP_PATH" --require="$GITHUB_WORKSPACE/includes/modules/social-publisher/includes/class-roxy-social-store.php" eval-file "$GITHUB_WORKSPACE/tests/social-draft-snapshot-mysql.php" "$GITHUB_WORKSPACE" >"$RUNNER_TEMP/social-fixture-output.txt" 2>&1 || { details="$(tail -n 35 "$RUNNER_TEMP/social-fixture-output.txt" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"; echo "::error title=Draft snapshot MySQL fixture failed::$details"; exit 1; }
+          cat "$RUNNER_TEMP/social-fixture-output.txt"
+
+  lint:
+    name: PHP ${{ matrix.php }} syntax
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.0', '8.1', '8.2', '8.3', '8.4']
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+
+      - name: Lint all tracked PHP files
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r file; do
+            php -l "$file" >/dev/null
+          done < <(git ls-files '*.php')
+
+      - name: Run showing selector regression
+        run: php tests/showing-selection-regression.php "$GITHUB_WORKSPACE"
+
+      - name: Run Will Call regression
+        run: php tests/will-call-regression.php "$GITHUB_WORKSPACE"
+
+      - name: Run Door Mode JavaScript regression
+        if: matrix.php == '8.3'
+        run: node tests/member-door-js-regression.cjs "$GITHUB_WORKSPACE"
+
+      - name: Run Grosses log-result regression
+        run: php tests/grosses-log-result-regression.php
+
+      - name: Run Grosses log-insert failure regression
+        run: php tests/grosses-log-insert-failure-regression.php
+
+      - name: Run Grosses schema bootstrap regression
+        run: php tests/grosses-schema-bootstrap-regression.php
+
+      - name: Run Grosses backfill date-read regression
+        run: php tests/grosses-backfill-date-read-regression.php
+
+      - name: Run Grosses metadata-backfill read regression
+        run: php tests/grosses-metadata-backfill-read-regression.php
+
+      - name: Run Grosses import writer regression
+        run: php tests/grosses-import-write-regression.php
+
+      - name: Run ticket-sales health regression
+        run: php tests/health-ticket-sales-regression.php
+
+      - name: Run advertiser email attachment regression
+        run: php tests/grosses-advertiser-email-outbox-regression.php
+
+      - name: Run workbook snapshot atomicity regression
+        run: php tests/grosses-workbook-atomic-regression.php
+
+      - name: Run release guard and manifest regression
+        if: matrix.php == '8.3'
+        run: node tests/release-workflow-regression.js
+
+      - name: Verify deterministic runtime package
+        if: matrix.php == '8.3'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/roxy-suite-source.tar"
+          git archive --format=tar --output="$archive" HEAD
+          source_date_epoch="$(git show -s --format=%ct HEAD)"
+          bash tools/verify-release-package.sh "$archive" "$source_date_epoch"
+
+      - name: Run Social cleanup regression with actionable diagnostics
+        if: matrix.php == '8.3'
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/social-cleanup-regression.txt"
+          if php tests/social-cleanup-regression.php >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            cat "$output"
+            details="$(tail -n 25 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Social cleanup regression failed::$details"
+            exit "$status"
+          fi
+
+      - name: Run isolated cross-module regression suite
+        if: matrix.php == '8.3'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            arcade-prize-regression.php
+            arcade-review-gate-regression.php
+            arcade-score-regression.php
+            booking-refund-regression.php
+            capacity-missing-order-api-regression.php
+            c6-governance-regression.php
+            capacity-walkup-regression.php
+            checkout-cart-regression.php
+            core-storage-regression.php
+            deployment-manifest-regression.php
+            grosses-attachments-regression.php
+            grosses-allocation-transaction-regression.php
+            grosses-closed-day-retry-regression.php
+            grosses-closed-day-store-regression.php
+            grosses-cashflow-report-regression.php
+            grosses-export-regression.php
+            grosses-fresh-email-allocation-regression.php
+            grosses-list-compatibility-regression.php
+            grosses-refund-auto-regression.php
+            grosses-refund-completion-store-regression.php
+            grosses-refund-webhook-regression.php
+            grosses-refund-reporter-regression.php
+            grosses-refund-snapshot-regression.php
+            grosses-reporter-snapshot-rebalance-regression.php
+            grosses-unmatched-concession-store-regression.php
+            grosses-unmatched-concession-admin-regression.php
+            grosses-sale-snapshot-regression.php
+            grosses-saved-report-readonly-regression.php
+            grosses-scheduler-calendar-regression.php
+            grosses-secrets-regression.php
+            grosses-square-money-regression.php
+            grosses-square-response-regression.php
+            grosses-square-returns-regression.php
+            grosses-workbook-calendar-regression.php
+            grosses-workbook-private-dir-regression.php
+            health-advertiser-freshness-regression.php
+            health-freshness-regression.php
+            health-record-read-regression.php
+            health-scheduler-outcome-regression.php
+            health-ticket-sales-regression.php
+            inventory-decision-regression.php
+            inventory-cost-schema-regression.php
+            inventory-handler-errors-regression.php
+            inventory-integrity-regression.php
+            inventory-regression.php
+            inventory-settings-callback-regression.php
+            inventory-square-response-regression.php
+            member-door-regression.php
+            member-export-regression.php
+            member-photo-upload-lifecycle-regression.php
+            member-regression.php
+            members-dashboard-regression.php
+            requested-agreement-conversion-regression.php
+            requested-agreement-regression.php
+            requested-entitlement-regression.php
+            requested-funding-read-regression.php
+            requested-money-regression.php
+            requested-payment-attempt-regression.php
+            requested-order-payment-completion-regression.php
+            requested-payment-review-render-regression.php
+            requested-payment-status-regression.php
+            requested-privacy-regression.php
+            sales-payment-refund-regression.php
+            schedule-child-status-regression.php
+            social-account-regression.php
+            social-ai-references-regression.php
+            social-ai-retry-regression.php
+            social-ai-snapshot-regression.php
+            social-bulk-editor-regression.php
+            social-film-context-regression.php
+            social-hangar-auth-cache-regression.php
+            social-hangar-featured-image-regression.php
+            social-hangar-thumbnail-security-regression.php
+            social-publisher-regression.php
+            social-review-confirmation-regression.php
+            social-secrets-regression.php
+            social-showtime-regression.php
+            show-ticket-log-private-dir-regression.php
+            stability-regression.php
+            showing-room-lock-regression.php
+            ticket-cart-pricing-regression.php
+            ticket-eligibility-regression.php
+            ticket-hold-settings-regression.php
+            ticket-publication-regression.php
+            updater-integrity-regression.php
+          )
+          run_regression() {
+            if "$@"; then return 0; else status=$?; fi
+            echo "::error title=Regression failed::${test} returned exit code ${status}; see the preceding output."
+            exit "$status"
+          }
+          for test in "${tests[@]}"; do
+            echo "Running $test"
+            if [[ "$test" == 'inventory-regression.php' ]]; then
+              run_regression php "tests/$test" "$GITHUB_WORKSPACE/includes/modules/inventory/includes"
+            elif [[ "$test" == 'members-dashboard-regression.php' ]]; then
+              run_regression php "tests/$test" --baseline-ref 6e730f0 "$GITHUB_WORKSPACE/includes/class-roxy-suite-members-dashboard.php"
+            elif [[ "$test" == 'social-film-context-regression.php' || "$test" == 'social-ai-references-regression.php' || "$test" == 'social-ai-retry-regression.php' ]]; then
+              run_regression php "tests/$test" "$GITHUB_WORKSPACE/includes/modules/social-publisher/includes"
+            else
+              run_regression php "tests/$test"
+            fi
+          done

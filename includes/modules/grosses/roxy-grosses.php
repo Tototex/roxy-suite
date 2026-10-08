@@ -8,7 +8,10 @@ require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-metadata.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-square.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-returns.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-refund-snapshot.php';
+require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-cashflow-report.php';
+require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-refund-webhook.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-store.php';
+require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-email-outbox.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-reporter.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-scheduler.php';
 require_once ROXY_GROSSES_PATH . 'includes/class-roxy-grosses-workbook.php';
@@ -20,6 +23,9 @@ add_action('plugins_loaded', function () {
 
     \RoxyGrosses\Settings::ensure_defaults();
     \RoxyGrosses\Store::maybe_upgrade_schema();
+    \RoxyGrosses\Store::init_metadata_enrichment();
+    \RoxyGrosses\RefundWebhook::init();
+    \RoxyGrosses\EmailOutbox::ensure_schema();
     \RoxyGrosses\Store::maybe_backfill_history();
     \RoxyGrosses\Settings::init();
     \RoxyGrosses\Scheduler::init();

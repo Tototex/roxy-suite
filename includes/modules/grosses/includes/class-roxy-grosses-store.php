@@ -4,6 +4,8 @@ namespace RoxyGrosses;
 if (!defined('ABSPATH')) exit;
 
 class Store {
+  private static ?string $concession_allocation_lock = null;
+  private static int $concession_allocation_owner = 0;
   public const TABLE = 'roxy_grosses_reports';
   public const LOG_TABLE = 'roxy_grosses_logs';
   public const HISTORY_TABLE = 'roxy_grosses_history';
@@ -18,8 +20,103 @@ class Store {
   public const ENTRY_MIGRATION_OPTION = 'roxy_grosses_entries_migrated';
   public const ROW_LOCK_SCHEMA_OPTION = 'roxy_grosses_row_lock_schema';
   public const REFUND_REVIEW_TABLE = 'roxy_grosses_refund_reviews';
+  public const REFUND_WEBHOOK_TABLE = 'roxy_grosses_refund_webhook_events';
+  public const UNMATCHED_CONCESSION_TABLE = 'roxy_grosses_unmatched_concessions';
+  public const SCHEMA_VERSION = 'verified-3';
   private static ?bool $refund_review_schema_exists = null;
   private static int $refund_review_lock_depth = 0;
+  private const METADATA_ENRICH_HOOK = 'roxy_grosses_enrich_movie_metadata';
+
+  public static function init_metadata_enrichment(): void {
+    add_action(self::METADATA_ENRICH_HOOK, [__CLASS__, 'handle_metadata_enrichment_job'], 10, 3);
+  }
+
+  private static function schedule_metadata_enrichment(array $row, int $after_id = 0): bool {
+    $title = sanitize_text_field((string) ($row['movie_title'] ?? ''));
+    $date = (string) ($row['report_date'] ?? '');
+    if ($title === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/D', $date)
+      || (trim((string) ($row['studio'] ?? '')) !== '' && trim((string) ($row['genre'] ?? '')) !== '')) return true;
+    $year = (int) substr($date, 0, 4);
+    $args = [$title, $year, max(0, $after_id)];
+    if (wp_next_scheduled(self::METADATA_ENRICH_HOOK, $args)) return true;
+    $scheduled = wp_schedule_single_event(time() + 60, self::METADATA_ENRICH_HOOK, $args);
+    if ($scheduled && !is_wp_error($scheduled)) return true;
+    if (!is_wp_error($scheduled) && wp_next_scheduled(self::METADATA_ENRICH_HOOK, $args)) return true;
+    error_log('Roxy Grosses could not queue movie metadata enrichment for report entry; the primary report save succeeded.');
+    return false;
+  }
+
+  /** Enrich missing labels outside the report save request, filling blanks only. */
+  public static function handle_metadata_enrichment_job($title = '', $year = 0, $after_id = 0): void {
+    if (!is_string($title) || !is_numeric($year) || !is_numeric($after_id)) {
+      error_log('Roxy Grosses ignored a malformed background metadata-enrichment job.');
+      return;
+    }
+    try {
+      self::run_metadata_enrichment_job($title, (int) $year, (int) $after_id);
+    } catch (\Throwable $error) {
+      error_log('Roxy Grosses background metadata enrichment failed; report data was not changed: ' . substr($error->getMessage(), 0, 1000));
+    }
+  }
+
+  /** Public worker body kept separately so database fault paths are testable. */
+  public static function run_metadata_enrichment_job(string $title, int $year, int $after_id = 0): array {
+    global $wpdb;
+    $title = sanitize_text_field($title);
+    $year = max(0, $year);
+    $after_id = max(0, $after_id);
+    if ($title === '' || $year < 1900 || $year > 2200) throw new \InvalidArgumentException('Invalid movie metadata enrichment identity.');
+    $normalized = self::normalize_title($title);
+    $from = sprintf('%04d-01-01', $year);
+    $through = sprintf('%04d-12-31', $year);
+    $wpdb->last_error = '';
+    $rows = $wpdb->get_results($wpdb->prepare(
+      'SELECT id, report_date, normalized_title, studio, genre FROM ' . self::entries_table_name()
+      . ' WHERE normalized_title = %s AND report_date >= %s AND report_date <= %s AND id > %d AND is_locked = 0'
+      . " AND (studio IS NULL OR studio = '' OR genre IS NULL OR genre = '') ORDER BY id ASC LIMIT 100",
+      $normalized, $from, $through, $after_id
+    ), ARRAY_A);
+    if ($wpdb->last_error !== '' || !is_array($rows)) throw new \RuntimeException('Movie metadata enrichment could not read candidate rows.');
+    if (!$rows) return ['processed' => 0, 'updated' => 0, 'scheduled' => false];
+
+    $metadata = Metadata::metadata_for_movie($title, $year);
+    $studio = sanitize_text_field((string) ($metadata['studio'] ?? ''));
+    $genre = sanitize_text_field((string) ($metadata['genre'] ?? ''));
+    if ($studio === '' && $genre === '') return ['processed' => count($rows), 'updated' => 0, 'scheduled' => false];
+
+    $updated = 0;
+    $now = current_time('mysql');
+    foreach ($rows as $row) {
+      if (!is_array($row) || (int) ($row['id'] ?? 0) <= 0) throw new \RuntimeException('Movie metadata enrichment received a malformed candidate row.');
+      $set = ['updated_at = %s'];
+      $params = [$now];
+      if ($studio !== '') {
+        $set[] = "studio = IF(studio IS NULL OR studio = '', %s, studio)";
+        $params[] = $studio;
+      }
+      if ($genre !== '') {
+        $set[] = "genre = IF(genre IS NULL OR genre = '', %s, genre)";
+        $params[] = $genre;
+      }
+      if (count($set) === 1) break;
+      array_push($params, (int) $row['id'], $normalized, $from, $through);
+      $wpdb->last_error = '';
+      $result = $wpdb->query($wpdb->prepare(
+        'UPDATE ' . self::entries_table_name() . ' SET ' . implode(', ', $set)
+        . ' WHERE id = %d AND normalized_title = %s AND report_date >= %s AND report_date <= %s AND is_locked = 0'
+        . " AND (studio IS NULL OR studio = '' OR genre IS NULL OR genre = '')",
+        ...$params
+      ));
+      if ($result === false || $wpdb->last_error !== '') throw new \RuntimeException('Movie metadata enrichment row update failed.');
+      if ($result > 0) $updated++;
+    }
+
+    $last_id = (int) ($rows[count($rows) - 1]['id'] ?? 0);
+    $has_more = count($rows) === 100 && $last_id > $after_id;
+    $scheduled = $has_more && self::schedule_metadata_enrichment(['movie_title' => $title, 'report_date' => $from, 'studio' => '', 'genre' => ''], $last_id);
+    if ($has_more && !$scheduled) throw new \RuntimeException('Movie metadata enrichment continuation could not be queued.');
+    return ['processed' => count($rows), 'updated' => $updated, 'scheduled' => $scheduled];
+  }
 
   /** PHP 8.0-compatible equivalent of array_is_list(). */
   private static function is_list(array $value): bool {
@@ -73,10 +170,20 @@ class Store {
     return $wpdb->prefix . self::IMPORT_FILE_TABLE;
   }
 
-  public static function install_schema(): void {
+  public static function refund_webhook_table_name(): string {
+    global $wpdb;
+    return $wpdb->prefix . self::REFUND_WEBHOOK_TABLE;
+  }
+
+  public static function unmatched_concession_table_name(): string {
+    global $wpdb;
+    return $wpdb->prefix . self::UNMATCHED_CONCESSION_TABLE;
+  }
+
+  public static function install_schema(): bool {
     global $wpdb;
 
-    require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+    if (!function_exists('dbDelta')) require_once ABSPATH . 'wp-admin/includes/upgrade.php';
     $charset = $wpdb->get_charset_collate();
 
     dbDelta("CREATE TABLE " . self::table_name() . " (
@@ -291,15 +398,192 @@ class Store {
       KEY status (status)
     ) {$charset};");
 
-    update_option(self::SCHEMA_OPTION, ROXY_GROSSES_VER);
+    dbDelta("CREATE TABLE " . self::refund_webhook_table_name() . " (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      event_id VARCHAR(191) NOT NULL,
+      refund_id VARCHAR(191) NOT NULL,
+      payment_id VARCHAR(191) NOT NULL DEFAULT '',
+      order_id VARCHAR(191) NOT NULL DEFAULT '',
+      location_id VARCHAR(191) NOT NULL DEFAULT '',
+      status VARCHAR(32) NOT NULL DEFAULT '',
+      amount_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
+      currency CHAR(3) NOT NULL DEFAULT '',
+      event_created_at DATETIME NOT NULL,
+      refund_created_at DATETIME NULL,
+      refund_updated_at DATETIME NULL,
+      payload_hash CHAR(64) NOT NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY event_id (event_id),
+      KEY refund_id (refund_id),
+      KEY status (status),
+      KEY event_created_at (event_created_at)
+    ) {$charset};");
+
+    dbDelta("CREATE TABLE " . self::unmatched_concession_table_name() . " (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      fingerprint CHAR(64) NOT NULL,
+      report_date DATE NOT NULL,
+      square_order_id VARCHAR(191) NOT NULL DEFAULT '',
+      square_line_uid VARCHAR(191) NOT NULL DEFAULT '',
+      catalog_object_id VARCHAR(191) NOT NULL DEFAULT '',
+      item_name VARCHAR(255) NOT NULL DEFAULT '',
+      closed_at VARCHAR(64) NOT NULL DEFAULT '',
+      amount_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
+      reason VARCHAR(96) NOT NULL DEFAULT 'no_show_row_match',
+      status VARCHAR(16) NOT NULL DEFAULT 'open',
+      occurrences INT UNSIGNED NOT NULL DEFAULT 1,
+      first_seen_at DATETIME NOT NULL,
+      last_seen_at DATETIME NOT NULL,
+      resolved_at DATETIME NULL,
+      resolved_by BIGINT UNSIGNED NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY fingerprint (fingerprint),
+      KEY report_status_date (report_date,status,last_seen_at)
+    ) {$charset};");
+
+    if (!self::required_schema_is_present()) {
+      error_log('Roxy Grosses schema installation did not produce the required tables and columns; retry pending.');
+      return false;
+    }
+    if (!self::ensure_live_presale_column() || !self::ensure_row_lock_columns()) return false;
+    update_option(self::SCHEMA_OPTION, self::SCHEMA_VERSION);
+    return (string) get_option(self::SCHEMA_OPTION, '') === self::SCHEMA_VERSION;
   }
 
-  public static function maybe_upgrade_schema(): void {
-    if (get_option(self::SCHEMA_OPTION) !== ROXY_GROSSES_VER) {
-      self::install_schema();
+  /** Verify core table/column presence before recording the schema version. */
+  private static function required_schema_is_present(): bool {
+    global $wpdb;
+    $required = [
+      self::table_name() => ['id', 'report_end_date', 'payload_json'],
+      self::log_table_name() => ['id', 'created_at', 'event_type', 'success'],
+      self::history_table_name() => ['id', 'report_date', 'showing_id'],
+      self::entries_table_name() => ['id', 'report_date', 'normalized_title'],
+      self::live_entries_table_name() => ['id', 'report_date', 'presale_qty'],
+      self::rental_entries_table_name() => ['id', 'report_date', 'rental_title'],
+      self::legacy_weekly_table_name() => ['id', 'week_start_date'],
+      self::import_batch_table_name() => ['id', 'created_at', 'status'],
+      self::import_file_table_name() => ['id', 'batch_id', 'status'],
+      self::refund_webhook_table_name() => ['id', 'event_id', 'refund_id', 'status', 'amount_cents', 'event_created_at', 'payload_hash'],
+      self::unmatched_concession_table_name() => ['id', 'fingerprint', 'report_date', 'square_order_id', 'square_line_uid', 'catalog_object_id', 'item_name', 'closed_at', 'amount_cents', 'reason', 'status', 'occurrences', 'first_seen_at', 'last_seen_at', 'resolved_at', 'resolved_by'],
+    ];
+    foreach ($required as $table => $columns) {
+      $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table)));
+      if ((string) $exists !== (string) $table || $wpdb->last_error !== '') return false;
+      foreach ($columns as $column) {
+        if (!$wpdb->get_var("SHOW COLUMNS FROM `{$table}` LIKE '" . esc_sql($column) . "'") || $wpdb->last_error !== '') return false;
+      }
     }
-    self::ensure_live_presale_column();
-    self::ensure_row_lock_columns();
+    $unique_event_index = $wpdb->get_var("SHOW INDEX FROM `" . self::refund_webhook_table_name() . "` WHERE Key_name = 'event_id' AND Non_unique = 0");
+    if (!$unique_event_index || $wpdb->last_error !== '') return false;
+    $unique_unmatched_fingerprint = $wpdb->get_var("SHOW INDEX FROM `" . self::unmatched_concession_table_name() . "` WHERE Key_name = 'fingerprint' AND Non_unique = 0");
+    if (!$unique_unmatched_fingerprint || $wpdb->last_error !== '') return false;
+    return true;
+  }
+
+  /** Return matching provider completion-event evidence for a current Square refund snapshot. */
+  public static function refund_completion_event(array $refund, string $refund_updated_at): ?array {
+    global $wpdb;
+    foreach (['id', 'payment_id', 'location_id'] as $field) {
+      if (!is_string($refund[$field] ?? null) || $refund[$field] === '') throw new \RuntimeException('Square refund event lookup lacks a stable identity.');
+    }
+    $money = $refund['amount_money'] ?? null;
+    if (!is_array($money) || !is_int($money['amount'] ?? null) || $money['amount'] < 0 || ($money['currency'] ?? null) !== 'USD') {
+      throw new \RuntimeException('Square refund event lookup lacks a verified USD amount.');
+    }
+    $table = self::refund_webhook_table_name();
+    $row = $wpdb->get_row($wpdb->prepare(
+      "SELECT event_id,event_created_at FROM {$table} WHERE refund_id = %s AND payment_id = %s AND location_id = %s AND status = 'COMPLETED' AND amount_cents = %d AND currency = 'USD' AND refund_updated_at = %s ORDER BY event_created_at DESC,id DESC LIMIT 1",
+      $refund['id'], $refund['payment_id'], $refund['location_id'], $money['amount'], $refund_updated_at
+    ), ARRAY_A);
+    if ($wpdb->last_error !== '') throw new \RuntimeException('Square refund completion evidence could not be read.');
+    if (!is_array($row)) return null;
+    if (!is_string($row['event_id'] ?? null) || $row['event_id'] === ''
+      || !is_string($row['event_created_at'] ?? null)
+      || !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $row['event_created_at'])) {
+      throw new \RuntimeException('Stored Square refund completion evidence is malformed.');
+    }
+    return $row;
+  }
+
+  /** Find bounded signed completion events by their event-created day, not the refund object's update day. */
+  public static function completed_refund_events_created_between(string $start_utc, string $end_utc): array {
+    global $wpdb;
+    $utc = new \DateTimeZone('UTC');
+    $start = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $start_utc, $utc);
+    $start_errors = \DateTimeImmutable::getLastErrors();
+    $end = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $end_utc, $utc);
+    $end_errors = \DateTimeImmutable::getLastErrors();
+    if (!$start || $start->format('Y-m-d H:i:s') !== $start_utc
+      || ($start_errors && ($start_errors['warning_count'] || $start_errors['error_count']))
+      || !$end || $end->format('Y-m-d H:i:s') !== $end_utc
+      || ($end_errors && ($end_errors['warning_count'] || $end_errors['error_count']))
+      || $start >= $end) {
+      throw new \RuntimeException('Invalid Square refund-event discovery window.');
+    }
+
+    $table = self::refund_webhook_table_name();
+    $rows = $wpdb->get_results($wpdb->prepare(
+      "SELECT event_id,refund_id,payment_id,location_id,amount_cents,currency,event_created_at,refund_updated_at FROM {$table} WHERE status = 'COMPLETED' AND currency = 'USD' AND event_created_at >= %s AND event_created_at < %s ORDER BY event_created_at DESC,id DESC LIMIT 101",
+      $start_utc, $end_utc
+    ), ARRAY_A);
+    if ($wpdb->last_error !== '' || !is_array($rows) || !self::is_list($rows)) {
+      throw new \RuntimeException('Square refund completion events could not be read.');
+    }
+    if (count($rows) > 100) throw new \RuntimeException('Square refund completion-event discovery exceeded its 100-event safety limit.');
+
+    $events = [];
+    foreach ($rows as $row) {
+      if (!is_array($row)) throw new \RuntimeException('Square refund completion-event data is malformed.');
+      foreach (['event_id', 'refund_id', 'payment_id', 'location_id'] as $field) {
+        if (!is_string($row[$field] ?? null) || $row[$field] === '' || strlen($row[$field]) > 191) {
+          throw new \RuntimeException('Square refund completion-event identity is malformed.');
+        }
+      }
+      $amount = $row['amount_cents'] ?? null;
+      if (!is_string($row['currency'] ?? null) || $row['currency'] !== 'USD'
+        || (!is_string($amount) && !is_int($amount)) || !preg_match('/^(?:0|[1-9]\d*)$/D', (string) $amount)
+        || filter_var((string) $amount, FILTER_VALIDATE_INT) === false) {
+        throw new \RuntimeException('Square refund completion-event amount is malformed.');
+      }
+      foreach (['event_created_at', 'refund_updated_at'] as $field) {
+        $value = $row[$field] ?? null;
+        if (!is_string($value) || !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $value)) {
+          throw new \RuntimeException('Square refund completion-event timestamp is malformed.');
+        }
+        $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $value, $utc);
+        $errors = \DateTimeImmutable::getLastErrors();
+        if (!$parsed || $parsed->format('Y-m-d H:i:s') !== $value || ($errors && ($errors['warning_count'] || $errors['error_count']))) {
+          throw new \RuntimeException('Square refund completion-event timestamp is invalid.');
+        }
+      }
+      // Rows are newest-first; a refund contributes at most once even if Square emitted
+      // more than one completed-state event for the same current refund snapshot.
+      if (!isset($events[$row['refund_id']])) $events[$row['refund_id']] = $row;
+    }
+    return array_values($events);
+  }
+
+  private static function report_schema_upgrade_failure(string $message): void {
+    error_log('Roxy Grosses schema upgrade incomplete; retry pending.');
+    add_action('admin_notices', static function () use ($message): void {
+      if (current_user_can('manage_options')) echo '<div class="notice notice-error"><p>' . esc_html($message) . '</p></div>';
+    });
+  }
+
+  public static function maybe_upgrade_schema(): bool {
+    if (get_option(self::SCHEMA_OPTION) !== self::SCHEMA_VERSION) {
+      if (!self::install_schema()) {
+        self::report_schema_upgrade_failure('Grosses database tables could not be verified. Reporting may be incomplete; the upgrade will retry automatically. Check database/storage health.');
+        return false;
+      }
+    }
+    $presale_ready = self::ensure_live_presale_column();
+    $row_locks_ready = self::ensure_row_lock_columns();
+    if (!$presale_ready || !$row_locks_ready) {
+      self::report_schema_upgrade_failure('Grosses database columns could not be upgraded. Reporting may be incomplete; the upgrade will retry automatically. Check database/storage health.');
+      return false;
+    }
+    return true;
   }
 
   public static function ensure_row_lock_columns(): bool {
@@ -333,15 +617,86 @@ class Store {
     return true;
   }
 
-  private static function ensure_live_presale_column(): void {
+  /** Serialize allocation reads/writes by date so competing pulls use one source snapshot. */
+  public static function with_concession_allocation_lock(string $report_date, callable $operation) {
+    global $wpdb;
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/D', $report_date)) throw new \InvalidArgumentException('Invalid concessions allocation date.');
+    if (self::$concession_allocation_lock !== null) throw new \RuntimeException('A concessions allocation is already active on this connection.');
+    $lock = 'roxy_grosses_alloc_' . substr(hash('sha256', self::entries_table_name() . '|' . $report_date), 0, 24);
+    $owner = (int) $wpdb->get_var('SELECT CONNECTION_ID()');
+    if ($owner <= 0 || $wpdb->last_error !== '') throw new \RuntimeException('Could not establish the concessions allocation database connection.');
+    $claimed = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $lock));
+    if ($wpdb->last_error !== '' || (string) $claimed !== '1') throw new \RuntimeException('A concessions allocation for this date is already running or its lock is unavailable.');
+    self::$concession_allocation_lock = $lock;
+    self::$concession_allocation_owner = $owner;
+    try {
+      self::assert_concession_allocation_owner();
+      return $operation();
+    } finally {
+      if ((int) $wpdb->get_var('SELECT CONNECTION_ID()') === $owner
+        && (int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', $lock)) === $owner) {
+        $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock));
+      }
+      self::$concession_allocation_lock = null;
+      self::$concession_allocation_owner = 0;
+    }
+  }
+
+  /** Run all daily allocation writes atomically, only on verified InnoDB tables. */
+  public static function with_concession_allocation_transaction(callable $operation) {
+    global $wpdb;
+    self::assert_concession_allocation_owner();
+    $tables = [self::entries_table_name(), self::live_entries_table_name(), self::rental_entries_table_name()];
+    foreach ($tables as $table) {
+      $status = $wpdb->get_row($wpdb->prepare('SHOW TABLE STATUS WHERE Name = %s', $table), ARRAY_A);
+      if ($wpdb->last_error !== '' || !is_array($status) || strcasecmp((string) ($status['Engine'] ?? ''), 'InnoDB') !== 0) {
+        throw new \RuntimeException('Concessions allocation requires verified InnoDB report tables; no rows were changed.');
+      }
+    }
+    $in_transaction = $wpdb->get_var('SELECT @@in_transaction');
+    if ($wpdb->last_error !== '' || !in_array((string) $in_transaction, ['0', '1'], true) || (string) $in_transaction !== '0') {
+      throw new \RuntimeException('The database transaction state is unavailable or already active; no concessions rows were changed.');
+    }
+    $owner = self::$concession_allocation_owner;
+    if ($wpdb->query('START TRANSACTION') === false) throw new \RuntimeException('Could not start the concessions allocation transaction.');
+    $started = true;
+    try {
+      self::assert_concession_allocation_owner();
+      if ((string) $wpdb->get_var('SELECT @@in_transaction') !== '1' || $wpdb->last_error !== '') throw new \RuntimeException('The concessions transaction could not be verified.');
+      $result = $operation();
+      self::assert_concession_allocation_owner();
+      if ($wpdb->query('COMMIT') === false) throw new \RuntimeException('The concessions allocation commit could not be confirmed.');
+      $started = false;
+      self::assert_concession_allocation_owner();
+      if ((string) $wpdb->get_var('SELECT @@in_transaction') !== '0' || $wpdb->last_error !== '') throw new \RuntimeException('The concessions allocation commit state could not be verified.');
+      return $result;
+    } catch (\Throwable $error) {
+      if ($started && (int) $wpdb->get_var('SELECT CONNECTION_ID()') === $owner) {
+        $rollback = $wpdb->query('ROLLBACK');
+        if ($rollback === false) throw new \RuntimeException('Concessions allocation failed and rollback could not be confirmed; inspect this date before retrying.');
+      }
+      throw $error;
+    }
+  }
+
+  private static function assert_concession_allocation_owner(): void {
+    global $wpdb;
+    if (self::$concession_allocation_lock === null || self::$concession_allocation_owner <= 0
+      || (int) $wpdb->get_var('SELECT CONNECTION_ID()') !== self::$concession_allocation_owner
+      || (int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', self::$concession_allocation_lock)) !== self::$concession_allocation_owner
+      || $wpdb->last_error !== '') {
+      throw new \RuntimeException('The concessions allocation lost its database owner; no further rows were changed.');
+    }
+  }
+
+  private static function ensure_live_presale_column(): bool {
     global $wpdb;
     $table = self::live_entries_table_name();
     $column = $wpdb->get_var("SHOW COLUMNS FROM {$table} LIKE 'presale_qty'");
-    if ($column) {
-      return;
-    }
-
-    $wpdb->query("ALTER TABLE {$table} ADD presale_qty INT UNSIGNED NOT NULL DEFAULT 0 AFTER theater_name");
+    if ($column && $wpdb->last_error === '') return true;
+    if ($wpdb->last_error !== '') return false;
+    if ($wpdb->query("ALTER TABLE {$table} ADD presale_qty INT UNSIGNED NOT NULL DEFAULT 0 AFTER theater_name") === false) return false;
+    return (bool) $wpdb->get_var("SHOW COLUMNS FROM {$table} LIKE 'presale_qty'") && $wpdb->last_error === '';
   }
 
   public static function maybe_backfill_history(): void {
@@ -525,7 +880,63 @@ class Store {
       'message' => sanitize_text_field($message),
       'context_json' => wp_json_encode($context),
     ]);
-    return $ok ? (int) $wpdb->insert_id : 0;
+    if ($ok) {
+      return (int) $wpdb->insert_id;
+    }
+    // Do not include caller data or try logging through the database again.
+    error_log('Roxy Grosses: audit log insert failed.');
+    return 0;
+  }
+
+  /** Persist unmatched Square lines without changing any report or allocation rows. */
+  public static function record_unmatched_concession_lines(string $report_date, array $lines): int {
+    global $wpdb;
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/D', $report_date)) throw new \InvalidArgumentException('Invalid unmatched-concessions report date.');
+    $table = self::unmatched_concession_table_name();
+    $now = current_time('mysql', true);
+    $recorded = 0;
+    foreach ($lines as $line) {
+      if (!is_array($line) || !preg_match('/^[a-f0-9]{64}$/D', (string) ($line['fingerprint'] ?? ''))
+        || !is_int($line['amount_cents'] ?? null) || $line['amount_cents'] <= 0) throw new \InvalidArgumentException('Malformed unmatched Square concession line.');
+      $sql = $wpdb->prepare(
+        "INSERT INTO {$table} (fingerprint,report_date,square_order_id,square_line_uid,catalog_object_id,item_name,closed_at,amount_cents,reason,status,occurrences,first_seen_at,last_seen_at)
+         VALUES (%s,%s,%s,%s,%s,%s,%s,%d,%s,'open',1,%s,%s)
+         ON DUPLICATE KEY UPDATE report_date=VALUES(report_date),square_order_id=VALUES(square_order_id),square_line_uid=VALUES(square_line_uid),catalog_object_id=VALUES(catalog_object_id),item_name=VALUES(item_name),closed_at=VALUES(closed_at),amount_cents=VALUES(amount_cents),reason=VALUES(reason),status='open',occurrences=LEAST(occurrences+1,4294967295),last_seen_at=VALUES(last_seen_at),resolved_at=NULL,resolved_by=NULL",
+        (string) $line['fingerprint'], $report_date,
+        substr(sanitize_text_field((string) ($line['square_order_id'] ?? '')), 0, 191),
+        substr(sanitize_text_field((string) ($line['square_line_uid'] ?? '')), 0, 191),
+        substr(sanitize_text_field((string) ($line['catalog_object_id'] ?? '')), 0, 191),
+        substr(sanitize_text_field((string) ($line['item_name'] ?? '')), 0, 255),
+        substr(sanitize_text_field((string) ($line['closed_at'] ?? '')), 0, 64),
+        $line['amount_cents'], 'no_show_row_match', $now, $now
+      );
+      if ($wpdb->query($sql) === false || $wpdb->last_error !== '') throw new \RuntimeException('Could not persist all unmatched Square concession lines for manager review.');
+      $recorded++;
+    }
+    return $recorded;
+  }
+
+  /** Read a bounded recent queue; open items are always shown before resolved history. */
+  public static function list_unmatched_concession_lines(string $status = 'all', int $limit = 100): array {
+    global $wpdb;
+    if (!in_array($status, ['all', 'open', 'resolved'], true)) throw new \InvalidArgumentException('Invalid unmatched-concession status filter.');
+    $where = $status === 'all' ? '' : $wpdb->prepare(' WHERE status = %s', $status);
+    $rows = $wpdb->get_results('SELECT id,fingerprint,report_date,square_order_id,square_line_uid,catalog_object_id,item_name,closed_at,amount_cents,reason,status,occurrences,first_seen_at,last_seen_at,resolved_at,resolved_by FROM ' . self::unmatched_concession_table_name() . $where . ' ORDER BY (status = \'open\') DESC,last_seen_at DESC,id DESC LIMIT ' . max(1, min(500, $limit)), ARRAY_A);
+    if ($wpdb->last_error !== '' || !is_array($rows)) throw new \RuntimeException('Could not read the unmatched Square concessions review queue.');
+    return $rows;
+  }
+
+  /** Resolve only an open queue item; this does not edit Grosses rows or Square data. */
+  public static function resolve_unmatched_concession_line(int $id): bool {
+    global $wpdb;
+    if ($id <= 0) return false;
+    $changed = $wpdb->update(self::unmatched_concession_table_name(), [
+      'status' => 'resolved',
+      'resolved_at' => current_time('mysql', true),
+      'resolved_by' => function_exists('get_current_user_id') ? get_current_user_id() : 0,
+    ], ['id' => $id, 'status' => 'open']);
+    if ($changed === false || $wpdb->last_error !== '') throw new \RuntimeException('Could not resolve the unmatched Square concession queue item.');
+    return $changed === 1;
   }
 
   /** Immutable emailed snapshots are flagged separately, never rewritten/resent. */
@@ -907,7 +1318,7 @@ class Store {
         'movie_title' => $movie_title,
         'studio' => (string) ($row['studio'] ?? ($existing['studio'] ?? '')),
         'genre' => (string) ($row['genre'] ?? ($existing['genre'] ?? '')),
-      ]);
+      ], false, false);
 
       $payload = [
         'updated_at' => $now,
@@ -945,6 +1356,7 @@ class Store {
         $ok = self::update_protected_row($table, $payload, (int)$existing['id']);
         if ($ok) {
           $updated++;
+          self::schedule_metadata_enrichment($payload);
         } else {
           if ($wpdb->last_error !== '') throw new \RuntimeException('Grosses update failed. Some earlier rows may have saved; retry after storage recovery.');
           $skipped++;
@@ -956,6 +1368,7 @@ class Store {
       $ok = $wpdb->insert($table, $payload);
       if ($ok !== false) {
         $created++;
+        self::schedule_metadata_enrichment($payload);
       } else {
         throw new \RuntimeException('Grosses insert failed. Some earlier rows may have saved; retry after storage recovery.');
       }
@@ -1091,6 +1504,50 @@ class Store {
     return is_array($rows) ? $rows : [];
   }
 
+  /** Read every row for one allocation day without the admin table's 1,000-row page cap. */
+  public static function list_all_entries_for_rebalance(string $dataset, string $report_date): array {
+    global $wpdb;
+    $tables = [
+      'movie' => self::entries_table_name(),
+      'live' => self::live_entries_table_name(),
+      'rental' => self::rental_entries_table_name(),
+    ];
+    if (!isset($tables[$dataset]) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date)) throw new \InvalidArgumentException('Invalid dataset or report date for concessions allocation.');
+    $date = \DateTimeImmutable::createFromFormat('!Y-m-d', $report_date, new \DateTimeZone('UTC'));
+    $errors = \DateTimeImmutable::getLastErrors();
+    if (!$date || $date->format('Y-m-d') !== $report_date || ($errors && ($errors['warning_count'] || $errors['error_count']))) throw new \InvalidArgumentException('Invalid calendar date for concessions allocation.');
+    $table = $tables[$dataset];
+    $maximum = $wpdb->get_var("SELECT MAX(id) FROM $table WHERE report_date = " . $wpdb->prepare('%s', $report_date));
+    if ($wpdb->last_error !== '') throw new \RuntimeException('Could not establish the concessions allocation read boundary.');
+    if ($maximum === null) return [];
+    if (!is_numeric($maximum) || (int) $maximum <= 0) throw new \RuntimeException('Concessions allocation read boundary is invalid.');
+    $maximum = (int) $maximum;
+    $cursor = 0;
+    $rows = [];
+    $seen = [];
+    for ($page = 0; $cursor < $maximum; $page++) {
+      if ($page >= 200) throw new \RuntimeException('Concessions allocation exceeded its per-day row safety limit.');
+      $batch = $wpdb->get_results($wpdb->prepare(
+        "SELECT * FROM $table WHERE report_date = %s AND id > %d AND id <= %d ORDER BY id ASC LIMIT 500",
+        $report_date,
+        $cursor,
+        $maximum
+      ), ARRAY_A);
+      if ($wpdb->last_error !== '' || !is_array($batch)) throw new \RuntimeException('Could not read all rows for the concessions allocation date.');
+      if (!$batch) break;
+      foreach ($batch as $row) {
+        $id = is_array($row) ? (int) ($row['id'] ?? 0) : 0;
+        if ($id <= $cursor || $id > $maximum || isset($seen[$id]) || (string) ($row['report_date'] ?? '') !== $report_date) throw new \RuntimeException('Concessions allocation page contained an invalid or repeated row.');
+        $seen[$id] = true;
+        $rows[] = $row;
+      }
+      $cursor = (int) ($batch[count($batch) - 1]['id'] ?? 0);
+      if ($cursor <= 0) throw new \RuntimeException('Concessions allocation pagination did not advance.');
+    }
+    if ($cursor < $maximum) throw new \RuntimeException('Concessions allocation rows changed or could not be read through the fixed boundary.');
+    return $rows;
+  }
+
   public static function count_entries(array $filters = []): int {
     global $wpdb;
     [$where, $params] = self::entry_where_sql($filters);
@@ -1135,7 +1592,7 @@ class Store {
       'movie_title' => $movie_title,
       'studio' => (string) ($data['studio'] ?? $existing['studio'] ?? ''),
       'genre' => (string) ($data['genre'] ?? $existing['genre'] ?? ''),
-    ]);
+    ], false, false);
     $payload = [
       'updated_at' => current_time('mysql'),
       'report_date' => sanitize_text_field((string) ($data['report_date'] ?? $existing['report_date'])),
@@ -1155,7 +1612,9 @@ class Store {
     ];
 
     if ($manual) $payload['is_locked']=isset($data['is_locked']) ? (!empty($data['is_locked'])?1:0) : 1;
-    return self::update_protected_row(self::entries_table_name(), $payload, $entry_id, $manual);
+    $saved = self::update_protected_row(self::entries_table_name(), $payload, $entry_id, $manual);
+    if ($saved) self::schedule_metadata_enrichment($payload);
+    return $saved;
   }
 
   public static function entries_summary(array $filters = []): array {
@@ -1553,6 +2012,9 @@ class Store {
     [$where, $params] = self::entry_where_sql($filters);
     $sql = 'SELECT DISTINCT report_date FROM ' . self::entries_table_name() . ' ' . $where . ' ORDER BY report_date ASC';
     $dates = $wpdb->get_col(self::prepare_query($sql, $params));
+    if ($wpdb->last_error !== '' || !is_array($dates)) {
+      throw new \RuntimeException('Could not read Grosses movie dates from storage.');
+    }
     return array_values(array_filter(array_map('strval', (array) $dates)));
   }
 
@@ -1561,6 +2023,9 @@ class Store {
     [$where, $params] = self::live_entry_where_sql($filters);
     $sql = 'SELECT DISTINCT report_date FROM ' . self::live_entries_table_name() . ' ' . $where . ' ORDER BY report_date ASC';
     $dates = $wpdb->get_col(self::prepare_query($sql, $params));
+    if ($wpdb->last_error !== '' || !is_array($dates)) {
+      throw new \RuntimeException('Could not read Grosses live-show dates from storage.');
+    }
     return array_values(array_filter(array_map('strval', (array) $dates)));
   }
 
@@ -2026,19 +2491,20 @@ class Store {
 
   public static function create_import_batch(string $source_kind, string $label): int {
     global $wpdb;
-    $wpdb->insert(self::import_batch_table_name(), [
+    $inserted = $wpdb->insert(self::import_batch_table_name(), [
       'created_at' => current_time('mysql'),
       'created_by' => get_current_user_id() ?: null,
       'source_kind' => sanitize_text_field($source_kind),
       'label' => sanitize_text_field($label),
       'status' => 'running',
     ]);
-    return (int) $wpdb->insert_id;
+    return $inserted === false || (int) $inserted < 1 ? 0 : max(0, (int) $wpdb->insert_id);
   }
 
   public static function add_import_file(int $batch_id, string $original_name, string $stored_path, string $parser_type, string $status): int {
     global $wpdb;
-    $wpdb->insert(self::import_file_table_name(), [
+    if ($batch_id < 1) return 0;
+    $inserted = $wpdb->insert(self::import_file_table_name(), [
       'batch_id' => $batch_id,
       'created_at' => current_time('mysql'),
       'original_name' => sanitize_file_name($original_name),
@@ -2046,28 +2512,44 @@ class Store {
       'parser_type' => sanitize_text_field($parser_type),
       'status' => sanitize_text_field($status),
     ]);
-    return (int) $wpdb->insert_id;
+    return $inserted === false || (int) $inserted < 1 ? 0 : max(0, (int) $wpdb->insert_id);
   }
 
-  public static function update_import_file_path(int $file_id, string $stored_path): void {
+  private static function import_update_succeeded(string $table, int $id, $updated): bool {
     global $wpdb;
-    $wpdb->update(self::import_file_table_name(), ['stored_path' => $stored_path], ['id' => $file_id]);
+    if ($updated === false || $id < 1) return false;
+    if ((int) $updated > 0) return true;
+    $found = $wpdb->get_var($wpdb->prepare("SELECT id FROM {$table} WHERE id = %d", $id));
+    return $wpdb->last_error === '' && (int) $found === $id;
   }
 
-  public static function update_import_file_status(int $file_id, string $status, int $rows_parsed, int $rows_imported, int $warning_count, string $error_message = ''): void {
+  public static function update_import_file_path(int $file_id, string $stored_path): bool {
     global $wpdb;
-    $wpdb->update(self::import_file_table_name(), [
+    if ($file_id < 1) return false;
+    $table = self::import_file_table_name();
+    $updated = $wpdb->update($table, ['stored_path' => $stored_path], ['id' => $file_id]);
+    return self::import_update_succeeded($table, $file_id, $updated);
+  }
+
+  public static function update_import_file_status(int $file_id, string $status, int $rows_parsed, int $rows_imported, int $warning_count, string $error_message = ''): bool {
+    global $wpdb;
+    if ($file_id < 1) return false;
+    $table = self::import_file_table_name();
+    $updated = $wpdb->update($table, [
       'status' => sanitize_text_field($status),
       'rows_parsed' => max(0, $rows_parsed),
       'rows_imported' => max(0, $rows_imported),
       'warning_count' => max(0, $warning_count),
       'error_message' => $error_message,
     ], ['id' => $file_id]);
+    return self::import_update_succeeded($table, $file_id, $updated);
   }
 
-  public static function finish_import_batch(int $batch_id, int $file_count, int $rows_created, int $rows_updated, int $rows_skipped, int $warning_count, string $status): void {
+  public static function finish_import_batch(int $batch_id, int $file_count, int $rows_created, int $rows_updated, int $rows_skipped, int $warning_count, string $status): bool {
     global $wpdb;
-    $wpdb->update(self::import_batch_table_name(), [
+    if ($batch_id < 1) return false;
+    $table = self::import_batch_table_name();
+    $updated = $wpdb->update($table, [
       'file_count' => max(0, $file_count),
       'rows_created' => max(0, $rows_created),
       'rows_updated' => max(0, $rows_updated),
@@ -2081,6 +2563,7 @@ class Store {
         'warning_count' => $warning_count,
       ]),
     ], ['id' => $batch_id]);
+    return self::import_update_succeeded($table, $batch_id, $updated);
   }
 
   public static function latest_import_batch(): ?array {
@@ -2127,14 +2610,18 @@ class Store {
     $limit = max(1, min(5000, $limit));
     $where = $force ? '1=1' : "(studio = '' OR genre = '' OR studio IS NULL OR genre IS NULL)";
     $where = 'is_locked = 0 AND (' . $where . ')';
+    $wpdb->last_error = '';
     $rows = $wpdb->get_results($wpdb->prepare(
       'SELECT id, report_date, movie_title, studio, genre FROM ' . self::entries_table_name() . ' WHERE ' . $where . ' ORDER BY report_date DESC, id DESC LIMIT %d',
       $limit
     ), ARRAY_A);
+    if ($wpdb->last_error !== '' || !is_array($rows)) {
+      throw new \RuntimeException('Movie metadata backfill could not read candidate rows. No metadata lookups or row updates were attempted.');
+    }
 
     $updated = 0;
     $skipped = 0;
-    foreach ((array) $rows as $row) {
+    foreach ($rows as $row) {
       $enriched = Metadata::enrich_movie_row($row, $force);
       $studio = sanitize_text_field((string) ($enriched['studio'] ?? ''));
       $genre = sanitize_text_field((string) ($enriched['genre'] ?? ''));
@@ -2439,7 +2926,14 @@ class Store {
       $params[] = $event_type;
     }
 
-    if (array_key_exists('success', $filters) && $filters['success'] !== '' && $filters['success'] !== null) {
+    $result = (string) ($filters['result'] ?? '');
+    if ($result === 'review') {
+      $where[] = "AND event_type = 'anomaly'";
+    } elseif ($result === 'success') {
+      $where[] = "AND success = 1 AND event_type <> 'anomaly'";
+    } elseif ($result === 'failed') {
+      $where[] = "AND success = 0 AND event_type <> 'anomaly'";
+    } elseif (array_key_exists('success', $filters) && $filters['success'] !== '' && $filters['success'] !== null) {
       $where[] = 'AND success = %d';
       $params[] = (int) ((bool) $filters['success']);
     }

@@ -7,6 +7,7 @@ if (!defined('ABSPATH')) exit;
 final class RefundSnapshot {
   private array $return_orders;
   private array $sources;
+  private array $payment_refunds;
 
   /** PHP 8.0-compatible equivalent of array_is_list(). */
   private static function is_list(array $value): bool {
@@ -15,9 +16,26 @@ final class RefundSnapshot {
     return true;
   }
 
-  private function __construct(array $return_orders, array $sources) {
+  private function __construct(array $return_orders, array $sources, array $payment_refunds = []) {
     $this->return_orders = $return_orders;
     $this->sources = $sources;
+    $this->payment_refunds = $payment_refunds;
+  }
+
+  /** Create a read-only financial projection from the complete Square payment-refund feed. */
+  public static function from_financial_refund_feed(array $refunds): self {
+    if (!self::is_list($refunds)) throw new \RuntimeException('Square returned an invalid financial refund feed.');
+    $indexed = [];
+    foreach ($refunds as $refund) {
+      if (!is_array($refund) || !is_string($refund['id'] ?? null) || $refund['id'] === ''
+        || strlen($refund['id']) > 255 || isset($indexed[$refund['id']])
+        || !is_string($refund['location_id'] ?? null) || $refund['location_id'] === ''
+        || !in_array($refund['status'] ?? '', ['PENDING', 'COMPLETED', 'REJECTED', 'FAILED'], true)) {
+        throw new \RuntimeException('Square returned a malformed or duplicate financial refund.');
+      }
+      $indexed[$refund['id']] = $refund;
+    }
+    return new self([], [], $indexed);
   }
 
   public static function load(string $earliest_sale_date, ?\DateTimeImmutable $now = null, ?float $deadline = null): self {
@@ -72,6 +90,7 @@ final class RefundSnapshot {
     $returns = [];
     $source_ids = [];
     $statuses = [];
+    $refund_records = [];
     $refund_owners = [];
     foreach ($orders as $order) {
       if (empty($order['returns'])) continue;
@@ -91,6 +110,8 @@ final class RefundSnapshot {
           $refund = $cached_refunds[$id] ?? Square::retrieve_payment_refund($id, $deadline);
           if (($refund['payment_id'] ?? null) !== $reference['tender_id']) throw new \RuntimeException('Square refund payment reference is missing or does not match its return order.');
           if (isset($refund['order_id']) && $refund['order_id'] !== $order['id']) throw new \RuntimeException('Square refund order reference does not match its return order.');
+          if (($refund['id'] ?? null) !== $id) throw new \RuntimeException('Square returned a different payment-refund identity than requested.');
+          $refund_records[$id] = $refund;
           $statuses[$id] = $refund['status'];
         }
         if ($statuses[$id] !== 'COMPLETED') $verified = false;
@@ -116,7 +137,74 @@ final class RefundSnapshot {
       $sale['source_date'] = $date;
       $sources[$sale['id']] = $sale;
     }
-    return new self($returns, $sources);
+    return new self($returns, $sources, $refund_records);
+  }
+
+  /** Completed refunds as dated cash-out events; separate from sale-day ticket adjustments. */
+  public function completed_financial_refunds(): array {
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $events = [];
+    foreach ($this->payment_refunds as $refund_id => $refund) {
+      if (($refund['status'] ?? '') !== 'COMPLETED') continue;
+      if (($refund['id'] ?? null) !== $refund_id
+        || !is_string($refund['payment_id'] ?? null) || $refund['payment_id'] === ''
+        || !is_string($refund['location_id'] ?? null) || $refund['location_id'] === '') {
+        throw new \RuntimeException('A completed Square refund is missing a stable financial identity.');
+      }
+      $order_id = $refund['order_id'] ?? null;
+      if ($order_id !== null && (!is_string($order_id) || $order_id === '')) throw new \RuntimeException('A completed Square refund has an invalid order identity.');
+      $money = $refund['amount_money'] ?? null;
+      if (!is_array($money) || !is_int($money['amount'] ?? null) || $money['amount'] < 0 || ($money['currency'] ?? null) !== 'USD') {
+        throw new \RuntimeException('A completed Square refund has an invalid amount or unsupported currency.');
+      }
+      // Square exposes updated_at on PaymentRefund, not a dedicated completed_at.
+      // Keep the source semantics explicit: this is a date proxy, never an
+      // authoritative cash-return timestamp.
+      $updated_at = $refund['updated_at'] ?? null;
+      if (!is_string($updated_at) || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/', $updated_at)) {
+        throw new \RuntimeException('A completed Square refund has no valid update timestamp.');
+      }
+      try { $timestamp = new \DateTimeImmutable($updated_at); }
+      catch (\Throwable $error) { throw new \RuntimeException('A completed Square refund has an invalid update timestamp.'); }
+      $errors = \DateTimeImmutable::getLastErrors();
+      if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('A completed Square refund has an invalid update calendar date.');
+      $refund_date_basis = 'square_updated_at_proxy';
+      $completion_event = null;
+      if (class_exists(Store::class) && method_exists(Store::class, 'refund_completion_event')) {
+        $completion_event = Store::refund_completion_event($refund, $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'));
+      }
+      $refund_timestamp = $timestamp;
+      if ($completion_event !== null) {
+        $event_timestamp = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $completion_event['event_created_at'], new \DateTimeZone('UTC'));
+        $errors = \DateTimeImmutable::getLastErrors();
+        if (!$event_timestamp || $event_timestamp->format('Y-m-d H:i:s') !== $completion_event['event_created_at'] || ($errors && ($errors['warning_count'] || $errors['error_count']))) {
+          throw new \RuntimeException('A matched Square refund completion event has an invalid timestamp.');
+        }
+        $refund_timestamp = $event_timestamp;
+        $refund_date_basis = 'square_refund_completed_event';
+      }
+      $events[] = [
+        'source' => 'square',
+        'refund_id' => $refund_id,
+        'payment_id' => $refund['payment_id'],
+        'order_id' => $order_id,
+        'location_id' => $refund['location_id'],
+        'amount_cents' => $money['amount'],
+        'currency' => 'USD',
+        'refund_updated_at' => $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
+        'refund_event_id' => $completion_event['event_id'] ?? null,
+        'refund_event_at' => $completion_event['event_created_at'] ?? null,
+        'refund_date' => $refund_timestamp->setTimezone($timezone)->format('Y-m-d'),
+        'refund_date_basis' => $refund_date_basis,
+      ];
+    }
+    usort($events, static fn(array $a, array $b): int => [$a['refund_updated_at'], $a['refund_id']] <=> [$b['refund_updated_at'], $b['refund_id']]);
+    return $events;
+  }
+
+  /** Backward-compatible name for return-linked callers. */
+  public function completed_return_financial_refunds(): array {
+    return $this->completed_financial_refunds();
   }
 
   /** Adjust quantities only. Never use these copied orders for cash arithmetic. */
@@ -180,5 +268,365 @@ final class RefundSnapshot {
     $errors = \DateTimeImmutable::getLastErrors();
     if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('A returned sale has an invalid original calendar date.');
     return $timestamp;
+  }
+}
+
+/** Read-only normalization for WooCommerce refunds processed through a payment API. */
+final class WooRefundEvents {
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
+
+  private static function amount_cents($amount): int {
+    if (!is_string($amount) && !is_int($amount)) throw new \RuntimeException('WooCommerce refund amount has an unsupported representation.');
+    $value = (string) $amount;
+    if (!preg_match('/^-?(?:0|[1-9]\d*)(?:\.\d{1,2})?$/D', $value)) throw new \RuntimeException('WooCommerce refund amount is invalid or has fractional cents.');
+    $negative = isset($value[0]) && $value[0] === '-';
+    if ($negative) $value = substr($value, 1);
+    $parts = explode('.', $value, 2);
+    $whole = (int) $parts[0];
+    $fraction = isset($parts[1]) ? (int) str_pad($parts[1], 2, '0') : 0;
+    if ($whole > intdiv(PHP_INT_MAX - $fraction, 100)) throw new \RuntimeException('WooCommerce refund exceeds the supported amount range.');
+    $cents = ($whole * 100) + $fraction;
+    return $negative ? -$cents : $cents;
+  }
+
+  /** API-confirmed refund events; manual refund records are deliberately excluded. */
+  public static function from_order_refunds(array $refunds, ?array $allowed_gateways = null): array {
+    if (!self::is_list($refunds)) throw new \RuntimeException('WooCommerce returned an invalid refund list.');
+    if ($allowed_gateways !== null) {
+      if (!self::is_list($allowed_gateways) || !$allowed_gateways || !function_exists('wc_get_order')) throw new \RuntimeException('WooCommerce refund gateway verification is unavailable.');
+      $allowed = [];
+      foreach ($allowed_gateways as $gateway) {
+        if (!is_string($gateway) || !preg_match('/^[a-z0-9_-]{1,80}$/D', $gateway) || stripos($gateway, 'square') !== false) throw new \RuntimeException('WooCommerce refund gateway allow-list is invalid or overlaps Square collections.');
+        $allowed[$gateway] = true;
+      }
+    } else $allowed = null;
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $events = [];
+    $seen = [];
+    $parent_gateway_cache = [];
+    foreach ($refunds as $refund) {
+      if (!is_object($refund)
+        || !method_exists($refund, 'get_id') || !method_exists($refund, 'get_parent_id')
+        || !method_exists($refund, 'get_refunded_payment') || !method_exists($refund, 'get_currency')
+        || !method_exists($refund, 'get_amount') || !method_exists($refund, 'get_date_created')) {
+        throw new \RuntimeException('WooCommerce returned a refund without the required financial fields.');
+      }
+      $id = $refund->get_id();
+      $order_id = $refund->get_parent_id();
+      if (!is_int($id) || $id <= 0 || isset($seen[$id]) || !is_int($order_id) || $order_id <= 0) {
+        throw new \RuntimeException('WooCommerce returned a duplicate or invalid refund identity.');
+      }
+      $seen[$id] = true;
+      if ($refund->get_refunded_payment() !== true) continue;
+      if ($allowed !== null) {
+        if (!array_key_exists($order_id, $parent_gateway_cache)) {
+          $parent = wc_get_order($order_id);
+          if (!is_object($parent) || !method_exists($parent, 'get_payment_method')) throw new \RuntimeException('WooCommerce could not verify the payment gateway for a refunded order.');
+          $parent_gateway_cache[$order_id] = $parent->get_payment_method();
+        }
+        $gateway = $parent_gateway_cache[$order_id];
+        if (!is_string($gateway) || $gateway === '') throw new \RuntimeException('WooCommerce refunded order has an invalid payment gateway.');
+        if (!isset($allowed[$gateway])) continue;
+      }
+      if ($refund->get_currency() !== 'USD') throw new \RuntimeException('WooCommerce refund uses an unsupported currency.');
+      $amount_cents = abs(self::amount_cents($refund->get_amount()));
+      $created = $refund->get_date_created();
+      if (!$created instanceof \DateTimeInterface) throw new \RuntimeException('WooCommerce refund has no valid creation timestamp.');
+      $timestamp = \DateTimeImmutable::createFromInterface($created)->setTimezone(new \DateTimeZone('UTC'));
+      $events[] = [
+        'source' => 'woocommerce',
+        'refund_id' => $id,
+        'order_id' => $order_id,
+        'amount_cents' => $amount_cents,
+        'currency' => 'USD',
+        'refund_created_at' => $timestamp->format('Y-m-d H:i:s'),
+        'refund_date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
+        'refund_date_basis' => 'woocommerce_refund_creation_proxy',
+        'payment_api_processed' => true,
+      ];
+    }
+    usort($events, static fn(array $a, array $b): int => [$a['refund_created_at'], $a['refund_id']] <=> [$b['refund_created_at'], $b['refund_id']]);
+    return $events;
+  }
+}
+
+/** Read-only WooCommerce collection events for explicitly approved online gateways. */
+final class WooCollectionEvents {
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
+
+  private static function amount_cents($amount): int {
+    if (!is_string($amount) && !is_int($amount)) throw new \RuntimeException('WooCommerce order amount has an unsupported representation.');
+    $value = (string) $amount;
+    if (!preg_match('/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/D', $value)) throw new \RuntimeException('WooCommerce order amount is invalid or has fractional cents.');
+    $parts = explode('.', $value, 2);
+    $whole = (int) $parts[0];
+    $fraction = isset($parts[1]) ? (int) str_pad($parts[1], 2, '0') : 0;
+    if ($whole > intdiv(PHP_INT_MAX - $fraction, 100)) throw new \RuntimeException('WooCommerce order exceeds the supported amount range.');
+    return ($whole * 100) + $fraction;
+  }
+
+  /** Only paid orders from the caller's allow-list count; manual/offline gateways are excluded. */
+  public static function from_orders(array $orders, array $allowed_gateways): array {
+    if (!self::is_list($orders) || !self::is_list($allowed_gateways) || !$allowed_gateways) throw new \RuntimeException('WooCommerce collection inputs are invalid.');
+    $gateways = [];
+    foreach ($allowed_gateways as $gateway) {
+      if (!is_string($gateway) || !preg_match('/^[a-z0-9_-]{1,80}$/D', $gateway) || stripos($gateway, 'square') !== false || isset($gateways[$gateway])) throw new \RuntimeException('WooCommerce collection gateway allow-list is invalid or overlaps Square collections.');
+      $gateways[$gateway] = true;
+    }
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $events = [];
+    $seen_orders = [];
+    $seen_transactions = [];
+    foreach ($orders as $order) {
+      $methods = ['get_id','get_payment_method','is_paid','get_currency','get_total','get_date_paid','get_transaction_id'];
+      if (!is_object($order)) throw new \RuntimeException('WooCommerce returned a malformed collection order.');
+      foreach ($methods as $method) if (!method_exists($order, $method)) throw new \RuntimeException('WooCommerce collection order lacks required payment evidence.');
+      $id = $order->get_id();
+      if (!is_int($id) || $id <= 0 || isset($seen_orders[$id])) throw new \RuntimeException('WooCommerce returned a duplicate or invalid collection order ID.');
+      $seen_orders[$id] = true;
+      $gateway = $order->get_payment_method();
+      if (!is_string($gateway) || $gateway === '') throw new \RuntimeException('WooCommerce collection order has an invalid gateway identity.');
+      if (!isset($gateways[$gateway]) || $order->is_paid() !== true) continue;
+      if ($order->get_currency() !== 'USD') throw new \RuntimeException('WooCommerce collection order uses an unsupported currency.');
+      $amount_cents = self::amount_cents($order->get_total());
+      if ($amount_cents === 0) continue;
+      $paid_at = $order->get_date_paid();
+      if (!$paid_at instanceof \DateTimeInterface) throw new \RuntimeException('Paid WooCommerce order has no paid timestamp.');
+      $transaction_id = $order->get_transaction_id();
+      if (!is_string($transaction_id) || trim($transaction_id) === '' || strlen($transaction_id) > 255) throw new \RuntimeException('Paid WooCommerce order has no stable transaction identity.');
+      $transaction_key = $gateway . ':' . $transaction_id;
+      if (isset($seen_transactions[$transaction_key])) throw new \RuntimeException('WooCommerce collection feed repeats a gateway transaction identity.');
+      $seen_transactions[$transaction_key] = true;
+      $timestamp = \DateTimeImmutable::createFromInterface($paid_at)->setTimezone(new \DateTimeZone('UTC'));
+      $events[] = [
+        'source' => 'woocommerce',
+        'order_id' => $id,
+        'gateway' => $gateway,
+        'transaction_id' => $transaction_id,
+        'amount_cents' => $amount_cents,
+        'currency' => 'USD',
+        'collected_at' => $timestamp->format('Y-m-d H:i:s'),
+        'collection_date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
+      ];
+    }
+    usort($events, static fn(array $a, array $b): int => [$a['collected_at'], $a['order_id']] <=> [$b['collected_at'], $b['order_id']]);
+    return $events;
+  }
+}
+
+/** Read-only normalization of actual Square tender collections and their payment identities. */
+final class SquareCollectionEvents {
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
+
+  private static function timestamp(string $value): \DateTimeImmutable {
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/', $value)) {
+      throw new \RuntimeException('Square collection event has an invalid RFC 3339 timestamp.');
+    }
+    try { $timestamp = new \DateTimeImmutable($value); }
+    catch (\Throwable $error) { throw new \RuntimeException('Square collection event has an invalid timestamp.'); }
+    $errors = \DateTimeImmutable::getLastErrors();
+    if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('Square collection event has an invalid calendar date.');
+    return $timestamp;
+  }
+
+  /** Completed orders only; tenders identify Square payments that may also appear in Woo. */
+  public static function from_orders(array $orders): array {
+    if (!self::is_list($orders)) throw new \RuntimeException('Square returned an invalid collection order list.');
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $events = [];
+    $seen = [];
+    $seen_payment_ids = [];
+    foreach ($orders as $order) {
+      if (!is_array($order) || !is_string($order['state'] ?? null)) throw new \RuntimeException('Square returned a malformed collection order.');
+      if ($order['state'] !== 'COMPLETED') continue;
+      $id = $order['id'] ?? null;
+      $location_id = $order['location_id'] ?? null;
+      if (!is_string($id) || $id === '' || strlen($id) > 192 || isset($seen[$id])
+        || !is_string($location_id) || $location_id === '') {
+        throw new \RuntimeException('Square returned a duplicate or invalid collection order identity.');
+      }
+      $seen[$id] = true;
+      $returns = $order['returns'] ?? [];
+      if (!is_array($returns) || !self::is_list($returns)) throw new \RuntimeException('Completed Square order has a malformed return list.');
+      $tenders = $order['tenders'] ?? [];
+      if (!is_array($tenders) || !self::is_list($tenders)) throw new \RuntimeException('Completed Square order has a malformed tender list.');
+      if (!$tenders) {
+        $order_money = $order['total_money'] ?? null;
+        if (!$returns && is_array($order_money) && ($order_money['amount'] ?? null) === 0 && ($order_money['currency'] ?? null) === 'USD') continue;
+        if ($returns) continue;
+        throw new \RuntimeException('Completed Square order has no tender evidence for its collection amount.');
+      }
+      $order_events = [];
+      foreach ($tenders as $tender) {
+        if (!is_array($tender)) throw new \RuntimeException('Completed Square order has a malformed tender.');
+        $money = $tender['amount_money'] ?? null;
+        if (!is_array($money) || !is_int($money['amount'] ?? null) || $money['amount'] < 0 || ($money['currency'] ?? null) !== 'USD') {
+          throw new \RuntimeException('Completed Square tender has an invalid amount or unsupported currency.');
+        }
+        $tender_id = $tender['id'] ?? null;
+        $payment_id = $tender['payment_id'] ?? null;
+        if ($tender_id !== null && (!is_string($tender_id) || $tender_id === '' || strlen($tender_id) > 192)) {
+          throw new \RuntimeException('Completed Square order has an invalid tender identity.');
+        }
+        if ($payment_id !== null && (!is_string($payment_id) || $payment_id === '' || strlen($payment_id) > 192)) {
+          throw new \RuntimeException('Completed Square order has an invalid tender payment identity.');
+        }
+        if ($tender_id !== null && $payment_id !== null && $tender_id !== $payment_id) {
+          throw new \RuntimeException('Completed Square tender and payment identities do not match.');
+        }
+        $payment_id = $payment_id ?? $tender_id;
+        if (!is_string($tender_id) || $tender_id === '' || $payment_id === null) throw new \RuntimeException('Completed Square tender is missing a stable collection identity.');
+        if (isset($seen_payment_ids[$payment_id])) throw new \RuntimeException('Square collection feed repeats a tender payment identity.');
+        $seen_payment_ids[$payment_id] = true;
+        $created_at = $tender['created_at'] ?? null;
+        if (!is_string($created_at)) throw new \RuntimeException('Completed Square tender has no collection timestamp.');
+        $timestamp = self::timestamp($created_at);
+        $order_events[] = [
+          'source' => 'square',
+          'order_id' => $id,
+          'tender_id' => $tender_id,
+          'payment_id' => $payment_id,
+          'location_id' => $location_id,
+          'amount_cents' => $money['amount'],
+          'currency' => 'USD',
+          'collected_at' => $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
+          'collection_date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
+          'collection_date_basis' => 'square_tender_created_at',
+        ];
+      }
+      if ($returns) {
+        foreach ($order_events as $event) if ($event['amount_cents'] > 0) throw new \RuntimeException('Completed Square return or exchange order includes a positive tender and requires manual cashflow reconciliation.');
+        continue;
+      }
+      array_push($events, ...$order_events);
+    }
+    usort($events, static fn(array $a, array $b): int => [$a['collected_at'], $a['tender_id']] <=> [$b['collected_at'], $b['tender_id']]);
+    return $events;
+  }
+}
+
+/** Normalize Square's payments feed by actual payment-created time, not order close time. */
+final class SquarePaymentEvents {
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
+
+  public static function from_payments(array $payments): array {
+    if (!self::is_list($payments)) throw new \RuntimeException('Square returned an invalid payment collection list.');
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $events = []; $seen = [];
+    foreach ($payments as $payment) {
+      if (!is_array($payment) || !is_string($payment['status'] ?? null)) throw new \RuntimeException('Square returned a malformed payment record.');
+      $id = $payment['id'] ?? null;
+      $location_id = $payment['location_id'] ?? null;
+      if (!is_string($id) || $id === '' || strlen($id) > 192 || isset($seen[$id]) || !is_string($location_id) || $location_id === '') {
+        throw new \RuntimeException('Square returned a duplicate or invalid payment identity.');
+      }
+      $seen[$id] = true;
+      if ($payment['status'] !== 'COMPLETED') continue;
+      $money = $payment['amount_money'] ?? null;
+      if (!is_array($money) || !is_int($money['amount'] ?? null) || $money['amount'] < 0 || ($money['currency'] ?? null) !== 'USD') {
+        throw new \RuntimeException('Completed Square payment has an invalid amount or unsupported currency.');
+      }
+      $created = $payment['created_at'] ?? null;
+      if (!is_string($created) || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/', $created)) {
+        throw new \RuntimeException('Completed Square payment has no valid creation timestamp.');
+      }
+      try { $timestamp = new \DateTimeImmutable($created); }
+      catch (\Throwable $error) { throw new \RuntimeException('Completed Square payment has an invalid creation timestamp.'); }
+      $errors = \DateTimeImmutable::getLastErrors();
+      if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('Completed Square payment has an invalid creation date.');
+      $events[] = [
+        'source' => 'square', 'order_id' => (string) ($payment['order_id'] ?? $id),
+        'tender_id' => $id, 'payment_id' => $id, 'location_id' => $location_id,
+        'amount_cents' => $money['amount'], 'currency' => 'USD',
+        'collected_at' => $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
+        'collection_date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
+        'collection_date_basis' => 'square_payment_created_at',
+      ];
+    }
+    usort($events, static fn(array $a, array $b): int => [$a['collected_at'], $a['tender_id']] <=> [$b['collected_at'], $b['tender_id']]);
+    return $events;
+  }
+}
+
+/** Pure daily aggregation of separately sourced collection and refund projections. */
+final class CashflowProjection {
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
+
+  private static function add_event(array &$days, array &$seen, $event, string $source, string $id_field, string $date_field, string $amount_field, string $currency_field, string $total_field): void {
+    if (!is_array($event) || ($event['source'] ?? null) !== $source) throw new \RuntimeException('Cashflow event has an invalid source or structure.');
+    $id = $event[$id_field] ?? null;
+    if ((!is_string($id) && !is_int($id)) || (is_string($id) && ($id === '' || strlen($id) > 255)) || (is_int($id) && $id <= 0)) {
+      throw new \RuntimeException('Cashflow event has an invalid identity.');
+    }
+    $identity = gettype($id) . ':' . (string) $id;
+    if (isset($seen[$identity])) throw new \RuntimeException('Cashflow feed repeats an event identity.');
+    $seen[$identity] = true;
+    $date = $event[$date_field] ?? null;
+    if (!is_string($date) || !preg_match('/^\d{4}-\d{2}-\d{2}$/D', $date)) throw new \RuntimeException('Cashflow event has an invalid date.');
+    $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date, new \DateTimeZone('UTC'));
+    $errors = \DateTimeImmutable::getLastErrors();
+    if (!$parsed || $parsed->format('Y-m-d') !== $date || ($errors && ($errors['warning_count'] || $errors['error_count']))) throw new \RuntimeException('Cashflow event has an invalid calendar date.');
+    if (($event[$currency_field] ?? null) !== 'USD' || !is_int($event[$amount_field] ?? null) || $event[$amount_field] < 0) {
+      throw new \RuntimeException('Cashflow event has invalid USD cents.');
+    }
+    if (!isset($days[$date])) $days[$date] = [
+      'square_collected_cents' => 0, 'woocommerce_collected_cents' => 0,
+      'square_refunded_cents' => 0, 'woocommerce_refunded_cents' => 0,
+      'total_collected_cents' => 0, 'total_refunded_cents' => 0, 'net_cents' => 0,
+    ];
+    $current = $days[$date][$total_field];
+    if ($event[$amount_field] > PHP_INT_MAX - $current) throw new \RuntimeException('Daily cashflow total exceeds the supported amount range.');
+    $days[$date][$total_field] += $event[$amount_field];
+  }
+
+  /**
+   * @return array<string,array<string,int>> One row per Pacific calendar date.
+   */
+  public static function daily_totals(array $square_collections, array $woo_collections, array $square_refunds, array $woo_refunds): array {
+    foreach ([$square_collections, $woo_collections, $square_refunds, $woo_refunds] as $events) {
+      if (!self::is_list($events)) throw new \RuntimeException('Cashflow event feeds must be indexed lists.');
+    }
+    $days = [];
+    $feed_specs = [
+      [$square_collections, 'square', 'tender_id', 'collection_date', 'amount_cents', 'currency', 'square_collected_cents'],
+      [$woo_collections, 'woocommerce', 'order_id', 'collection_date', 'amount_cents', 'currency', 'woocommerce_collected_cents'],
+      [$square_refunds, 'square', 'refund_id', 'refund_date', 'amount_cents', 'currency', 'square_refunded_cents'],
+      [$woo_refunds, 'woocommerce', 'refund_id', 'refund_date', 'amount_cents', 'currency', 'woocommerce_refunded_cents'],
+    ];
+    foreach ($feed_specs as [$events, $source, $id_field, $date_field, $amount_field, $currency_field, $total_field]) {
+      $seen = [];
+      foreach ($events as $event) self::add_event($days, $seen, $event, $source, $id_field, $date_field, $amount_field, $currency_field, $total_field);
+    }
+    ksort($days, SORT_STRING);
+    foreach ($days as &$day) {
+      if ($day['woocommerce_collected_cents'] > PHP_INT_MAX - $day['square_collected_cents'] || $day['woocommerce_refunded_cents'] > PHP_INT_MAX - $day['square_refunded_cents']) {
+        throw new \RuntimeException('Combined daily cashflow total exceeds the supported amount range.');
+      }
+      $day['total_collected_cents'] = $day['square_collected_cents'] + $day['woocommerce_collected_cents'];
+      $day['total_refunded_cents'] = $day['square_refunded_cents'] + $day['woocommerce_refunded_cents'];
+      $day['net_cents'] = $day['total_collected_cents'] - $day['total_refunded_cents'];
+    }
+    unset($day);
+    return $days;
   }
 }

@@ -309,7 +309,7 @@ class CPT {
 
         echo '<label for="roxy-rs-sponsor-amount"><strong>Sponsor package amount</strong></label>';
         echo '<input id="roxy-rs-sponsor-amount" type="number" min="1" step="0.01" name="roxy_rs_sponsor_amount" value="' . esc_attr($sponsor_amount_input) . '">';
-        echo '<div class="roxy-rs-help">Customer-facing sponsorship automatically drops as paid backers pledge money. Keep this at or above the funding goal so a sponsor can fully satisfy the request.</div>';
+        echo '<div class="roxy-rs-help">Customer-facing sponsorship automatically drops as paid backers contribute. Keep this at or above the funding goal so a sponsor can fully satisfy the request.</div>';
 
         echo '<label for="roxy-rs-sponsor-tickets"><strong>Sponsor included tickets</strong></label>';
         echo '<input id="roxy-rs-sponsor-tickets" type="number" min="0" step="1" name="roxy_rs_sponsor_tickets" value="' . esc_attr((string) $sponsor_tickets) . '">';
@@ -323,7 +323,7 @@ class CPT {
         } elseif ($totals === null) {
             echo '<div class="roxy-rs-help"><strong>Progress:</strong> Funding temporarily unavailable; backing totals could not be verified.</div>';
         } else {
-            echo '<div class="roxy-rs-help"><strong>Progress:</strong> ' . wp_kses_post(wc_price(((int) $totals['charge_total']) / 100)) . ' pledged of '
+            echo '<div class="roxy-rs-help"><strong>Progress:</strong> ' . wp_kses_post(wc_price(((int) $totals['charge_total']) / 100)) . ' contributed of '
                 . wp_kses_post(wc_price($funding_goal / 100)) . ', '
                 . esc_html(number_format_i18n((int) $totals['support_qty'])) . ' paid backer tickets, '
                 . esc_html(number_format_i18n((int) $totals['subscriber_qty'])) . ' subscriber reservations, '

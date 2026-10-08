@@ -9,26 +9,30 @@ class Capacity {
   public static function subscription_entitlement_count(int $user_id): int {
     if ($user_id <= 0) return 0;
     if (!function_exists('wcs_get_users_subscriptions')) return 0;
-    $subs = wcs_get_users_subscriptions($user_id);
     $count = 0;
-    foreach ($subs as $sub) {
-      if (!is_object($sub) || !method_exists($sub, 'has_status')) continue;
-      if ($sub->has_status('active') || $sub->has_status('pending-cancel')) {
-        if (method_exists($sub, 'get_items')) {
+    try {
+      $subs = wcs_get_users_subscriptions($user_id);
+      if (!is_array($subs) || (function_exists('is_wp_error') && is_wp_error($subs))) return 0;
+      foreach ($subs as $sub) {
+        if (!is_object($sub) || !method_exists($sub, 'has_status')) return 0;
+        if ($sub->has_status('active') || $sub->has_status('pending-cancel')) {
+          if (!method_exists($sub, 'get_items')) return 0;
           $items = $sub->get_items();
+          if (!is_array($items) || (function_exists('is_wp_error') && is_wp_error($items))) return 0;
           $qty_sum = 0;
-          if (is_array($items)) {
-            foreach ($items as $item) {
-              if (is_object($item) && method_exists($item, 'get_quantity')) {
-                $qty_sum += (int) $item->get_quantity();
-              }
-            }
+          foreach ($items as $item) {
+            if (!is_object($item) || !method_exists($item, 'get_quantity')) return 0;
+            $quantity = $item->get_quantity();
+            if (!is_numeric($quantity) || !is_finite((float) $quantity) || (float) $quantity < 0
+              || floor((float) $quantity) !== (float) $quantity || (float) $quantity > PHP_INT_MAX - $qty_sum) return 0;
+            $qty_sum += (int) $quantity;
           }
           $count += max(1, $qty_sum);
-        } else {
-          $count += 1;
+          if ($count > PHP_INT_MAX) return 0;
         }
       }
+    } catch (\Throwable $error) {
+      return 0;
     }
     return max(0, (int) $count);
   }
@@ -85,6 +89,10 @@ class Capacity {
   }
 
   public static function validate_add_to_cart(bool $passed, int $product_id, int $quantity, int $variation_id = 0): bool {
+    // This is a validation filter: never undo a rejection made by WooCommerce
+    // or an earlier validation callback.
+    if (!$passed) return false;
+
     $sid = (int) get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true);
     if (!$sid) return $passed;
 
@@ -206,50 +214,91 @@ class Capacity {
 
 
   public static function purchased_subscriber_qty_for_showing_user(int $showing_id, int $user_id): int {
-    if ($showing_id <= 0 || $user_id <= 0 || !function_exists('wc_get_orders')) return 0;
+    if ($showing_id <= 0 || $user_id <= 0 || !function_exists('wc_get_orders')) return PHP_INT_MAX;
 
     $cache_key = $showing_id . ':' . $user_id;
     if (isset(self::$subscriber_usage_cache[$cache_key])) {
       return self::$subscriber_usage_cache[$cache_key];
     }
 
-    $orders = wc_get_orders([
-      'customer_id' => $user_id,
-      'status'      => ['wc-processing', 'wc-completed'],
-      'limit'       => -1,
-      'return'      => 'ids',
-      'type'        => 'shop_order',
-      'meta_query'  => [[
-        'key'   => '_roxy_contains_showing_' . $showing_id,
-        'value' => '1',
-      ]],
-    ]);
+    try {
+      $orders = wc_get_orders([
+        'customer_id' => $user_id,
+        'status'      => ['wc-processing', 'wc-completed'],
+        'limit'       => -1,
+        'return'      => 'ids',
+        'type'        => 'shop_order',
+        'meta_query'  => [[
+          'key'   => '_roxy_contains_showing_' . $showing_id,
+          'value' => '1',
+        ]],
+      ]);
+    } catch (\Throwable $error) {
+      return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+    }
+
+    $database_read_failed = static function (): bool {
+      global $wpdb;
+      return isset($wpdb->last_error) && (string) $wpdb->last_error !== '';
+    };
+
+    // This query controls paid entitlement consumption. Treat an unreadable or
+    // malformed result as unknown usage, never as an empty purchase history.
+    if ($database_read_failed() || !is_array($orders) || (function_exists('is_wp_error') && is_wp_error($orders))) {
+      return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+    }
 
     $used = 0;
-    foreach ($orders as $order) {
-      $order = wc_get_order($order);
-      if (!is_object($order) || !method_exists($order, 'get_items')) continue;
-      foreach ($order->get_items('line_item') as $item) {
-        if (!is_object($item) || !method_exists($item, 'get_product_id')) continue;
-        $product_id = (int) $item->get_product_id();
-        if ($product_id <= 0) continue;
-        if ((int) get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true) !== $showing_id) continue;
-        if ((string) get_post_meta($product_id, ROXY_ST_META_TICKET_TYPE, true) !== 'subscriber') continue;
-        $used += (int) $item->get_quantity();
+    try {
+      foreach ($orders as $order) {
+        $order = wc_get_order($order);
+        if ($database_read_failed()) return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+        if (!is_object($order) || !method_exists($order, 'get_items')) {
+          return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+        }
+        $items = $order->get_items('line_item');
+        if ($database_read_failed() || !is_array($items) || (function_exists('is_wp_error') && is_wp_error($items))) {
+          return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+        }
+        foreach ($items as $item) {
+          if (!is_object($item) || !method_exists($item, 'get_product_id') || !method_exists($item, 'get_quantity')) {
+            return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+          }
+          $product_id = (int) $item->get_product_id();
+          if ($product_id <= 0) return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+          if ((int) get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true) !== $showing_id) continue;
+          if ((string) get_post_meta($product_id, ROXY_ST_META_TICKET_TYPE, true) !== 'subscriber') continue;
+          $quantity = $item->get_quantity();
+          if (!is_numeric($quantity) || !is_finite((float) $quantity) || (float) $quantity < 0
+            || floor((float) $quantity) !== (float) $quantity || (float) $quantity > PHP_INT_MAX - $used) {
+            return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+          }
+          $used += (int) $quantity;
+        }
       }
+    } catch (\Throwable $error) {
+      return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
     }
 
     return self::$subscriber_usage_cache[$cache_key] = max(0, (int) $used);
   }
 
   public static function subscriber_limit_remaining_for_showing(int $showing_id, int $user_id = 0, bool $include_cart = true): int {
+    if ($showing_id <= 0) return 0;
     $user_id = $user_id > 0 ? $user_id : get_current_user_id();
     $entitlement = self::subscription_entitlement_count((int) $user_id);
     if ($entitlement <= 0) return 0;
 
     $used = self::purchased_subscriber_qty_for_showing_user($showing_id, (int) $user_id);
-    try { if(class_exists('\Roxy_Sub_Check')) $used+=\Roxy_Sub_Check::walkup_quantity_for_showing($showing_id,(int)$user_id); }
-    catch(\Throwable $e){return 0;} // Unknown arrivals cannot grant more entitlement.
+    if ($used === PHP_INT_MAX) return 0;
+    try {
+      if (class_exists('\Roxy_Sub_Check')) {
+        $walkups = \Roxy_Sub_Check::walkup_quantity_for_showing($showing_id, (int) $user_id);
+        if (!is_numeric($walkups) || !is_finite((float) $walkups) || (float) $walkups < 0
+          || floor((float) $walkups) !== (float) $walkups || (float) $walkups > PHP_INT_MAX - $used) return 0;
+        $used += (int) $walkups;
+      }
+    } catch (\Throwable $e) { return 0; } // Unknown arrivals cannot grant more entitlement.
     $remaining = max(0, $entitlement - $used);
 
     if ($include_cart) {

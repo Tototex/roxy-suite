@@ -183,7 +183,10 @@ function roxy_eb_build_pizza_change_from_request($booking, array $input) {
 function roxy_eb_booking_revision(array $booking): string {
     $fields = ['status','wp_user_id','customer_email','payment_method','invoice_status','guest_count','base_price','extra_hours','extra_price','doors_open_at','show_start_at','doors_close_at','reserved_start_at','reserved_end_at','notes_admin','pizza_requested','pizza_quantity','pizza_order_details','pizza_total','bulk_concessions_requested','bulk_popcorn_qty','bulk_soda_qty','bulk_concessions_total','special_charge_label','special_charge_total','total_price','woo_order_id','woo_adjustment_order_ids'];
     $snapshot = [];
-    foreach ($fields as $field) $snapshot[$field] = ($booking[$field] ?? null) === null ? null : (string) $booking[$field];
+    foreach ($fields as $field) {
+        $value = $booking[$field] ?? null;
+        $snapshot[$field] = $value === null ? null : (is_scalar($value) ? (string) $value : wp_json_encode($value));
+    }
     return hash('sha256', wp_json_encode($snapshot));
 }
 
@@ -410,10 +413,12 @@ function roxy_eb_maybe_cancel_booking_for_order($order_id) {
     if (($booking['status'] ?? '') === 'cancelled') return;
 
     if (function_exists('roxy_eb_cancel_booking')) {
-        roxy_eb_cancel_booking(intval($booking['id']), 'admin');
-    } else {
-        roxy_eb_repo_update_booking(intval($booking['id']), ['status' => 'cancelled']);
+        $result = roxy_eb_cancel_booking(intval($booking['id']), 'admin');
+        if (is_wp_error($result)) return;
+        return; // Successful cancellation handles its own reminder cleanup.
     }
+    $result = roxy_eb_repo_update_booking(intval($booking['id']), ['status' => 'cancelled']);
+    if (is_wp_error($result)) return;
     roxy_eb_clear_pizza_reminders(intval($booking['id']));
 }
 

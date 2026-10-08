@@ -558,7 +558,20 @@ class Roxy_Arcade {
     $to = sanitize_email(get_option('admin_email'));
     if ($to === '') return;
 
-    $subject = sprintf('Roxy Arcade monthly winner review needed for %s', (string) ($candidate['month'] ?? 'this month'));
+    $month = (string) ($candidate['month'] ?? '');
+    $user_id = (int) ($candidate['user_id'] ?? 0);
+    $score = (int) ($candidate['score'] ?? 0);
+    if (!preg_match('/^\\d{4}-(0[1-9]|1[0-2])$/D', $month) || $user_id <= 0 || $score < 0) return;
+
+    // A manual rerun or concurrent monthly worker must not send the same
+    // review email twice. Claim before wp_mail; an interrupted/uncertain send
+    // is visible for reconciliation but is never retried automatically.
+    $notice_key = 'roxy_arcade_review_mail_' . hash('sha256', $month . ':' . $user_id . ':' . $score);
+    $notice_claim = ['state' => 'sending', 'month' => $month, 'user_id' => $user_id,
+      'score' => $score, 'claimed_at' => gmdate('c')];
+    if (!add_option($notice_key, $notice_claim, '', false)) return;
+
+    $subject = sprintf('Roxy Arcade monthly winner review needed for %s', $month);
     $message = implode("\n", [
       'Automatic prize fulfillment is disabled for Roxy Arcade.',
       'Scores are supplied by players\' browsers and are not verified gameplay. Independently vet the candidate before approving a prize.',
@@ -572,7 +585,15 @@ class Roxy_Arcade {
       '',
       'If this looks correct, approve the queued candidate from the Arcade settings screen. There is no need to enable automatic fulfillment.',
     ]);
-    wp_mail($to, $subject, $message);
+    $sent = false;
+    try {
+      $sent = wp_mail($to, $subject, $message);
+    } catch (Throwable $error) {
+      // wp_mail outcome is uncertain if a transport throws after delivery.
+    }
+    $notice_claim['state'] = $sent ? 'sent' : 'uncertain';
+    $notice_claim['updated_at'] = gmdate('c');
+    update_option($notice_key, $notice_claim, false);
   }
 
   private static function approve_review_candidate() {

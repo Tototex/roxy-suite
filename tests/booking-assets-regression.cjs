@@ -1,0 +1,26 @@
+// Execute canonical booking helpers with mocked jQuery; no booking/order submitted.
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path');
+const root=process.argv[2]||path.resolve(__dirname,'..');
+let code=fs.readFileSync(path.join(root,'includes/modules/event-booking/assets/roxy-eb.js'),'utf8');
+code=code.replace(/\}\)\(jQuery\);\s*$/,'globalThis.bookingFixture={computePricing,buildTimeOptions,pizzaAllowedForCurrentSelection,togglePizzaFields};})(jQuery);');
+let time='11:30';const $=arg=>typeof arg==='function'?undefined:{val(){return time;},find(){return this;},prop(){return this;},show(){return this;},hide(){return this;},text(){return this;},toggle(){return this;}};
+const config={prices:{under:100,over:150,extra:25},pizzaPrice:0,bulkItemPrice:0,leadTimeHours:0,incrementMinutes:15,openTime:'08:00',closeTime:'24:00',pizzaStartMinutes:690,pizzaEndMinutes:1260};
+const context={jQuery:$,RoxyEB:config,Date,console};vm.runInNewContext(code,context);
+const f=context.bookingFixture;
+let pricing=f.computePricing(20,1,1,3,1,25,25);assert.equal(pricing.pizza,0);assert.equal(pricing.bulk,0);assert.equal(pricing.total,125);
+console.log('PASS: intentional zero pizza and bulk prices preserved');
+delete config.pizzaPrice;delete config.bulkItemPrice;pricing=f.computePricing(20,0,1,2,1,25,0);assert.equal(pricing.pizza,36);assert.equal(pricing.bulk,75);
+console.log('PASS: missing settings use original defaults');
+const today=new Date();const options=f.buildTimeOptions(today,0,[]);const now=today.getHours()*60+today.getMinutes();
+assert(options.some(o=>{const [h,m]=o.value.split(':').map(Number);return h*60+m>now&&!o.disabled;})||now>=1320);
+config.leadTimeHours=48;assert(f.buildTimeOptions(today,0,[]).every(o=>o.disabled));
+console.log('PASS: zero lead time permits remaining same-day starts, default lead blocks today');
+time='11:29';assert.equal(f.pizzaAllowedForCurrentSelection(),false);time='11:30';assert.equal(f.pizzaAllowedForCurrentSelection(),true);time='21:00';assert.equal(f.pizzaAllowedForCurrentSelection(),true);time='21:01';assert.equal(f.pizzaAllowedForCurrentSelection(),false);
+config.pizzaStartMinutes=0;time='00:00';assert.equal(f.pizzaAllowedForCurrentSelection(),true);
+console.log('PASS: pizza boundaries and intentional midnight start setting');
+assert(code.includes('Availability unavailable'));assert(code.includes("prop('disabled', true).empty()"));
+const css=fs.readFileSync(path.join(root,'includes/modules/event-booking/assets/roxy-eb.css'),'utf8');assert(css.includes('#d7a928'));assert(css.includes('#66cccc'));
+const loader=fs.readFileSync(path.join(root,'includes/modules/event-booking/roxy-event-booking.php'),'utf8');assert(loader.includes("ROXY_EB_PLUGIN_URL . 'assets/'"));
+for(const name of ['roxy-eb.js','roxy-eb.css'])assert.equal(fs.readFileSync(path.join(root,'assets/event-booking',name),'utf8').replace(/\r\n/g,'\n').trimEnd(),fs.readFileSync(path.join(root,'includes/modules/event-booking/assets',name),'utf8').replace(/\r\n/g,'\n').trimEnd());
+console.log('PASS: canonical assets contain failed-date guard and both calendar colors');
+console.log('PASS: legacy cached-page compatibility copies cannot drift');

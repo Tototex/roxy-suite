@@ -1,0 +1,9 @@
+# Advertiser completion freshness — 2026-10-07
+
+Suite 1.0.61 adds a read-only monthly advertiser completion check to Grosses health. When the schedule is disabled it is explicitly not needed. When enabled, the check uses the configured report timezone, monthly day with the scheduler’s end-of-month clamp, and configured send time. Before the current cycle is due it does not manufacture a first-cycle warning; after the due boundary it warns when the expected prior-month marker is missing or late. Malformed, future, or otherwise unexpected markers warn. A matching marker is only evidence that the completion marker was saved; it does not prove provider delivery.
+
+Fourteen deterministic PHP 8.3 cases passed before deployment, covering the due boundary, time-zone normalization, missed cycles, leap-year and short-month clamps, year rollover, disabled schedules, malformed/future markers, and invalid schedule time. Deployment readback passed, and the installed Grosses Health structural sections all pass. The live marker currently reports the expected month (`2026-09`) as passing with the delivery caveat. No job, email, provider call, schedule repair, or option write was executed.
+
+The prior Health file was baseline-checked, archived to I:, and verified before replacement. Archive: `I:\My Drive\Roxy Site Recovery\2026-10-06\roxy-health65-before.tar.gz`, 12,313 bytes, SHA-256 `c248e4717756b043419d9761d2c82a5b63c6a6f967dfab9b05ea47eb8fd57362`. Candidate and installed hashes were checked; no version bump was needed because the 1.0.61 runtime was already deployed. Cloud synchronization was not verified.
+
+C1 remains partial: Requested Showings and Grosses do not yet have a durable, run-level attempt/completion record. This check is intentionally a marker/freshness check only. Monthly advertiser reporting itself remains unchanged.

@@ -34,7 +34,26 @@ final class Publisher {
             });
         }
         $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . Store::table_name() . ' WHERE ((status = %s) OR (status = %s AND instagram_media_id IS NULL AND (last_error LIKE %s OR last_error LIKE %s))) AND scheduled_for <= %s ORDER BY scheduled_for ASC, id ASC LIMIT 3', 'approved', 'failed', '%Instagram video is still processing%', '%Media ID is not available%', current_time('mysql')), ARRAY_A) ?: [];
-        foreach ($rows as $row) self::queue_publish((int) $row['id']);
+        foreach ($rows as $row) {
+            if ((string) ($row['status'] ?? '') === 'failed'
+                && stripos((string) ($row['last_error'] ?? ''), 'Media ID is not available') !== false) {
+                self::with_lock((int) $row['id'], static function () use ($row) {
+                    $id = (int) ($row['id'] ?? 0);
+                    $fresh = Store::find($id);
+                    if (!$fresh || (string) ($fresh['status'] ?? '') !== 'failed'
+                        || !empty($fresh['instagram_media_id'])
+                        || stripos((string) ($fresh['last_error'] ?? ''), 'Media ID is not available') === false) return false;
+                    return self::save_result($id, 'needs_review', 'A previous Instagram publish attempt returned “Media ID is not available.” The outcome is not safe to retry automatically. Check the Instagram account, then approve a new attempt only after remote review; recorded platform IDs and the container ID have been retained.');
+                });
+                continue;
+            }
+            $attempt = 0;
+            if ((string) ($row['status'] ?? '') === 'failed' && stripos((string) ($row['last_error'] ?? ''), 'Instagram video is still processing') !== false) {
+                $attempt = 5;
+                if (preg_match('/status check ([0-4]) of 5/i', (string) ($row['last_error'] ?? ''), $match)) $attempt = (int) $match[1] + 1;
+            }
+            self::queue_publish((int) $row['id'], $attempt);
+        }
     }
 
     public static function queue_publish_now(int $id): bool {
@@ -44,11 +63,15 @@ final class Publisher {
         return self::queue_publish($id);
     }
 
-    public static function process_queued(int $id): void {
-        self::with_lock($id, static function () use ($id) {
+    public static function process_queued(int $id, int $video_attempt = 0): void {
+        self::with_lock($id, static function () use ($id, $video_attempt) {
             $row = Store::find($id);
             if (!$row || (string) $row['status'] !== 'publishing') return false;
-            try { return self::publish_row($row); }
+            if (stripos((string) ($row['last_error'] ?? ''), 'Media ID is not available') !== false) {
+                self::save_result($id, 'needs_review', 'A queued Instagram publish retry had an earlier “Media ID is not available” outcome. The queued retry was stopped. Check the Instagram account, then approve a new attempt only after remote review; recorded platform IDs and the container ID have been retained.');
+                return false;
+            }
+            try { return self::publish_row($row, $video_attempt); }
             catch (\Throwable $error) {
                 if (self::owns_lock()) self::save_result($id, 'needs_review', 'The publishing worker was interrupted. Review remote accounts before retrying.');
                 error_log('Roxy Social publishing worker interrupted for draft ' . $id . '.');
@@ -57,12 +80,24 @@ final class Publisher {
         });
     }
 
-    private static function queue_publish(int $id): bool {
-        return self::with_lock($id, static function () use ($id) {
+    /** Queue one bounded status poll for a failed video container; never republish other failures. */
+    public static function queue_video_status_retry(int $id, int $video_attempt): bool {
+        if ($video_attempt < 1 || $video_attempt > 5) return false;
+        $row = Store::find($id);
+        if (!$row || (string) ($row['status'] ?? '') !== 'failed'
+            || empty($row['instagram_container_id']) || !empty($row['instagram_media_id'])
+            || stripos((string) ($row['last_error'] ?? ''), 'Instagram video is still processing') === false) return false;
+        if (!preg_match('/status check ([0-4]) of 5/i', (string) ($row['last_error'] ?? ''), $match)
+            || $video_attempt !== (int) $match[1] + 1) return false;
+        return self::queue_publish($id, $video_attempt);
+    }
+
+    private static function queue_publish(int $id, int $video_attempt = 0): bool {
+        return self::with_lock($id, static function () use ($id, $video_attempt) {
             $row = Store::find($id);
             if (!$row || !in_array((string) $row['status'], ['approved', 'failed'], true)) return false;
             if (!Store::compare_publish_status($id, (string) $row['status'], 'publishing', self::$claim)) return false;
-            if (wp_next_scheduled('roxy_social_publish_single', [$id]) || wp_schedule_single_event(time() + 1, 'roxy_social_publish_single', [$id])) return true;
+            if (wp_next_scheduled('roxy_social_publish_single', [$id, $video_attempt]) || wp_schedule_single_event(time() + 1, 'roxy_social_publish_single', [$id, $video_attempt])) return true;
             Store::compare_publish_status($id, 'publishing', (string) $row['status'], self::$claim);
             return false;
         });
@@ -98,7 +133,7 @@ final class Publisher {
         return self::save_result($id, 'removed', '');
     }
 
-    private static function publish_row(array $row): bool {
+    private static function publish_row(array $row, int $video_attempt = 0): bool {
         $id = (int) ($row['id'] ?? 0);
         $media_url = esc_url_raw((string) ($row['media_url'] ?? ''));
         $caption = trim((string) ($row['post_text'] ?? ''));
@@ -126,13 +161,23 @@ final class Publisher {
             if (!self::save_result($id,'publishing','',(string)($facebook['id']??''),(string)$instagram['id'])) {self::save_result($id,'needs_review','Instagram accepted the post but its ID could not be saved. Review remote posts before retrying.');return false;}
             $row['instagram_media_id']=(string)$instagram['id'];
         }
+        if (!empty($instagram['error']) && stripos((string) $instagram['error'], 'Instagram video is still processing') !== false) {
+            $instagram['error'] = 'Instagram video is still processing (status check ' . $video_attempt . ' of 5).';
+            if ($video_attempt >= 5) {
+                $instagram['error'] = 'Instagram video is still processing after five scheduled status checks. Review the container and retry manually.';
+                $instagram['ambiguous'] = true;
+            } elseif (!wp_next_scheduled('roxy_social_video_status_retry', [$id, $video_attempt + 1])
+                && !wp_schedule_single_event(time() + 60, 'roxy_social_video_status_retry', [$id, $video_attempt + 1])) {
+                $instagram['error'] = 'Instagram video is still processing, but its automatic retry could not be scheduled. Review the container and retry manually.';
+                $instagram['ambiguous'] = true;
+            }
+        }
         $errors = array_filter([
             !empty($facebook['error']) ? 'Facebook: ' . $facebook['error'] : '',
             !empty($instagram['error']) ? 'Instagram: ' . $instagram['error'] : '',
         ]);
         if ($errors) {
             self::save_result($id, !empty($instagram['ambiguous']) ? 'needs_review' : 'failed', implode(' ', $errors), (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? ''));
-            if (!empty($instagram['error']) && stripos((string) $instagram['error'], 'still processing') !== false) wp_schedule_single_event(time() + 300, 'roxy_social_publish_single', [$id]);
             return false;
         }
         if (($platform!=='instagram' && empty($row['facebook_post_id']) && empty($facebook['id'])) || ($platform!=='facebook' && empty($row['instagram_media_id']) && empty($instagram['id']))) {self::save_result($id,'needs_review','A platform returned no published ID. Review remote posts before retrying.');return false;}
@@ -159,22 +204,28 @@ final class Publisher {
         if (!empty($container['error']) || empty($container['id'])) return $container;
         if (!Store::set_instagram_container_id($post_id, (string) $container['id'], self::$claim)) return ['error'=>'Instagram container ID could not be saved. Review before retrying.','ambiguous'=>true];
         if ($type === 'video') {
-            $ready = false;
-            for ($attempt = 0; $attempt < 30; $attempt++) {
-                sleep(4);
-                $status = self::get('https://graph.facebook.com/' . rawurlencode((string) $container['id']), ['fields' => 'status_code', 'access_token' => Meta::access_token()]);
-                if (($status['status_code'] ?? '') === 'FINISHED') { $ready = true; break; }
-                if (($status['status_code'] ?? '') === 'ERROR') return ['error' => 'Instagram video processing failed.'];
+            if ($existing_container_id === '') return ['error' => 'Instagram video is still processing; the scheduler will retry automatically.'];
+            $status = self::get('https://graph.facebook.com/' . rawurlencode((string) $container['id']), ['fields' => 'status_code,status', 'access_token' => Meta::access_token()]);
+            if (!empty($status['error'])) return ['error' => 'Instagram video status could not be verified. Review the provider response before retrying.'];
+            $status_code = $status['status_code'] ?? '';
+            if ($status_code === 'IN_PROGRESS') return ['error' => 'Instagram video is still processing; the scheduler will retry automatically.'];
+            if ($status_code === 'ERROR' || $status_code === 'EXPIRED') {
+                if (!Store::clear_instagram_container_id($post_id, self::$claim)) return ['error' => 'Instagram video container reached terminal status but its local identity could not be cleared. Review before retrying.', 'ambiguous' => true];
+                return ['error' => $status_code === 'ERROR'
+                    ? 'Instagram video processing failed; review the draft before creating a fresh container.'
+                    : 'Instagram video container expired before publication. Review the draft before creating a fresh container.'];
             }
-            if (!$ready) return ['error' => 'Instagram video is still processing; the scheduler will retry automatically.'];
+            if ($status_code === 'PUBLISHED') return ['error' => 'Instagram reports this container is already published but no media ID is recorded. Review the account before retrying.', 'ambiguous' => true];
+            if ($status_code !== 'FINISHED') return ['error' => 'Instagram returned an unknown video-container status. Review the provider account before retrying.', 'ambiguous' => true];
         }
         $publish_url = 'https://graph.facebook.com/' . rawurlencode(Meta::instagram_user_id()) . '/media_publish';
         $publish_body = ['creation_id' => $container['id'], 'access_token' => Meta::access_token()];
-        $published = [];
-        for ($attempt = 0; $attempt < 5; $attempt++) {
-            if ($attempt > 0) sleep(3);
-            $published = self::request($publish_url, $publish_body);
-            if (empty($published['error']) || stripos((string) $published['error'], 'Media ID is not available') === false) break;
+        // A publish request may succeed remotely even when its response is
+        // rejected or lost. Never repeat it automatically; ambiguous outcomes
+        // require a manager to reconcile the remote account first.
+        $published = self::request($publish_url, $publish_body);
+        if (!empty($published['error']) && stripos((string) $published['error'], 'Media ID is not available') !== false) {
+            $published['ambiguous'] = true;
         }
         return $published;
     }
