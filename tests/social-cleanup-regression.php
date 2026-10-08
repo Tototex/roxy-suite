@@ -184,6 +184,7 @@ final class CleanupWpdb {
 }
 
 function current_time(string $type): string { return '2026-10-06 12:00:00'; }
+function apply_filters(string $hook, $value) { return $hook === 'roxy_social_enable_detached_media_cleanup' ? ($GLOBALS['cleanup_detached_enabled'] ?? $value) : $value; }
 function wp_schedule_single_event(int $timestamp, string $hook, array $args = []): bool { $GLOBALS['cleanup_scheduled'][] = [$timestamp, $hook, $args]; return true; }
 function get_post(int $id) { global $wpdb; if($wpdb->post_read_error){$wpdb->last_error='fixture read failed';return null;}return $wpdb->attachments[$id] ?? null; }
 function get_post_meta(int $id, string $key, bool $single = false) { global $wpdb; return $wpdb->meta[$id][$key] ?? ''; }
@@ -202,6 +203,13 @@ function fixture(array $overrides = []): void {
     $wpdb->attachments[42] = (object) ['ID' => 42, 'post_type' => 'attachment'];
     $wpdb->meta[42] = ['_roxy_social_temporary' => '1', '_roxy_hangar_asset_id' => '900'];
 }
+
+$GLOBALS['cleanup_detached_enabled'] = false;
+fixture();
+$wpdb->cleanup_rows[42] = ['attachment_id'=>42,'social_post_id'=>88,'cleanup_after'=>'2026-10-06 11:59:00'];
+check_cleanup(\RoxySocial\Store::cleanup_detached_media_page(0, 42) === 0 && isset($wpdb->attachments[42]) && count($wpdb->queries) === 0,
+    'detached-media deletion stays disabled by default without reading or deleting candidates');
+$GLOBALS['cleanup_detached_enabled'] = true;
 
 fixture();
 $wpdb->rows[2] = ['id'=>2, 'status'=>'posted', 'temporary_attachment_id'=>43, 'cleanup_after'=>'2026-10-06 12:01:00', 'media_url'=>''];

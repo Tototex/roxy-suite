@@ -89,6 +89,11 @@ final class Store {
     }
 
     private static function cleanup_detached_media(?int $after_id = null, ?int $upper_id = null): int {
+        // This newer detached-upload lifecycle scans core WordPress stores, but
+        // cannot prove that unknown plugin tables or external writers do not
+        // reference a file. Require an explicit site-level opt-in until that
+        // wider reference boundary has been audited.
+        if (apply_filters('roxy_social_enable_detached_media_cleanup', false) !== true) return 0;
         global $wpdb;
         $table = self::cleanup_table_name();
         $cutoff = current_time('mysql');

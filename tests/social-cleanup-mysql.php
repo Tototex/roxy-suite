@@ -11,6 +11,7 @@ $code=file_get_contents($path);
 $code=str_replace(['namespace RoxySocial;',"'roxy_social_posts'","'roxy_social_media_cleanup'"],['namespace '.$namespace.';',var_export($suffix,true),var_export($queue_suffix,true)],$code);
 eval('?>'.$code);$store=$namespace.'\\Store';
 eval('namespace '.$namespace.';
+function apply_filters($hook,$value){return $hook==="roxy_social_enable_detached_media_cleanup"?($GLOBALS["cleanup53_detached_enabled"]??$value):$value;}
 function get_post($id){return !empty($GLOBALS["cleanup53_exists"])?(object)["ID"=>$id,"post_type"=>"attachment"]:null;}
 function get_post_meta($id,$key,$single=true){return $key==="_roxy_social_temporary"?($GLOBALS["cleanup53_owner"]?"1":"0"):($key==="_roxy_hangar_asset_id"?"888":null);}
 function wp_get_attachment_url($id){return "https://fixture.example.invalid/cleanup53-".$id.".mp4";}
@@ -24,10 +25,11 @@ $old=$wpdb->suppress_errors(true);$created=false;
 try {
     if($wpdb->query('CREATE TEMPORARY TABLE '.$table.' LIKE '.$production)===false||$wpdb->query('CREATE TEMPORARY TABLE '.$queue_table.' (attachment_id BIGINT UNSIGNED NOT NULL, social_post_id BIGINT UNSIGNED NOT NULL, cleanup_after DATETIME NOT NULL, created_at DATETIME NOT NULL, PRIMARY KEY (attachment_id), KEY cleanup_after (cleanup_after), KEY social_post_id (social_post_id))')===false)throw new RuntimeException('Private cleanup schema failed.');$created=true;
     add_filter('query',$block,PHP_INT_MAX);add_filter('pre_wp_mail',$mail,PHP_INT_MAX);add_filter('pre_http_request',$http,PHP_INT_MAX);
-    $reset=static function()use($wpdb,$table){
+$virtual_base=random_int(50000000000,90000000000);
+$reset=static function()use($wpdb,$table,$virtual_base){
         if($wpdb->query('DELETE FROM '.$table)===false)throw new RuntimeException('Private reset failed.');
         $GLOBALS['cleanup53_exists']=true;$GLOBALS['cleanup53_owner']=true;$GLOBALS['cleanup53_delete_fail']=false;$GLOBALS['cleanup53_delete_calls']=0;
-        $row=['id'=>1,'campaign_key'=>'PRIVATE','post_key'=>'PRIVATE-cleanup','showing_ids'=>'','platform'=>'both','scheduled_for'=>'2000-01-01 12:00:00','status'=>'posted','ai_status'=>'ready','post_text'=>'Private virtual media fixture','media_url'=>'https://fixture.example.invalid/cleanup53-2147482000.mp4','media_type'=>'video','temporary_attachment_id'=>2147482000,'cleanup_after'=>'2000-01-04 12:00:00','created_at'=>current_time('mysql'),'updated_at'=>current_time('mysql')];
+        $row=['id'=>1,'campaign_key'=>'PRIVATE','post_key'=>'PRIVATE-cleanup','showing_ids'=>'','platform'=>'both','scheduled_for'=>'2000-01-01 12:00:00','status'=>'posted','ai_status'=>'ready','post_text'=>'Private virtual media fixture','media_url'=>'https://fixture.example.invalid/cleanup53-'.$virtual_base.'.mp4','media_type'=>'video','temporary_attachment_id'=>$virtual_base,'cleanup_after'=>'2000-01-04 12:00:00','created_at'=>current_time('mysql'),'updated_at'=>current_time('mysql')];
         if($wpdb->insert($table,$row)!==1)throw new RuntimeException('Private row failed.');return $row;
     };
     $reset();$GLOBALS['cleanup53_owner']=false;
@@ -44,12 +46,14 @@ try {
     $reset();$wpdb->update($table,['cleanup_after'=>'2099-01-01 12:00:00'],['id'=>1]);
     $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0,'future local deadline remains untouched');
     $wpdb->query('DELETE FROM '.$table);$wpdb->query('DELETE FROM '.$queue_table);
-    $detached=['attachment_id'=>2147482050,'social_post_id'=>88,'cleanup_after'=>'2000-01-04 12:00:00','created_at'=>current_time('mysql')];
-    $wpdb->insert($queue_table,$detached);$GLOBALS['cleanup53_exists']=true;$GLOBALS['cleanup53_delete_calls']=0;
-    $assert($store::cleanup_expired()===1&&$GLOBALS['cleanup53_delete_calls']===1&&(int)$wpdb->get_var('SELECT COUNT(*) FROM '.$queue_table)===0,'detached owned media is deleted after queue deadline and queue record is removed');
+    $detached=['attachment_id'=>$virtual_base+50,'social_post_id'=>88,'cleanup_after'=>'2000-01-04 12:00:00','created_at'=>current_time('mysql')];
+    $wpdb->insert($queue_table,$detached);$GLOBALS['cleanup53_exists']=true;$GLOBALS['cleanup53_delete_calls']=0;$GLOBALS['cleanup53_detached_enabled']=false;
+    $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0&&(int)$wpdb->get_var('SELECT COUNT(*) FROM '.$queue_table)===1,'detached owned media remains queued and untouched without explicit opt-in');
+    $GLOBALS['cleanup53_detached_enabled']=true;
+    $assert($store::cleanup_expired()===1&&$GLOBALS['cleanup53_delete_calls']===1&&(int)$wpdb->get_var('SELECT COUNT(*) FROM '.$queue_table)===0,'explicitly enabled detached cleanup deletes after deadline and removes its queue record');
     $assert(hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)))===$before,'all production Social rows unchanged');
     $row=$reset();$GLOBALS['cleanup53_exists']=true;$GLOBALS['cleanup53_scheduled']=[];
-    for($id=2;$id<=101;$id++){$later=$row;$later['id']=$id;$later['post_key']='PRIVATE-cleanup-'.$id;$later['temporary_attachment_id']=2147482000+$id;$later['media_url']='https://fixture.example.invalid/cleanup53-'.$later['temporary_attachment_id'].'.mp4';if($wpdb->insert($table,$later)!==1)throw new RuntimeException('Private pagination row failed.');}
+    for($id=2;$id<=101;$id++){$later=$row;$later['id']=$id;$later['post_key']='PRIVATE-cleanup-'.$id;$later['temporary_attachment_id']=$virtual_base+$id;$later['media_url']='https://fixture.example.invalid/cleanup53-'.$later['temporary_attachment_id'].'.mp4';if($wpdb->insert($table,$later)!==1)throw new RuntimeException('Private pagination row failed.');}
     $pagination_result=$store::cleanup_expired();$pagination_schedule=$GLOBALS['cleanup53_scheduled'][0]??null;
     $assert($pagination_result===1&&($pagination_schedule[1]??'')==='roxy_social_cleanup_page'&&($pagination_schedule[2]??[])===[100,101],'actual private-table cleanup schedules exactly the remaining bounded high-water page; '.json_encode(['result'=>$pagination_result,'scheduled'=>$GLOBALS['cleanup53_scheduled']]));
     $assert(hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)))===$before,'pagination leaves production Social rows unchanged');
