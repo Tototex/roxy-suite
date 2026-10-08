@@ -757,35 +757,114 @@ class Roxy_Sub_Check {
     if ($wpdb->last_error || (!is_int($maximum_raw) && !is_string($maximum_raw)) || !preg_match('/^(?:0|[1-9]\d*)$/D',(string)$maximum_raw)) wp_die('Could not read scan log for export.');
     $maximum=(int)$maximum_raw;
 
+    $columns=['scanned_at','subscription_id','is_active','status','user_id','ip','user_agent','showing_id','source','quantity'];
+    $directory = $path = null;
+    $out = null;
+    try {
+      [$directory, $path, $out] = self::open_private_scan_export();
+      self::put_private_scan_export_row($out, $columns);
+      $last=0;
+      while($last<$maximum) {
+        $sql="SELECT id," . implode(',',$columns) . " FROM {$table} WHERE id>%d AND id<=%d";
+        $params=[$last,$maximum];
+        if($filter_sub){$sql.=' AND subscription_id=%d';$params[]=$filter_sub;}
+        $rows=$wpdb->get_results($wpdb->prepare($sql.' ORDER BY id ASC LIMIT 500',...$params),ARRAY_A);
+        if($wpdb->last_error || !is_array($rows)) throw new \RuntimeException('A scan-log export page could not be read.');
+        if(!$rows)break;
+        foreach($rows as $r){
+          $row_id=$r['id']??null;
+          if((!is_int($row_id)&&!is_string($row_id))||!preg_match('/^[1-9]\d*$/D',(string)$row_id)||(int)$row_id<=$last||(int)$row_id>$maximum) throw new \RuntimeException('A scan-log export page had an invalid row boundary.');
+          $values=[];
+          foreach($columns as $column){$value=(string)($r[$column]??'');$values[]=preg_match('/^[=+@\-\t\r]/',$value)?"'".$value:$value;}
+          self::put_private_scan_export_row($out, $values);
+          $last=(int)$row_id;
+        }
+      }
+      if (!@fflush($out)) throw new \RuntimeException('Scan-log export could not be finalized.');
+      if (!@fclose($out)) throw new \RuntimeException('Scan-log export could not be closed.');
+      $out = null;
+    } catch (\Throwable $error) {
+      if (is_resource($out)) fclose($out);
+      self::remove_private_scan_export($directory, $path);
+      wp_die('Could not complete the scan log export. No partial CSV was sent; retry after storage or database recovery.');
+    }
+
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename=roxy-scan-log.csv');
     header('Cache-Control: no-store');
     header('X-Content-Type-Options: nosniff');
+    $sent = @readfile($path);
+    self::remove_private_scan_export($directory, $path);
+    if ($sent === false) wp_die('The completed scan log export could not be delivered.');
+  }
 
-    $out = fopen('php://output', 'w');
-    if (!$out) wp_die('Could not start scan log export.');
-    $columns=['scanned_at','subscription_id','is_active','status','user_id','ip','user_agent','showing_id','source','quantity'];
-    if (fputcsv($out,$columns,',','"','') === false) { fclose($out); wp_die('Could not write scan log export.'); }
-    $last=0;
-    while($last<$maximum) {
-      $sql="SELECT id," . implode(',',$columns) . " FROM {$table} WHERE id>%d AND id<=%d";
-      $params=[$last,$maximum];
-      if($filter_sub){$sql.=' AND subscription_id=%d';$params[]=$filter_sub;}
-      $rows=$wpdb->get_results($wpdb->prepare($sql.' ORDER BY id ASC LIMIT 500',...$params),ARRAY_A);
-      if($wpdb->last_error || !is_array($rows)){
-        if(fputcsv($out,['EXPORT_INCOMPLETE','Database read failed; retry export.'],',','"','') === false){fclose($out);wp_die('Scan log export failed before completion.');}
-        break;
-      }
-      if(!$rows)break;
-      foreach($rows as $r){
-        $values=[];
-        foreach($columns as $column){$value=(string)($r[$column]??'');$values[]=preg_match('/^[=+@\-\t\r]/',$value)?"'".$value:$value;}
-        if(fputcsv($out,$values,',','"','') === false){fclose($out);wp_die('Scan log export failed before completion.');}
-        $last=(int)$r['id'];
-      }
+  private static function put_private_scan_export_row($handle, array $row): void {
+    $buffer = @fopen('php://temp', 'w+b');
+    if (!is_resource($buffer)) throw new \RuntimeException('CSV row buffer could not be created.');
+    try {
+      $length = fputcsv($buffer, $row, ',', '"', '');
+      $position = ftell($buffer);
+      if (!is_int($length) || !is_int($position) || $position !== $length || !rewind($buffer)) throw new \RuntimeException('CSV row could not be serialized completely.');
+      $csv = stream_get_contents($buffer);
+      if (!is_string($csv) || strlen($csv) !== $length) throw new \RuntimeException('CSV row could not be buffered completely.');
+    } finally {
+      @fclose($buffer);
     }
+    $offset = 0;
+    $csv_length = strlen($csv);
+    while ($offset < $csv_length) {
+      $written = @fwrite($handle, substr($csv, $offset));
+      if (!is_int($written) || $written <= 0) throw new \RuntimeException('A scan-log export row could not be written completely.');
+      $offset += $written;
+    }
+  }
 
-    fclose($out);
+  private static function scan_export_temp_is_private(string $temp): bool {
+    $roots = [ABSPATH, defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : ABSPATH, $_SERVER['DOCUMENT_ROOT'] ?? ''];
+    if (defined('WP_PLUGIN_DIR')) $roots[] = WP_PLUGIN_DIR;
+    $normalize = static function (string $path): string {
+      return rtrim(str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $path), DIRECTORY_SEPARATOR);
+    };
+    $temp = $normalize($temp);
+    foreach ($roots as $web_root) {
+      if (!is_string($web_root) || $web_root === '') continue;
+      $root = realpath($web_root);
+      if ($root === false) continue;
+      $root = $normalize($root);
+      $prefix = $root . DIRECTORY_SEPARATOR;
+      $inside = DIRECTORY_SEPARATOR === '\\'
+        ? (strtolower($temp) === strtolower($root) || str_starts_with(strtolower($temp . DIRECTORY_SEPARATOR), strtolower($prefix)))
+        : ($temp === $root || str_starts_with($temp . DIRECTORY_SEPARATOR, $prefix));
+      if ($inside) return false;
+    }
+    return true;
+  }
+
+  private static function open_private_scan_export(): array {
+    $temp = realpath(sys_get_temp_dir());
+    if ($temp === false || !is_dir($temp) || !is_writable($temp)) throw new \RuntimeException('Private temporary storage is unavailable.');
+    if (!self::scan_export_temp_is_private($temp)) throw new \RuntimeException('Private temporary storage must be outside the website.');
+    $directory = $temp . DIRECTORY_SEPARATOR . 'roxy-scan-export-' . bin2hex(random_bytes(16));
+    if (!@mkdir($directory, 0700) || !@chmod($directory, 0700)) {
+      if (is_dir($directory)) @rmdir($directory);
+      throw new \RuntimeException('Private scan-log storage could not be created.');
+    }
+    $path = $directory . DIRECTORY_SEPARATOR . 'scan-log.csv';
+    $handle = @fopen($path, 'x+b');
+    if ($handle === false || !@chmod($path, 0600)) {
+      if (is_resource($handle)) fclose($handle);
+      self::remove_private_scan_export($directory, $path);
+      throw new \RuntimeException('Private scan-log file could not be created.');
+    }
+    register_shutdown_function(static function () use ($directory, $path): void {
+      self::remove_private_scan_export($directory, $path);
+    });
+    return [$directory, $path, $handle];
+  }
+
+  private static function remove_private_scan_export($directory, $path): void {
+    if (is_string($path) && is_file($path) && !@unlink($path)) error_log('Roxy Member Check: private scan export cleanup failed.');
+    if (is_string($directory) && is_dir($directory) && !@rmdir($directory)) error_log('Roxy Member Check: private scan export directory cleanup failed.');
   }
 
   public static function render_myaccount_photo_uploader($subscription) {
