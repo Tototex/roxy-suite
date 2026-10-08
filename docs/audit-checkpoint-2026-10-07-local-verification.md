@@ -14,6 +14,10 @@
   Requested Showings agreement/tax, Social AI references, Grosses workbook
   calendar, scheduler, and anomaly-status regressions pass. The outbox tests
   use private fixtures/intercepted mail; no real recipient was contacted.
+- A final Square inventory parser audit found and fixed one additional
+  fail-closed case: terminal responses missing the `counts` field can no longer
+  be interpreted as zero stock. The response suite now passes 50 checks and
+  preserves stock on missing terminal collections.
 
 ## Live read-only checks
 

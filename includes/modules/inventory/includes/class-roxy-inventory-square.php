@@ -118,7 +118,8 @@ class Square {
         if ($code < 200 || $code >= 300 || !($native instanceof \stdClass) || json_last_error() !== JSON_ERROR_NONE) throw new \RuntimeException('Square inventory request failed or returned invalid JSON.');
         if (property_exists($native, 'errors') && (!is_array($native->errors) || $native->errors)) throw new \RuntimeException('Square reported an inventory request error.');
         $field = strpos($path, '/v2/catalog/list') === 0 ? 'objects' : 'counts';
-        if (!property_exists($native, $field) && array_diff(array_keys(get_object_vars($native)), ['errors','cursor'])) throw new \RuntimeException('Square returned an unrecognized inventory response.');
+        if (!property_exists($native, $field) && !property_exists($native, 'cursor')) throw new \RuntimeException('Square omitted the inventory collection from a terminal response.');
+        if (array_diff(array_keys(get_object_vars($native)), ['errors','cursor',$field])) throw new \RuntimeException('Square returned an unrecognized inventory response.');
         if (property_exists($native, $field)) {
             if (!is_array($native->$field)) throw new \RuntimeException('Square returned an invalid inventory collection.');
             foreach ($native->$field as $entry) {

@@ -72,6 +72,7 @@ resetfixture(null,encoded(['cursor'=>'counts-page-2']));$GLOBALS['responses']['c
 check(\RoxyInventory\Square::pull()['v1']['on_hand']===4.0,'cursor-only count page followed by a complete page uses returned count instead of zero');
 resetfixture(null,encoded(['cursor'=>'empty-counts-page-2']));$GLOBALS['responses']['counts'][]=encoded(['counts'=>[]]);
 check(\RoxyInventory\Square::pull()['v1']['on_hand']===0,'cursor-only count page followed by an explicit empty terminal collection is a valid empty result');
+resetfixture(null,encoded(['cursor'=>'missing-terminal-counts']));$GLOBALS['responses']['counts'][]=encoded((object)[]);rejects('missing terminal counts collection is not zero stock');
 resetfixture(encoded(['cursor'=>'catalog-page-2']));$GLOBALS['responses']['catalog'][]=encoded(catalog());
 check(\RoxyInventory\Square::pull()['v1']['on_hand']===3.0,'cursor-only catalog page followed by a complete page retains returned item');
 resetfixture(encoded(['cursor'=>'empty-catalog-page-2']));$GLOBALS['responses']['catalog'][]=encoded(['objects'=>[]]);
@@ -81,7 +82,8 @@ rejects('count pagination request failure after cursor-only page');
 resetfixture(encoded(['cursor'=>'catalog-page-2']));$GLOBALS['responses']['catalog'][]=encoded((object)[],500);
 rejects('catalog pagination request failure after cursor-only page');
 resetfixture(null,encoded(['counts'=>[countrow('-2.5')]]));check(\RoxyInventory\Square::pull()['v1']['on_hand']===-2.5,'legitimate negative decimal Square stock retained');
-foreach ([(object)[],['counts'=>[]]] as $empty) { resetfixture(null,encoded($empty));check(\RoxyInventory\Square::pull()['v1']['on_hand']===0,'absent/empty counts legitimately mean no stock'); }
+resetfixture(null,encoded(['counts'=>[]]));check(\RoxyInventory\Square::pull()['v1']['on_hand']===0,'explicitly empty counts legitimately mean no stock');
+resetfixture(null,encoded((object)[]));rejects('missing terminal counts collection is not zero stock');
 resetfixture(encoded((object)[]));rejects('successful empty catalog is not treated as a complete inventory pull');
 $method=new ReflectionMethod(\RoxyInventory\Square::class,'page_budget');$method->setAccessible(true);
 foreach ([[microtime(true)-1,0],[microtime(true)+10,100]] as [$deadline,$pages]) { $failed=false;try{$method->invokeArgs(null,[$deadline,&$pages]);}catch(Throwable $e){$failed=true;}check($failed,'expired/page-count budget fails closed'); }
