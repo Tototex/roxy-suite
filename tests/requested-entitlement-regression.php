@@ -96,7 +96,7 @@ namespace {
         public function save() {}
     }
     class WC_Order {
-        public $id = 7001; public $customer_id = 77; public $saved = false; public $events = []; public $lines = []; public $completed = 0; public $meta = []; public $paid = false; public $currency = 'USD';
+        public $id = 7001; public $customer_id = 77; public $saved = false; public $events = []; public $lines = []; public $completed = 0; public $meta = []; public $paid = false; public $currency = 'USD'; public $transaction_id = ''; public $date_paid = null;
         public function add_product($product, $qty) { $this->lines[] = new FixtureOrderItem($product->id, $qty); return count($this->lines); }
         public function get_items($type = 'line_item') { return $type === 'line_item' ? $this->lines : []; }
         public function get_item($id) { return $this->lines[$id - 1] ?? null; }
@@ -114,12 +114,14 @@ namespace {
         public function is_paid() { return $this->paid; }
         public function calculate_totals() { $this->events[] = 'calculate'; }
         public function update_taxes() { $this->events[] = 'update_taxes'; }
-        public function save() { $this->saved = true; $this->events[] = 'save'; }
+        public function save() { $this->saved = true; $this->events[] = 'save'; return $this->id; }
         public function set_created_via($value) {}
         public function set_payment_method($value) {}
         public function set_payment_method_title($value) {}
-        public function payment_complete($key = '') { $this->events[] = 'payment_complete'; $this->completed++; }
+        public function payment_complete($key = '') { $this->events[] = 'payment_complete'; $this->completed++; $this->paid = true; $this->transaction_id = (string) $key; $this->date_paid = new \DateTimeImmutable('2026-10-08T12:00:00Z'); return true; }
         public function get_id() { return $this->id; }
+        public function get_transaction_id() { return $this->transaction_id; }
+        public function get_date_paid() { return $this->date_paid; }
     }
 
     final class FixtureWpdb {

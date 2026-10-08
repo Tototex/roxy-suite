@@ -20,6 +20,7 @@ namespace {
     function remove_filter($hook, $callback, $priority = 10): void { unset($GLOBALS['payment_filters'][$hook]); }
     function get_user_option($key, $user) { return 'cus_fixture'; }
     function is_wp_error($value) { return $value instanceof WP_Error; }
+    function wc_get_order($id) { return isset($GLOBALS['payment_saved_orders'][$id]) ? clone $GLOBALS['payment_saved_orders'][$id] : false; }
     final class WP_Error { public function __construct(public string $code, public string $message) {} }
     final class WC_Payment_Tokens { public static function get($id) { return new class { public function get_user_id() { return 77; } public function get_token() { return 'pm_fixture'; } }; } }
     final class WC_Order {
@@ -28,6 +29,8 @@ namespace {
         public float $total = 12;
         public string $transaction = '';
         public bool $save_fails = false;
+        public bool $paid = false;
+        public $date_paid = null;
         public function __construct(public int $id) {}
         public function get_id() { return $this->id; }
         public function get_total() { return $this->total; }
@@ -36,8 +39,11 @@ namespace {
         public function set_payment_method($value) {}
         public function set_payment_method_title($value) {}
         public function set_transaction_id($value) { $this->transaction = $value; }
-        public function save() { if ($this->save_fails) throw new \RuntimeException('Fixture persistence failure'); $this->saves++; }
-        public function payment_complete($id) { $this->completed++; }
+        public function save() { if ($this->save_fails) throw new \RuntimeException('Fixture persistence failure'); $this->saves++; $GLOBALS['payment_saved_orders'][$this->id] = clone $this; return $this->id; }
+        public function payment_complete($id) { $this->completed++; $this->paid = true; $this->transaction = $id; $this->date_paid = new \DateTimeImmutable('2026-10-08T12:00:00Z'); return $this->save() === $this->id; }
+        public function is_paid() { return $this->paid; }
+        public function get_transaction_id() { return $this->transaction; }
+        public function get_date_paid() { return $this->date_paid; }
         public function add_order_note($note) {}
     }
     final class WC_Stripe_API {
@@ -70,6 +76,7 @@ namespace {
         \RoxyRS\PaymentAttempts::$claimed = []; \RoxyRS\PaymentAttempts::$verify_ok = true; \RoxyRS\PaymentAttempts::$record_ok = true;
         WC_Stripe_API::$calls = 0; WC_Stripe_API::$status = 'succeeded'; WC_Stripe_API::$throw = false; WC_Stripe_API::$missing_id = false; WC_Stripe_API::$keys = [];
         WC_Stripe_API::$wrong_amount = false;
+        $GLOBALS['payment_saved_orders'] = [];
         $GLOBALS['payment_filters'] = [];
     };
     $reset(); $order = new WC_Order(701);

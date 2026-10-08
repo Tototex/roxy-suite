@@ -135,6 +135,7 @@ jobs:
             requested-funding-read-regression.php
             requested-money-regression.php
             requested-payment-attempt-regression.php
+            requested-order-payment-completion-regression.php
             requested-payment-review-render-regression.php
             requested-payment-status-regression.php
             requested-privacy-regression.php

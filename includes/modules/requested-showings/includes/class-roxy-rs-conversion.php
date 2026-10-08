@@ -915,8 +915,9 @@ class Conversion {
         } else {
             $order->set_payment_method('');
             $order->set_payment_method_title('No charge');
-            $order->save();
-            $order->payment_complete('roxy-rs-nocharge-' . $backing_id);
+            if (!self::complete_order_and_verify_payment($order, 'roxy-rs-nocharge-' . $backing_id, 0, strtoupper((string) $order->get_currency()))) {
+                return new \WP_Error('nocharge_completion_unverified', 'The no-charge WooCommerce order could not be confirmed as paid. Review the saved order and backing before retrying.');
+            }
             $lease->assert_owner();
             $recorded = roxy_rs_repo_update_backing($backing_id, [
                 'status' => 'charged',
@@ -1229,12 +1230,38 @@ class Conversion {
             $order->set_payment_method('stripe');
             $order->set_payment_method_title('Credit / Debit Card');
             $order->set_transaction_id($intent->id);
-            $order->save();
-            $order->payment_complete($intent->id);
+            if (!self::complete_order_and_verify_payment($order, $intent->id, $amount, strtoupper($request['currency']))) {
+                return new \WP_Error('payment_completion_unverified', 'The provider confirmed payment, but WooCommerce did not confirm the paid order state. Review the saved order and provider intent; do not charge again.');
+            }
             $order->add_order_note('Requested showing backing charged off-session from saved payment method.');
             return ['intent_id' => $intent->id];
         } catch (\Throwable $error) {
             return new \WP_Error('payment_review_required', 'Payment requires reconciliation. Review the saved order and provider records before any further payment attempt.');
+        }
+    }
+
+    /** Persist payment completion and verify the durable Woo order before linking a charged backing. */
+    private static function complete_order_and_verify_payment(\WC_Order $order, string $transaction_id, int $expected_amount_cents, string $expected_currency): bool {
+        if ($transaction_id === '' || !method_exists($order, 'get_id') || !method_exists($order, 'save')
+            || !method_exists($order, 'payment_complete') || !method_exists($order, 'get_total')
+            || !method_exists($order, 'get_currency') || !function_exists('wc_get_order')
+            || $expected_amount_cents < 0 || !preg_match('/^[A-Z]{3}$/D', $expected_currency)) return false;
+        $order_id = (int) $order->get_id();
+        if ($order_id <= 0) return false;
+        try {
+            if (self::money_to_cents($order->get_total()) !== $expected_amount_cents
+                || strtoupper((string) $order->get_currency()) !== $expected_currency) return false;
+            if ((int) $order->save() !== $order_id || $order->payment_complete($transaction_id) !== true) return false;
+            $saved = wc_get_order($order_id);
+            if (!$saved instanceof \WC_Order || !method_exists($saved, 'get_id') || (int) $saved->get_id() !== $order_id
+                || !method_exists($saved, 'is_paid') || !method_exists($saved, 'get_transaction_id')
+                || !method_exists($saved, 'get_date_paid') || !method_exists($saved, 'get_total') || !method_exists($saved, 'get_currency')
+                || $saved->is_paid() !== true || self::money_to_cents($saved->get_total()) !== $expected_amount_cents
+                || strtoupper((string) $saved->get_currency()) !== $expected_currency
+                || !hash_equals($transaction_id, (string) $saved->get_transaction_id())) return false;
+            return $saved->get_date_paid() instanceof \DateTimeInterface;
+        } catch (\Throwable $error) {
+            return false;
         }
     }
 
