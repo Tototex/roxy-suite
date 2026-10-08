@@ -7,6 +7,7 @@ if (!defined('ABSPATH')) exit;
 final class RefundSnapshot {
   private array $return_orders;
   private array $sources;
+  private array $payment_refunds;
 
   /** PHP 8.0-compatible equivalent of array_is_list(). */
   private static function is_list(array $value): bool {
@@ -15,9 +16,10 @@ final class RefundSnapshot {
     return true;
   }
 
-  private function __construct(array $return_orders, array $sources) {
+  private function __construct(array $return_orders, array $sources, array $payment_refunds = []) {
     $this->return_orders = $return_orders;
     $this->sources = $sources;
+    $this->payment_refunds = $payment_refunds;
   }
 
   public static function load(string $earliest_sale_date, ?\DateTimeImmutable $now = null, ?float $deadline = null): self {
@@ -72,6 +74,7 @@ final class RefundSnapshot {
     $returns = [];
     $source_ids = [];
     $statuses = [];
+    $refund_records = [];
     $refund_owners = [];
     foreach ($orders as $order) {
       if (empty($order['returns'])) continue;
@@ -91,6 +94,8 @@ final class RefundSnapshot {
           $refund = $cached_refunds[$id] ?? Square::retrieve_payment_refund($id, $deadline);
           if (($refund['payment_id'] ?? null) !== $reference['tender_id']) throw new \RuntimeException('Square refund payment reference is missing or does not match its return order.');
           if (isset($refund['order_id']) && $refund['order_id'] !== $order['id']) throw new \RuntimeException('Square refund order reference does not match its return order.');
+          if (($refund['id'] ?? null) !== $id) throw new \RuntimeException('Square returned a different payment-refund identity than requested.');
+          $refund_records[$id] = $refund;
           $statuses[$id] = $refund['status'];
         }
         if ($statuses[$id] !== 'COMPLETED') $verified = false;
@@ -116,7 +121,46 @@ final class RefundSnapshot {
       $sale['source_date'] = $date;
       $sources[$sale['id']] = $sale;
     }
-    return new self($returns, $sources);
+    return new self($returns, $sources, $refund_records);
+  }
+
+  /** Return-linked completed refunds as dated cash-out events; separate from sale-day ticket adjustments. */
+  public function completed_return_financial_refunds(): array {
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $events = [];
+    foreach ($this->payment_refunds as $refund_id => $refund) {
+      if (($refund['status'] ?? '') !== 'COMPLETED') continue;
+      if (($refund['id'] ?? null) !== $refund_id
+        || !is_string($refund['payment_id'] ?? null) || $refund['payment_id'] === ''
+        || !is_string($refund['order_id'] ?? null) || $refund['order_id'] === ''
+        || !is_string($refund['location_id'] ?? null) || $refund['location_id'] === '') {
+        throw new \RuntimeException('A completed Square refund is missing a stable financial identity.');
+      }
+      $money = $refund['amount_money'] ?? null;
+      if (!is_array($money) || !is_int($money['amount'] ?? null) || $money['amount'] < 0 || ($money['currency'] ?? null) !== 'USD') {
+        throw new \RuntimeException('A completed Square refund has an invalid amount or unsupported currency.');
+      }
+      $completed_at = $refund['updated_at'] ?? null;
+      if (!is_string($completed_at) || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/', $completed_at)) {
+        throw new \RuntimeException('A completed Square refund has no valid completion timestamp.');
+      }
+      try { $timestamp = new \DateTimeImmutable($completed_at); }
+      catch (\Throwable $error) { throw new \RuntimeException('A completed Square refund has an invalid completion timestamp.'); }
+      $errors = \DateTimeImmutable::getLastErrors();
+      if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('A completed Square refund has an invalid completion calendar date.');
+      $events[] = [
+        'refund_id' => $refund_id,
+        'payment_id' => $refund['payment_id'],
+        'order_id' => $refund['order_id'],
+        'location_id' => $refund['location_id'],
+        'amount_cents' => $money['amount'],
+        'currency' => 'USD',
+        'completed_at' => $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
+        'refund_date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
+      ];
+    }
+    usort($events, static fn(array $a, array $b): int => [$a['completed_at'], $a['refund_id']] <=> [$b['completed_at'], $b['refund_id']]);
+    return $events;
   }
 
   /** Adjust quantities only. Never use these copied orders for cash arithmetic. */
