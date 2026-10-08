@@ -12,4 +12,4 @@ Valid date strings remain unchanged local wall-clock values, including leap-day 
 
 ## Verification boundary
 
-`git diff --check` passes. PHP is not installed in the local environment, so execution and PHP 8.0–8.4 syntax verification must be provided by the hosted compatibility workflow before this checkpoint is considered tested. This is branch-only; no production deployment or live data change was made.
+`git diff --check` passes. Hosted run 37736678490 passes all tracked-PHP syntax checks on PHP 8.0–8.4 and the complete 71-program isolated regression suite on PHP 8.3, including the schedule child status regression. An initial hosted attempt exposed a missing fixture stub, which was added and verified in this successful run. This is branch-only; no production deployment or live data change was made.
