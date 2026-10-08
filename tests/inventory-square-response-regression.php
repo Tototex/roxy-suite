@@ -55,9 +55,9 @@ function check($ok,$label) { global $checks; if(!$ok)throw new RuntimeException(
 function rejects($label) { $failed=false;try{\RoxyInventory\Square::pull();}catch(Throwable $e){$failed=true;}check($failed && !\RoxyInventory\Store::$saved && \RoxyInventory\Store::$commits===0 && \RoxyInventory\Store::$stock===['v1'=>19],$label.' preserves saved inventory'); }
 resetfixture(); $items=\RoxyInventory\Square::pull();
 check($items['v1']['on_hand']===3.0 && \RoxyInventory\Store::$commits===1,'valid response commits once');
-$body=json_decode($GLOBALS['requests'][2][1]['body'],true);
+$body=json_decode($GLOBALS['requests'][1][1]['body'],true);
 check($body['location_ids']===['L1','L2'] && $body['states']===['IN_STOCK'],'locations deduplicated and available-stock filter retained');
-check($GLOBALS['requests'][0][1]['timeout']<=35 && $GLOBALS['requests'][1][1]['timeout']<=35 && $GLOBALS['requests'][2][1]['timeout']<=35,'network calls share bounded timeout');
+check($GLOBALS['requests'][0][1]['timeout']<=35 && $GLOBALS['requests'][1][1]['timeout']<=35,'network calls share bounded timeout');
 $receipt=['type'=>'ADJUSTMENT','adjustment'=>['id'=>'receipt-1','catalog_object_id'=>'v1','location_id'=>'L1','from_state'=>'NONE','to_state'=>'IN_STOCK','quantity'=>'12','reason_id'=>['type'=>'RECEIVED'],'created_at'=>'2026-10-06T18:01:00Z','occurred_at'=>'2026-10-06T18:00:00Z']];
 \RoxyInventory\Store::$receipt_orders=[['id'=>3,'created_at'=>'2026-10-06 10:00:00','payload'=>json_encode([['square_variation_id'=>'v1']])]];
 resetfixture(null,null,encoded(['changes'=>[$receipt]]));
