@@ -10,7 +10,7 @@ Return `false` immediately for an already-rejected request. Existing capacity an
 
 ## Verification
 
-`tests/capacity-walkup-regression.php` adds a direct assertion that a false incoming filter value remains false while retaining the existing valid-last-seat and over-capacity cases. Hosted PHP 8.0–8.4 syntax and the PHP 8.3 cross-module suite will verify the patch. No live cart or order was changed.
+`tests/capacity-walkup-regression.php` adds a direct assertion that a false incoming filter value remains false while retaining the existing valid-last-seat and over-capacity cases. Hosted run [37749363129](https://github.com/Tototex/roxy-suite/actions/runs/37749363129) passed the PHP 8.0–8.4 syntax matrix and PHP 8.3 cross-module suite. No live cart or order was changed.
 
 ## Risk
 
