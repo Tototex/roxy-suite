@@ -952,9 +952,67 @@ class Roxy_Sub_Check {
       return;
     }
 
-    if (!method_exists($sub, 'update_meta_data') || !method_exists($sub, 'save')) return;
-    $sub->update_meta_data(self::META_PHOTO_ID, (int)$attachment_id);
-    if (!$sub->save()) return;
+    $attachment_id = absint($attachment_id);
+    if (!$attachment_id) return;
+    $previous_photo_id = method_exists($sub, 'get_meta') ? absint($sub->get_meta(self::META_PHOTO_ID, true)) : 0;
+    $metadata_saved = false;
+
+    if (method_exists($sub, 'update_meta_data') && method_exists($sub, 'save') && method_exists($sub, 'get_meta')) {
+      try {
+        $sub->update_meta_data(self::META_PHOTO_ID, $attachment_id);
+        $metadata_saved = (bool)$sub->save();
+        if ($metadata_saved) {
+          $verified_sub = wcs_get_subscription($sub_id);
+          $metadata_saved = is_object($verified_sub)
+            && method_exists($verified_sub, 'get_meta')
+            && absint($verified_sub->get_meta(self::META_PHOTO_ID, true)) === $attachment_id;
+        }
+      } catch (Throwable $error) {
+        $metadata_saved = false;
+      }
+    }
+
+    if (!$metadata_saved) {
+      // Restore and verify the previous reference before removing the new file.
+      // If rollback cannot be verified, preserve both files rather than risk
+      // leaving subscription metadata pointing at a deleted attachment.
+      $rollback_verified = false;
+      if (method_exists($sub, 'update_meta_data') && method_exists($sub, 'delete_meta_data') && method_exists($sub, 'save')) {
+        try {
+          if ($previous_photo_id) $sub->update_meta_data(self::META_PHOTO_ID, $previous_photo_id);
+          else $sub->delete_meta_data(self::META_PHOTO_ID);
+          $sub->save();
+          $restored_sub = wcs_get_subscription($sub_id);
+          $rollback_verified = is_object($restored_sub)
+            && method_exists($restored_sub, 'get_meta')
+            && absint($restored_sub->get_meta(self::META_PHOTO_ID, true)) === $previous_photo_id;
+        } catch (Throwable $error) {
+          $rollback_verified = false;
+        }
+      }
+      if (!$rollback_verified) {
+        try {
+          $restored_sub = wcs_get_subscription($sub_id);
+          $rollback_verified = is_object($restored_sub)
+            && method_exists($restored_sub, 'get_meta')
+            && absint($restored_sub->get_meta(self::META_PHOTO_ID, true)) === $previous_photo_id;
+        } catch (Throwable $error) {
+          $rollback_verified = false;
+        }
+      }
+      if (!$rollback_verified) {
+        error_log('Roxy Member Check: photo metadata rollback could not be verified; preserving uploaded attachment.');
+      } elseif ($attachment_id !== $previous_photo_id && function_exists('wp_delete_attachment')) {
+        try {
+          if (!wp_delete_attachment($attachment_id, true)) {
+            error_log('Roxy Member Check: failed to delete an unreferenced uploaded photo attachment.');
+          }
+        } catch (Throwable $error) {
+          error_log('Roxy Member Check: failed to delete an unreferenced uploaded photo attachment.');
+        }
+      }
+      return;
+    }
 
     wp_safe_redirect(wp_get_referer() ?: wc_get_account_endpoint_url('subscriptions'));
     exit;

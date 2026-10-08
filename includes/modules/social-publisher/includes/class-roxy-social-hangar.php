@@ -146,20 +146,28 @@ final class Hangar {
             if ($old_file === '' || $old_file === null) delete_post_meta($attachment_id, '_roxy_social_video_poster_file');
             else update_post_meta($attachment_id, '_roxy_social_video_poster_file', $old_file);
             @unlink($poster_path);
+            return;
         }
+        if (is_string($old_file) && $old_file !== '' && $old_file !== $poster_path && !self::delete_owned_video_thumbnail_file($old_file)) {
+            error_log('Roxy Social could not remove a replaced Hangar video poster file.');
+        }
+    }
+
+    private static function delete_owned_video_thumbnail_file(string $file): bool {
+        if ($file === '') return true;
+        $uploads = wp_upload_dir();
+        $upload_root = !empty($uploads['basedir']) ? realpath($uploads['basedir']) : false;
+        $poster_realpath = realpath($file);
+        $upload_prefix = $upload_root !== false ? rtrim($upload_root, '/\\') . DIRECTORY_SEPARATOR : '';
+        if ($upload_root === false || $poster_realpath === false || !is_file($poster_realpath)
+            || strpos($poster_realpath, $upload_prefix) !== 0
+            || !preg_match('/-poster(?:-[0-9]+)?\.[A-Za-z0-9]+$/', basename($poster_realpath))) return true;
+        return @unlink($poster_realpath) || !file_exists($poster_realpath);
     }
 
     public static function delete_video_thumbnail(int $attachment_id): void {
         $file = (string) get_post_meta($attachment_id, '_roxy_social_video_poster_file', true);
-        $uploads = wp_upload_dir();
-        $upload_root = !empty($uploads['basedir']) ? realpath($uploads['basedir']) : false;
-        $poster_realpath = $file !== '' ? realpath($file) : false;
-        $upload_prefix = $upload_root !== false ? rtrim($upload_root, '/\\') . DIRECTORY_SEPARATOR : '';
-        if ($upload_root !== false && $poster_realpath !== false && is_file($poster_realpath)
-            && strpos($poster_realpath, $upload_prefix) === 0
-            && preg_match('/-poster(?:-[0-9]+)?\.[A-Za-z0-9]+$/', basename($poster_realpath))) {
-            @unlink($poster_realpath);
-        }
+        self::delete_owned_video_thumbnail_file($file);
         delete_post_meta($attachment_id, '_roxy_social_video_poster_url');
         delete_post_meta($attachment_id, '_roxy_social_video_poster_file');
     }

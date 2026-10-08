@@ -227,6 +227,7 @@ jobs:
             inventory-square-response-regression.php
             member-door-regression.php
             member-export-regression.php
+            member-photo-upload-lifecycle-regression.php
             member-regression.php
             members-dashboard-regression.php
             requested-agreement-conversion-regression.php

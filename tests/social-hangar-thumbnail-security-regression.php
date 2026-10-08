@@ -143,6 +143,26 @@ namespace RoxySocial {
     unset($GLOBALS['hangar_fixture']['fail_meta_key']);
     $check($GLOBALS['hangar_fixture']['meta'][507] === $old_poster_meta && file_get_contents($old_poster_path) === 'preserve-prior-poster'
         && !is_file($upload_dir . DIRECTORY_SEPARATOR . 'replacement-poster.png'), 'failed replacement preserves prior poster metadata and bytes');
+    $replace_old_path = $upload_dir . DIRECTORY_SEPARATOR . 'replace-me-poster.png';
+    file_put_contents($replace_old_path, 'obsolete-poster');
+    $GLOBALS['hangar_fixture']['meta'][509] = [
+        '_roxy_social_video_poster_url' => 'https://fixture.invalid/uploads/replace-me-poster.png',
+        '_roxy_social_video_poster_file' => $replace_old_path,
+    ];
+    $save_poster->invoke(null, 509, 31, 'new-poster.mp4');
+    $replacement_path = $GLOBALS['hangar_fixture']['meta'][509]['_roxy_social_video_poster_file'] ?? '';
+    $check(!file_exists($replace_old_path) && is_file($replacement_path) && file_get_contents($replacement_path) === $png,
+        'verified poster replacement removes only the previous owned poster and retains the new file');
+    $outside_old_path = $upload_dir . '-previous-poster.png';
+    file_put_contents($outside_old_path, 'preserve-outside-poster');
+    $GLOBALS['hangar_fixture']['meta'][510] = [
+        '_roxy_social_video_poster_url' => 'https://fixture.invalid/previous-poster.png',
+        '_roxy_social_video_poster_file' => $outside_old_path,
+    ];
+    $save_poster->invoke(null, 510, 31, 'new-outside-poster.mp4');
+    $check(is_file($outside_old_path) && file_get_contents($outside_old_path) === 'preserve-outside-poster',
+        'poster replacement never deletes a previous path outside the configured uploads directory');
+    unlink($outside_old_path);
     $before_files = count(glob($upload_dir . DIRECTORY_SEPARATOR . '*') ?: []);
     $before_meta = $GLOBALS['hangar_fixture']['meta'][501];
     $GLOBALS['hangar_fixture']['cache']['roxy_social_hangar_thumb_32'] = '/posters/bad.png';
