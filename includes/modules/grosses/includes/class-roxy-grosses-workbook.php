@@ -1078,7 +1078,16 @@ class Workbook {
     if ($start_year !== $end_year || $start_month !== $end_month) {
       $range_suffix .= '-to-' . sprintf('%04d-%02d', $end_year, $end_month);
     }
-    $path = trailingslashit($dir) . 'advertiser-summary-' . $range_suffix . '-' . self::new_send_request_id() . '.xlsx';
+    $path = '';
+    for ($attempt = 0; $attempt < 5; $attempt++) {
+      $candidate = trailingslashit($dir) . 'advertiser-summary-' . $range_suffix . '-' . self::new_send_request_id() . '.xlsx';
+      $reserved = @fopen($candidate, 'x');
+      if ($reserved === false) continue;
+      if (!fclose($reserved)) { @unlink($candidate); continue; }
+      $path = $candidate;
+      break;
+    }
+    if ($path === '') throw new \RuntimeException('A unique private advertiser workbook path could not be reserved.');
     try {
       self::write_simple_xlsx($path, 'Advertiser Summary', $rows);
     } catch (\Throwable $error) {

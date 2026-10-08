@@ -31,7 +31,9 @@ namespace RoxyGrosses {
   final class EmailOutbox {
     public static array $rows = [];
     public static int $next_id = 1;
+    public static bool $throw_once = false;
     public static function claim(string $key, string $kind, int $source_id, ?string $report_date, array $payload, array $context): array {
+      if (self::$throw_once) { self::$throw_once = false; throw new \RuntimeException('fixture outbox claim failure'); }
       if (isset(self::$rows[$key])) return ['claimed'=>false,'id'=>self::$rows[$key]['id'],'status'=>self::$rows[$key]['status']];
       $id=self::$next_id++;
       self::$rows[$key]=['id'=>$id,'status'=>'sending','payload'=>$payload,'context'=>$context];
@@ -52,6 +54,10 @@ namespace {
   define('WP_CONTENT_DIR', $private_content_dir);
   function trailingslashit($path): string { return rtrim((string) $path, '/\\') . DIRECTORY_SEPARATOR; }
   function wp_mkdir_p($path): bool { return is_dir($path) || mkdir($path, 0700, true); }
+  function wp_generate_uuid4(): string {
+    if (!empty($GLOBALS['advertiser_uuid_queue'])) return array_shift($GLOBALS['advertiser_uuid_queue']);
+    return sprintf('%08x-%04x-4%03x-a%03x-%012x', random_int(0, 0xffffffff), random_int(0, 0xffff), random_int(0, 0xfff), random_int(0, 0xfff), random_int(0, 0xffffffffffff));
+  }
   function wp_date($format, $timestamp = null, $timezone = null): string { return '2026-10-07 12:00:00'; }
   function is_email($email): bool { return filter_var($email, FILTER_VALIDATE_EMAIL) !== false; }
   function wp_mail($to, $subject, $body, $headers = [], $attachments = []): bool {
@@ -80,6 +86,20 @@ namespace {
   eval('?>' . $source);
 
   $GLOBALS['advertiser_fixture_files'] = [];
+  $GLOBALS['advertiser_uuid_queue'] = [
+    '123e4567-e89b-42d3-a456-426614174001',
+    '123e4567-e89b-42d3-a456-426614174002',
+    '123e4567-e89b-42d3-a456-426614174001',
+    '123e4567-e89b-42d3-a456-426614174003',
+    '123e4567-e89b-42d3-a456-426614174004',
+    '123e4567-e89b-42d3-a456-426614174005',
+    '123e4567-e89b-42d3-a456-426614174006',
+    '123e4567-e89b-42d3-a456-426614174007',
+    '123e4567-e89b-42d3-a456-426614174008',
+    '123e4567-e89b-42d3-a456-426614174009',
+    '123e4567-e89b-42d3-a456-426614174010',
+    '123e4567-e89b-42d3-a456-426614174011',
+  ];
   $GLOBALS['advertiser_mail_calls'] = [];
   $GLOBALS['advertiser_mail_result'] = true;
   $checks = 0;
@@ -113,9 +133,14 @@ namespace {
     $thrown = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 8, 'manual-advertiser', 2026, 8, '123e4567-e89b-42d3-a456-426614174001', true);
     unset($GLOBALS['advertiser_mail_throw']);
     $check(empty($thrown['success']) && count($GLOBALS['advertiser_mail_calls']) === 4, 'thrown advertiser mail outcome is recorded as uncertain');
+    \RoxyGrosses\EmailOutbox::$throw_once = true;
+    $claim_error = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 8, 'manual-advertiser', 2026, 8, '123e4567-e89b-42d3-a456-426614174002', true);
+    $check(empty($claim_error['success']) && count($GLOBALS['advertiser_mail_calls']) === 4, 'outbox claim failure stops before mail and cleans its attachment');
     $attachment_paths = array_column($GLOBALS['advertiser_mail_calls'], 'attachment');
     $check(count(array_unique($attachment_paths)) === count($attachment_paths), 'each advertiser send receives a distinct workbook attachment path');
-    $check(count(array_filter($attachment_paths, 'is_file')) === 0, 'private advertiser attachments are removed after each mail attempt');
+    $check($GLOBALS['advertiser_uuid_queue'] === [], 'forced filename collision was retried with a fresh UUID');
+    $check(count(array_unique($GLOBALS['advertiser_fixture_files'])) === count($GLOBALS['advertiser_fixture_files']), 'forced UUID collision is resolved without reusing a workbook path');
+    $check(count(array_filter($GLOBALS['advertiser_fixture_files'], 'is_file')) === 0, 'all private advertiser attachments are removed after send, suppression and pre-mail failures');
     echo "Passed {$checks} advertiser email outbox checks; all mail was intercepted.\n";
   } finally {
     foreach ($GLOBALS['advertiser_fixture_files'] as $fixture_file) if (is_file($fixture_file)) unlink($fixture_file);
