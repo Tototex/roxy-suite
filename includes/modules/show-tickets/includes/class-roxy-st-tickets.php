@@ -37,7 +37,9 @@ class Tickets {
     add_action('wp_ajax_roxy_st_door_checkin', [__CLASS__, 'ajax_door_checkin']);
     add_action('wp_ajax_roxy_st_door_stats', [__CLASS__, 'ajax_door_stats']);
     add_action('wp_ajax_roxy_st_member_admit', [__CLASS__, 'ajax_member_admit']);
+    add_action('wp_ajax_roxy_st_member_walkup_undo', [__CLASS__, 'ajax_member_walkup_undo']);
     add_action('admin_post_roxy_st_manual_member_admit', [__CLASS__, 'handle_manual_member_admit']);
+    add_action('admin_post_roxy_st_undo_member_walkup', [__CLASS__, 'handle_undo_member_walkup']);
     add_action('wp_ajax_roxy_st_qr', [__CLASS__, 'ajax_qr']);
     add_action('wp_ajax_nopriv_roxy_st_qr', [__CLASS__, 'ajax_qr']);
 
@@ -976,6 +978,16 @@ class Tickets {
     if (isset($_GET['member_notice'])) {
       if ($_GET['member_notice'] === 'admitted') {
         echo '<div class="notice notice-success"><p>Subscriber admitted and logged.</p></div>';
+        $visit_id = isset($_GET['walkup_visit_id']) ? absint($_GET['walkup_visit_id']) : 0;
+        $sub_id = isset($_GET['walkup_subscription_id']) ? absint($_GET['walkup_subscription_id']) : 0;
+        $showing_id = isset($_GET['door_showing_id']) ? absint($_GET['door_showing_id']) : 0;
+        if ($visit_id && $sub_id && $showing_id) self::render_walkup_undo_form($visit_id,$sub_id,$showing_id);
+      } elseif ($_GET['member_notice'] === 'undo') {
+        echo '<div class="notice notice-success"><p>One walk-up arrival was undone.</p></div>';
+        $visit_id = isset($_GET['walkup_visit_id']) ? absint($_GET['walkup_visit_id']) : 0;
+        $sub_id = isset($_GET['walkup_subscription_id']) ? absint($_GET['walkup_subscription_id']) : 0;
+        $showing_id = isset($_GET['door_showing_id']) ? absint($_GET['door_showing_id']) : 0;
+        if ($visit_id && $sub_id && $showing_id) self::render_walkup_undo_form($visit_id,$sub_id,$showing_id);
       } elseif ($_GET['member_notice'] === 'error') {
         $message = isset($_GET['member_error']) ? sanitize_text_field(wp_unslash($_GET['member_error'])) : 'Unable to admit subscriber.';
         echo '<div class="notice notice-error"><p>' . esc_html($message) . '</p></div>';
@@ -1428,6 +1440,7 @@ class Tickets {
       }
       $visit=\Roxy_Sub_Check::log_member_visit($sub_id,$showing_id,$quantity,$source,static fn(array $row):bool=>$operation->member_visit($row));
       if(empty($visit['ok'])) throw new \RuntimeException('Membership visit was not saved.');
+      $visit['walkup_visit_id']=$operation->member_visit_id();
       return $visit;
     });
   }
@@ -1504,6 +1517,7 @@ class Tickets {
     $payload['admit_reserved_count'] = $reserved_count;
     $payload['admit_reserved_changed'] = $reserved_changed;
     $payload['admit_showing_id'] = $showing_id;
+    if (!empty($visit['walkup_visit_id']) && strpos($source, '_walkup') !== false) $payload['walkup_visit_id'] = (int) $visit['walkup_visit_id'];
     $payload['showing_title'] = get_the_title($showing_id);
     $payload['attendance'] = self::door_stats_payload($showing_id);
 
@@ -1622,6 +1636,29 @@ class Tickets {
     wp_send_json_success($admit['payload']);
   }
 
+  public static function undo_member_walkup(int $visit_id,int $sub_id,int $showing_id): array {
+    if($visit_id<=0 || $sub_id<=0 || $showing_id<=0 || get_post_type($showing_id)!==CPT::POST_TYPE)throw new \RuntimeException('Invalid member walk-up identity.');
+    if(!\Roxy_Sub_Check::prepare_admission_log())throw new \RuntimeException('Membership log is unavailable.');
+    $result=(new Issuance([],'walkup:'.$showing_id))->run(static function(Issuance $operation)use($visit_id,$sub_id,$showing_id):array {
+      $audit=$operation->undo_member_walkup($visit_id,$sub_id,$showing_id);
+      return $audit;
+    });
+    self::invalidate_door_stats_cache($showing_id);
+    return $result;
+  }
+
+  public static function ajax_member_walkup_undo(): void {
+    if(!roxy_suite_user_can_access_admin())wp_send_json_error(['message'=>'Permission denied.'],403);
+    check_ajax_referer('roxy_st_door_checkin','nonce');
+    $showing_id=isset($_POST['showing_id'])?absint($_POST['showing_id']):0;
+    try {
+      $audit=self::undo_member_walkup(isset($_POST['visit_id'])?absint($_POST['visit_id']):0,isset($_POST['subscription_id'])?absint($_POST['subscription_id']):0,$showing_id);
+      wp_send_json_success(['audit'=>$audit,'attendance'=>self::door_stats_payload($showing_id)]);
+    } catch(\Throwable $error) {
+      wp_send_json_error(['message'=>'Member walk-up was not undone. Refresh and review the admission list.'],409);
+    }
+  }
+
   public static function handle_manual_member_admit(): void {
     if (!roxy_suite_user_can_access_admin()) {
       wp_die('Invalid request.');
@@ -1645,9 +1682,40 @@ class Tickets {
     ];
     if (empty($admit['ok'])) {
       $args['member_error'] = rawurlencode((string) ($admit['message'] ?? 'Unable to admit member.'));
+    } elseif (!empty($admit['payload']['walkup_visit_id'])) {
+      $args['walkup_visit_id'] = (int) $admit['payload']['walkup_visit_id'];
+      $args['walkup_subscription_id'] = $sub_id;
     }
     wp_safe_redirect(add_query_arg($args, admin_url('admin.php')));
     exit;
+  }
+
+  private static function render_walkup_undo_form(int $visit_id,int $sub_id,int $showing_id): void {
+    echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin:12px 0">';
+    echo '<input type="hidden" name="action" value="roxy_st_undo_member_walkup">';
+    echo '<input type="hidden" name="visit_id" value="' . esc_attr((string)$visit_id) . '">';
+    echo '<input type="hidden" name="subscription_id" value="' . esc_attr((string)$sub_id) . '">';
+    echo '<input type="hidden" name="showing_id" value="' . esc_attr((string)$showing_id) . '">';
+    wp_nonce_field('roxy_st_undo_member_walkup_' . $visit_id);
+    echo '<button type="submit" class="button">Undo one walk-up arrival</button></form>';
+  }
+
+  public static function handle_undo_member_walkup(): void {
+    if(!roxy_suite_user_can_access_admin())wp_die('Permission denied.');
+    $visit_id=isset($_POST['visit_id'])?absint($_POST['visit_id']):0;
+    $sub_id=isset($_POST['subscription_id'])?absint($_POST['subscription_id']):0;
+    $showing_id=isset($_POST['showing_id'])?absint($_POST['showing_id']):0;
+    if(!$visit_id || !check_admin_referer('roxy_st_undo_member_walkup_' . $visit_id))wp_die('Invalid request.');
+    $args=['page'=>'roxy-ticket-ops','tab'=>'manual-checkin','door_showing_id'=>$showing_id,'member_notice'=>'admitted'];
+    try {
+      $audit=self::undo_member_walkup($visit_id,$sub_id,$showing_id);
+      $args['member_notice']='undo';
+      if(!empty($audit['replacement_visit_id'])){$args['walkup_visit_id']=$audit['replacement_visit_id'];$args['walkup_subscription_id']=$sub_id;}
+    } catch(\Throwable $error) {
+      $args['member_notice']='error';
+      $args['member_error']='Member walk-up was not undone. Refresh and review the admission list.';
+    }
+    wp_safe_redirect(add_query_arg($args,admin_url('admin.php')));exit;
   }
 
   public static function ajax_door_stats(): void {

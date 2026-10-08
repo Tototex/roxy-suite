@@ -32,13 +32,22 @@ try {
   $fail=static fn($sql)=>str_starts_with($sql,"INSERT INTO `$table`")?'INSERT INTO `roxy_missing_walkup_log_failure` VALUES (1)':$sql;
   add_filter('query',$fail);$errors=$wpdb->suppress_errors(true);try{$result=$admit(1);}finally{remove_filter('query',$fail);$wpdb->suppress_errors($errors);}
   $check(!$result['ok']&&$total()===0,'failed transactional walk-up log reports no admission');
-  $result=$admit(1);$check($result['ok']&&$total()===1&&$result['payload']['admit_quantity']===1,'fresh staff retry commits one walk-up');
+  $result=$admit(1);$check($result['ok']&&$total()===1&&$result['payload']['admit_quantity']===1&&$result['payload']['walkup_visit_id']>0,'fresh staff retry commits one walk-up with its exact visit identity');
+  $walkup_id=(int)$result['payload']['walkup_visit_id'];$wrong_identity=false;try{\RoxyST\WalkupFixtureTickets::undo_member_walkup($walkup_id,$subs[1]->get_id(),$show);}catch(Throwable $error){$wrong_identity=true;}
+  $check($wrong_identity&&$total()===1,'walk-up Undo refuses a mismatched subscription without changing the visit');
+  $audit=\RoxyST\WalkupFixtureTickets::undo_member_walkup($walkup_id,$subs[0]->get_id(),$show);
+  $check($total()===0&&$audit['quantity_after']===0&&(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `$table` WHERE id=%d AND is_active=0 AND quantity=1",$walkup_id))===1,'exact walk-up Undo preserves the original record and releases its seat');
+  $duplicate_undo=false;try{\RoxyST\WalkupFixtureTickets::undo_member_walkup($walkup_id,$subs[0]->get_id(),$show);}catch(Throwable $error){$duplicate_undo=true;}
+  $check($duplicate_undo&&$total()===0,'duplicate or stale walk-up Undo cannot change attendance twice');
+  $result=$admit(1);$check($result['ok']&&$total()===1,'member can be admitted again after an exact walk-up Undo');
   $result=$admit(1);$check(!$result['ok']&&$total()===1,'repeat target-one walk-up cannot consume another entitlement');
   $result=$admit(1,1);$check(!$result['ok']&&$total()===1,'different subscriber cannot take an occupied last seat');
   $check(\RoxyST\FixtureCapacity::remaining_seats_for_showing($show)===0,'public seat availability includes walk-up without double subtraction');
   $check(\RoxyST\FixtureCapacity::subscriber_limit_remaining_for_showing($show,$users[0],false)===2,'online entitlement deducts the admitted member walk-up');
   $clear();update_post_meta($show,'_roxy_capacity',3);$result=$admit(1);$result=$admit(3);
-  $check($result['ok']&&$total()===3&&$result['payload']['admit_quantity']===2,'raising arrived target logs only newly arrived people');
+  $check($result['ok']&&$total()===3&&$result['payload']['admit_quantity']===2&&$result['payload']['walkup_visit_id']>0,'raising arrived target logs only newly arrived people with an exact visit identity');
+  $partial=\RoxyST\WalkupFixtureTickets::undo_member_walkup((int)$result['payload']['walkup_visit_id'],$subs[0]->get_id(),$show);
+  $check($total()===2&&$partial['quantity_after']===1&&$partial['replacement_visit_id']>0&&(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `$table` WHERE id=%d AND is_active=0 AND source='manual_undo_walkup' AND status=%s",$partial['undo_audit_id'],'undo_of:'.$result['payload']['walkup_visit_id']))===1,'partial walk-up Undo preserves remaining arrivals and a linked inactive audit row');
   $clear();update_post_meta($show,'_roxy_capacity',1);
   for($n=0;$n<2;$n++) {
     $pipes=[];$process=proc_open([PHP_BINARY,'/usr/local/bin/wp','--path='.ABSPATH,'eval-file',__DIR__.'/member-walkup-worker.php',$root,(string)$subs[$n]->get_id(),(string)$show],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);
