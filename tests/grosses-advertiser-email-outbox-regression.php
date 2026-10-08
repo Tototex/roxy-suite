@@ -119,6 +119,7 @@ namespace {
     $check(!empty($first['success']) && $first_count === 1, 'first advertiser email sends through intercepted mail' . (empty($first['success']) ? ': ' . (string) ($first['message'] ?? 'no error detail') : ''));
     $check(!empty($second['success']) && !empty($second['duplicate_suppressed']) && count($GLOBALS['advertiser_mail_calls']) === 1, 'scheduled/manual advertiser duplicate is suppressed across modes');
     $check($collision_preserved, 'exclusive filename reservation preserves an existing concurrent workbook');
+    if (is_file($collision_sentinel)) unlink($collision_sentinel);
 
     $resend_id = '123e4567-e89b-42d3-a456-426614174000';
     $resend = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 9, 'manual-advertiser', 2026, 9, $resend_id, true);
