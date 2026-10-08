@@ -24,9 +24,10 @@ class FixtureWpdb {
   public array $tables = [];
   public function get_charset_collate(): string { return ''; }
   public function prepare(string $sql, ...$args): string { return vsprintf(str_replace('%s', "'%s'", $sql), $args); }
+  public function esc_like(string $value): string { return addcslashes($value, '_%\\'); }
   public function get_var(string $sql) {
     $this->last_error = '';
-    if (preg_match('/SHOW TABLES LIKE \'([^\']+)\'/i', $sql, $m)) return isset($this->tables[$m[1]]) ? $m[1] : null;
+    if (preg_match('/SHOW TABLES LIKE \'([^\']+)\'/i', $sql, $m)) { $name = stripslashes($m[1]); return isset($this->tables[$name]) ? $name : null; }
     if (preg_match('/SHOW COLUMNS FROM `?([a-z0-9_]+)`? LIKE \'([a-z0-9_]+)\'/i', $sql, $m)) return isset($this->tables[$m[1]][$m[2]]) ? $m[2] : null;
     $this->last_error = 'Unexpected fixture query';
     return null;

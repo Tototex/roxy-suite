@@ -315,7 +315,7 @@ class Store {
       self::import_file_table_name() => ['id', 'batch_id', 'status'],
     ];
     foreach ($required as $table => $columns) {
-      $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table));
+      $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table)));
       if ((string) $exists !== (string) $table || $wpdb->last_error !== '') return false;
       foreach ($columns as $column) {
         if (!$wpdb->get_var("SHOW COLUMNS FROM `{$table}` LIKE '" . esc_sql($column) . "'") || $wpdb->last_error !== '') return false;
@@ -569,7 +569,12 @@ class Store {
       'message' => sanitize_text_field($message),
       'context_json' => wp_json_encode($context),
     ]);
-    return $ok ? (int) $wpdb->insert_id : 0;
+    if ($ok) {
+      return (int) $wpdb->insert_id;
+    }
+    // Do not include caller data or try logging through the database again.
+    error_log('Roxy Grosses: audit log insert failed.');
+    return 0;
   }
 
   /** Immutable emailed snapshots are flagged separately, never rewritten/resent. */
