@@ -4,6 +4,8 @@ define('ABSPATH', __DIR__ . '/');
 define('ARRAY_A', 'ARRAY_A');
 function roxy_suite_module_enabled($key): bool { return true; }
 function roxy_rs_table_backings(): string { return 'wp_roxy_requested_showing_backings'; }
+function roxy_eb_table_bookings(): string { return 'wp_roxy_event_bookings'; }
+function current_time($format) { return '2026-10-08 12:00:00'; }
 function get_option($key, $default = false) { return $default; }
 function get_posts($args): array {
     if ($GLOBALS['posts_error']) $GLOBALS['wpdb']->last_error = 'fixture query error';
@@ -13,6 +15,7 @@ final class HealthRecordFixture {
     public string $prefix = 'wp_';
     public string $last_error = '';
     public $count = '0';
+    public $count_result = null;
     public bool $exists = true;
     public bool $count_error = false;
     public bool $lookup_error = false;
@@ -26,7 +29,7 @@ final class HealthRecordFixture {
             return $this->exists ? $match[1] : null;
         }
         if ($this->count_error) $this->last_error = 'fixture count failure';
-        return $this->count;
+        return $this->count_result ?? $this->count;
     }
 }
 $GLOBALS['wpdb'] = new HealthRecordFixture();
@@ -64,6 +67,19 @@ foreach (['functional_will_call', 'functional_arcade', 'functional_requested_sho
     $check($count_item['status'] === 'warn' && $count_item['detail'] === 'Read unavailable', $module . ' uses checked count');
     $wpdb->count_error = false;
 }
+$event_booking = static function () use ($call) { return $call('functional_event_booking')[0]; };
+$wpdb->count_result = '0';
+$event_zero = $event_booking();
+$check($event_zero['status'] === 'warn' && $event_zero['detail'] === 'None' && str_contains($event_zero['note'], 'No upcoming bookings found'), 'verified zero booking count remains a truthful empty result');
+$wpdb->count_error = true;
+$event_failed = $event_booking();
+$check($event_failed['status'] === 'warn' && $event_failed['detail'] === 'Unavailable' && str_contains($event_failed['note'], 'not a zero-booking result'), 'booking SQL failure is unavailable, not zero');
+$wpdb->count_error = false;
+foreach ([false, 'unknown', '-1', '1.5', '99999999999999999999'] as $bad_count) {
+    $wpdb->count_result = $bad_count;
+    $check($event_booking()['detail'] === 'Unavailable', 'malformed/overflow booking count is unavailable');
+}
+$wpdb->count_result = null;
 $GLOBALS['posts_error'] = true;
 $check($call('functional_requested_showings')[0]['status'] === 'warn', 'failed request query not empty list');
 $GLOBALS['posts_error'] = false;

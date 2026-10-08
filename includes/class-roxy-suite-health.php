@@ -586,11 +586,23 @@ class Health {
         if (!function_exists('roxy_eb_table_bookings')) return $items;
 
         $table = roxy_eb_table_bookings();
-        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $count = (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM `{$table}` WHERE status IN ('confirmed','pending','pending_invoice') AND doors_open_at >= %s",
-            current_time('mysql')
-        ));
+        try {
+            $wpdb->last_error = '';
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $raw_count = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM `{$table}` WHERE status IN ('confirmed','pending','pending_invoice') AND doors_open_at >= %s",
+                current_time('mysql')
+            ));
+            if ($wpdb->last_error !== '' || !(is_int($raw_count) || is_string($raw_count))
+                || !preg_match('/^(0|[1-9][0-9]*)$/D', (string) $raw_count)) {
+                throw new \RuntimeException('Upcoming booking count could not be verified.');
+            }
+            $count = filter_var($raw_count, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+            if ($count === false) throw new \RuntimeException('Upcoming booking count is outside the supported range.');
+        } catch (\Throwable $error) {
+            return [self::item('Upcoming confirmed bookings', 'Unavailable', self::WARN,
+                'The booking count could not be verified; this is not a zero-booking result.')];
+        }
 
         $items[] = self::item(
             'Upcoming confirmed bookings',
