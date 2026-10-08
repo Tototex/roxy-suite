@@ -22,7 +22,7 @@ Read-only production reconciliation (2026-10-08): the live Grosses Logs page com
 
 This reconciliation tested the existing Grosses concessions comparison, not the new branch-only Cashflow tab. The later guarded read verified Square `PAYMENTS_READ` access but returned zero records; populated-response parsing and production Cashflow totals remain unverified.
 
-The subsequent guarded Cashflow probe did verify `PAYMENTS_READ` access, but returned zero payment records. That confirms permission only; it does not verify parsing populated production records or reconcile Cashflow totals. See `docs/grosses-square-payments-live-readonly-checkpoint-2026-10-08.md`.
+The initial guarded Cashflow probe verified `PAYMENTS_READ` access on October 7 but returned zero records. A follow-up read on October 3 returned seven completed payments and seven validated collection events through the candidate parser; no identifiers or amounts were printed, and no database writes, emails, or other requests were allowed. This verifies populated-record parsing, but not daily-total reconciliation, WooCommerce attribution, webhook configuration, or deployed Cashflow behavior. See `docs/grosses-square-payments-live-readonly-checkpoint-2026-10-08.md`.
 
 Read-only ticket-list smoke (2026-10-08): the live `/tickets/` page rendered upcoming movie and live-show listings through November 1, with ticket tiers, scheduled times, member ticket controls, and the scheduled-price notice. All quantities remained zero; no cart, checkout, or order was created. This verifies rendering only, not purchase/seat-race behavior.
 
