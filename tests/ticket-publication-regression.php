@@ -16,6 +16,7 @@ function is_wp_error($v){return $v instanceof WP_Error;}
 function __($s,...$args){return $s;}
 function get_post_type($id){return $GLOBALS['types'][$id]??false;}
 function get_post_status($id){return $GLOBALS['statuses'][$id]??false;}
+function get_the_title($id){return $GLOBALS['titles'][$id]??'Fixture showing';}
 function get_post_meta($id,$key,$single=true){return $GLOBALS['meta'][$id][$key]??'';}
 function update_post_meta($id,$key,$value){$GLOBALS['meta'][$id][$key]=$value;return true;}
 function delete_post_meta($id,$key){unset($GLOBALS['meta'][$id][$key]);return true;}
