@@ -140,8 +140,10 @@ class Products {
       $profile = get_post_meta($showing_id, '_roxy_pricing_profile', true) ?: 'movie_evening';
 
     $title = trim((string) get_the_title($showing_id));
-    $start = get_post_meta($showing_id, '_roxy_start', true);
-    $start_label = $start ? date_i18n('D n/j g:ia', strtotime($start)) : '';
+    $start_timestamp = Eligibility::showing_start_timestamp($showing_id);
+    // The readiness check rejects invalid dates; keep labels on the same strict,
+    // site-local interpretation instead of letting strtotime normalize bad data.
+    $start_label = $start_timestamp !== null ? date_i18n('D n/j g:ia', $start_timestamp) : '';
 
     $thumb_id = get_post_thumbnail_id($showing_id);
 
@@ -254,8 +256,7 @@ class Products {
     $title = trim((string) get_the_title($showing_id));
     if ($title === '' || stripos($title, 'Auto Draft') === 0) return false;
 
-    $start = (string) get_post_meta($showing_id, '_roxy_start', true);
-    if ($start === '' || !strtotime($start)) return false;
+    if (!class_exists(Eligibility::class) || Eligibility::showing_start_timestamp($showing_id) === null) return false;
 
     return true;
   }

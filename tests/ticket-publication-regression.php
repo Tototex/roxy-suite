@@ -147,6 +147,8 @@ $GLOBALS['meta'][1]['_roxy_live_price_1']='0'; check(\RoxyST\Eligibility::produc
 $GLOBALS['meta'][1]['_roxy_start']='invalid date';
 $GLOBALS['meta'][1]['_roxy_duration_minutes']='60';
 check(is_wp_error(\RoxyST\Eligibility::product_error(101)) && \RoxyST\Eligibility::showing_end_timestamp(1)===null,'malformed start date fails closed for live ticket sales');
+\RoxyST\Products::ensure_products_for_showing(1);
+check(!isset($GLOBALS['transients']['roxy_st_sync_1']),'malformed showing date blocks ticket product synchronization without acquiring a sync lock');
 $GLOBALS['meta'][1]['_roxy_start']=current_datetime()->modify('-90 minutes')->format('Y-m-d\TH:i');
 $GLOBALS['meta'][1]['_roxy_duration_minutes']='60';
 check(is_wp_error(\RoxyST\Eligibility::product_error(101)),'ended live showing is no longer purchasable');
