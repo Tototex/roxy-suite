@@ -34,6 +34,8 @@ namespace RoxyGrosses {
     public static array $live = [];
     public static array $rental = [];
     public static array $updates = [];
+    public static array $unmatched_concessions = [];
+    public static bool $fail_unmatched_write = false;
     public static bool $fail_update = false;
     public static int $fail_update_number = 0;
     public static int $report_id = 100;
@@ -74,6 +76,10 @@ namespace RoxyGrosses {
     public static function update_live_entry(int $id, array $data, bool $manual = false): bool { return self::save('live', $id, $data); }
     public static function update_rental_entry(int $id, array $data, bool $manual = false): bool { return self::save('rental', $id, $data); }
     public static function concessions_by_date(string $from, string $to): array { return []; }
+    public static function record_unmatched_concession_lines(string $date, array $lines): int {
+      if (self::$fail_unmatched_write) throw new \RuntimeException('fixture queue write failure');
+      self::$unmatched_concessions[$date] = $lines; return count($lines);
+    }
   }
   final class RefundSnapshot {}
   final class Fixture {
@@ -103,6 +109,7 @@ namespace RoxyGrosses {
 namespace {
   if (!defined('ABSPATH')) define('ABSPATH', __DIR__ . DIRECTORY_SEPARATOR);
   function wp_date($format, $timestamp = null, $timezone = null) { return (new DateTimeImmutable('@' . ($timestamp ?? time())))->setTimezone($timezone ?: new DateTimeZone('UTC'))->format($format); }
+  function wp_json_encode($value) { return json_encode($value); }
   function sanitize_text_field($value) { return trim((string) $value); }
   function get_option($key, $default = false) { return ''; }
   function sanitize_email($value) { return (string)$value; }
@@ -199,14 +206,40 @@ namespace {
   $unmatched_date = '2038-05-04';
   \RoxyGrosses\Store::$movie[$unmatched_date] = [['id'=>7001,'show_time'=>'7:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0]];
   \RoxyGrosses\Square::$orders[$unmatched_date] = [[
+    'id' => 'unmatched-order-fixture',
     'closed_at' => $unmatched_date . 'T23:30:00-07:00',
-    'line_items' => [['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1250,'currency'=>'USD']]],
+    'line_items' => [['uid'=>'unmatched-line-fixture','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1250,'currency'=>'USD']]],
   ]];
   $before_unmatched_writes = count(\RoxyGrosses\Store::$updates);
   $unmatched_failed = false;
   try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$unmatched_date])); }
-  catch (Throwable $error) { $unmatched_failed = str_contains($error->getMessage(), '1 eligible Square concession line(s), totaling $12.50'); }
-  $check($unmatched_failed && count(\RoxyGrosses\Store::$updates) === $before_unmatched_writes && (float) \RoxyGrosses\Store::$movie[$unmatched_date][0]['concessions_total'] === 0.0, 'unmatched eligible sale is reported with amount and stops before allocation writes');
+  catch (Throwable $error) { $unmatched_failed = str_contains($error->getMessage(), '1 eligible Square concession line(s), totaling $12.50') && str_contains($error->getMessage(), 'review queue'); }
+  $queued = \RoxyGrosses\Store::$unmatched_concessions[$unmatched_date] ?? [];
+  $check($unmatched_failed && count($queued) === 1 && $queued[0]['amount_cents'] === 1250 && $queued[0]['square_order_id'] === 'unmatched-order-fixture' && $queued[0]['square_line_uid'] === 'unmatched-line-fixture' && preg_match('/^[a-f0-9]{64}$/D', $queued[0]['fingerprint']) === 1 && count(\RoxyGrosses\Store::$updates) === $before_unmatched_writes && (float) \RoxyGrosses\Store::$movie[$unmatched_date][0]['concessions_total'] === 0.0, 'unmatched eligible sale is persisted to review queue and stops before allocation writes');
+
+  $no_rows_date = '2038-05-06';
+  \RoxyGrosses\Square::$orders[$no_rows_date] = [[
+    'id' => 'unmatched-order-no-rows', 'closed_at' => $no_rows_date . 'T23:30:00-07:00',
+    'line_items' => [['uid'=>'unmatched-line-no-rows','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>250,'currency'=>'USD']]],
+  ]];
+  $no_rows_detected = false;
+  try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$no_rows_date])); }
+  catch (Throwable $error) { $no_rows_detected = str_contains($error->getMessage(), '1 eligible Square concession line(s), totaling $2.50'); }
+  $check($no_rows_detected && count(\RoxyGrosses\Store::$unmatched_concessions[$no_rows_date] ?? []) === 1, 'eligible Square concession is queued even when the date has no report rows');
+
+  $queue_failure_date = '2038-05-05';
+  \RoxyGrosses\Store::$movie[$queue_failure_date] = [['id'=>7002,'show_time'=>'7:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0]];
+  \RoxyGrosses\Square::$orders[$queue_failure_date] = [[
+    'id' => 'unmatched-order-queue-failure', 'closed_at' => $queue_failure_date . 'T23:30:00-07:00',
+    'line_items' => [['uid'=>'unmatched-line-queue-failure','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1250,'currency'=>'USD']]],
+  ]];
+  \RoxyGrosses\Store::$fail_unmatched_write = true;
+  $before_queue_failure_writes = count(\RoxyGrosses\Store::$updates);
+  $queue_failure_aborted = false;
+  try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$queue_failure_date])); }
+  catch (Throwable $error) { $queue_failure_aborted = str_contains($error->getMessage(), 'fixture queue write failure'); }
+  \RoxyGrosses\Store::$fail_unmatched_write = false;
+  $check($queue_failure_aborted && count(\RoxyGrosses\Store::$updates) === $before_queue_failure_writes && (float) \RoxyGrosses\Store::$movie[$queue_failure_date][0]['concessions_total'] === 0.0, 'queue persistence failure aborts before any allocation write');
 
   // A storage failure on an unlocked row must abort the allocation explicitly;
   // a locked row remains protected and is skipped rather than treated as failure.

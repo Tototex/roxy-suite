@@ -21,7 +21,8 @@ class Store {
   public const ROW_LOCK_SCHEMA_OPTION = 'roxy_grosses_row_lock_schema';
   public const REFUND_REVIEW_TABLE = 'roxy_grosses_refund_reviews';
   public const REFUND_WEBHOOK_TABLE = 'roxy_grosses_refund_webhook_events';
-  public const SCHEMA_VERSION = 'verified-2';
+  public const UNMATCHED_CONCESSION_TABLE = 'roxy_grosses_unmatched_concessions';
+  public const SCHEMA_VERSION = 'verified-3';
   private static ?bool $refund_review_schema_exists = null;
   private static int $refund_review_lock_depth = 0;
 
@@ -80,6 +81,11 @@ class Store {
   public static function refund_webhook_table_name(): string {
     global $wpdb;
     return $wpdb->prefix . self::REFUND_WEBHOOK_TABLE;
+  }
+
+  public static function unmatched_concession_table_name(): string {
+    global $wpdb;
+    return $wpdb->prefix . self::UNMATCHED_CONCESSION_TABLE;
   }
 
   public static function install_schema(): bool {
@@ -321,6 +327,28 @@ class Store {
       KEY event_created_at (event_created_at)
     ) {$charset};");
 
+    dbDelta("CREATE TABLE " . self::unmatched_concession_table_name() . " (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      fingerprint CHAR(64) NOT NULL,
+      report_date DATE NOT NULL,
+      square_order_id VARCHAR(191) NOT NULL DEFAULT '',
+      square_line_uid VARCHAR(191) NOT NULL DEFAULT '',
+      catalog_object_id VARCHAR(191) NOT NULL DEFAULT '',
+      item_name VARCHAR(255) NOT NULL DEFAULT '',
+      closed_at VARCHAR(64) NOT NULL DEFAULT '',
+      amount_cents BIGINT UNSIGNED NOT NULL DEFAULT 0,
+      reason VARCHAR(96) NOT NULL DEFAULT 'no_show_row_match',
+      status VARCHAR(16) NOT NULL DEFAULT 'open',
+      occurrences INT UNSIGNED NOT NULL DEFAULT 1,
+      first_seen_at DATETIME NOT NULL,
+      last_seen_at DATETIME NOT NULL,
+      resolved_at DATETIME NULL,
+      resolved_by BIGINT UNSIGNED NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY fingerprint (fingerprint),
+      KEY report_status_date (report_date,status,last_seen_at)
+    ) {$charset};");
+
     if (!self::required_schema_is_present()) {
       error_log('Roxy Grosses schema installation did not produce the required tables and columns; retry pending.');
       return false;
@@ -343,6 +371,7 @@ class Store {
       self::import_batch_table_name() => ['id', 'created_at', 'status'],
       self::import_file_table_name() => ['id', 'batch_id', 'status'],
       self::refund_webhook_table_name() => ['id', 'event_id', 'refund_id', 'status', 'amount_cents', 'event_created_at', 'payload_hash'],
+      self::unmatched_concession_table_name() => ['id', 'fingerprint', 'report_date', 'square_order_id', 'square_line_uid', 'catalog_object_id', 'item_name', 'closed_at', 'amount_cents', 'reason', 'status', 'occurrences', 'first_seen_at', 'last_seen_at', 'resolved_at', 'resolved_by'],
     ];
     foreach ($required as $table => $columns) {
       $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table)));
@@ -353,6 +382,8 @@ class Store {
     }
     $unique_event_index = $wpdb->get_var("SHOW INDEX FROM `" . self::refund_webhook_table_name() . "` WHERE Key_name = 'event_id' AND Non_unique = 0");
     if (!$unique_event_index || $wpdb->last_error !== '') return false;
+    $unique_unmatched_fingerprint = $wpdb->get_var("SHOW INDEX FROM `" . self::unmatched_concession_table_name() . "` WHERE Key_name = 'fingerprint' AND Non_unique = 0");
+    if (!$unique_unmatched_fingerprint || $wpdb->last_error !== '') return false;
     return true;
   }
 
@@ -704,6 +735,57 @@ class Store {
     // Do not include caller data or try logging through the database again.
     error_log('Roxy Grosses: audit log insert failed.');
     return 0;
+  }
+
+  /** Persist unmatched Square lines without changing any report or allocation rows. */
+  public static function record_unmatched_concession_lines(string $report_date, array $lines): int {
+    global $wpdb;
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/D', $report_date)) throw new \InvalidArgumentException('Invalid unmatched-concessions report date.');
+    $table = self::unmatched_concession_table_name();
+    $now = current_time('mysql', true);
+    $recorded = 0;
+    foreach ($lines as $line) {
+      if (!is_array($line) || !preg_match('/^[a-f0-9]{64}$/D', (string) ($line['fingerprint'] ?? ''))
+        || !is_int($line['amount_cents'] ?? null) || $line['amount_cents'] <= 0) throw new \InvalidArgumentException('Malformed unmatched Square concession line.');
+      $sql = $wpdb->prepare(
+        "INSERT INTO {$table} (fingerprint,report_date,square_order_id,square_line_uid,catalog_object_id,item_name,closed_at,amount_cents,reason,status,occurrences,first_seen_at,last_seen_at)
+         VALUES (%s,%s,%s,%s,%s,%s,%s,%d,%s,'open',1,%s,%s)
+         ON DUPLICATE KEY UPDATE report_date=VALUES(report_date),square_order_id=VALUES(square_order_id),square_line_uid=VALUES(square_line_uid),catalog_object_id=VALUES(catalog_object_id),item_name=VALUES(item_name),closed_at=VALUES(closed_at),amount_cents=VALUES(amount_cents),reason=VALUES(reason),status='open',occurrences=LEAST(occurrences+1,4294967295),last_seen_at=VALUES(last_seen_at),resolved_at=NULL,resolved_by=NULL",
+        (string) $line['fingerprint'], $report_date,
+        substr(sanitize_text_field((string) ($line['square_order_id'] ?? '')), 0, 191),
+        substr(sanitize_text_field((string) ($line['square_line_uid'] ?? '')), 0, 191),
+        substr(sanitize_text_field((string) ($line['catalog_object_id'] ?? '')), 0, 191),
+        substr(sanitize_text_field((string) ($line['item_name'] ?? '')), 0, 255),
+        substr(sanitize_text_field((string) ($line['closed_at'] ?? '')), 0, 64),
+        $line['amount_cents'], 'no_show_row_match', $now, $now
+      );
+      if ($wpdb->query($sql) === false || $wpdb->last_error !== '') throw new \RuntimeException('Could not persist all unmatched Square concession lines for manager review.');
+      $recorded++;
+    }
+    return $recorded;
+  }
+
+  /** Read a bounded recent queue; open items are always shown before resolved history. */
+  public static function list_unmatched_concession_lines(string $status = 'all', int $limit = 100): array {
+    global $wpdb;
+    if (!in_array($status, ['all', 'open', 'resolved'], true)) throw new \InvalidArgumentException('Invalid unmatched-concession status filter.');
+    $where = $status === 'all' ? '' : $wpdb->prepare(' WHERE status = %s', $status);
+    $rows = $wpdb->get_results('SELECT id,fingerprint,report_date,square_order_id,square_line_uid,catalog_object_id,item_name,closed_at,amount_cents,reason,status,occurrences,first_seen_at,last_seen_at,resolved_at,resolved_by FROM ' . self::unmatched_concession_table_name() . $where . ' ORDER BY (status = \'open\') DESC,last_seen_at DESC,id DESC LIMIT ' . max(1, min(500, $limit)), ARRAY_A);
+    if ($wpdb->last_error !== '' || !is_array($rows)) throw new \RuntimeException('Could not read the unmatched Square concessions review queue.');
+    return $rows;
+  }
+
+  /** Resolve only an open queue item; this does not edit Grosses rows or Square data. */
+  public static function resolve_unmatched_concession_line(int $id): bool {
+    global $wpdb;
+    if ($id <= 0) return false;
+    $changed = $wpdb->update(self::unmatched_concession_table_name(), [
+      'status' => 'resolved',
+      'resolved_at' => current_time('mysql', true),
+      'resolved_by' => function_exists('get_current_user_id') ? get_current_user_id() : 0,
+    ], ['id' => $id, 'status' => 'open']);
+    if ($changed === false || $wpdb->last_error !== '') throw new \RuntimeException('Could not resolve the unmatched Square concession queue item.');
+    return $changed === 1;
   }
 
   /** Immutable emailed snapshots are flagged separately, never rewritten/resent. */

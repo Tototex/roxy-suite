@@ -1757,10 +1757,6 @@ class Reporter {
       ];
     }
 
-    if (!$reports) {
-      return ['rows' => 0, 'updated' => 0, 'concessions_total' => 0.0];
-    }
-
     self::apply_concessions_to_reports($reports, $report_date, self::showings_for_date($report_date, 'live'));
 
     return Store::with_concession_allocation_transaction(static function () use ($reports, $report_date): array {
@@ -1789,10 +1785,6 @@ class Reporter {
   }
 
   private static function apply_concessions_to_reports(array &$reports, string $report_date, array $showings = []): void {
-    if (!$reports) {
-      return;
-    }
-
     $orders = Square::fetch_orders_for_date($report_date);
     $catalog_object_ids = [];
     $provisional = [];
@@ -1800,6 +1792,7 @@ class Reporter {
     $locked_cents = 0;
     $unmatched_lines = 0;
     $unmatched_cents = 0;
+    $unmatched_items = [];
     foreach ($reports as $entry_id => $report) {
       if (!empty($report['_is_locked'])) {
         $fixed = round((float) ($report['concessions_total'] ?? 0) * 100);
@@ -1820,7 +1813,7 @@ class Reporter {
 
     foreach ($orders as $order) {
       $order_closed_at = self::order_closed_at($order);
-      foreach ((array) ($order['line_items'] ?? []) as $line_item) {
+      foreach ((array) ($order['line_items'] ?? []) as $line_index => $line_item) {
         if (!self::is_concession_line_item($line_item, $showings, $category_map)) {
           continue;
         }
@@ -1835,6 +1828,28 @@ class Reporter {
           if ($line_total_cents > PHP_INT_MAX - $unmatched_cents) throw new \RuntimeException('Unmatched Square concessions exceed the supported amount range.');
           $unmatched_lines++;
           $unmatched_cents += $line_total_cents;
+          $order_id = trim((string) ($order['id'] ?? ''));
+          $line_uid = trim((string) ($line_item['uid'] ?? ''));
+          // Square normally supplies an order ID. If not, hash the complete
+          // provider object (store only the hash) to avoid colliding distinct
+          // same-time orders that share a total.
+          $encoded_order = $order_id !== '' ? '' : wp_json_encode($order);
+          if ($order_id === '' && (!is_string($encoded_order) || $encoded_order === '')) throw new \RuntimeException('An unmatched Square order has no stable identity; review the provider response before refreshing.');
+          $order_identity = $order_id !== '' ? $order_id : hash('sha256', $encoded_order);
+          $identity = $line_uid !== ''
+            ? ['date' => $report_date, 'order' => $order_identity, 'line_uid' => $line_uid]
+            : ['date' => $report_date, 'order' => $order_identity, 'line_index' => (int) $line_index, 'catalog_object_id' => $catalog_object_id, 'name' => (string) ($line_item['name'] ?? ''), 'quantity' => (string) ($line_item['quantity'] ?? ''), 'amount_cents' => $line_total_cents];
+          $encoded_identity = wp_json_encode($identity);
+          if (!is_string($encoded_identity) || $encoded_identity === '') throw new \RuntimeException('An unmatched Square concession line could not be assigned a stable review identity.');
+          $unmatched_items[] = [
+            'fingerprint' => hash('sha256', $encoded_identity),
+            'square_order_id' => $order_id,
+            'square_line_uid' => $line_uid,
+            'catalog_object_id' => $catalog_object_id,
+            'item_name' => (string) ($line_item['name'] ?? ''),
+            'closed_at' => $order_closed_at ? $order_closed_at->format(DATE_ATOM) : (string) ($order['closed_at'] ?? $order['created_at'] ?? ''),
+            'amount_cents' => $line_total_cents,
+          ];
           continue;
         }
         if ($line_total_cents > PHP_INT_MAX - $eligible_cents) throw new \RuntimeException('Daily concessions exceed the supported allocation range.');
@@ -1849,11 +1864,14 @@ class Reporter {
       }
     }
 
-    if ($unmatched_lines > 0) throw new \RuntimeException(sprintf(
-      '%d eligible Square concession line(s), totaling $%s, could not be matched to a report row within the show-time window; review this date before refreshing.',
-      $unmatched_lines,
-      number_format($unmatched_cents / 100, 2, '.', ',')
-    ));
+    if ($unmatched_lines > 0) {
+      Store::record_unmatched_concession_lines($report_date, $unmatched_items);
+      throw new \RuntimeException(sprintf(
+        '%d eligible Square concession line(s), totaling $%s, could not be matched to a report row within the show-time window. They were saved to the Grosses Logs unmatched-sales review queue; review this date before refreshing.',
+        $unmatched_lines,
+        number_format($unmatched_cents / 100, 2, '.', ',')
+      ));
+    }
     if ($locked_cents > $eligible_cents) throw new \RuntimeException('Locked concessions exceed the matching Square total; review the protected rows before refreshing.');
     if ($eligible_cents <= 0) return;
     $remaining_cents = $eligible_cents - $locked_cents;

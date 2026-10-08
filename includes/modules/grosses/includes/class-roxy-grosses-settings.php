@@ -12,6 +12,20 @@ class Settings {
   public static function init(): void {
     add_action('admin_init',[__CLASS__,'migrate_legacy_token'],1);
     add_action('admin_init',[__CLASS__,'register_settings']);
+    add_action('admin_post_roxy_grosses_resolve_unmatched_concession',[__CLASS__,'handle_resolve_unmatched_concession']);
+  }
+
+  public static function handle_resolve_unmatched_concession(): void {
+    if (!current_user_can('manage_options')) wp_die('You are not allowed to resolve Grosses reconciliation items.');
+    $id = isset($_POST['item_id']) ? absint(wp_unslash($_POST['item_id'])) : 0;
+    check_admin_referer('roxy_grosses_resolve_unmatched_concession_' . $id);
+    $resolved = Store::resolve_unmatched_concession_line($id);
+    $url = add_query_arg([
+      'page' => 'roxy-grosses', 'tab' => 'logs',
+      'unmatched_notice' => $resolved ? 'resolved' : 'unchanged',
+    ], admin_url('admin.php')) . '#roxy-unmatched-concessions';
+    wp_safe_redirect($url);
+    exit;
   }
   public static function migrate_legacy_token(): bool {
     global $wpdb;
@@ -752,6 +766,31 @@ class Settings {
       echo '</tbody></table>';
     } else {
       echo '<p><em>Reconciliation has not run yet for this page load. Use the form above when you want to check a date range.</em></p>';
+    }
+    echo '<hr><h3 id="roxy-unmatched-concessions">Unmatched Square Concessions</h3><p>Eligible Square concession lines that could not be assigned to a show are saved here. Resolve an item after reviewing it; this only acknowledges the queue entry and never edits a report. If a later pull still cannot match the line, it will reopen.</p>';
+    $unmatched_notice = isset($_GET['unmatched_notice']) ? sanitize_key(wp_unslash((string) $_GET['unmatched_notice'])) : '';
+    if ($unmatched_notice === 'resolved') echo '<div class="notice notice-success inline"><p>Unmatched concession item resolved.</p></div>';
+    elseif ($unmatched_notice === 'unchanged') echo '<div class="notice notice-info inline"><p>That item was already resolved or no longer available.</p></div>';
+    try {
+      $unmatched_rows = Store::list_unmatched_concession_lines('all', 100);
+      echo '<table class="widefat striped"><thead><tr><th>Report date</th><th>Square order</th><th>Item</th><th>Closed</th><th>Amount</th><th>Reason</th><th>Status</th><th>Last seen / occurrences</th><th>Action</th></tr></thead><tbody>';
+      foreach ($unmatched_rows as $unmatched_row) {
+        $id = (int) ($unmatched_row['id'] ?? 0);
+        $is_open = (string) ($unmatched_row['status'] ?? '') === 'open';
+        echo '<tr><td>'.esc_html((string) ($unmatched_row['report_date'] ?? '')).'</td><td>'.esc_html((string) (($unmatched_row['square_order_id'] ?? '') ?: 'Unavailable')).'</td><td>'.esc_html((string) (($unmatched_row['item_name'] ?? '') ?: 'Unnamed item')).'<br><small>Catalog ID: '.esc_html((string) (($unmatched_row['catalog_object_id'] ?? '') ?: '-')).' · Line: '.esc_html((string) (($unmatched_row['square_line_uid'] ?? '') ?: '-')).'</small></td><td>'.esc_html((string) ($unmatched_row['closed_at'] ?? '')).'</td><td>$'.esc_html(number_format(((int) ($unmatched_row['amount_cents'] ?? 0)) / 100, 2, '.', ',')).'</td><td>'.esc_html((string) ($unmatched_row['reason'] ?? '')).'</td><td>'.esc_html(ucfirst((string) ($unmatched_row['status'] ?? 'unknown'))).($is_open ? '' : '<br><small>Resolved '.esc_html((string) ($unmatched_row['resolved_at'] ?? '')).'</small>').'</td><td>'.esc_html((string) ($unmatched_row['last_seen_at'] ?? '')).' / '.esc_html((string) ($unmatched_row['occurrences'] ?? '1')).'</td><td>';
+        if ($is_open && $id > 0) {
+          echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
+          wp_nonce_field('roxy_grosses_resolve_unmatched_concession_' . $id);
+          echo '<input type="hidden" name="action" value="roxy_grosses_resolve_unmatched_concession"><input type="hidden" name="item_id" value="'.esc_attr((string) $id).'">';
+          submit_button('Resolve','secondary','submit',false);
+          echo '</form>';
+        } else echo '—';
+        echo '</td></tr>';
+      }
+      if (!$unmatched_rows) echo '<tr><td colspan="9">No unmatched Square concession lines have been recorded.</td></tr>';
+      echo '</tbody></table>';
+    } catch (\Throwable $unmatched_error) {
+      echo '<div class="notice notice-error inline"><p>The unmatched-concession review queue could not be read. Allocation refreshes fail closed when an eligible line has no matching show.</p></div>';
     }
   }
 

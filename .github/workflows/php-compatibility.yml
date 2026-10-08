@@ -103,6 +103,8 @@ jobs:
             grosses-refund-reporter-regression.php
             grosses-refund-snapshot-regression.php
             grosses-reporter-snapshot-rebalance-regression.php
+            grosses-unmatched-concession-store-regression.php
+            grosses-unmatched-concession-admin-regression.php
             grosses-sale-snapshot-regression.php
             grosses-saved-report-readonly-regression.php
             grosses-scheduler-calendar-regression.php
