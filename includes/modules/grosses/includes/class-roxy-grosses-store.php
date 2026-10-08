@@ -1857,6 +1857,9 @@ class Store {
     [$where, $params] = self::entry_where_sql($filters);
     $sql = 'SELECT DISTINCT report_date FROM ' . self::entries_table_name() . ' ' . $where . ' ORDER BY report_date ASC';
     $dates = $wpdb->get_col(self::prepare_query($sql, $params));
+    if ($wpdb->last_error !== '' || !is_array($dates)) {
+      throw new \RuntimeException('Could not read Grosses movie dates from storage.');
+    }
     return array_values(array_filter(array_map('strval', (array) $dates)));
   }
 
@@ -1865,6 +1868,9 @@ class Store {
     [$where, $params] = self::live_entry_where_sql($filters);
     $sql = 'SELECT DISTINCT report_date FROM ' . self::live_entries_table_name() . ' ' . $where . ' ORDER BY report_date ASC';
     $dates = $wpdb->get_col(self::prepare_query($sql, $params));
+    if ($wpdb->last_error !== '' || !is_array($dates)) {
+      throw new \RuntimeException('Could not read Grosses live-show dates from storage.');
+    }
     return array_values(array_filter(array_map('strval', (array) $dates)));
   }
 

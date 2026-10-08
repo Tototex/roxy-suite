@@ -700,12 +700,16 @@ class Reporter {
   }
 
   public static function backfill_free_tickets(array $filters = [], string $mode = 'manual-free-backfill'): array {
-    $dates = Store::distinct_entry_dates(array_filter([
-      'search' => (string) ($filters['search'] ?? ''),
-      'year' => !empty($filters['year']) ? (int) $filters['year'] : null,
-      'month' => (string) ($filters['month'] ?? ''),
-      'day' => (string) ($filters['day'] ?? ''),
-    ]));
+    try {
+      $dates = Store::distinct_entry_dates(array_filter([
+        'search' => (string) ($filters['search'] ?? ''),
+        'year' => !empty($filters['year']) ? (int) $filters['year'] : null,
+        'month' => (string) ($filters['month'] ?? ''),
+        'day' => (string) ($filters['day'] ?? ''),
+      ]));
+    } catch (\Throwable $error) {
+      return ['success' => false, 'message' => 'Could not read movie dates from storage. No rows were changed.'];
+    }
 
     if (!$dates) {
       return [
@@ -773,12 +777,16 @@ class Reporter {
   }
 
   public static function backfill_movie_concessions(array $filters = [], string $mode = 'manual-concessions-backfill'): array {
-    $dates = Store::distinct_entry_dates(array_filter([
-      'search' => (string) ($filters['search'] ?? ''),
-      'year' => !empty($filters['year']) ? (int) $filters['year'] : null,
-      'month' => (string) ($filters['month'] ?? ''),
-      'day' => (string) ($filters['day'] ?? ''),
-    ]));
+    try {
+      $dates = Store::distinct_entry_dates(array_filter([
+        'search' => (string) ($filters['search'] ?? ''),
+        'year' => !empty($filters['year']) ? (int) $filters['year'] : null,
+        'month' => (string) ($filters['month'] ?? ''),
+        'day' => (string) ($filters['day'] ?? ''),
+      ]));
+    } catch (\Throwable $error) {
+      return ['success' => false, 'message' => 'Could not read movie dates from storage. No rows were changed.'];
+    }
 
     if (!$dates) {
       return ['success' => false, 'message' => 'No movie database dates matched the current filters.'];
@@ -841,12 +849,16 @@ class Reporter {
   }
 
   public static function backfill_live_concessions(array $filters = [], string $mode = 'manual-live-concessions-backfill'): array {
-    $dates = Store::distinct_live_entry_dates(array_filter([
-      'search' => (string) ($filters['search'] ?? ''),
-      'year' => !empty($filters['year']) ? (int) $filters['year'] : null,
-      'month' => (string) ($filters['month'] ?? ''),
-      'day' => (string) ($filters['day'] ?? ''),
-    ]));
+    try {
+      $dates = Store::distinct_live_entry_dates(array_filter([
+        'search' => (string) ($filters['search'] ?? ''),
+        'year' => !empty($filters['year']) ? (int) $filters['year'] : null,
+        'month' => (string) ($filters['month'] ?? ''),
+        'day' => (string) ($filters['day'] ?? ''),
+      ]));
+    } catch (\Throwable $error) {
+      return ['success' => false, 'message' => 'Could not read live-show dates from storage. No rows were changed.'];
+    }
 
     if (!$dates) {
       return ['success' => false, 'message' => 'No live show dates matched the current filters.'];

@@ -51,6 +51,9 @@ jobs:
       - name: Run Grosses schema bootstrap regression
         run: php tests/grosses-schema-bootstrap-regression.php
 
+      - name: Run Grosses backfill date-read regression
+        run: php tests/grosses-backfill-date-read-regression.php
+
       - name: Run Grosses import writer regression
         run: php tests/grosses-import-write-regression.php
 
