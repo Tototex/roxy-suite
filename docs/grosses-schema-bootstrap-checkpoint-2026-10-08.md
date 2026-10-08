@@ -16,5 +16,5 @@ Import batch/file write APIs were traced and currently have no callers, so they 
 ## Verification
 
 - `git diff --check` passes.
-- Local PHP CLI is unavailable in this workstation environment. The focused PHP regression and full PHP 8.0–8.4 / PHP 8.3 cross-module workflow are queued for hosted validation by pushing this checkpoint.
+- Local PHP CLI is unavailable in this workstation environment. Hosted workflow [37763498944](https://github.com/Tototex/roxy-suite/actions/runs/37763498944) passed all five PHP 8.0–8.4 syntax jobs and the PHP 8.3 full cross-module suite, including the focused schema bootstrap regression and release/package guards.
 - No production site, database, saved report, email, vendor order, or financial record was modified.
