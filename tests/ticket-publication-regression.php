@@ -6,11 +6,24 @@ namespace RoxyST {
         public static function get_default_capacity(){return 100;}
         public static function get($key,$default=''){return $default;}
     }
+    class Reservations {
+        public static int $committed=0;
+        public static function quantity_for_showing(int $showing_id,int $exclude_order_id=0,int $subscriber_user_id=0): int { return self::$committed; }
+    }
+    class Issuance {
+        public static int $walkups=0;
+        public static bool $fail=false;
+        public function __construct($ids,string $scope='') { $GLOBALS['capacity_locks'][]=$scope; }
+        public function run(callable $operation) { if(self::$fail)throw new RuntimeException('fixture lock failure');return $operation($this); }
+        public function member_walkup_quantity(int $showing_id,int $subscription_id=0): int { return self::$walkups; }
+        public function post_meta(int $id,string $key,$value,bool $remove=false): void { update_post_meta($id,$key,$value); }
+        public function post_meta_value(int $id,string $key) { return get_post_meta($id,$key,true); }
+    }
 }
 namespace {
 define('ABSPATH', __DIR__); define('MINUTE_IN_SECONDS',60); define('ROXY_ST_META_SHOWING_ID','_roxy_showing_id'); define('ROXY_ST_META_TICKET_TYPE','_roxy_ticket_type');
 $root=$argv[1]??dirname(__DIR__); $fixture=$argv[2]??$root.'/includes/modules/show-tickets/includes/';
-$GLOBALS['meta']=[]; $GLOBALS['types']=[]; $GLOBALS['statuses']=[]; $GLOBALS['notices']=[]; $GLOBALS['writes']=[]; $GLOBALS['hooks']=[]; $GLOBALS['listing_queries']=[]; $GLOBALS['cleanup_queries']=[]; $GLOBALS['cleanup_pages']=[]; $GLOBALS['transients']=[];
+$GLOBALS['meta']=[]; $GLOBALS['types']=[]; $GLOBALS['statuses']=[]; $GLOBALS['notices']=[]; $GLOBALS['writes']=[]; $GLOBALS['hooks']=[]; $GLOBALS['listing_queries']=[]; $GLOBALS['cleanup_queries']=[]; $GLOBALS['cleanup_pages']=[]; $GLOBALS['transients']=[]; $GLOBALS['capacity_locks']=[];
 $GLOBALS['room_lock_calls']=[]; $GLOBALS['room_conflict']=false;
 class WooCommerce {} class WP_Error { private $message; function __construct($code,$message){$this->message=$message;} function get_error_message(){return $this->message;} }
 function is_wp_error($v){return $v instanceof WP_Error;}
@@ -93,7 +106,17 @@ check(($GLOBALS['statuses'][101]??'')==='publish','cleanup preserves ticket prod
 
 $_POST=['roxy_showing_nonce'=>'fixture','roxy_capacity'=>'100','roxy_pricing_profile'=>'movie_evening','roxy_start'=>$GLOBALS['meta'][1]['_roxy_start']];
 \RoxyST\CPT::save(1,null);
+check(($GLOBALS['capacity_locks'][0]??'')==='walkup:1','showing capacity writes use the shared seat-claim lock');
 check($GLOBALS['meta'][1]['_roxy_duration_minutes']==='60','missing duration POST preserves the saved value');
+\RoxyST\Reservations::$committed=2; \RoxyST\Issuance::$walkups=1;
+$_POST['roxy_capacity']='2'; $_POST['roxy_live_label_1']='Must not partially save';
+\RoxyST\CPT::save(1,null);
+check((string)$GLOBALS['meta'][1]['_roxy_capacity']==='100' && ($GLOBALS['meta'][1]['_roxy_live_label_1']??'')!=='Must not partially save' && isset($GLOBALS['transients']['roxy_st_capacity_conflict_7']),'capacity below sold seats plus walk-ups rejects the entire showing edit');
+$_POST['roxy_capacity']='3'; \RoxyST\CPT::save(1,null);
+check((string)$GLOBALS['meta'][1]['_roxy_capacity']==='3','capacity equal to current committed occupancy is accepted');
+\RoxyST\Issuance::$fail=true; $_POST['roxy_capacity']='4'; \RoxyST\CPT::save(1,null); \RoxyST\Issuance::$fail=false;
+check((string)$GLOBALS['meta'][1]['_roxy_capacity']==='3','unavailable seat lock rejects capacity writes');
+\RoxyST\Reservations::$committed=0; \RoxyST\Issuance::$walkups=0; unset($GLOBALS['transients']['roxy_st_capacity_conflict_7']); $_POST['roxy_capacity']='100';
 $_POST['roxy_duration_minutes']=''; \RoxyST\CPT::save(1,null);
 check($GLOBALS['meta'][1]['_roxy_duration_minutes']==='60' && isset($GLOBALS['transients']['roxy_st_invalid_duration_7']),'blank duration preserves a saved value and can warn');
 $GLOBALS['meta'][1]['_roxy_duration_minutes']=''; unset($GLOBALS['transients']['roxy_st_invalid_duration_7']);

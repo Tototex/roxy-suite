@@ -1,5 +1,17 @@
 <?php
 /** Standalone schedule-child status tests. Run with: php tests/schedule-child-status-regression.php */
+namespace RoxyST {
+  final class Reservations {
+    public static function quantity_for_showing(int $showing_id, int $exclude_order_id = 0, int $subscriber_user_id = 0): int { return 0; }
+  }
+  final class Issuance {
+    public function __construct($order_ids, $scope = '') {}
+    public function run(callable $operation) { return $operation($this); }
+    public function member_walkup_quantity(int $showing_id, int $subscription_id = 0): int { return 0; }
+    public function post_meta(int $id, string $key, $value, bool $remove = false): void { \update_post_meta($id, $key, $value); }
+    public function post_meta_value(int $id, string $key) { return \get_post_meta($id, $key, true); }
+  }
+}
 namespace {
   define('ABSPATH', __DIR__ . '/');
   define('MINUTE_IN_SECONDS', 60);

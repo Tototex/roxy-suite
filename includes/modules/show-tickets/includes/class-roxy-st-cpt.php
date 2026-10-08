@@ -448,6 +448,11 @@ class CPT {
       }
     }
 
+    if (!self::save_capacity_with_seat_lock($post_id, (int) $shared_meta['_roxy_capacity'])) {
+      set_transient('roxy_st_capacity_conflict_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+      return;
+    }
+    unset($shared_meta['_roxy_capacity']);
     foreach ($shared_meta as $meta_key => $meta_value) {
       update_post_meta($post_id, $meta_key, $meta_value);
     }
@@ -491,6 +496,22 @@ class CPT {
       return false;
     }
     return $result === true;
+  }
+
+  /** Serialize capacity edits with checkout and refuse limits below current occupancy. */
+  private static function save_capacity_with_seat_lock(int $showing_id, int $capacity): bool {
+    if ($showing_id <= 0 || $capacity < 0 || !class_exists(Issuance::class) || !class_exists(Reservations::class)) return false;
+    try {
+      return (new Issuance([], 'walkup:' . $showing_id))->run(static function (Issuance $writer) use ($showing_id, $capacity): bool {
+        $reserved = Reservations::quantity_for_showing($showing_id);
+        $walkups = $writer->member_walkup_quantity($showing_id);
+        if ($reserved < 0 || $walkups < 0 || $reserved > PHP_INT_MAX - $walkups || $capacity < $reserved + $walkups) return false;
+        $writer->post_meta($showing_id, '_roxy_capacity', $capacity);
+        return (string) $writer->post_meta_value($showing_id, '_roxy_capacity') === (string) $capacity;
+      }) === true;
+    } catch (\Throwable $error) {
+      return false;
+    }
   }
 
 
@@ -614,11 +635,14 @@ class CPT {
     $duration_invalid = (bool) get_transient('roxy_st_invalid_duration_' . $user_id);
     $start_invalid = (bool) get_transient('roxy_st_invalid_start_' . $user_id);
     $room_conflict = (string) get_transient('roxy_st_room_conflict_' . $user_id);
-    if (!$duration_invalid && !$start_invalid && $room_conflict === '') return;
+    $capacity_conflict = (bool) get_transient('roxy_st_capacity_conflict_' . $user_id);
+    if (!$duration_invalid && !$start_invalid && $room_conflict === '' && !$capacity_conflict) return;
     if ($duration_invalid) delete_transient('roxy_st_invalid_duration_' . $user_id);
     if ($start_invalid) delete_transient('roxy_st_invalid_start_' . $user_id);
     if ($room_conflict !== '') delete_transient('roxy_st_room_conflict_' . $user_id);
+    if ($capacity_conflict) delete_transient('roxy_st_capacity_conflict_' . $user_id);
     echo '<div class="notice notice-error"><p>';
+    if ($capacity_conflict) echo 'Capacity could not be saved because current reservations or walk-up admissions could not be verified, or the new capacity is below seats already committed. No other settings from this submission were saved. ';
     if ($duration_invalid) echo 'Duration must be a whole number from 1 to 10,080 minutes. The submitted value was rejected; any previously saved duration was preserved. ';
     if ($start_invalid) echo 'Each showing must use a valid local calendar date and 24-hour time. The schedule was not saved; previously saved showing dates and shared settings were preserved.';
     if ($room_conflict !== '') echo esc_html($room_conflict);
