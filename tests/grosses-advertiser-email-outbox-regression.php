@@ -112,9 +112,13 @@ namespace {
   try {
     $first = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 9, 'manual-advertiser', 2026, 9);
     $first_count = count($GLOBALS['advertiser_mail_calls']);
+    $collision_sentinel = $private_content_dir . DIRECTORY_SEPARATOR . 'roxy-grosses-private' . DIRECTORY_SEPARATOR . 'advertiser' . DIRECTORY_SEPARATOR . 'advertiser-summary-2026-09-123e4567-e89b-42d3-a456-426614174001.xlsx';
+    if (file_put_contents($collision_sentinel, 'existing concurrent workbook') === false) throw new RuntimeException('Could not create collision sentinel.');
     $second = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 9, 'scheduled-advertiser', 2026, 9);
+    $collision_preserved = is_file($collision_sentinel) && file_get_contents($collision_sentinel) === 'existing concurrent workbook';
     $check(!empty($first['success']) && $first_count === 1, 'first advertiser email sends through intercepted mail' . (empty($first['success']) ? ': ' . (string) ($first['message'] ?? 'no error detail') : ''));
     $check(!empty($second['success']) && !empty($second['duplicate_suppressed']) && count($GLOBALS['advertiser_mail_calls']) === 1, 'scheduled/manual advertiser duplicate is suppressed across modes');
+    $check($collision_preserved, 'exclusive filename reservation preserves an existing concurrent workbook');
 
     $resend_id = '123e4567-e89b-42d3-a456-426614174000';
     $resend = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 9, 'manual-advertiser', 2026, 9, $resend_id, true);
@@ -143,6 +147,7 @@ namespace {
     $check(count(array_filter($GLOBALS['advertiser_fixture_files'], 'is_file')) === 0, 'all private advertiser attachments are removed after send, suppression and pre-mail failures');
     echo "Passed {$checks} advertiser email outbox checks; all mail was intercepted.\n";
   } finally {
+    if (isset($collision_sentinel) && is_file($collision_sentinel)) unlink($collision_sentinel);
     foreach ($GLOBALS['advertiser_fixture_files'] as $fixture_file) if (is_file($fixture_file)) unlink($fixture_file);
     $advertiser_dir = $private_content_dir . DIRECTORY_SEPARATOR . 'roxy-grosses-private' . DIRECTORY_SEPARATOR . 'advertiser';
     foreach (['index.html', '.htaccess'] as $file) if (is_file($advertiser_dir . DIRECTORY_SEPARATOR . $file)) unlink($advertiser_dir . DIRECTORY_SEPARATOR . $file);
