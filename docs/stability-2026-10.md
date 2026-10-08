@@ -122,6 +122,10 @@ This supersedes the earlier I4 note that the connected-account request was unver
 
 Production recheck on 2026-10-08 found the live Square, Store, and Admin source hashes exactly match this branch; all three pass PHP 8.5.11 lint on the host. A second guarded WP-CLI run against the deployed Square class parsed 203 live variations and made one receipt-history request for existing ordered Inventory items. Products, vendors, orders, and runs table digests matched before/after; no email or provider mutation was allowed. The temporary fixture was removed. I4 is deployed and its live read path is verified; confirmation of a real partial delivery remains pending.
 
+## C1 Grosses anomaly-label live verification — 2026-10-08
+
+The earlier C1 table note saying the Grosses anomaly-label correction was not deployed is stale. The live `class-roxy-grosses-settings.php` SHA-256 exactly matches the current branch (`78e28956fbfb0a91beee49fda466bcdd25e931d5692f63eddf5148db87222068`). A read-only WP-CLI check invoked the production label helper and filter queries: an anomaly is labeled `Review`; 95 anomaly rows are counted in Review, and the Success filter excludes them (509 Success rows). This confirms the deployed code and existing log state without changing records. The isolated five label/four filter regression checks remain passing. Broader C1 diagnostic live review and cross-module coordination/delivery checks remain open.
+
 Hosted workflow [37758734972](https://github.com/Tototex/roxy-suite/actions/runs/37758734972) passed the complete PHP 8.0–8.4 syntax matrix, PHP 8.3 cross-module regression suite, release-manifest guard, and deterministic runtime archive verification for commit bb9f5ca. Only release/deployment and next real-delivery confirmation remain.
 
 ## G10 follow-up — member export atomic delivery
