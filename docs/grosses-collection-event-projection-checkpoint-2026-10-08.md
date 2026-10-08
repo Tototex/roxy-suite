@@ -19,7 +19,7 @@ Scope: read-only event normalization and live payment-gateway discovery only.
 
 ## Verification
 
-- Hosted workflow [37742815484](https://github.com/Tototex/roxy-suite/actions/runs/37742815484) passes all PHP 8.0–8.4 syntax jobs and the PHP 8.3 full isolated regression suite. Tender-ID fallback/disagreement regressions are added in the follow-up and await CI.
+- Hosted workflow [37742815484](https://github.com/Tototex/roxy-suite/actions/runs/37742815484) passes all PHP 8.0–8.4 syntax jobs and the PHP 8.3 full isolated regression suite. Follow-up workflow [37743081233](https://github.com/Tototex/roxy-suite/actions/runs/37743081233) passes the same matrix and suite with tender-ID fallback/disagreement regressions.
 - The Grosses refund-snapshot regression now covers paid/unpaid filtering, explicit gateway allow-listing, zero-dollar orders, cents/currency, paid-date conversion, missing evidence, and duplicate transactions, alongside Square collection safeguards.
 - Local `git diff --check` passes. This workstation has no PHP executable, so local PHP execution was not available.
 - No live site deployment or financial records were changed.
