@@ -59,6 +59,12 @@ class TestItem {
     function get_quantity(){return $this->quantity;} function get_total(){return $this->total;} function get_total_tax(){return $this->tax;}
     function get_taxes(){return ['total'=>[1=>1.8]];} function get_meta($key,$single){return [101,102,103];}
 }
+class FixtureDate {
+    private $date;
+    function __construct($value){$this->date=new DateTimeImmutable($value);}
+    function getTimestamp(){return $this->date->getTimestamp();}
+    function date($format){return $this->date->format($format);}
+}
 class TestDatabase {
     public $prefix='test_'; public $writes=0; public $fail=false;public $last_error='';
     function prepare($sql,...$args){return $sql;}
@@ -100,7 +106,7 @@ $saved_orders=$GLOBALS['orders']; $GLOBALS['orders']=[];
 for($i=1;$i<=201;$i++){
     $order=new WC_Order;
     $order->status=$i===201?'completed':($i===2?'cancelled':($i===3?'on-hold':'processing'));
-    $order->created=new DateTimeImmutable($i===4?'2025-04-01 12:00:00':'2026-10-01 12:00:00');
+    $order->created=new FixtureDate($i===4?'2025-04-01 12:00:00':'2026-10-01 12:00:00');
     $order->billing_first='Buyer'.$i; $order->billing_last='Fixture'; $order->billing_email='buyer'.$i.'@example.test';
     if($i===1){$order->quantity=4;$order->line_total=24;$order->line_tax=2.4;}
     $GLOBALS['orders'][$i]=$order;
