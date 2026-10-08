@@ -8,7 +8,7 @@ Compared the three components previously reported missing from production agains
 - `class-roxy-grosses-email-outbox.php`
 - `class-roxy-grosses-refund-webhook.php`
 
-A sanitized WP-CLI diagnostic then verified that the Cashflow class loads, the Square refund webhook route is registered, and the refund-event table exists. It printed no secret values, transaction data, or event identifiers. The WooCommerce gateways enabled on the site are `paypal`, `stripe`, `stripe_blik`, and `stripe_link`; the Cashflow allow-list count is zero. The Square webhook signature key is not configured.
+A sanitized WP-CLI diagnostic then verified that the Cashflow class loads, the Square refund webhook route is registered, and the refund-event table exists. It printed no secret values, transaction data, or event identifiers. The WooCommerce gateways enabled on the site are `paypal`, `stripe`, `stripe_blik`, and `stripe_link`; the Cashflow allow-list count is zero. The Square webhook signature key is not configured. Invoking the actual production `CashflowReport::for_day()` path with the empty allow-list returned the intended configuration error before making provider reads.
 
 ## Effect and boundary
 
