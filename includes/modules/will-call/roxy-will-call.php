@@ -227,14 +227,18 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
     </form>
 
     <?php
-      if ($mode === 'showing' && $selected_showing_id) {
-        $result = roxy_will_call_get_showing_list($selected_showing_id);
-        roxy_will_call_render_table('showing', $selected_showing_id, $result['rows'], $result['totals']);
-      } elseif ($mode === 'product' && $selected_product_id) {
-        $result = roxy_will_call_get_list([$selected_product_id]);
-        roxy_will_call_render_table('product', $selected_product_id, $result['rows'], $result['totals']);
-      } else {
-        echo '<p>Select a showing or product to generate the list.</p>';
+      try {
+        if ($mode === 'showing' && $selected_showing_id) {
+          $result = roxy_will_call_get_showing_list($selected_showing_id);
+          roxy_will_call_render_table('showing', $selected_showing_id, $result['rows'], $result['totals']);
+        } elseif ($mode === 'product' && $selected_product_id) {
+          $result = roxy_will_call_get_list([$selected_product_id]);
+          roxy_will_call_render_table('product', $selected_product_id, $result['rows'], $result['totals']);
+        } else {
+          echo '<p>Select a showing or product to generate the list.</p>';
+        }
+      } catch (\Throwable $e) {
+        echo '<div class="notice notice-error"><p>Will Call could not verify the complete paid-ticket list. No partial list was shown; try again or contact the administrator.</p></div>';
       }
     ?>
   <style>
@@ -837,12 +841,13 @@ function roxy_will_call_get_list($product_ids, array $ticket_type_labels = [], b
     'return' => 'ids',
     'date_created' => '>' . (new DateTime('-18 months'))->format('Y-m-d'),
   ]);
+  if (!is_array($order_ids)) throw new \RuntimeException('Will Call could not load the complete order list. No partial list was cached.');
 
   $product_lookup = array_fill_keys($product_ids, true);
   $agg = [];
   $total_qty = 0;
   $total_revenue = 0.0;
-  $matching_order_ids = [];
+  $matching_order_count = 0;
 
   foreach ($order_ids as $oid) {
     $order = wc_get_order($oid);
@@ -911,7 +916,7 @@ function roxy_will_call_get_list($product_ids, array $ticket_type_labels = [], b
     }
 
     if ($matched_this_order) {
-      $matching_order_ids[(int) $oid] = true;
+      $matching_order_count++;
     }
   }
 
@@ -920,18 +925,18 @@ function roxy_will_call_get_list($product_ids, array $ticket_type_labels = [], b
     return strcasecmp($a['name'], $b['name']);
   });
 
-  $result = roxy_will_call_cacheable_list_result($rows, (int) $total_qty, (float) $total_revenue, $matching_order_ids);
+  $result = roxy_will_call_cacheable_list_result($rows, (int) $total_qty, (float) $total_revenue, $matching_order_count);
   set_transient($cache_key, $result, ROXY_WC_CACHE_TTL);
   return $result;
 }
 
-function roxy_will_call_cacheable_list_result(array $rows, int $total_qty, float $total_revenue, array $matching_order_ids): array {
+function roxy_will_call_cacheable_list_result(array $rows, int $total_qty, float $total_revenue, int $order_count): array {
   return [
     'rows' => $rows,
     'totals' => [
       'total_qty' => (int) $total_qty,
       'total_revenue' => (float) $total_revenue,
-      'order_count' => (int) count($matching_order_ids),
+      'order_count' => max(0, $order_count),
     ],
   ];
 }
@@ -1259,7 +1264,9 @@ add_action('wp_ajax_roxy_will_call_save', function () {
   $ticket_ids = roxy_will_call_ticket_ids_for_customer($context_id, $customer_key);
   $mode=roxy_will_call_context_mode($context_id); $object_id=roxy_will_call_context_object_id($context_id);
   $products=$mode==='showing' ? roxy_will_call_showing_product_ids($object_id) : [$object_id];
-  $fresh=roxy_will_call_get_list($products,[],true); $matching=null;
+  try { $fresh=roxy_will_call_get_list($products,[],true); }
+  catch (Throwable $e) { wp_send_json_error(['message'=>'Will Call could not verify the complete paid-ticket list. No attendance was changed; refresh and try again.','conflict'=>true]); return; }
+  $matching=null;
   foreach($fresh['rows'] as $row) if($row['customer_key']===$customer_key) $matching=$row;
   if(!$matching || $used_qty > (int)$matching['qty']) wp_send_json_error(['message'=>'Customer or paid ticket quantity changed. Refresh the list.','conflict'=>true]);
   $current_map=roxy_will_call_authoritative_checkins($context_id,roxy_will_call_get_checkins_map($context_id));
