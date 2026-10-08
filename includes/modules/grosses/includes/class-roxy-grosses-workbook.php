@@ -545,16 +545,30 @@ class Workbook {
 
     $dir = self::private_workbooks_dir();
     $output_path = trailingslashit($dir) . 'roxy-box-office-' . $year . '.xlsx';
-    if (!copy($template, $output_path)) {
-      throw new \RuntimeException('The workbook template could not be copied for generation.');
+    $temporary_path = '';
+    for ($attempt = 0; $attempt < 5; $attempt++) {
+      $candidate = trailingslashit($dir) . '.roxy-box-office-' . $year . '-' . self::new_send_request_id() . '.tmp.xlsx';
+      $reserved = @fopen($candidate, 'x');
+      if ($reserved === false) continue;
+      if (!fclose($reserved)) { @unlink($candidate); continue; }
+      $temporary_path = $candidate;
+      break;
     }
+    if ($temporary_path === '') throw new \RuntimeException('A unique private workbook generation path could not be reserved.');
 
-    $zip = new \ZipArchive();
-    if ($zip->open($output_path) !== true) {
-      throw new \RuntimeException('The generated workbook could not be opened.');
-    }
-
+    $zip = null;
+    $zip_open = false;
     try {
+      if (!copy($template, $temporary_path)) {
+        throw new \RuntimeException('The workbook template could not be copied for generation.');
+      }
+
+      $zip = new \ZipArchive();
+      if ($zip->open($temporary_path) !== true) {
+        throw new \RuntimeException('The generated workbook could not be opened.');
+      }
+      $zip_open = true;
+
       $sheet3 = $zip->getFromName('xl/worksheets/sheet3.xml');
       $sheet4 = $zip->getFromName('xl/worksheets/sheet4.xml');
       $workbook = $zip->getFromName('xl/workbook.xml');
@@ -562,14 +576,28 @@ class Workbook {
         throw new \RuntimeException('The workbook template is missing required worksheets.');
       }
 
-      $zip->addFromString('xl/worksheets/sheet3.xml', self::populate_weekly_log_sheet((string) $sheet3, $weekly_rows));
-      $zip->addFromString('xl/worksheets/sheet4.xml', self::populate_setup_sheet((string) $sheet4, $year));
-      $zip->addFromString('xl/workbook.xml', self::force_recalculate_workbook((string) $workbook));
+      if (!$zip->addFromString('xl/worksheets/sheet3.xml', self::populate_weekly_log_sheet((string) $sheet3, $weekly_rows))
+        || !$zip->addFromString('xl/worksheets/sheet4.xml', self::populate_setup_sheet((string) $sheet4, $year))
+        || !$zip->addFromString('xl/workbook.xml', self::force_recalculate_workbook((string) $workbook))) {
+        throw new \RuntimeException('The generated workbook sheets could not be updated.');
+      }
+      if (!$zip->close()) {
+        throw new \RuntimeException('The generated workbook could not be finalized.');
+      }
+      $zip_open = false;
+      if (!@rename($temporary_path, $output_path)) {
+        throw new \RuntimeException('The completed workbook could not replace the saved snapshot.');
+      }
+      $temporary_path = '';
+      return $output_path;
     } finally {
-      $zip->close();
+      if ($zip_open && $zip instanceof \ZipArchive) {
+        try { $zip->close(); } catch (\Throwable $close_error) { error_log('Roxy Grosses: temporary workbook archive close failed.'); }
+      }
+      if ($temporary_path !== '' && is_file($temporary_path) && !@unlink($temporary_path)) {
+        error_log('Roxy Grosses: temporary workbook generation file could not be removed.');
+      }
     }
-
-    return $output_path;
   }
 
   public static function get_snapshot_status(int $year): array {

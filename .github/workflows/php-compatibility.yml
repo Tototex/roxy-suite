@@ -45,3 +45,6 @@ jobs:
 
       - name: Run advertiser email attachment regression
         run: php tests/grosses-advertiser-email-outbox-regression.php
+
+      - name: Run workbook snapshot atomicity regression
+        run: php tests/grosses-workbook-atomic-regression.php
