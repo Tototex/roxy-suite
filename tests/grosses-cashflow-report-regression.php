@@ -121,6 +121,13 @@ namespace {
   $assert($paged['counts']['woocommerce_collections'] === 101 && $paged['totals']['woocommerce_collected_cents'] === 101, 'WooCommerce financial reads traverse every bounded page before returning complete totals');
   $assert(count(array_filter($GLOBALS['wc_queries'], static fn(array $query): bool => ($query['type'] ?? '') === 'shop_order')) === 2, 'WooCommerce read requests exactly both required order pages');
 
+  $GLOBALS['wc_parent_orders'] = [];
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'missing WooCommerce refund parent fails closed instead of silently omitting gateway attribution');
+  $GLOBALS['wc_parent_orders'] = [
+    21 => new \RoxyGrosses\FakeOrder(21, 'stripe', '30.00', 'stripe-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
+    99 => new \RoxyGrosses\FakeOrder(99, 'paypal', '20.00', 'paypal-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
+  ];
+
   $GLOBALS['wc_queries'] = [];
   $GLOBALS['wc_pages']['shop_order'][1] = array_slice($page_one, 0, 99);
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'short nonterminal WooCommerce page fails closed rather than presenting partial totals');
