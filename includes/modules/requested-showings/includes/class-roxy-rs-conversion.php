@@ -399,7 +399,7 @@ class Conversion {
             update_post_meta($request_id, CPT::META_STATUS, 'approved');
             wp_cache_delete($request_id, 'post_meta');
             if (get_post_meta($request_id, CPT::META_STATUS, true) !== 'approved') {
-                self::restore_conversion_review_status($request_id);
+                self::restore_conversion_review_status($request_id, true);
                 return new \WP_Error('approval_state_review_required', 'The request approval status could not be saved. Review the request, showing and backing/order records before retrying. Customer confirmation was not sent.');
             }
 
