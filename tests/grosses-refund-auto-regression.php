@@ -53,6 +53,8 @@ namespace RoxyGrosses {
     public static array $upserted_movie_rows = [];
     public static array $logs = [];
     public static bool $throw_refund_update = false;
+    public static function with_concession_allocation_lock(string $date, callable $operation) { return $operation(); }
+    public static function with_concession_allocation_transaction(callable $operation) { return $operation(); }
     public static function reset(): void {
       self::$movie_rows = self::$refund_updates = self::$upserted_movie_rows = self::$logs = [];
       self::$throw_refund_update = false;
