@@ -1,6 +1,7 @@
 <?php
 // Isolated transaction/ownership fixture for concession allocation; no WordPress DB or live reports.
 define('ABSPATH', __DIR__);
+define('ARRAY_A', 'ARRAY_A');
 function check(bool $condition, string $label): void {
     if (!$condition) throw new RuntimeException('FAIL: ' . $label);
     echo 'PASS: ' . $label . PHP_EOL;
