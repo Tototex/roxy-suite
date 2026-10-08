@@ -207,6 +207,13 @@ namespace {
   try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', ['2038-05-01'])); }
   catch (Throwable $error) { $mismatch_failed = str_contains($error->getMessage(), 'Locked concessions exceed'); }
   $check($mismatch_failed && count(\RoxyGrosses\Store::$updates) === $updates_before_mismatch, 'locked amount above matching Square total fails before any allocation write');
+  \RoxyGrosses\Store::$movie['2038-05-01'][0]['concessions_total'] = 5.01;
+  \RoxyGrosses\Store::$live['2038-05-01'][0]['concessions_total'] = 5.0;
+  \RoxyGrosses\Store::$live['2038-05-01'][0]['is_locked'] = 1;
+  \RoxyGrosses\Store::$rental['2038-05-01'][0]['is_locked'] = 1;
+  $all_locked_updates = count(\RoxyGrosses\Store::$updates);
+  $all_locked = \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', ['2038-05-01']));
+  $check($all_locked['updated'] === 0 && count(\RoxyGrosses\Store::$updates) === $all_locked_updates && (int) round($all_locked['concessions_total'] * 100) === 1001, 'fully locked rows matching the source total remain untouched and count as reconciled');
 
   echo "OK: {$checks} reporter snapshot/rebalance checks\n";
 }

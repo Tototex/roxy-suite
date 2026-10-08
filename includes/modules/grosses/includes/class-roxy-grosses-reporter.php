@@ -1836,10 +1836,11 @@ class Reporter {
           continue;
         }
 
-        $candidate_ids = array_values(array_filter($candidate_ids, static fn(int $entry_id): bool => empty($reports[$entry_id]['_is_locked'])));
         if (!$candidate_ids) continue;
         if ($line_total_cents > PHP_INT_MAX - $eligible_cents) throw new \RuntimeException('Daily concessions exceed the supported allocation range.');
         $eligible_cents += $line_total_cents;
+        $candidate_ids = array_values(array_filter($candidate_ids, static fn(int $entry_id): bool => empty($reports[$entry_id]['_is_locked'])));
+        if (!$candidate_ids) continue;
         foreach (self::distribute_amount_cents_across_rows($line_total_cents, $candidate_ids, $reports) as $entry_id => $allocated_cents) {
           if ($allocated_cents <= 0 || !isset($reports[$entry_id])) continue;
           if ($allocated_cents > PHP_INT_MAX - ($provisional[$entry_id] ?? 0)) throw new \RuntimeException('A concessions allocation exceeds the supported amount range.');
