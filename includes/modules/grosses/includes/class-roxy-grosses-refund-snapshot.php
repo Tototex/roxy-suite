@@ -184,6 +184,7 @@ final class RefundSnapshot {
         $refund_date_basis = 'square_refund_completed_event';
       }
       $events[] = [
+        'source' => 'square',
         'refund_id' => $refund_id,
         'payment_id' => $refund['payment_id'],
         'order_id' => $order_id,

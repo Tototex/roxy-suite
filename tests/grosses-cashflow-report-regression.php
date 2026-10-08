@@ -89,13 +89,13 @@ namespace {
   $assert($report['counts'] === ['square_collections'=>1,'woocommerce_collections'=>1,'square_refunds'=>1,'woocommerce_refunds'=>1], 'daily report counts only provider events attributed to selected local date');
   $assert($report['refund_date_bases']['square'] === ['square_updated_at_proxy'] && $report['refund_date_bases']['woocommerce'] === ['woocommerce_refund_creation_proxy'], 'daily report retains explicit refund-date provenance');
   $assert($GLOBALS['wc_queries'][0]['date_paid'] === '1790924400...1791010799' && $GLOBALS['wc_queries'][1]['date_created'] === '1790924400...1791010799', 'WooCommerce queries use exact UTC bounds for the report timezone day');
-  $assert(\RoxyGrosses\Square::$calls[0] === ['payments', '2026-10-03T07:00:00Z', '2026-10-04T07:00:00Z'], 'Square payment read uses exact UTC boundaries for the selected report-timezone day');
+  $assert(\RoxyGrosses\Square::$calls[0] === ['payments', '2026-10-02T07:00:00Z', '2026-10-03T07:00:00Z'], 'Square payment read uses exact UTC boundaries for the selected report-timezone day');
 
   \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = '';
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'combined report refuses to silently omit WooCommerce collections when gateway allow-list is empty');
   \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = 'stripe';
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-02-30'), 'invalid calendar date fails before provider reads');
-  $assert(count(\RoxyGrosses\Square::$calls) === 1, 'invalid date and missing gateway configuration cause no provider reads');
+  $assert(count(\RoxyGrosses\Square::$calls) === 2, 'invalid date and missing gateway configuration cause no additional provider reads');
 
   $GLOBALS['wc_queries'] = [];
   $page_one = [];

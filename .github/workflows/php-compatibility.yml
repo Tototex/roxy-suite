@@ -171,15 +171,20 @@ jobs:
             ticket-publication-regression.php
             updater-integrity-regression.php
           )
+          run_regression() {
+            if "$@"; then return 0; else status=$?; fi
+            echo "::error title=Regression failed::${test} returned exit code ${status}; see the preceding output."
+            exit "$status"
+          }
           for test in "${tests[@]}"; do
             echo "Running $test"
             if [[ "$test" == 'inventory-regression.php' ]]; then
-              php "tests/$test" "$GITHUB_WORKSPACE/includes/modules/inventory/includes"
+              run_regression php "tests/$test" "$GITHUB_WORKSPACE/includes/modules/inventory/includes"
             elif [[ "$test" == 'members-dashboard-regression.php' ]]; then
-              php "tests/$test" --baseline-ref 6e730f0 "$GITHUB_WORKSPACE/includes/class-roxy-suite-members-dashboard.php"
+              run_regression php "tests/$test" --baseline-ref 6e730f0 "$GITHUB_WORKSPACE/includes/class-roxy-suite-members-dashboard.php"
             elif [[ "$test" == 'social-film-context-regression.php' || "$test" == 'social-ai-references-regression.php' || "$test" == 'social-ai-retry-regression.php' ]]; then
-              php "tests/$test" "$GITHUB_WORKSPACE/includes/modules/social-publisher/includes"
+              run_regression php "tests/$test" "$GITHUB_WORKSPACE/includes/modules/social-publisher/includes"
             else
-              php "tests/$test"
+              run_regression php "tests/$test"
             fi
           done

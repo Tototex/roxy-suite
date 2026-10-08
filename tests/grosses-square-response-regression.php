@@ -103,16 +103,18 @@ namespace {
   parse_str(parse_url($GLOBALS['calls'][1][0],PHP_URL_QUERY),$payment_next_query);
   check($payment_query['begin_time']==='2026-10-03T00:00:00+00:00' && $payment_query['end_time']==='2026-10-03T23:59:59.999999+00:00' && $payment_query['location_id']==='fixture-location','payment feed filters by created time and excludes next-day midnight at its inclusive end boundary');
   check($payment_next_query['cursor']==='next' && $payment_next_query['begin_time']===$payment_query['begin_time'] && $payment_next_query['location_id']===$payment_query['location_id'],'payment pagination retains original date/location filters');
-  foreach([
-    response(['payments'=>null]), response(['payments'=>['wrong-key'=>$payment]]),
-    response(['payments'=>[array_replace($payment,['location_id'=>'wrong-location'])]]),
-    response(['payments'=>[$payment,$payment]]),
-    response(['payments'=>[array_replace($payment,['created_at'=>'2026-10-04T00:00:00Z'])]]),
-    response(['payments'=>[array_replace($payment,['created_at'=>'2026-02-30T12:00:00Z'])]]),
-    response(['payments'=>[array_replace($payment,['status'=>'UNKNOWN'])]]),
-    response(['payments'=>[$payment],'cursor'=>'next']), response(['payments'=>[],'cursor'=>'next']),
-    response(['payments'=>[['id'=>'payment-a','location_id'=>'fixture-location','status'=>'COMPLETED']]]),
-    response(['payments'=>[$payment]],503), new FixtureNetworkError('network failure'),
-  ] as $bad){reset_fixture([$bad]);try{\RoxyGrosses\Square::list_payments_created_between('2026-10-03T00:00:00Z','2026-10-04T00:00:00Z');throw new \LogicException('Expected invalid payment feed failure');}catch(\RuntimeException $e){check(true,'malformed, misplaced, duplicate, incomplete, or failed Square payment feed cannot become partial totals');}}
+  $payment_failure_sets=[
+    [response(['payments'=>null])], [response(['payments'=>['wrong-key'=>$payment]])],
+    [response(['payments'=>[array_replace($payment,['location_id'=>'wrong-location'])]])],
+    [response(['payments'=>[$payment,$payment]])],
+    [response(['payments'=>[array_replace($payment,['created_at'=>'2026-10-04T00:00:00Z'])]])],
+    [response(['payments'=>[array_replace($payment,['created_at'=>'2026-02-30T12:00:00Z'])]])],
+    [response(['payments'=>[array_replace($payment,['status'=>'UNKNOWN'])]])],
+    [response(['payments'=>[$payment],'cursor'=>'next']),response(['payments'=>[$payment],'cursor'=>'next'])],
+    [response(['payments'=>[],'cursor'=>'next'])],
+    [response(['payments'=>[['id'=>'payment-a','location_id'=>'fixture-location','status'=>'COMPLETED']]])],
+    [response(['payments'=>[$payment]],503)], [new FixtureNetworkError('network failure')],
+  ];
+  foreach($payment_failure_sets as $responses){reset_fixture($responses);try{\RoxyGrosses\Square::list_payments_created_between('2026-10-03T00:00:00Z','2026-10-04T00:00:00Z');throw new \LogicException('Expected invalid payment feed failure');}catch(\RuntimeException $e){check(true,'malformed, misplaced, duplicate, incomplete, or failed Square payment feed cannot become partial totals');}}
   reset_fixture([['status'=>200,'body'=>'{}']]);check(\RoxyGrosses\Square::list_payments_created_between('2026-10-03T00:00:00Z','2026-10-04T00:00:00Z')===[],'legitimate empty Square payment feed remains zero collections');
 }
