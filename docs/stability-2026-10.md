@@ -10,7 +10,7 @@ Latest local verification and deployment boundary are recorded in `docs/audit-ch
 
 ## Findings
 
-G2 addendum (checkpoint 81): completed Square refund projections now prefer a persisted `refund.updated` event only when it exactly matches the current refund ID, payment/location IDs, cents, and Square `updated_at`. The event timestamp and event ID are retained as provider status-transition evidence; absent evidence falls back to the explicitly labeled `updated_at` proxy, and evidence-read failures fail closed. The projection remains unconnected to financial dashboards/reports. See `docs/grosses-square-refund-completion-evidence-checkpoint-2026-10-08.md`.
+G2 addendum (checkpoints 81–82): completed Square refund projections now prefer a persisted `refund.updated` event only when it exactly matches the current refund ID, payment/location IDs, cents, and Square `updated_at`. The event timestamp and event ID are retained as provider status-transition evidence; absent evidence falls back to the explicitly labeled `updated_at` proxy, and evidence-read failures fail closed. The real Store query now has direct fixture coverage for parameters, completed/USD constraints, missing/malformed evidence, and DB errors. The projection remains unconnected to financial dashboards/reports; hosted verification is pending. See `docs/grosses-square-refund-completion-evidence-checkpoint-2026-10-08.md`.
 
 Refund attribution confirmed 2026-10-06: later Square ticket refunds correct original sale-day studio figures. Financial totals attribute refunds to the day the money is returned. Already-emailed reports should be flagged for review, never automatically resent. This policy is awaiting implementation/reconciliation, not a historical data-change instruction.
 

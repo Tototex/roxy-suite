@@ -10,4 +10,5 @@
 ## Verification
 
 - Extended the Grosses refund snapshot regression to verify exact identity/timestamp lookup constraints, event-date precedence, provenance, and proxy fallback.
+- Added a direct real-`Store` regression for the parameterized evidence query, completed/USD constraints, missing-event fallback, malformed records, and database failures.
 - Hosted verification is pending for this follow-up commit. The webhook foundation and prior full suite passed in run [37765206700](https://github.com/Tototex/roxy-suite/actions/runs/37765206700).
