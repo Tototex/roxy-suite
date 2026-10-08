@@ -136,7 +136,7 @@ namespace {
   ];
   $snapshot = $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z'));
   $financial = $snapshot->completed_return_financial_refunds();
-  $assert(count($financial) === 1 && $financial[0]['amount_cents'] === 1234 && $financial[0]['refund_date'] === '2026-08-13', 'completed refund uses verified cents and completion timestamp in Pacific date');
+  $assert(count($financial) === 1 && $financial[0]['amount_cents'] === 1234 && $financial[0]['refund_date'] === '2026-08-13' && $financial[0]['refund_updated_at'] === '2026-08-14 06:30:00', 'completed refund uses verified cents and UTC update timestamp to derive Pacific refund date');
   $assert($financial[0]['order_id'] === 'return-financial' && $financial[0]['payment_id'] === 'payment-financial', 'financial refund event retains immutable Square identities');
   \RoxyGrosses\Square::$refunds['payment-financial_refund-financial']['updated_at'] = '2026-02-30T06:30:00Z';
   $expect_throw(static fn() => $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z'))->completed_return_financial_refunds(), 'invalid completed refund date must fail closed');

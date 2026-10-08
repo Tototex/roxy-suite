@@ -155,11 +155,11 @@ final class RefundSnapshot {
         'location_id' => $refund['location_id'],
         'amount_cents' => $money['amount'],
         'currency' => 'USD',
-        'completed_at' => $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
+        'refund_updated_at' => $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
         'refund_date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
       ];
     }
-    usort($events, static fn(array $a, array $b): int => [$a['completed_at'], $a['refund_id']] <=> [$b['completed_at'], $b['refund_id']]);
+    usort($events, static fn(array $a, array $b): int => [$a['refund_updated_at'], $a['refund_id']] <=> [$b['refund_updated_at'], $b['refund_id']]);
     return $events;
   }
 
