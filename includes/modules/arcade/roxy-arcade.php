@@ -2,14 +2,14 @@
 /**
  * Plugin Name: Roxy Arcade
  * Description: Modular arcade with multiple games, per-game + combined leaderboards, guest play, login-required score saving, and monthly prize via WooCommerce Subscriptions.
- * Version: 0.4.4
+ * Version: 0.4.6
  * Author: Newport Roxy (AI Team)
  * Update URI: https://github.com/Tototex/roxy-arcade
  */
 
 if (!defined('ABSPATH')) exit;
 
-define('ROXY_ARCADE_VERSION', '0.4.4');
+define('ROXY_ARCADE_VERSION', '0.4.6');
 
 class Roxy_Arcade {
   const DB_VERSION = '1.0';
@@ -127,7 +127,9 @@ class Roxy_Arcade {
       'nonce'   => wp_create_nonce('wp_rest'),
       'isLoggedIn' => is_user_logged_in(),
       'loginUrl' => wp_login_url(get_permalink()),
-      'awardRuleText' => 'Monthly winner is the #1 combined score on the 1st at 9:00am.',
+      'awardRuleText' => (int) get_option(self::OPTION_REWARDS_ENABLED, 0) === 1
+        ? 'Monthly leaders are candidates for manager review, not guaranteed prize winners.'
+        : 'Prize awards are currently disabled.',
     ]);
   }
 
@@ -187,8 +189,11 @@ class Roxy_Arcade {
           <h3>👑 Current Leader</h3>
           <div id="roxyChampion" class="roxy-board">Loading…</div>
           <div class="roxy-small">
-            Prize: 1 billing period free of <strong>Friends of The Roxy</strong> (SKU: <?php echo esc_html(self::SKU_PRIZE); ?>)
-            for the monthly winner.
+            <?php if ((int) get_option(self::OPTION_REWARDS_ENABLED, 0) === 1): ?>
+              Potential prize: 1 billing period free of <strong>Friends of The Roxy</strong> (SKU: <?php echo esc_html(self::SKU_PRIZE); ?>), subject to manager verification and approval. A leaderboard score does not guarantee a prize.
+            <?php else: ?>
+              Prize awards are currently disabled. Enjoy the games and leaderboards.
+            <?php endif; ?>
           </div>
         </div>
       </div>
@@ -290,7 +295,9 @@ class Roxy_Arcade {
 
     if ($score > 9999999) $score = 9999999;
 
-    self::upsert_best_score($user_id, $game, $score);
+    if (!self::upsert_best_score($user_id, $game, $score)) {
+      return new WP_REST_Response(['ok' => false, 'message' => 'Your score could not be saved. Please try again later.'], 503);
+    }
 
     $combined = self::get_combined_top10();
     return new WP_REST_Response([
@@ -308,19 +315,21 @@ class Roxy_Arcade {
     global $wpdb;
     $table = self::table();
 
-    $existing = (int) $wpdb->get_var($wpdb->prepare(
-      "SELECT best_score FROM $table WHERE user_id = %d AND game_key = %s",
-      $user_id, $game
-    ));
+    // Zero never created a leaderboard entry in the original implementation.
+    if ($score <= 0) return true;
 
-    if ($score <= $existing) return;
-
-    $wpdb->query($wpdb->prepare(
+    // One statement serializes competing writes on the unique user/game key.
+    // Assign the timestamp before the score so equal/lower attempts keep the
+    // original achievement time used to break per-game leaderboard ties.
+    $result = $wpdb->query($wpdb->prepare(
       "INSERT INTO $table (user_id, game_key, best_score, updated_at)
        VALUES (%d, %s, %d, NOW())
-       ON DUPLICATE KEY UPDATE best_score = VALUES(best_score), updated_at = NOW()",
+       ON DUPLICATE KEY UPDATE
+         updated_at = IF(VALUES(best_score) > best_score, VALUES(updated_at), updated_at),
+         best_score = GREATEST(best_score, VALUES(best_score))",
       $user_id, $game, $score
     ));
+    return $result !== false;
   }
 
   private static function get_game_top10($game) {
@@ -430,23 +439,57 @@ class Roxy_Arcade {
     $combined = self::get_combined_top10();
     if (empty($combined) || empty($combined[0]['user_id'])) return;
 
-    $winner_id = (int) $combined[0]['user_id'];
-    $auto_fulfill = (int) get_option(self::OPTION_AUTO_FULFILL_REWARDS, 0) === 1;
+    // Browser-supplied scores are not proof of gameplay. Even a legacy enabled
+    // auto-fulfillment option cannot bypass explicit manager review.
+    self::queue_review_candidate($month, $combined[0]);
+  }
 
-    if (!$auto_fulfill) {
-      self::queue_review_candidate($month, $combined[0]);
-      return;
-    }
-
-    $sub_id = self::award_free_subscription_one_period($winner_id);
-    if ($sub_id) {
-      update_option(self::OPTION_LAST_AWARDED_MONTH, $month);
-      update_option(self::OPTION_LAST_WINNER_USER_ID, $winner_id);
-      update_option(self::OPTION_LAST_WINNER_SUB_ID, (int)$sub_id);
+  private static function award_once($month, $user_id) {
+    global $wpdb;
+    if (!preg_match('/^\d{4}-(0[1-9]|1[0-2])$/D', (string) $month) || $user_id <= 0) return 0;
+    $key = 'roxy_arcade_award_claim_' . $month;
+    $claim = ['state' => 'started', 'user_id' => (int) $user_id, 'subscription_id' => 0,
+      'token' => wp_generate_uuid4(), 'started_at' => gmdate('c')];
+    $expected = wp_json_encode($claim);
+    // Unique option_name is a durable claim, including across worker crashes.
+    // Never automatically delete/retry an uncertain attempt or reset a completed one.
+    $inserted = $wpdb->query($wpdb->prepare(
+      "INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')",
+      $key, $expected
+    ));
+    if ($inserted !== 1) return 0;
+    wp_cache_delete($key, 'options');
+    wp_cache_delete('notoptions', 'options');
+    $persist = static function ($subscription_id) use ($key, &$claim, &$expected) {
+      $next = $claim; $next['subscription_id'] = (int) $subscription_id;
+      $claim = $next;
+      if (!self::save_award_claim($key, $expected, $next)) throw new RuntimeException('Prize identity could not be recorded');
+      $expected = wp_json_encode($next);
+    };
+    try {
+      $sub_id = self::award_free_subscription_one_period($user_id, $persist);
+      if (!$sub_id) throw new RuntimeException('Prize preparation failed');
+      $next = $claim; $next['state'] = 'completed'; $next['completed_at'] = gmdate('c');
+      if (!self::save_award_claim($key, $expected, $next)) return 0;
+      return $sub_id;
+    } catch (Throwable $error) {
+      $next = $claim; $next['state'] = 'needs_review';
+      self::save_award_claim($key, $expected, $next);
+      return 0;
     }
   }
 
-  private static function award_free_subscription_one_period($user_id) {
+  private static function save_award_claim($key, $expected, array $next) {
+    global $wpdb;
+    $saved = $wpdb->query($wpdb->prepare(
+      "UPDATE {$wpdb->options} SET option_value=%s WHERE option_name=%s AND BINARY option_value=BINARY %s",
+      wp_json_encode($next), $key, $expected
+    ));
+    wp_cache_delete($key, 'options');
+    return $saved === 1;
+  }
+
+  private static function award_free_subscription_one_period($user_id, $persist_identity = null) {
     if (!class_exists('WooCommerce')) return 0;
     if (!function_exists('wcs_create_subscription')) return 0;
 
@@ -454,31 +497,46 @@ class Roxy_Arcade {
     if (!$product_id) return 0;
 
     $product = wc_get_product($product_id);
-    if (!$product) return 0;
+    if (!$product || !class_exists('WC_Subscriptions_Product') || !WC_Subscriptions_Product::is_subscription($product)) return 0;
+    $period = WC_Subscriptions_Product::get_period($product);
+    $interval = (int) WC_Subscriptions_Product::get_interval($product);
+    if (!in_array($period, ['day', 'week', 'month', 'year'], true) || $interval < 1 || !get_user_by('id', $user_id)) return 0;
 
     $sub = wcs_create_subscription([
       'customer_id' => $user_id,
-      'billing_period' => $product->get_billing_period(),
-      'billing_interval' => $product->get_billing_interval(),
+      'status' => 'pending',
+      'billing_period' => $period,
+      'billing_interval' => $interval,
       'start_date' => gmdate('Y-m-d H:i:s'),
     ]);
 
     if (is_wp_error($sub) || !$sub) return 0;
 
-    $sub->add_product($product, 1);
+    // Record the pending subscription before configuring or activating it.
+    if ($persist_identity) $persist_identity((int) $sub->get_id());
+    $item = new WC_Order_Item_Product();
+    $item->set_product($product);
+    $item->set_quantity(1);
+    $item->set_subtotal(0);
+    $item->set_total(0);
+    $item->set_taxes(['subtotal' => [], 'total' => []]);
+    // Installed Woo returns void on successful add_item, false on invalid type.
+    if ($sub->add_item($item) === false) throw new RuntimeException('Prize line could not be added');
 
     $sub->set_requires_manual_renewal(true);
     $sub->set_payment_method('');
-    $sub->set_total(0);
-    $sub->calculate_totals();
+    $sub->calculate_totals(false);
+    if ((float) $sub->get_total() !== 0.0) throw new RuntimeException('Prize total is not zero');
 
-    $end_ts = wcs_add_time($product->get_billing_period(), $product->get_billing_interval(), $sub->get_time('start'));
+    $end_ts = wcs_add_time($interval, $period, $sub->get_time('start'));
+    if ($end_ts <= $sub->get_time('start')) throw new RuntimeException('Prize expiry is invalid');
     $sub->update_dates([
       'end' => gmdate('Y-m-d H:i:s', $end_ts),
       'next_payment' => 0,
     ]);
 
-    $sub->update_status('active', 'Roxy Arcade monthly winner prize awarded.');
+    $sub->save();
+    if (!$sub->update_status('active', 'Roxy Arcade monthly winner prize awarded.')) throw new RuntimeException('Prize activation failed');
     $sub->add_order_note('Roxy Arcade: Monthly winner prize — Free 1 billing period (SUB002).');
 
     return (int) $sub->get_id();
@@ -503,6 +561,7 @@ class Roxy_Arcade {
     $subject = sprintf('Roxy Arcade monthly winner review needed for %s', (string) ($candidate['month'] ?? 'this month'));
     $message = implode("\n", [
       'Automatic prize fulfillment is disabled for Roxy Arcade.',
+      'Scores are supplied by players\' browsers and are not verified gameplay. Independently vet the candidate before approving a prize.',
       '',
       'Review candidate:',
       'Month: ' . (string) ($candidate['month'] ?? ''),
@@ -511,7 +570,7 @@ class Roxy_Arcade {
       'Combined score: ' . (string) ($candidate['score'] ?? 0),
       'Queued at: ' . (string) ($candidate['queued_at'] ?? ''),
       '',
-      'If this looks correct, enable automatic fulfillment temporarily and run the monthly award manually from the Arcade settings screen.',
+      'If this looks correct, approve the queued candidate from the Arcade settings screen. There is no need to enable automatic fulfillment.',
     ]);
     wp_mail($to, $subject, $message);
   }
@@ -535,11 +594,11 @@ class Roxy_Arcade {
     }
 
     $winner_id = (int) $candidate['user_id'];
-    $sub_id = self::award_free_subscription_one_period($winner_id);
+    $sub_id = self::award_once($month, $winner_id);
     if (!$sub_id) {
       return [
         'ok' => false,
-        'message' => 'Unable to issue the prize subscription for the queued candidate.',
+        'message' => 'Prize not issued. Check the monthly claim: an existing or uncertain attempt requires review; it will not be retried automatically.',
       ];
     }
 
@@ -565,13 +624,10 @@ class Roxy_Arcade {
     if (isset($_POST['roxy_arcade_save']) && check_admin_referer('roxy_arcade_save_settings')) {
       $enabled = isset($_POST['rewards_enabled']) ? 1 : 0;
       update_option(self::OPTION_REWARDS_ENABLED, $enabled);
-      $auto_fulfill = isset($_POST['auto_fulfill_rewards']) ? 1 : 0;
-      update_option(self::OPTION_AUTO_FULFILL_REWARDS, $auto_fulfill);
+      update_option(self::OPTION_AUTO_FULFILL_REWARDS, 0);
 
       if (isset($_POST['reset_awarded_month'])) {
-        update_option(self::OPTION_LAST_AWARDED_MONTH, '');
-        update_option(self::OPTION_LAST_WINNER_USER_ID, 0);
-        update_option(self::OPTION_LAST_WINNER_SUB_ID, 0);
+        $msg = 'Award history cannot be reset to issue a duplicate prize. Review the monthly claim instead.';
       }
 
       if (isset($_POST['run_award_now'])) {
@@ -580,18 +636,21 @@ class Roxy_Arcade {
       } elseif (isset($_POST['approve_review_candidate'])) {
         $result = self::approve_review_candidate();
         $msg = (string) ($result['message'] ?? 'Settings saved.');
-      } else {
+      } elseif ($msg === '') {
         $msg = 'Settings saved.';
       }
     }
 
     $enabled = (int) get_option(self::OPTION_REWARDS_ENABLED, 0);
-    $auto_fulfill = (int) get_option(self::OPTION_AUTO_FULFILL_REWARDS, 0);
     $last_month = (string) get_option(self::OPTION_LAST_AWARDED_MONTH, '');
     $last_winner_id = (int) get_option(self::OPTION_LAST_WINNER_USER_ID, 0);
     $last_sub_id = (int) get_option(self::OPTION_LAST_WINNER_SUB_ID, 0);
     $review_candidate = get_option(self::OPTION_LAST_REVIEW_CANDIDATE, []);
     if (!is_array($review_candidate)) $review_candidate = [];
+    $claim_month = !empty($review_candidate['month']) ? (string) $review_candidate['month'] : wp_date('Y-m');
+    $award_claim = get_option('roxy_arcade_award_claim_' . $claim_month, []);
+    if (is_string($award_claim)) $award_claim = json_decode($award_claim, true);
+    if (!is_array($award_claim)) $award_claim = [];
 
     $next_ts = wp_next_scheduled('roxy_arcade_monthly_award');
     $next_run = $next_ts ? wp_date('Y-m-d H:i:s T', $next_ts, wp_timezone()) : 'Not scheduled';
@@ -620,12 +679,8 @@ class Roxy_Arcade {
                 <input type="checkbox" name="rewards_enabled" <?php checked($enabled, 1); ?> />
                 Enable monthly prize awarding (1st at <?php echo esc_html(get_option(self::OPTION_AWARD_TIME)); ?>)
               </label>
-              <p class="description">Keep OFF while seeding scores.</p>
-              <label style="display:block;margin-top:8px;">
-                <input type="checkbox" name="auto_fulfill_rewards" <?php checked($auto_fulfill, 1); ?> />
-                Automatically create the prize subscription without admin review
-              </label>
-              <p class="description">Recommended OFF. When disabled, the monthly job emails the admin with a review candidate instead of automatically issuing the prize.</p>
+              <p class="description">Keep OFF while seeding scores. When enabled, this only queues a candidate for manager review; it does not issue a prize automatically.</p>
+              <p class="description">Automatic fulfillment is unavailable: browser-submitted scores are not verified gameplay. Independently vet the candidate before explicitly approving a prize.</p>
             </td>
           </tr>
 
@@ -655,10 +710,9 @@ class Roxy_Arcade {
                   Approve queued review candidate and issue the prize now
                 </label>
               <?php endif; ?>
-              <label style="display:block;margin-top:8px;">
-                <input type="checkbox" name="reset_awarded_month" />
-                Reset awarded month (allows awarding again this month)
-              </label>
+              <p>Monthly claim (<?php echo esc_html($claim_month); ?>): <?php echo esc_html($award_claim['state'] ?? 'No attempt recorded'); ?>.
+                Subscription: <?php echo esc_html((string) ($award_claim['subscription_id'] ?? 0)); ?>.</p>
+              <p class="description">Started or uncertain attempts require manual review before recovery. Completed claims cannot be reset to award twice.</p>
             </td>
           </tr>
 

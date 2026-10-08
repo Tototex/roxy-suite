@@ -7,12 +7,13 @@ class Sales {
   private static array $stats_cache = [];
   private const META_KEY = '_roxy_sales_stats';
   private const LEGACY_SCAN_COMPLETE_KEY = '_roxy_legacy_sales_scan_complete';
-  private const CACHE_VERSION = 2;
+  private const CACHE_VERSION = 3;
 
   public static function init(): void {
     add_action('woocommerce_order_status_changed', [__CLASS__, 'on_order_changed'], 20, 1);
     add_action('woocommerce_checkout_order_processed', [__CLASS__, 'on_order_changed'], 20, 1);
     add_action('woocommerce_refund_created', [__CLASS__, 'on_refund_created'], 20, 2);
+    add_action('woocommerce_refund_deleted', [__CLASS__, 'on_refund_deleted'], 20, 2);
     add_action('save_post_' . CPT::POST_TYPE, [__CLASS__, 'on_showing_saved'], 30, 1);
   }
 
@@ -34,6 +35,10 @@ class Sales {
     if ($order_id > 0) {
       self::on_order_changed($order_id);
     }
+  }
+
+  public static function on_refund_deleted(int $refund_id, int $order_id): void {
+    if ($order_id > 0) self::on_order_changed($order_id);
   }
 
   public static function get_showing_stats(int $showing_id): array {
@@ -107,7 +112,7 @@ class Sales {
     $order_ids = wc_get_orders([
       'limit' => -1,
       'return' => 'ids',
-      'status' => ['processing', 'completed', 'on-hold'],
+      'status' => array_values(array_unique(array_merge(['processing', 'completed', 'on-hold'], function_exists('wc_get_is_paid_statuses') ? wc_get_is_paid_statuses() : []))),
       'type' => 'shop_order',
       'meta_query' => [[
         'key' => '_roxy_contains_showing_' . $showing_id,
@@ -123,6 +128,12 @@ class Sales {
       $order = wc_get_order($oid);
       if (!$order) continue;
 
+      $status = method_exists($order, 'get_status') ? strtolower((string) $order->get_status()) : '';
+      if (in_array($status, ['cancelled', 'canceled', 'refunded'], true)) continue;
+      $paid_status = in_array($status, ['processing', 'completed'], true);
+      $is_paid = method_exists($order, 'is_paid') && $order->is_paid();
+      if (!$paid_status && !$is_paid) continue;
+
       $order_date = self::order_date($order);
       $is_presale_order = $showing_date !== '' && $order_date !== '' && $order_date < $showing_date;
       $matched_order = false;
@@ -131,12 +142,24 @@ class Sales {
         if (!isset($ticket_type_by_product[$pid])) continue;
 
         $matched_order = true;
-        $qty = (int) $item->get_quantity();
+        $qty = max(0, (int) $item->get_quantity());
+        $item_id = method_exists($item, 'get_id') ? (int) $item->get_id() : 0;
+        $refunded_qty = $item_id > 0 && method_exists($order, 'get_qty_refunded_for_item')
+          ? abs((int) $order->get_qty_refunded_for_item($item_id))
+          : 0;
+        $qty = max(0, $qty - min($qty, $refunded_qty));
         $type = $ticket_type_by_product[$pid];
+        // These are eligible-order line values, not a dated cash ledger. Keep
+        // the legacy gross field compatible; never move a later cash refund to
+        // the showing/sale date by subtracting it here.
         $line_total = (float) $item->get_total();
+        $refunded_total = $item_id > 0 && method_exists($order, 'get_total_refunded_for_item')
+          ? abs((float) $order->get_total_refunded_for_item($item_id))
+          : 0.0;
 
         $stats['sold_qty'] += $qty;
         $stats['gross_revenue'] += $line_total;
+        $stats['refunded_revenue'] += $refunded_total;
         if ($type === 'subscriber') {
           $stats['subscriber_qty'] += $qty;
         } elseif ($is_presale_order) {
@@ -163,6 +186,8 @@ class Sales {
 
     $stats['paid_qty'] = max(0, $stats['sold_qty'] - $stats['subscriber_qty']);
     $stats['gross_revenue'] = round((float) $stats['gross_revenue'], 2);
+    $stats['refunded_revenue'] = round((float) $stats['refunded_revenue'], 2);
+    $stats['net_revenue'] = round($stats['gross_revenue'] - $stats['refunded_revenue'], 2);
     foreach ($stats['ticket_types'] as $type => $row) {
       $stats['ticket_types'][$type]['revenue'] = round((float) $row['revenue'], 2);
     }
@@ -175,7 +200,7 @@ class Sales {
     $query_args = [
       'limit' => -1,
       'return' => 'ids',
-      'status' => ['processing', 'completed', 'on-hold'],
+      'status' => array_values(array_unique(array_merge(['processing', 'completed', 'on-hold'], function_exists('wc_get_is_paid_statuses') ? wc_get_is_paid_statuses() : []))),
       'type' => 'shop_order',
     ];
 
@@ -336,6 +361,8 @@ class Sales {
       'presale_qty' => 0,
       'day_of_qty' => 0,
       'gross_revenue' => 0.0,
+      'refunded_revenue' => 0.0,
+      'net_revenue' => 0.0,
       'order_count' => 0,
       'ticket_types' => [],
     ];

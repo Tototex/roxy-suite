@@ -31,6 +31,7 @@ function roxy_rs_install_schema(): void {
         sponsor_amount INT NOT NULL DEFAULT 0,
         sponsor_ticket_qty INT UNSIGNED NOT NULL DEFAULT 0,
         charge_total INT NOT NULL DEFAULT 0,
+        agreement_json LONGTEXT NULL,
         approved_showing_id BIGINT UNSIGNED NULL,
         woo_order_id BIGINT UNSIGNED NULL,
         charge_intent_id VARCHAR(190) NULL,
@@ -44,4 +45,9 @@ function roxy_rs_install_schema(): void {
     ) $charset;";
 
     dbDelta($sql);
+    $wpdb->last_error = '';
+    $agreement_column = $wpdb->get_var("SHOW COLUMNS FROM `$table` LIKE 'agreement_json'");
+    if ($wpdb->last_error !== '' || $agreement_column !== 'agreement_json') {
+        throw new RuntimeException('Requested-showing agreement storage was not installed.');
+    }
 }

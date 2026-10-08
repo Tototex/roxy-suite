@@ -103,10 +103,6 @@ function roxy_eb_get_showing_blocks_for_range(DateTimeImmutable $rangeStart, Dat
             continue;
         }
 
-        if ($show_start < $rangeStart || $show_start >= $rangeEnd) {
-            continue;
-        }
-
         // Public showings reserve the room around the actual showtime.
         $reserved_start = $show_start->modify('-2 hours');
         $reserved_end = $show_start->modify('+2 hours');
@@ -169,11 +165,12 @@ function roxy_eb_check_lead_time(DateTimeImmutable $doorsOpen) {
     return $doorsOpen >= $now->modify('+' . $lead . ' hours');
 }
 
-function roxy_eb_is_slot_available(DateTimeImmutable $reservedStart, DateTimeImmutable $reservedEnd, $ignore_booking_id = 0) {
+function roxy_eb_is_slot_available(DateTimeImmutable $reservedStart, DateTimeImmutable $reservedEnd, $ignore_booking_id = 0, bool $throw_read_errors = false) {
     $start_mysql = roxy_eb_datetime_to_mysql($reservedStart);
     $end_mysql   = roxy_eb_datetime_to_mysql($reservedEnd);
 
     $bookings = roxy_eb_repo_list_bookings_in_range($start_mysql, $end_mysql);
+    if (is_wp_error($bookings)) { if ($throw_read_errors) throw new RuntimeException($bookings->get_error_message()); return false; }
     foreach ($bookings as $b) {
         if (intval($ignore_booking_id) > 0 && intval($b['id']) === intval($ignore_booking_id)) continue;
         return false;
@@ -181,6 +178,7 @@ function roxy_eb_is_slot_available(DateTimeImmutable $reservedStart, DateTimeImm
 
     // blocks
     $blocks = roxy_eb_repo_list_blocks_in_range($start_mysql, $end_mysql);
+    if (is_wp_error($blocks)) { if ($throw_read_errors) throw new RuntimeException($blocks->get_error_message()); return false; }
     if (!empty($blocks)) return false;
 
     // fixed showtime blocks
@@ -216,6 +214,7 @@ function roxy_eb_get_calendar_blocks(DateTimeImmutable $rangeStart, DateTimeImmu
 
     // Existing bookings (reserved windows)
     $bookings = roxy_eb_repo_list_bookings_in_range($start_mysql, $end_mysql);
+    if (is_wp_error($bookings)) return $bookings;
     foreach ($bookings as $b) {
         $items[] = [
             'kind' => 'booking',
@@ -229,6 +228,7 @@ function roxy_eb_get_calendar_blocks(DateTimeImmutable $rangeStart, DateTimeImmu
 
     // Admin blocks
     $blocks = roxy_eb_repo_list_blocks_in_range($start_mysql, $end_mysql);
+    if (is_wp_error($blocks)) return $blocks;
     foreach ($blocks as $bl) {
         $items[] = [
             'kind' => 'block',

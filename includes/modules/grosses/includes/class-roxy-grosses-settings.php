@@ -7,9 +7,24 @@ class Settings {
   public const STATUS_KEY='roxy_grosses_last_report';
   private const WORKBOOK_TEMPLATE_UPLOAD_KEY='workbook_template_upload';
   private const ENCRYPTION_PREFIX='gcm:';
+  private const ENCRYPTION_PREFIX_V2='gcm:v2:';
 
   public static function init(): void {
+    add_action('admin_init',[__CLASS__,'migrate_legacy_token'],1);
     add_action('admin_init',[__CLASS__,'register_settings']);
+  }
+  public static function migrate_legacy_token(): bool {
+    global $wpdb;
+    $saved=get_option(self::OPTION_KEY,[]);
+    if (!is_array($saved)) return false;
+    $old=(string)($saved['square_access_token']??'');
+    if ($old==='' || str_starts_with($old,self::ENCRYPTION_PREFIX)) return true;
+    try { $updated=$saved;$updated['square_access_token']=self::encrypt_secret($old); } catch (\Throwable $error) { return false; }
+    // Single-value compare-and-swap preserves concurrent settings edits.
+    $changed=$wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value=%s WHERE option_name=%s AND BINARY option_value=BINARY %s",maybe_serialize($updated),self::OPTION_KEY,maybe_serialize($saved)));
+    if ($changed!==1) return false;
+    wp_cache_delete(self::OPTION_KEY,'options');wp_cache_delete('alloptions','options');wp_cache_delete('notoptions','options');
+    return true;
   }
   public static function current_tab(): string {
     $tab=isset($_GET['tab'])?sanitize_key((string) wp_unslash($_GET['tab'])):'database';
@@ -91,9 +106,15 @@ class Settings {
       $existing = [];
     }
     $incoming_square_token = sanitize_text_field((string) ($input['square_access_token'] ?? ''));
-    $square_token = $incoming_square_token !== ''
-      ? self::encrypt_secret($incoming_square_token)
-      : sanitize_text_field((string) ($existing['square_access_token'] ?? $d['square_access_token']));
+    $previous_token=(string)($existing['square_access_token']??$d['square_access_token']);
+    try {
+      $square_token=$incoming_square_token!=='' ? self::encrypt_secret($incoming_square_token) : $previous_token;
+      // Migrate legacy plaintext during a normal settings save, even if token is blank.
+      if ($square_token!=='' && !str_starts_with($square_token,self::ENCRYPTION_PREFIX)) $square_token=self::encrypt_secret($square_token);
+    } catch (\Throwable $error) {
+      add_settings_error(self::OPTION_KEY,'credential_encryption','Secure token storage failed. Existing settings and token were not changed.','error');
+      return $existing;
+    }
     $sanitized=[
       'square_environment'=>in_array(($input['square_environment']??''),['production','sandbox'],true)?$input['square_environment']:$d['square_environment'],
       'square_access_token'=>$square_token,
@@ -147,6 +168,8 @@ class Settings {
         foreach(['production'=>'Production','sandbox'=>'Sandbox'] as $ov=>$label){ echo '<option value="'.esc_attr($ov).'" '.selected($value,$ov,false).'>'.esc_html($label).'</option>'; }
         echo '</select><p class="description">Use sandbox only for testing with a Square sandbox token.</p>'; return;
       case 'square_access_token':
+        $saved=get_option(self::OPTION_KEY,[]);
+        if (!empty($saved['square_access_token']) && self::decrypt_secret((string)$saved['square_access_token'])==='') echo '<p class="description" style="color:#b32d2e">The saved Square token could not be read. Re-enter the token; the saved value has not been erased.</p>';
         echo '<input type="password" class="regular-text code" name="'.esc_attr($name).'" value="" autocomplete="off"'.(self::has_square_access_token() ? ' placeholder="Token saved - leave blank to keep current token"' : '').'><p class="description">Personal access token or OAuth token with Orders read access. Leave blank to keep the current token.</p>'; return;
       case 'square_location_ids': case 'ticket_keywords': case 'exclude_keywords': case 'film_mappings': case 'studio_mappings': case 'email_body': case 'advertiser_email_body':
         $rows=$key==='film_mappings'?'8':'5';
@@ -801,9 +824,17 @@ class Settings {
   }
 
   private static function render_reports_tab(string $default_date,?array $selected_report,array $saved_reports): void {
+    if ($selected_report && !empty($selected_report['refund_review'])) {
+      echo '<div class="notice notice-warning inline"><p><strong>Report changes need review.</strong> A later Square refresh changed the saved figures for ' . esc_html(implode(', ', array_keys($selected_report['refund_review']))) . '. This emailed snapshot has not been changed or automatically resent. Pull a fresh draft for the affected sale day, review it, and deliberately email a correction if needed.</p></div>';
+    }
+    foreach ($saved_reports as &$review_row) {
+      if (($review_row['mode'] ?? '') === 'scheduled-provisional') $review_row['status'] .= ' — Provisional';
+      if (!empty($review_row['refund_review'])) $review_row['status'] .= ' — Review required';
+    }
+    unset($review_row);
     echo '<h2>Pull Report Data</h2><p>Generate a saved draft report, review it, and email it when it looks right.</p><form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
     wp_nonce_field('roxy_grosses_pull_report'); echo '<input type="hidden" name="action" value="roxy_grosses_pull_report"><table class="form-table"><tbody><tr><th scope="row"><label for="roxy-grosses-report-date">Report end date</label></th><td><input id="roxy-grosses-report-date" type="date" name="report_date" value="'.esc_attr($default_date).'"></td></tr></tbody></table>'; submit_button('Pull And Save Draft','primary'); echo '</form>';
-    if($selected_report){ $summary=is_array($selected_report['summary']??null)?$selected_report['summary']:[]; echo '<hr><h2>Review Saved Report #'.esc_html((string) $selected_report['id']).'</h2><p>Created: '.esc_html((string) $selected_report['created_at']).' | Status: '.esc_html((string) $selected_report['status']).'</p><table class="widefat striped" style="max-width:980px"><thead><tr><th>Report Date</th><th>Show Time</th><th>Theater</th><th>Film Title</th><th>General</th><th>Discount</th><th>Group</th><th>Total Tickets</th><th>Gross</th></tr></thead><tbody>';
+    if($selected_report){ $summary=is_array($selected_report['summary']??null)?$selected_report['summary']:[]; $status=(string) ($selected_report['status']??''); if(($selected_report['mode']??'')==='scheduled-provisional') $status.=' — Provisional'; echo '<hr><h2>Review Saved Report #'.esc_html((string) $selected_report['id']).'</h2><p>Created: '.esc_html((string) $selected_report['created_at']).' | Status: '.esc_html($status).'</p><table class="widefat striped" style="max-width:980px"><thead><tr><th>Report Date</th><th>Show Time</th><th>Theater</th><th>Film Title</th><th>General</th><th>Discount</th><th>Group</th><th>Total Tickets</th><th>Gross</th></tr></thead><tbody>';
       foreach((array) ($selected_report['rows']??[]) as $row){ echo '<tr><td>'.esc_html((string) ($row['report_date']??'')).'</td><td>'.esc_html((string) ($row['show_time']??'')).'</td><td>'.esc_html((string) ($row['theater_name']??'')).'</td><td>'.esc_html((string) ($row['film_title']??'')).'</td><td>'.esc_html(number_format_i18n((int) ($row['general_qty']??0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['discount_qty']??0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['group_qty']??0))).'</td><td>'.esc_html(number_format_i18n((int) ($row['total_tickets']??0))).'</td><td>$'.esc_html(number_format((float) ($row['gross_total']??0),2)).'</td></tr>'; }
       echo '</tbody></table><p style="margin-top:12px;"><strong>Total Gross:</strong> $'.esc_html(number_format((float) ($summary['gross_total']??0),2)).' | <strong>Total Tickets:</strong> '.esc_html(number_format_i18n((int) ($summary['total_tickets']??0))).'</p>';
       if(($selected_report['status']??'')!=='emailed'){ echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="margin-top:12px;">'; wp_nonce_field('roxy_grosses_send_saved_report'); echo '<input type="hidden" name="action" value="roxy_grosses_send_saved_report"><input type="hidden" name="report_id" value="'.esc_attr((string) $selected_report['id']).'">'; submit_button('Email This Saved Report','secondary','submit',false); echo '</form>'; }
@@ -853,7 +884,12 @@ class Settings {
       $scope = 'last12';
     }
     $dashboard_year = isset($_GET['grosses_dashboard_year']) ? max(0, (int) $_GET['grosses_dashboard_year']) : (int) wp_date('Y');
-    $snapshot = Store::dashboard_snapshot($scope, $dashboard_year);
+    try {
+      $snapshot = Store::dashboard_snapshot($scope, $dashboard_year);
+    } catch (\Throwable $error) {
+      echo '<div class="notice notice-error"><p>Grosses dashboard data is unavailable. Please try again. No complete analytics could be calculated.</p></div>';
+      return;
+    }
     $year_options = Store::distinct_years();
     echo '<div style="margin:16px 0 24px; padding:16px; background:#fff; border:1px solid #dcdcde; border-radius:4px;">';
     echo '<h2 style="margin-top:0;">Grosses Dashboard</h2>';
@@ -1032,6 +1068,7 @@ class Settings {
     self::number_input('total_tickets', 'Total', (int) ($row['total_tickets'] ?? 0));
     self::text_input('gross_total', 'Ticket Gross', (string) ($row['gross_total'] ?? '0.00'), 'number', '0.01');
     self::text_input('concessions_total', 'Concessions', (string) ($row['concessions_total'] ?? '0.00'), 'number', '0.01');
+    self::row_protection_input($row);
     submit_button('Save Row', 'primary', 'submit', false);
     echo '</form></td></tr>';
   }
@@ -1051,6 +1088,7 @@ class Settings {
     self::number_input('total_tickets', 'Total', (int) ($row['total_tickets'] ?? 0));
     self::text_input('gross_total', 'Ticket Gross', (string) ($row['gross_total'] ?? '0.00'), 'number', '0.01');
     self::text_input('concessions_total', 'Concessions', (string) ($row['concessions_total'] ?? '0.00'), 'number', '0.01');
+    self::row_protection_input($row);
     submit_button('Save Row', 'primary', 'submit', false);
     echo '</form></td></tr>';
   }
@@ -1069,6 +1107,7 @@ class Settings {
     self::text_input('invoice_amount', 'Invoice', (string) ($row['invoice_amount'] ?? '0.00'), 'number', '0.01');
     self::text_input('concessions_total', 'Concessions', (string) ($row['concessions_total'] ?? '0.00'), 'number', '0.01');
     self::text_input('notes', 'Notes', (string) ($row['notes'] ?? ''));
+    self::row_protection_input($row);
     submit_button('Save Row', 'primary', 'submit', false);
     echo '</form></td></tr>';
   }
@@ -1089,8 +1128,15 @@ class Settings {
     self::number_input('total_attendance', 'Total', (int) ($row['total_attendance'] ?? 0));
     self::text_input('gross_total', 'Ticket Gross', (string) ($row['gross_total'] ?? '0.00'), 'number', '0.01');
     self::text_input('concessions_total', 'Concessions', (string) ($row['concessions_total'] ?? '0.00'), 'number', '0.01');
+    self::row_protection_input($row);
     submit_button('Save Row', 'primary', 'submit', false);
     echo '</form></td></tr>';
+  }
+
+  private static function row_protection_input(array $row): void {
+    echo '<div><input type="hidden" name="is_locked" value="0"><label><input type="checkbox" name="is_locked" value="1" checked> Protect my changes from automatic pulls</label><br><small>';
+    echo !empty($row['is_locked']) ? 'This row is currently protected. Uncheck and save to allow automatic updates.' : 'This row is not currently protected. Saving with this checked protects your corrections.';
+    echo '</small></div>';
   }
 
   private static function text_input(string $name, string $label, string $value, string $type = 'text', string $step = ''): void {
@@ -1148,13 +1194,14 @@ class Settings {
     if ($plain === '') {
       return '';
     }
+    if (!function_exists('openssl_encrypt')) throw new \RuntimeException('Secure token encryption is unavailable.');
     $iv = random_bytes(12);
     $tag = '';
-    $cipher = openssl_encrypt($plain, 'aes-256-gcm', self::encryption_key(), OPENSSL_RAW_DATA, $iv, $tag);
-    if ($cipher === false || $tag === '') {
-      return $plain;
+    $cipher = openssl_encrypt($plain, 'aes-256-gcm', hash('sha256',wp_salt('auth').'|roxy-grosses:v2',true), OPENSSL_RAW_DATA, $iv, $tag, 'roxy-grosses:v2',16);
+    if (!is_string($cipher) || strlen($tag)!==16) {
+      throw new \RuntimeException('Secure token encryption failed.');
     }
-    return self::ENCRYPTION_PREFIX . base64_encode($iv . $tag . $cipher);
+    return self::ENCRYPTION_PREFIX_V2 . base64_encode($iv . $tag . $cipher);
   }
 
   private static function decrypt_secret(string $value): string {
@@ -1163,16 +1210,19 @@ class Settings {
       return '';
     }
     if (!str_starts_with($value, self::ENCRYPTION_PREFIX)) {
+      if (str_contains($value,':')) return '';
       return $value;
     }
-    $raw = base64_decode(substr($value, strlen(self::ENCRYPTION_PREFIX)), true);
+    if (!function_exists('openssl_decrypt')) return '';
+    $v2=str_starts_with($value,self::ENCRYPTION_PREFIX_V2);
+    $raw = base64_decode(substr($value, strlen($v2?self::ENCRYPTION_PREFIX_V2:self::ENCRYPTION_PREFIX)), true);
     if ($raw === false || strlen($raw) < 29) {
       return '';
     }
     $iv = substr($raw, 0, 12);
     $tag = substr($raw, 12, 16);
     $cipher = substr($raw, 28);
-    $plain = openssl_decrypt($cipher, 'aes-256-gcm', self::encryption_key(), OPENSSL_RAW_DATA, $iv, $tag);
+    $plain = openssl_decrypt($cipher, 'aes-256-gcm', $v2?hash('sha256',wp_salt('auth').'|roxy-grosses:v2',true):self::encryption_key(), OPENSSL_RAW_DATA, $iv, $tag, $v2?'roxy-grosses:v2':'');
     return $plain === false ? '' : $plain;
   }
 }

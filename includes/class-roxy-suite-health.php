@@ -49,6 +49,8 @@ class Health {
             self::module_event_booking_structural(),
             self::module_arcade_structural(),
             self::module_grosses_structural(),
+            self::module_inventory_structural(),
+            self::module_social_structural(),
         ];
     }
 
@@ -65,6 +67,8 @@ class Health {
             'Will Call'          => self::functional_will_call(),
             'Arcade'             => self::functional_arcade(),
             'Grosses'            => self::functional_grosses(),
+            'Inventory'          => self::functional_inventory(),
+            'Social Publisher'   => self::functional_social(),
         ];
 
         foreach ($modules as &$mod) {
@@ -90,21 +94,23 @@ class Health {
     // ── Structural module checks ────────────────────────────────────────────────
 
     private static function module_core_structural(): array {
-        $php_ok = version_compare(PHP_VERSION, '7.4', '>=');
+        $php_ok = version_compare(PHP_VERSION, '8.0', '>=');
         $wp_ok  = version_compare(get_bloginfo('version'), '6.0', '>=');
         $wc_ok  = class_exists('WooCommerce');
         $as_ok  = class_exists('ActionScheduler') || function_exists('as_enqueue_async_action');
+        $storage = Compatibility::order_storage_status();
 
         // Core has no toggle key — it is always enabled
         return self::module('Core / Environment', null, [
             self::item('PHP version', PHP_VERSION,
-                $php_ok ? self::PASS : self::FAIL, $php_ok ? '' : 'Requires PHP 7.4+'),
+                $php_ok ? self::PASS : self::FAIL, $php_ok ? '' : 'Requires PHP 8.0+'),
             self::item('WordPress version', get_bloginfo('version'),
                 $wp_ok ? self::PASS : self::WARN, $wp_ok ? '' : 'Recommend WP 6.0+'),
             self::item('WooCommerce', $wc_ok ? 'Active' : 'Not found',
                 $wc_ok ? self::PASS : self::FAIL, $wc_ok ? '' : 'WooCommerce is required'),
             self::item('Action Scheduler', $as_ok ? 'Available' : 'Not found',
                 $as_ok ? self::PASS : self::WARN, $as_ok ? '' : 'Required by Event Booking'),
+            self::item('WooCommerce order storage', $storage['value'], $storage['status'], $storage['message']),
         ]);
     }
 
@@ -215,7 +221,48 @@ class Health {
                 $product_ok ? '' : 'Set a booking product ID in EB Settings'),
             self::item('Daily booking health check', $health_cron ? 'Scheduled' : 'Missing', $health_cron ? self::PASS : self::WARN,
                 $health_cron ? '' : 'Reactivate the plugin to schedule the daily check'),
+            self::event_booking_monitor_result(),
         ], 'event_booking');
+    }
+
+    /** Surface the saved daily monitor outcome only; never execute the monitor here. */
+    private static function event_booking_monitor_result(): array {
+        $result = get_option('roxy_eb_health_last_result', null);
+        if (!is_array($result) || !isset($result['checked_at']) || !is_string($result['checked_at']) || $result['checked_at'] === '') {
+            return self::item('Last daily booking monitor', 'No valid result recorded', self::WARN,
+                'The scheduled monitor has not recorded a completed check.');
+        }
+
+        $timezone = wp_timezone();
+        $checked = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $result['checked_at'], $timezone);
+        $parse = \DateTimeImmutable::getLastErrors();
+        if (!$checked || ($parse !== false && ($parse['warning_count'] > 0 || $parse['error_count'] > 0))
+            || $checked->format('Y-m-d H:i:s') !== $result['checked_at']) {
+            return self::item('Last daily booking monitor', 'Invalid check timestamp', self::WARN,
+                'The stored monitor result needs review; no check was rerun.');
+        }
+
+        $now = new \DateTimeImmutable('now', $timezone);
+        $age = $now->getTimestamp() - $checked->getTimestamp();
+        if ($age < 0) {
+            return self::item('Last daily booking monitor', $result['checked_at'] . ' (future timestamp)', self::WARN,
+                'The stored check time is ahead of the site clock.');
+        }
+        if ($age > 36 * HOUR_IN_SECONDS) {
+            return self::item('Last daily booking monitor', $result['checked_at'] . ' (stale)', self::WARN,
+                'No daily monitor result was recorded in the last 36 hours.');
+        }
+        if (!array_key_exists('ok', $result) || !is_bool($result['ok']) || !is_array($result['errors'] ?? null)) {
+            return self::item('Last daily booking monitor', $result['checked_at'] . ' (invalid result)', self::WARN,
+                'The stored monitor outcome is incomplete.');
+        }
+        if (!$result['ok'] || $result['errors']) {
+            $error_count = count($result['errors']);
+            return self::item('Last daily booking monitor', sprintf('Failed at %s (%d recorded error(s))', $result['checked_at'], $error_count), self::FAIL,
+                'The saved monitor reported a problem. Review Event Booking configuration and the monitor result.');
+        }
+
+        return self::item('Last daily booking monitor', $result['checked_at'] . ' — passed', self::PASS);
     }
 
     private static function module_arcade_structural(): array {
@@ -256,8 +303,21 @@ class Health {
         $advertiser_enabled = ($settings['advertiser_schedule_enabled'] ?? '0') === '1';
         $report_hook = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::report_hook() : 'roxy_grosses_scheduled_send';
         $advertiser_hook = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::advertiser_hook() : 'roxy_grosses_monthly_advertiser_send';
-        $report_cron = wp_next_scheduled($report_hook);
+        $report_cron = class_exists('\\RoxyGrosses\\Scheduler')
+            ? (bool) \RoxyGrosses\Scheduler::scheduled_time_local($report_hook)
+            : wp_next_scheduled($report_hook);
         $advertiser_cron = wp_next_scheduled($advertiser_hook);
+        $closed_day = class_exists('\\RoxyGrosses\\Scheduler')
+            ? \RoxyGrosses\Scheduler::closed_day_refresh_health()
+            : ['status' => 'idle', 'date' => '', 'attempt' => 0];
+        $closed_day_status = (string) ($closed_day['status'] ?? 'idle');
+        $closed_day_label = $closed_day_status === 'idle' ? 'No refresh pending' : ucfirst($closed_day_status) . ' — ' . (string) ($closed_day['date'] ?? 'unknown date');
+        $closed_day_health = self::item(
+            'Closed-day refresh',
+            $closed_day_label,
+            $closed_day_status === 'failed' ? self::WARN : ($closed_day_status === 'unscheduled' ? self::FAIL : self::PASS),
+            $closed_day_status === 'failed' ? (string) ($closed_day['message'] ?? 'Bounded retries exhausted; manager attention is required.') : ($closed_day_status === 'unscheduled' ? 'A durable refresh is pending but no dated cron event is registered.' : '')
+        );
 
         return self::module('Grosses', admin_url('admin.php?page=roxy-grosses'), [
             self::item($t_reports, $t_r_ok ? 'Exists' : 'Missing',
@@ -278,10 +338,167 @@ class Health {
             self::item('Monthly advertiser cron', $advertiser_cron ? 'Scheduled' : ($advertiser_enabled ? 'Missing' : 'Not needed'),
                 $advertiser_cron ? self::PASS : ($advertiser_enabled ? self::FAIL : self::PASS),
                 $advertiser_cron ? '' : ($advertiser_enabled ? 'Monthly advertiser sends are enabled, but the cron hook is not registered.' : '')),
+            $closed_day_health,
+            self::advertiser_monthly_freshness($settings, get_option('roxy_grosses_last_advertiser_month', ''), null),
         ], 'grosses');
     }
 
+    /** Check the saved advertiser completion marker without running the job. */
+    private static function advertiser_monthly_freshness(array $settings, $completed_month, ?\DateTimeImmutable $now = null): array {
+        if (($settings['advertiser_schedule_enabled'] ?? '0') !== '1') {
+            return self::item('Monthly advertiser completion', 'Not needed (disabled)', self::PASS);
+        }
+
+        try {
+            $timezone_name = class_exists('\\RoxyGrosses\\Settings')
+                ? \RoxyGrosses\Settings::get_report_timezone()
+                : (function_exists('wp_timezone_string') ? wp_timezone_string() : 'UTC');
+            $timezone = new \DateTimeZone($timezone_name);
+            $now = ($now ?? new \DateTimeImmutable('now', $timezone))->setTimezone($timezone);
+            $day = max(1, min(31, (int) ($settings['advertiser_schedule_day'] ?? 1)));
+            $time = (string) ($settings['advertiser_schedule_time'] ?? '09:00');
+            if (!preg_match('/^(\d{2}):(\d{2})$/', $time, $matches) || (int) $matches[1] > 23 || (int) $matches[2] > 59) {
+                throw new \RuntimeException('Invalid advertiser schedule time.');
+            }
+
+            $due_day = min($day, (int) $now->format('t'));
+            $due = $now->setDate((int) $now->format('Y'), (int) $now->format('n'), $due_day)
+                ->setTime((int) $matches[1], (int) $matches[2], 0);
+            $due_passed = $now >= $due;
+            $expected = $due_passed
+                ? $now->modify('first day of last month')->format('Y-m')
+                : $now->modify('first day of -2 months')->format('Y-m');
+
+            if (!is_string($completed_month) || $completed_month === '') {
+                return self::item('Monthly advertiser completion', 'Never', $due_passed ? self::WARN : self::PASS,
+                    $due_passed ? "No completion is recorded; expected {$expected}." : 'The first scheduled completion is still pending.');
+            }
+            if (!preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $completed_month)
+                || $completed_month > $now->format('Y-m') || $completed_month > $expected) {
+                return self::item('Monthly advertiser completion', $completed_month, self::WARN, 'The saved month is malformed or later than the expected cycle.');
+            }
+            if ($completed_month !== $expected) {
+                return self::item('Monthly advertiser completion', $completed_month, self::WARN, "Expected completed month {$expected}.");
+            }
+            return self::item('Monthly advertiser completion', $completed_month, self::PASS, 'A marker exists for the expected month; delivery is not independently verified.');
+        } catch (\Throwable $error) {
+            return self::item('Monthly advertiser completion', 'Unavailable', self::WARN, 'Could not validate the monthly schedule or completion marker.');
+        }
+    }
+
     // ── Functional checks (on-demand only) ─────────────────────────────────────
+
+    private static function module_inventory_structural(): array {
+        $link = admin_url('admin.php?page=roxy-inventory');
+        if (!self::module_enabled('inventory')) return self::module('Inventory', $link, [], 'inventory');
+        global $wpdb;
+        $items = [];
+        foreach (['products', 'vendors', 'orders', 'runs'] as $suffix) {
+            $table = $wpdb->prefix . 'roxy_inventory_' . $suffix;
+            $exists = self::table_exists($table);
+            $items[] = self::item($table, $exists ? 'Exists' : 'Missing', $exists ? self::PASS : self::FAIL);
+        }
+        $enabled = (get_option('roxy_inventory_settings', [])['schedule_enabled'] ?? '1') === '1';
+        $scheduled = wp_next_scheduled('roxy_inventory_nightly_pull');
+        $items[] = self::item('Nightly pull cron', $scheduled ? 'Scheduled' : ($enabled ? 'Missing' : 'Disabled'),
+            !$enabled || $scheduled ? self::PASS : self::FAIL);
+        return self::module('Inventory', $link, $items, 'inventory');
+    }
+
+    private static function module_social_structural(): array {
+        $link = admin_url('admin.php?page=roxy-social-posts');
+        if (!self::module_enabled('social_publisher')) return self::module('Social Publisher', $link, [], 'social_publisher');
+        global $wpdb;
+        $table = $wpdb->prefix . 'roxy_social_posts';
+        $exists = self::table_exists($table);
+        $items = [self::item($table, $exists ? 'Exists' : 'Missing', $exists ? self::PASS : self::FAIL)];
+        foreach (['roxy_social_publish_due', 'roxy_social_cleanup'] as $hook) {
+            $scheduled = wp_next_scheduled($hook);
+            $items[] = self::item($hook, $scheduled ? 'Scheduled' : 'Missing', $scheduled ? self::PASS : self::WARN);
+        }
+        return self::module('Social Publisher', $link, $items, 'social_publisher');
+    }
+
+    private static function functional_inventory(): array {
+        if (!self::module_enabled('inventory')) return [];
+        global $wpdb;
+        $table = $wpdb->prefix . 'roxy_inventory_runs';
+        try {
+            $table_exists = self::table_exists($table);
+            if ($wpdb->last_error !== '') throw new \RuntimeException('Inventory run table could not be checked.');
+            if (!$table_exists) return [];
+            if (!class_exists('\\RoxyInventory\\Store')) throw new \RuntimeException('Inventory run reader is unavailable.');
+            $latest = \RoxyInventory\Store::latest_run('pull');
+            $success = $wpdb->get_var("SELECT created_at FROM $table WHERE run_type='pull' AND status='success' ORDER BY id DESC LIMIT 1");
+            if ($wpdb->last_error !== '') throw new \RuntimeException('Inventory success history could not be read.');
+            $valid_stamp = static function ($value): bool {
+                if (!is_string($value)) return false;
+                $stamp = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $value, wp_timezone());
+                $errors = \DateTimeImmutable::getLastErrors();
+                return $stamp && (!$errors || (!$errors['warning_count'] && !$errors['error_count']))
+                    && $stamp->format('Y-m-d H:i:s') === $value && $stamp->getTimestamp() <= time();
+            };
+            if ($success !== null && !$valid_stamp($success)) throw new \RuntimeException('Inventory success timestamp is invalid.');
+            if ($latest !== null && (!is_array($latest) || !$valid_stamp($latest['created_at'] ?? null) || !is_string($latest['status'] ?? null))) throw new \RuntimeException('Inventory run record is invalid.');
+        } catch (\Throwable $error) {
+            return [
+                self::item('Last inventory pull', 'Run history unavailable', self::WARN, 'Run history could not be verified; no empty-history conclusion was made.'),
+                self::item('Last successful inventory pull', 'Unavailable', self::WARN, 'Check inventory run-history storage before relying on freshness status.'),
+            ];
+        }
+        $enabled = (get_option('roxy_inventory_settings', [])['schedule_enabled'] ?? '1') === '1';
+        $stale = false;
+        if ($success) {
+            try { $stale = time() - (new \DateTimeImmutable($success, wp_timezone()))->getTimestamp() > 36 * HOUR_IN_SECONDS; }
+            catch (\Exception $e) { $stale = true; }
+        }
+        return [
+            self::item('Last inventory pull', $latest ? $latest['created_at'] . ' — ' . $latest['status'] : 'No runs recorded',
+                $latest && $latest['status'] === 'success' ? self::PASS : self::WARN),
+            self::item('Last successful inventory pull', $success ?: 'None recorded',
+                $enabled && (!$success || $stale) ? self::WARN : self::PASS,
+                $enabled && (!$success || $stale) ? 'Automatic pulls are enabled, but no success was recorded in the last 36 hours. No email is sent by this diagnostic.' : ''),
+        ];
+    }
+
+    private static function functional_social(): array {
+        if (!self::module_enabled('social_publisher')) return [];
+        global $wpdb;
+        $table = $wpdb->prefix . 'roxy_social_posts';
+        try {
+            $wpdb->last_error = '';
+            $table_exists = self::table_exists($table);
+            if ($wpdb->last_error !== '') {
+                return [self::item('Social job checks', 'Unavailable', self::WARN, 'Could not verify the Social Publisher table because the database read failed.')];
+            }
+            // Structural health reports a missing table as an error; do not duplicate it here.
+            if (!$table_exists) return [];
+
+            $read_count = static function (string $sql) use ($wpdb): ?int {
+                $wpdb->last_error = '';
+                $value = $wpdb->get_var($sql);
+                if ($wpdb->last_error !== '') return null;
+                if (is_int($value)) return $value >= 0 ? $value : null;
+                if (!is_string($value) || !preg_match('/^(?:0|[1-9][0-9]*)$/D', $value)) return null;
+                $count = filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+                return $count === false ? null : $count;
+            };
+
+            $failed = $read_count("SELECT COUNT(*) FROM $table WHERE status='failed'");
+            if ($failed === null) throw new \RuntimeException('Failed-job count was not readable.');
+            $overdue = $read_count($wpdb->prepare("SELECT COUNT(*) FROM $table WHERE status IN ('approved','publishing') AND scheduled_for < %s", wp_date('Y-m-d H:i:s', time() - HOUR_IN_SECONDS)));
+            if ($overdue === null) throw new \RuntimeException('Overdue-job count was not readable.');
+        } catch (\Throwable $error) {
+            return [
+                self::item('Failed social jobs', 'Unavailable', self::WARN, 'The Social Publisher count could not be verified because a database read failed or returned an invalid count.'),
+                self::item('Social jobs overdue by over an hour', 'Unavailable', self::WARN, 'The Social Publisher count could not be verified because a database read failed or returned an invalid count.'),
+            ];
+        }
+        return [
+            self::item('Failed social jobs', (string) $failed, $failed ? self::WARN : self::PASS, $failed ? 'Review failed drafts; do not blindly republish an ambiguous provider result.' : ''),
+            self::item('Social jobs overdue by over an hour', (string) $overdue, $overdue ? self::WARN : self::PASS),
+        ];
+    }
 
     private static function functional_core(): array {
         $items = [];
@@ -411,6 +628,8 @@ class Health {
         if (!self::module_enabled('requested_showings')) return [];
 
         $items = [];
+        global $wpdb;
+        $wpdb->last_error = '';
         $active = get_posts([
             'post_type' => 'roxy_req_showing',
             'post_status' => ['publish', 'draft'],
@@ -422,16 +641,16 @@ class Health {
             ]],
         ]);
 
-        $items[] = self::item('Open requests', count($active) > 0 ? count($active) . ' request(s)' : 'None', self::PASS);
+        $items[] = $wpdb->last_error !== '' || !is_array($active)
+            ? self::item('Open requests', 'Read unavailable', self::WARN, 'The request list could not be verified; this is not an empty list.')
+            : self::item('Open requests', count($active) > 0 ? count($active) . ' request(s)' : 'None', self::PASS);
+
+        $items[] = self::scheduled_run_item('Daily review', 'roxy_rs_daily_review_last_result', true);
 
         if (function_exists('roxy_rs_table_backings')) {
             global $wpdb;
             $table = roxy_rs_table_backings();
-            if (self::table_exists($table)) {
-                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$table}`");
-                $items[] = self::item('Backing records', $count . ' total', self::PASS);
-            }
+            $items[] = self::record_count_item('Backing records', $table);
         }
 
         return $items;
@@ -442,11 +661,7 @@ class Health {
 
         global $wpdb;
         $table = $wpdb->prefix . 'roxy_will_call_checkins';
-        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$table}`");
-        return [
-            self::item('Check-in records', "$count total rows", self::PASS),
-        ];
+        return [self::record_count_item('Check-in records', $table)];
     }
 
     private static function functional_arcade(): array {
@@ -454,11 +669,7 @@ class Health {
 
         global $wpdb;
         $table = $wpdb->prefix . 'roxy_arcade_scores';
-        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$table}`");
-        return [
-            self::item('Score records', "$count total", self::PASS),
-        ];
+        return [self::record_count_item('Score records', $table)];
     }
 
     private static function functional_grosses(): array {
@@ -472,8 +683,7 @@ class Health {
             return [self::item('Report table', 'Missing — run activation', self::FAIL)];
         }
 
-        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        $count = (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$t_reports}`");
+        $saved_reports = self::record_count_item('Saved reports', $t_reports);
 
         $status      = get_option('roxy_grosses_last_report', []);
         $last_date   = is_array($status) && !empty($status['report_date']) ? $status['report_date'] : 'Never';
@@ -535,16 +745,76 @@ class Health {
         }
 
         return [
-            self::item('Saved reports', "$count total", self::PASS),
+            $saved_reports,
             self::item('Last report', $last_date . ($last_mode ? " ($last_mode)" : ''), self::PASS),
             self::item('Next daily cron', $next_local ?: 'Not scheduled', $next_local ? self::PASS : ($sched_enabled ? self::FAIL : self::PASS), $next_local ? '' : ($sched_enabled ? 'The daily grosses cron hook is missing.' : '')),
             self::item('Next advertiser cron', $next_advertiser_local ?: 'Not scheduled', $next_advertiser_local ? self::PASS : ($advertiser_enabled ? self::FAIL : self::PASS), $next_advertiser_local ? '' : ($advertiser_enabled ? 'The advertiser cron hook is missing.' : '')),
             self::item('Last automatic run', $stale_detail, $stale_status, $stale_note),
             self::item('Latest log event', $latest_log_detail, $latest_log_status, $latest_log_note),
+            self::scheduled_run_item('Daily scheduler outcome', 'roxy_grosses_last_scheduled_sync_result', $sched_enabled),
+            self::scheduled_run_item('Advertiser scheduler outcome', 'roxy_grosses_last_advertiser_send_result', $advertiser_enabled),
         ];
     }
 
+    private static function scheduled_run_item(string $label, string $option, bool $enabled, ?\DateTimeImmutable $now = null): array {
+        if (!$enabled) return self::item($label, 'Not needed (disabled)', self::PASS);
+        $result = get_option($option, null);
+        if (!is_array($result) || ($result['version'] ?? null) !== 1) {
+            return self::item($label, 'No run outcome recorded', self::WARN, 'No supported scheduler outcome is available.');
+        }
+        $status = $result['status'] ?? null;
+        $started = self::scheduler_utc_time($result['started_at'] ?? null);
+        $finished = self::scheduler_utc_time($result['completed_at'] ?? null);
+        $now = $now ?? new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        if (!is_string($result['run_id'] ?? null) || trim($result['run_id']) === '' || !$started
+            || $started > $now || !in_array($status, ['running', 'completed', 'failed', 'skipped'], true)
+            || ($status === 'running' ? ($result['completed_at'] ?? null) !== '' : (!$finished || $finished < $started || $finished > $now))) {
+            return self::item($label, 'Outcome unavailable', self::WARN, 'The saved outcome has missing, invalid, or future run evidence.');
+        }
+        $message = $result['message'] ?? $result['error'] ?? '';
+        $message = is_string($message) ? $message : '';
+        if ($status === 'failed') return self::item($label, 'Last recorded run failed', self::FAIL, $message);
+        if ($now->getTimestamp() - $started->getTimestamp() > 48 * 3600) {
+            return self::item($label, 'Last recorded run is stale', self::WARN, 'Started ' . $result['started_at'] . ' UTC; no recent run outcome is recorded.');
+        }
+        if ($status === 'completed') {
+            return self::item($label, 'Reported completion ' . $result['completed_at'] . ' UTC', self::PASS,
+                'The worker returned normally; this is not independent verification of email delivery or every downstream write. ' . $message);
+        }
+        if ($status === 'skipped') return self::item($label, 'Skipped ' . $result['completed_at'] . ' UTC', self::WARN,
+            'No work was performed by this invocation. Check the separate completion/freshness markers. ' . $message);
+        if ($status === 'running') {
+            return self::item($label, 'Run in progress', self::WARN, 'The last run may still be active or may have been interrupted.');
+        }
+        return self::item($label, 'Outcome unavailable', self::WARN, 'The saved scheduler result is incomplete or unrecognized.');
+    }
+
+    private static function scheduler_utc_time($value): ?\DateTimeImmutable {
+        if (!is_string($value) || !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $value)) return null;
+        $date = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $value, new \DateTimeZone('UTC'));
+        return $date && $date->format('Y-m-d H:i:s') === $value ? $date : null;
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────────
+
+    /** SQL failure and malformed results must never become a green zero count. */
+    private static function record_count_item(string $label, string $table): array {
+        global $wpdb;
+        try {
+            if (!preg_match('/^[a-zA-Z0-9_]+$/D', $table)) throw new \RuntimeException('Invalid table identity.');
+            $wpdb->last_error = '';
+            $exists = self::table_exists($table);
+            if ($wpdb->last_error !== '' || !$exists) throw new \RuntimeException('Table unavailable.');
+            $wpdb->last_error = '';
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $count = $wpdb->get_var("SELECT COUNT(*) FROM `{$table}`");
+            if ($wpdb->last_error !== '' || !(is_int($count) || is_string($count))
+                || !preg_match('/^(0|[1-9][0-9]*)$/D', (string) $count)) throw new \RuntimeException('Count unavailable.');
+            return self::item($label, (string) $count . ' total', self::PASS);
+        } catch (\Throwable $error) {
+            return self::item($label, 'Read unavailable', self::WARN, 'The stored record count could not be verified; this is not zero records.');
+        }
+    }
 
     private static function module_enabled(string $key): bool {
         return roxy_suite_module_enabled($key);
@@ -646,12 +916,12 @@ class Health {
         </style>
 
         <div class="rs-health-bar">
-            <strong id="rs-summary-text"><?php echo esc_html("$pass_count / $total modules operational (structural)"); ?></strong>
+            <strong id="rs-summary-text"><?php echo esc_html("$pass_count / $total modules passed structural diagnostics"); ?></strong>
             <span>Roxy Suite v<?php echo esc_html(ROXY_SUITE_VERSION); ?></span>
         </div>
 
         <div class="rs-health-actions">
-            <button id="rs-run-tests" class="button button-primary">&#9654; Run Full Tests</button>
+            <button id="rs-run-tests" class="button button-primary">&#9654; Run Diagnostics</button>
             <span class="rs-health-timestamp" id="rs-timestamp"></span>
         </div>
 
@@ -710,7 +980,7 @@ class Health {
 
             // ── Full test run ─────────────────────────────────────────────────
             btn.addEventListener('click', function() {
-                btn.textContent = '⏳ Running tests…';
+                btn.textContent = '⏳ Running diagnostics…';
                 btn.classList.add('rs-loading');
 
                 fetch(ajaxUrl, {
@@ -723,7 +993,7 @@ class Health {
                 })
                 .then(r => r.json())
                 .then(data => {
-                    btn.textContent = '▶ Run Full Tests';
+                    btn.textContent = '▶ Run Diagnostics';
                     btn.classList.remove('rs-loading');
 
                     if (!data.success) {
@@ -736,7 +1006,7 @@ class Health {
                     const active   = modules.filter(m => m.enabled !== false);
                     const passCount = active.filter(m => m.overall === 'pass').length;
 
-                    summary.textContent = passCount + ' / ' + active.length + ' modules fully operational (full test)';
+                    summary.textContent = passCount + ' / ' + active.length + ' modules passed diagnostics (not an end-to-end checkout test)';
 
                     const bar = summary.closest('.rs-health-bar');
                     bar.style.background = passCount === active.length ? '#00a32a'
@@ -747,7 +1017,7 @@ class Health {
                     grid.innerHTML = modules.map(mod => renderCard(mod)).join('');
                 })
                 .catch(err => {
-                    btn.textContent = '▶ Run Full Tests';
+                    btn.textContent = '▶ Run Diagnostics';
                     btn.classList.remove('rs-loading');
                     alert('Request failed: ' + err.message);
                 });

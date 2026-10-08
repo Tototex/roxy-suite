@@ -436,39 +436,7 @@ function roxy_eb_render_my_bookings() {
 }
 
 function roxy_eb_attempt_gateway_refund($order, $booking_id) {
-    if (!$order || !is_a($order, 'WC_Order')) {
-        return new WP_Error('invalid_order', 'Invalid WooCommerce order.');
-    }
-
-    $order_id = intval($order->get_id());
-    $refundable = floatval($order->get_total()) - floatval($order->get_total_refunded());
-    $refundable = round(max(0.0, $refundable), wc_get_price_decimals());
-
-    if ($refundable <= 0) {
-        return [
-            'refunded' => false,
-            'amount'   => 0.0,
-            'refund'   => null,
-        ];
-    }
-
-    $refund = wc_create_refund([
-        'amount'         => $refundable,
-        'reason'         => 'Roxy booking cancelled',
-        'order_id'       => $order_id,
-        'refund_payment' => true,
-        'restock_items'  => false,
-    ]);
-
-    if (is_wp_error($refund)) {
-        return $refund;
-    }
-
-    return [
-        'refunded' => true,
-        'amount'   => $refundable,
-        'refund'   => $refund,
-    ];
+    return roxy_eb_refund_booking_payment($order, (int) $booking_id);
 }
 
 function roxy_eb_cancel_booking($booking_id, $by = 'customer') {
@@ -508,7 +476,7 @@ function roxy_eb_cancel_booking($booking_id, $by = 'customer') {
         if ($order_ids && class_exists('WC_Order')) {
             foreach ($order_ids as $order_id) {
                 $order = wc_get_order($order_id);
-                if (!$order) continue;
+                if (!$order) return new WP_Error('order_missing', 'A linked booking order is unavailable. Please contact us for review.');
 
                 try {
                     $refund_result = roxy_eb_attempt_gateway_refund($order, $booking_id);
@@ -533,10 +501,11 @@ function roxy_eb_cancel_booking($booking_id, $by = 'customer') {
             }
         }
 
-        roxy_eb_repo_update_booking($booking_id, [
+        $saved = roxy_eb_repo_update_booking($booking_id, [
             'status' => 'cancelled',
             'invoice_status' => ($booking['payment_method'] ?? '') === 'invoice' ? 'void' : ($booking['invoice_status'] ?? 'not_needed'),
         ]);
+        if (is_wp_error($saved)) return new WP_Error('cancel_save_failed', 'Payment processing finished, but cancellation could not be saved. Please contact us before retrying.');
 
         if (function_exists('roxy_eb_clear_pizza_reminders')) {
             roxy_eb_clear_pizza_reminders($booking_id);

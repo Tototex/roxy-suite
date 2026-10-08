@@ -20,6 +20,7 @@ class CPT {
     add_filter('post_row_actions', [__CLASS__, 'row_actions'], 10, 2);
     add_action('admin_action_roxy_duplicate_weekend', [__CLASS__, 'handle_duplicate_weekend']);
     add_action('admin_notices', [__CLASS__, 'admin_notices']);
+    add_action('admin_notices', [__CLASS__, 'duration_input_notice']);
     add_action('admin_notices', [__CLASS__, 'render_admin_tabs']);
   }
 
@@ -87,6 +88,7 @@ class CPT {
     $use_schedule_builder = $is_new_showing;
 
     $start = get_post_meta($post->ID, '_roxy_start', true);
+    $duration_minutes = get_post_meta($post->ID, '_roxy_duration_minutes', true);
     $capacity_raw = get_post_meta($post->ID, '_roxy_capacity', true);
     $capacity = ($capacity_raw === '' || $capacity_raw === null) ? Settings::get_default_capacity() : (int) $capacity_raw;
     $profile = get_post_meta($post->ID, '_roxy_pricing_profile', true) ?: 'movie_evening';
@@ -120,6 +122,9 @@ class CPT {
 
     echo '<label for="roxy_start"><strong>Start (local time)</strong></label>';
     echo '<input id="roxy_start" name="roxy_start" type="datetime-local" value="' . esc_attr($start) . '"' . ($use_schedule_builder ? ' disabled' : '') . '>';
+
+    echo '<label for="roxy_duration_minutes"><strong>Duration (minutes)</strong></label>';
+    echo '<div><input id="roxy_duration_minutes" name="roxy_duration_minutes" type="number" min="1" max="10080" step="1" value="' . esc_attr((string) $duration_minutes) . '"><p class="description">No authoritative movie runtime or showing-end feed is available in this site code. Enter a verified duration to keep sales open through the end; without one, the existing start-time cutoff applies.</p></div>';
 
     if ($is_new_showing) {
       echo '<label for="roxy_use_schedule_builder"><strong>Schedule Builder</strong></label>';
@@ -387,6 +392,28 @@ class CPT {
       '_roxy_trailer_url' => esc_url_raw($_POST['roxy_trailer_url'] ?? ''),
     ];
 
+    $saved_duration = (string) get_post_meta($post_id, '_roxy_duration_minutes', true);
+    if (preg_match('/^[1-9][0-9]{0,4}$/D', $saved_duration) && (int) $saved_duration <= 10080) {
+      $shared_meta['_roxy_duration_minutes'] = (string) (int) $saved_duration;
+    }
+
+    if (array_key_exists('roxy_duration_minutes', $_POST)) {
+      $duration_input = wp_unslash($_POST['roxy_duration_minutes']);
+      $duration_is_scalar = is_scalar($duration_input);
+      $duration_raw = $duration_is_scalar ? trim(sanitize_text_field((string) $duration_input)) : '';
+      if ($duration_is_scalar && $duration_raw === '') {
+        // Blank is optional for legacy records; preserve an existing valid value,
+        // but do not nag on ordinary edits when no duration has been entered.
+        if (preg_match('/^[1-9][0-9]{0,4}$/D', $saved_duration) && (int) $saved_duration <= 10080) {
+          set_transient('roxy_st_invalid_duration_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+        }
+      } elseif (preg_match('/^[1-9][0-9]{0,4}$/D', $duration_raw) && (int) $duration_raw <= 10080) {
+        $shared_meta['_roxy_duration_minutes'] = (string) (int) $duration_raw;
+      } else {
+        set_transient('roxy_st_invalid_duration_' . get_current_user_id(), 1, MINUTE_IN_SECONDS);
+      }
+    }
+
     foreach ($shared_meta as $meta_key => $meta_value) {
       update_post_meta($post_id, $meta_key, $meta_value);
     }
@@ -400,7 +427,8 @@ class CPT {
         update_post_meta($post_id, '_roxy_pricing_profile', $first['profile']);
 
         if ((string) get_post_meta($post_id, '_roxy_schedule_generated', true) !== '1') {
-          self::create_additional_showings_from_schedule($post_id, $post, $schedule_rows, $shared_meta);
+          $created = self::create_additional_showings_from_schedule($post_id, $post, $schedule_rows, $shared_meta);
+          if (is_wp_error($created)) return;
           update_post_meta($post_id, '_roxy_schedule_generated', '1');
         }
         return;
@@ -528,6 +556,13 @@ class CPT {
     echo '<div class="' . esc_attr($class) . '"><p>' . esc_html($message) . '</p></div>';
   }
 
+  public static function duration_input_notice(): void {
+    $user_id = get_current_user_id();
+    if ($user_id <= 0 || !get_transient('roxy_st_invalid_duration_' . $user_id)) return;
+    delete_transient('roxy_st_invalid_duration_' . $user_id);
+    echo '<div class="notice notice-error"><p>Duration must be a whole number from 1 to 10,080 minutes. The submitted value was rejected; any previously saved duration was preserved.</p></div>';
+  }
+
   public static function admin_columns(array $columns): array {
     $out = [];
     foreach ($columns as $key => $label) {
@@ -652,49 +687,69 @@ class CPT {
     return $rows;
   }
 
-  private static function create_additional_showings_from_schedule(int $source_post_id, $post, array $schedule_rows, array $shared_meta): void {
+  private static function create_additional_showings_from_schedule(int $source_post_id, $post, array $schedule_rows, array $shared_meta) {
     if (empty($schedule_rows)) {
-      return;
+      return true;
     }
 
     $taxonomy_terms = wp_get_object_terms($source_post_id, 'roxy_show_type', ['fields' => 'ids']);
     $thumbnail_id = get_post_thumbnail_id($source_post_id);
+    $child_status = self::generated_post_status($post);
+
+    $created_ids = [];
     self::$is_generating_schedule = true;
+    try {
+      foreach ($schedule_rows as $row) {
+        $new_post_id = wp_insert_post([
+          'post_type' => self::POST_TYPE,
+          'post_status' => $child_status,
+          'post_title' => (string) $post->post_title,
+          'post_content' => (string) $post->post_content,
+          'post_excerpt' => (string) $post->post_excerpt,
+          'post_author' => (int) $post->post_author,
+        ], true);
 
-    foreach ($schedule_rows as $row) {
-      $new_post_id = wp_insert_post([
-        'post_type' => self::POST_TYPE,
-        'post_status' => 'publish',
-        'post_title' => (string) $post->post_title,
-        'post_content' => (string) $post->post_content,
-        'post_excerpt' => (string) $post->post_excerpt,
-        'post_author' => (int) $post->post_author,
-      ], true);
+        if (is_wp_error($new_post_id) || !$new_post_id) {
+          foreach ($created_ids as $created_id) wp_delete_post($created_id, true);
+          return is_wp_error($new_post_id)
+            ? $new_post_id
+            : new \WP_Error('schedule_child_insert_failed', 'A scheduled showing could not be created.');
+        }
 
-      if (is_wp_error($new_post_id) || !$new_post_id) {
-        continue;
-      }
+        $new_post_id = (int) $new_post_id;
+        $created_ids[] = $new_post_id;
+        foreach ($shared_meta as $meta_key => $meta_value) {
+          update_post_meta($new_post_id, $meta_key, $meta_value);
+        }
+        update_post_meta($new_post_id, '_roxy_start', $row['start']);
+        update_post_meta($new_post_id, '_roxy_pricing_profile', $row['profile']);
+        update_post_meta($new_post_id, '_roxy_schedule_generated', '1');
+        update_post_meta($new_post_id, '_roxy_generated_from_builder', '1');
 
-      foreach ($shared_meta as $meta_key => $meta_value) {
-        update_post_meta($new_post_id, $meta_key, $meta_value);
+        if (!empty($taxonomy_terms) && !is_wp_error($taxonomy_terms)) {
+          wp_set_object_terms($new_post_id, $taxonomy_terms, 'roxy_show_type', false);
+        }
+        if ($thumbnail_id) set_post_thumbnail($new_post_id, $thumbnail_id);
       }
-      update_post_meta($new_post_id, '_roxy_start', $row['start']);
-      update_post_meta($new_post_id, '_roxy_pricing_profile', $row['profile']);
-      update_post_meta($new_post_id, '_roxy_schedule_generated', '1');
-      update_post_meta($new_post_id, '_roxy_generated_from_builder', '1');
-
-      if (!empty($taxonomy_terms) && !is_wp_error($taxonomy_terms)) {
-        wp_set_object_terms($new_post_id, $taxonomy_terms, 'roxy_show_type', false);
-      }
-      if ($thumbnail_id) {
-        set_post_thumbnail($new_post_id, $thumbnail_id);
-      }
-      if (class_exists(__NAMESPACE__ . '\\Products')) {
-        Products::ensure_products_for_showing((int) $new_post_id);
-      }
+    } finally {
+      self::$is_generating_schedule = false;
     }
 
-    self::$is_generating_schedule = false;
+    if (class_exists(__NAMESPACE__ . '\\Products')) {
+      foreach ($created_ids as $created_id) Products::ensure_products_for_showing($created_id);
+    }
+    return true;
+  }
+
+  private static function generated_post_status($post): string {
+    $source_status = (string) ($post->post_status ?? 'draft');
+    if (in_array($source_status, ['draft','pending','private'], true)) return $source_status;
+    if ($source_status === 'publish') {
+      $post_type = get_post_type_object(self::POST_TYPE);
+      if (is_object($post_type) && isset($post_type->cap->publish_posts) && current_user_can((string)$post_type->cap->publish_posts)) return 'publish';
+    }
+    // A future child has no WordPress publication date; never schedule it implicitly.
+    return 'draft';
   }
 
 
@@ -703,12 +758,11 @@ class CPT {
     if ($start === '') {
       return null;
     }
-    $timestamp = strtotime($start);
-    if (!$timestamp) {
+    try {
+      $dt = (new \DateTimeImmutable($start, wp_timezone()))->setTimezone(wp_timezone())->setTime(0, 0);
+    } catch (\Exception $e) {
       return null;
     }
-    $dt = new \DateTimeImmutable('@' . $timestamp);
-    $dt = $dt->setTimezone(wp_timezone())->setTime(0, 0);
     $day = (int) $dt->format('N');
     if ($day === 5) {
       return $dt;
@@ -765,7 +819,7 @@ class CPT {
 
     $new_post_id = wp_insert_post([
       'post_type' => self::POST_TYPE,
-      'post_status' => $source->post_status === 'publish' ? 'publish' : 'draft',
+      'post_status' => self::generated_post_status($source),
       'post_title' => (string) $source->post_title,
       'post_content' => (string) $source->post_content,
       'post_excerpt' => (string) $source->post_excerpt,
@@ -780,6 +834,7 @@ class CPT {
     $excluded = [
       '_roxy_pid_adult', '_roxy_pid_discount', '_roxy_pid_matinee', '_roxy_pid_live1', '_roxy_pid_live2', '_roxy_pid_subscriber',
       '_roxy_sales_stats', '_roxy_schedule_generated', '_roxy_generated_from_builder', '_edit_lock', '_edit_last', '_thumbnail_id',
+      '_roxy_legacy_product_ids', '_roxy_rs_request_id',
     ];
     foreach ($all_meta as $meta_key => $values) {
       if (in_array($meta_key, $excluded, true)) {

@@ -14,8 +14,9 @@ define('ROXY_EB_VERSION', '1.4.14');
 define('ROXY_EB_PLUGIN_FILE', __FILE__);
 define('ROXY_EB_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ROXY_EB_PLUGIN_URL', plugin_dir_url(__FILE__));
-define('ROXY_EB_ASSETS_URL', defined('ROXY_SUITE_URL') ? ROXY_SUITE_URL . 'assets/event-booking/' : ROXY_EB_PLUGIN_URL . 'assets/');
-define('ROXY_EB_ASSETS_DIR', defined('ROXY_SUITE_PATH') ? ROXY_SUITE_PATH . 'assets/event-booking/' : ROXY_EB_PLUGIN_DIR . 'assets/');
+// One canonical asset set for standalone and Suite installs.
+define('ROXY_EB_ASSETS_URL', ROXY_EB_PLUGIN_URL . 'assets/');
+define('ROXY_EB_ASSETS_DIR', ROXY_EB_PLUGIN_DIR . 'assets/');
 define('ROXY_EB_SLING_LOG_RETENTION_DAYS', 180);
 define('ROXY_EB_SLING_PRUNE_HOOK', 'roxy_eb_prune_sling_logs_daily');
 define('ROXY_EB_HEALTH_CHECK_HOOK', 'roxy_eb_daily_health_check');

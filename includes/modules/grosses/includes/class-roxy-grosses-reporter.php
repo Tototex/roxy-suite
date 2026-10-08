@@ -4,6 +4,9 @@ namespace RoxyGrosses;
 if (!defined('ABSPATH')) exit;
 
 class Reporter {
+  private static array $refund_review_dates = [];
+  private const REFUND_SCAN_DATE = 'roxy_grosses_refund_scan_date';
+  private const REFUND_PENDING_FROM = 'roxy_grosses_refund_pending_from';
   public static function init(): void {
     add_action('admin_post_roxy_grosses_send_manual', [__CLASS__, 'handle_manual_send']);
     add_action('admin_post_roxy_grosses_pull_database', [__CLASS__, 'handle_pull_database']);
@@ -145,10 +148,9 @@ class Reporter {
 
     switch ($dataset) {
       case 'live':
-        $row_count = Store::count_live_entries($filters);
-        $rows = Store::list_live_entries($filters, max(1, $row_count), 0);
+        $rows = Store::iterate_dataset('live', $filters);
         $header = ['Date', 'Show', 'Show Time', 'Total', 'Presale Tickets', 'Online Ticket', 'Door Ticket', 'Group/Subscriber', 'Gross', 'Concessions'];
-        $records = array_map(static function (array $row): array {
+        $records = self::map_export_rows(static function (array $row): array {
           return [
             (string) ($row['report_date'] ?? ''),
             (string) ($row['show_title'] ?? ''),
@@ -164,10 +166,9 @@ class Reporter {
         }, $rows);
         break;
       case 'rentals':
-        $row_count = Store::count_rental_entries($filters);
-        $rows = Store::list_rental_entries($filters, max(1, $row_count), 0);
+        $rows = Store::iterate_dataset('rentals', $filters);
         $header = ['Date', 'Rental', 'Type', 'Customer', 'Status', 'Show Time', 'Invoice', 'Concessions', 'Notes'];
-        $records = array_map(static function (array $row): array {
+        $records = self::map_export_rows(static function (array $row): array {
           return [
             (string) ($row['report_date'] ?? ''),
             (string) ($row['rental_title'] ?? ''),
@@ -182,10 +183,9 @@ class Reporter {
         }, $rows);
         break;
       case 'legacy':
-        $row_count = Store::count_legacy_weekly($filters);
-        $rows = Store::list_legacy_weekly($filters, max(1, $row_count), 0);
+        $rows = Store::iterate_dataset('legacy', $filters);
         $header = ['Week Of', 'Week End', 'Movie', 'Rating', 'Weeks', 'General', 'Discount', 'Free', 'Total', 'Ticket Gross', 'Concessions'];
-        $records = array_map(static function (array $row): array {
+        $records = self::map_export_rows(static function (array $row): array {
           return [
             (string) ($row['week_start_date'] ?? ''),
             (string) ($row['week_end_date'] ?? ''),
@@ -203,10 +203,9 @@ class Reporter {
         break;
       default:
         $dataset = 'movies';
-        $row_count = Store::count_entries($filters);
-        $rows = Store::list_entries($filters, max(1, $row_count), 0);
+        $rows = Store::iterate_dataset('movies', $filters);
         $header = ['Date', 'Movie', 'Studio', 'Genre', 'Show Time', 'Total', 'General', 'Discount', 'Group', 'Free', 'Gross', 'Concessions'];
-        $records = array_map(static function (array $row): array {
+        $records = self::map_export_rows(static function (array $row): array {
           return [
             (string) ($row['report_date'] ?? ''),
             (string) ($row['movie_title'] ?? ''),
@@ -225,20 +224,42 @@ class Reporter {
         break;
     }
 
+    // Finish a private, automatically removed spool before sending download headers.
+    // A failed later page must not look like a successful truncated CSV download.
+    $output = tmpfile();
+    if (!$output) {
+      wp_die('Could not create CSV export stream.');
+    }
+    try {
+      if (fputcsv($output, $header) === false) {
+        throw new \RuntimeException('Could not write CSV export.');
+      }
+      foreach ($records as $record) {
+        if (fputcsv($output, $record) === false) {
+          throw new \RuntimeException('Could not write CSV export.');
+        }
+      }
+      if (!rewind($output)) {
+        throw new \RuntimeException('Could not read CSV export.');
+      }
+    } catch (\Throwable $error) {
+      fclose($output);
+      wp_die('Could not complete CSV export. Please try again.');
+      return;
+    }
     $filename = 'roxy-grosses-' . $dataset . '-' . wp_date('Y-m-d-His') . '.csv';
     nocache_headers();
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename=' . $filename);
-    $output = fopen('php://output', 'w');
-    if (!$output) {
-      wp_die('Could not open CSV export stream.');
-    }
-    fputcsv($output, $header);
-    foreach ($records as $record) {
-      fputcsv($output, $record);
-    }
+    fpassthru($output);
     fclose($output);
     exit;
+  }
+
+  private static function map_export_rows(callable $mapper, iterable $rows): \Generator {
+    foreach ($rows as $row) {
+      yield $mapper($row);
+    }
   }
 
   public static function handle_update_row(): void {
@@ -260,17 +281,17 @@ class Reporter {
 
     switch ($dataset) {
       case 'live':
-        $success = Store::update_live_entry($entry_id, $_POST);
+        $success = Store::update_live_entry($entry_id, $_POST, true);
         break;
       case 'rentals':
-        $success = Store::update_rental_entry($entry_id, $_POST);
+        $success = Store::update_rental_entry($entry_id, $_POST, true);
         break;
       case 'legacy':
-        $success = Store::update_legacy_weekly($entry_id, $_POST);
+        $success = Store::update_legacy_weekly($entry_id, $_POST, true);
         break;
       default:
         $dataset = 'movies';
-        $success = Store::update_entry($entry_id, $_POST);
+        $success = Store::update_entry($entry_id, $_POST, true);
         break;
     }
 
@@ -300,16 +321,28 @@ class Reporter {
   }
 
   public static function send_report(string $report_date, string $mode = 'scheduled'): array {
+    try { return Square::with_sale_snapshot(static fn() => Store::with_refund_review_lock(static fn() => self::send_report_locked($report_date, $mode))); }
+    catch (\Throwable $error) { return ['success' => false, 'message' => $error->getMessage()]; }
+  }
+
+  private static function send_report_locked(string $report_date, string $mode): array {
     try {
       $reports = self::build_reports($report_date);
+      if (in_array($mode, ['scheduled', 'scheduled-provisional'], true)) {
+        foreach ($reports as $row) {
+          if (isset(self::$refund_review_dates[$row['report_date'] ?? ''])) throw new \RuntimeException('A later Square refund changed an already-emailed sale day. Review a fresh draft; it was not automatically resent.');
+        }
+      }
       $summary = self::summarize_reports($reports);
-      if ((int) ($summary['total_tickets'] ?? 0) <= 0) {
+      if ((int) ($summary['total_tickets'] ?? 0) <= 0 && !self::contains_refund_correction($reports)) {
         throw new \RuntimeException('No matching Square ticket sales were found for that report date or its configured lookback window.');
       }
 
       Store::upsert_history_rows($reports, $mode, null);
-      Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, null), 'update');
+      // Email snapshots are not financial-table refreshes. In particular, do
+      // not replace cross-category concession allocations with movie-only ones.
 
+      Store::assert_refund_review_lock();
       $send = self::send_email($reports, $summary, $mode);
       if (!$send['success']) {
         throw new \RuntimeException($send['message']);
@@ -318,7 +351,6 @@ class Reporter {
       $report_id = Store::create_report($report_date, max(0, (int) Settings::get('lookback_days', '0')), $mode, 'emailed', $summary, $reports);
       if ($report_id > 0) {
         Store::upsert_history_rows($reports, $mode, $report_id);
-        Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, $report_id), 'update');
       }
 
       $message = $send['message'];
@@ -367,15 +399,19 @@ class Reporter {
   }
 
   public static function pull_into_database(string $report_date, string $mode = 'manual-pull'): array {
+    return Square::with_sale_snapshot(static fn() => self::pull_into_database_snapshot($report_date, $mode));
+  }
+
+  private static function pull_into_database_snapshot(string $report_date, string $mode): array {
     try {
       $reports = self::build_reports($report_date);
       $summary = self::summarize_reports($reports);
-      if ((int) ($summary['total_tickets'] ?? 0) <= 0) {
+      if ((int) ($summary['total_tickets'] ?? 0) <= 0 && !self::contains_refund_correction($reports)) {
         throw new \RuntimeException('No matching Square ticket sales were found for that date.');
       }
 
       $entry_result = Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, null), 'update');
-      self::rebalance_concessions_for_date($report_date);
+      self::rebalance_concessions_for_report_dates($reports, $report_date);
       Store::upsert_history_rows($reports, $mode, null);
       $message = sprintf(
         'Pulled %d row(s) for %s. %d created, %d updated, %d skipped.',
@@ -416,6 +452,10 @@ class Reporter {
   }
 
   public static function pull_live_into_database(string $report_date, string $mode = 'manual-live-pull'): array {
+    return Square::with_sale_snapshot(static fn() => self::pull_live_into_database_snapshot($report_date, $mode));
+  }
+
+  private static function pull_live_into_database_snapshot(string $report_date, string $mode): array {
     try {
       $rows = self::build_live_reports($report_date);
       if (!$rows) {
@@ -459,9 +499,72 @@ class Reporter {
     }
   }
 
-  public static function sync_automatic_tables(string $report_date, string $mode = 'scheduled-sync'): array {
+  public static function sync_automatic_tables(string $report_date, string $mode = 'scheduled-sync', ?\DateTimeImmutable $now = null): array {
+    return Square::with_sale_snapshot(static fn() => self::sync_automatic_tables_snapshot($report_date, $mode, $now));
+  }
+
+  /** Refresh a closed sale day and flag changed emailed snapshots; never sends a report. */
+  public static function refresh_closed_day(string $report_date): array {
+    return self::sync_automatic_tables($report_date, 'closed-day-refresh');
+  }
+
+  private static function sync_automatic_tables_snapshot(string $report_date, string $mode, ?\DateTimeImmutable $now): array {
+    global $wpdb;
+    $lock = 'roxy_grosses_refund_sync_' . substr(hash('sha256', Store::entries_table_name()), 0, 24);
+    $claimed = false;
     try {
-      $movie_rows = self::build_reports($report_date, true);
+      $claimed = (int) $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $lock)) === 1;
+      if (!$claimed) throw new \RuntimeException('A Grosses refund refresh is already running or its lock is unavailable.');
+      $timezone = new \DateTimeZone(Settings::get_report_timezone());
+      $cutoff = ($now ?? new \DateTimeImmutable('now', $timezone))->setTimezone($timezone);
+      $related = self::related_showings_by_date($report_date);
+      $dates = array_keys($related);
+      sort($dates);
+      $earliest = (string) ($dates[0] ?? $report_date);
+      $cursor = (string) get_option(self::REFUND_SCAN_DATE, '');
+      if ($cursor !== '') {
+        $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $cursor, $cutoff->getTimezone());
+        if (!$parsed || $parsed->format('Y-m-d') !== $cursor || $parsed > $cutoff) throw new \RuntimeException('The Square refund scan checkpoint is invalid; review it before continuing.');
+        $scan_from = $parsed->modify('-1 day')->format('Y-m-d');
+      } else $scan_from = $cutoff->modify('-30 days')->format('Y-m-d');
+      $earliest = min($earliest, $scan_from);
+      $pending_from = (string) get_option(self::REFUND_PENDING_FROM, '');
+      if ($pending_from !== '') {
+        $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $pending_from, $cutoff->getTimezone());
+        if (!$parsed || $parsed->format('Y-m-d') !== $pending_from || $parsed > $cutoff) throw new \RuntimeException('The pending Square refund checkpoint needs review.');
+        $earliest = min($earliest, $pending_from);
+      }
+      $deadline = microtime(true) + 120;
+      // Expand to original source days so earlier partial refunds are included.
+      for ($attempt = 0; ; $attempt++) {
+        $snapshot = RefundSnapshot::load($earliest, $cutoff, $deadline);
+        $source_dates = $snapshot->original_sale_dates();
+        $source_earliest = $source_dates[0] ?? $earliest;
+        if ($source_earliest >= $earliest) break;
+        if ($attempt >= 19) throw new \RuntimeException('Square refund source discovery exceeded its safety limit.');
+        $earliest = $source_earliest;
+      }
+      $refund_updated = 0; $refund_protected = 0;
+      foreach ($snapshot->original_sale_dates() as $date) {
+        if (isset($related[$date])) continue;
+        $sources = $snapshot->source_orders_for_date($date);
+        $ticket_lines = [];
+        foreach ($sources as $sale) foreach (($sale['line_items'] ?? []) as $line) if (self::classify_ticket_variation($line) !== '') $ticket_lines[$sale['id']][$line['uid'] ?? ''] = true;
+        if (!$ticket_lines) continue; // Cash/concession refunds have a separate path.
+        $reconciled = $snapshot->reconcile_sale_day($date, $sources);
+        if ($reconciled['issues']) throw new \RuntimeException('A past original sale day has a Square return requiring manual review. No corrected report was automatically sent.');
+        $ticket_returned = false;
+        foreach ($reconciled['adjustments'] as $adjustment) if (isset($ticket_lines[$adjustment['source_order_id']][$adjustment['source_line_item_uid']])) $ticket_returned = true;
+        if (!$ticket_returned) continue;
+        $showings = self::showings_for_date($date);
+        if (!$showings) throw new \RuntimeException('A refunded past sale has no original showing to refresh. Review it manually.');
+        $corrections = self::build_reports_for_date_showings($date, $showings, $snapshot, true);
+        if ((int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', $lock)) !== 1) throw new \RuntimeException('Grosses refund refresh lost its database lock.');
+        $result = Store::update_refunded_movie_quantities($corrections);
+        $refund_updated += $result['updated'];
+        $refund_protected += $result['protected'];
+      }
+      $movie_rows = self::build_reports($report_date, true, $snapshot);
       $live_rows = self::build_live_reports($report_date, true);
 
       $movie_result = ['created' => 0, 'updated' => 0, 'skipped' => 0];
@@ -474,7 +577,18 @@ class Reporter {
       if ($live_rows) {
         $live_result = Store::upsert_live_entries($live_rows, 'update');
       }
-      self::rebalance_concessions_for_date($report_date);
+      self::rebalance_concessions_for_report_dates($movie_rows, $report_date);
+      if ((int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', $lock)) !== 1) throw new \RuntimeException('Grosses refund refresh lost its database lock.');
+      $closed_day_reports_flagged = $mode === 'closed-day-refresh'
+        ? Store::with_refund_review_lock(static fn() => Store::flag_emailed_closed_day_changes($report_date, Store::closed_day_report_rows($report_date)))
+        : [];
+      $scan_date = $cutoff->format('Y-m-d');
+      $pending_dates = $snapshot->pending_source_dates();
+      $pending_date = (string) ($pending_dates[0] ?? '');
+      update_option(self::REFUND_PENDING_FROM, $pending_date, false);
+      if ((string) get_option(self::REFUND_PENDING_FROM, '') !== $pending_date) throw new \RuntimeException('Could not record pending Square refunds for retry.');
+      update_option(self::REFUND_SCAN_DATE, $scan_date, false);
+      if ((string) get_option(self::REFUND_SCAN_DATE, '') !== $scan_date) throw new \RuntimeException('Could not record the Square refund scan checkpoint. Retry the refresh.');
 
       $movie_paid_rows = 0;
       foreach ($movie_rows as $row) {
@@ -502,6 +616,10 @@ class Reporter {
         'live_rows' => count($live_rows),
         'live_created' => (int) ($live_result['created'] ?? 0),
         'live_updated' => (int) ($live_result['updated'] ?? 0),
+        'refund_movie_rows_updated' => $refund_updated,
+        'refund_movie_rows_protected' => $refund_protected,
+        'closed_day_reports_flagged' => count($closed_day_reports_flagged),
+        'pending_refund_source_days' => count($pending_dates),
       ]);
       self::log_sync_anomalies($report_date, $mode, $movie_rows, $live_rows);
 
@@ -513,10 +631,13 @@ class Reporter {
         'live_rows' => count($live_rows),
         'movie_result' => $movie_result,
         'live_result' => $live_result,
+        'refund_movie_rows_updated' => $refund_updated,
+        'refund_movie_rows_protected' => $refund_protected,
+        'closed_day_reports_flagged' => count($closed_day_reports_flagged),
       ];
     } catch (\Throwable $e) {
       Store::insert_log('sync_tables', $mode, null, $report_date, false, $e->getMessage());
-      self::notify_admin_failure('Grosses automatic sync failed', $report_date, $mode, $e->getMessage());
+      if ($mode !== 'closed-day-refresh') self::notify_admin_failure('Grosses automatic sync failed', $report_date, $mode, $e->getMessage());
       return [
         'success' => false,
         'message' => $e->getMessage(),
@@ -526,6 +647,8 @@ class Reporter {
         'movie_result' => ['created' => 0, 'updated' => 0, 'skipped' => 0],
         'live_result' => ['created' => 0, 'updated' => 0, 'skipped' => 0],
       ];
+    } finally {
+      if ($claimed) $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock));
     }
   }
 
@@ -888,10 +1011,14 @@ class Reporter {
   }
 
   public static function save_report_draft(string $report_date, string $mode = 'review'): array {
+    return Square::with_sale_snapshot(static fn() => self::save_report_draft_snapshot($report_date, $mode));
+  }
+
+  private static function save_report_draft_snapshot(string $report_date, string $mode): array {
     try {
       $reports = self::build_reports($report_date);
       $summary = self::summarize_reports($reports);
-      if ((int) ($summary['total_tickets'] ?? 0) <= 0) {
+      if ((int) ($summary['total_tickets'] ?? 0) <= 0 && !self::contains_refund_correction($reports)) {
         throw new \RuntimeException('No matching Square ticket sales were found for that report date or its configured lookback window.');
       }
 
@@ -901,7 +1028,7 @@ class Reporter {
       }
 
       Store::upsert_history_rows($reports, $mode, $report_id);
-      Store::upsert_entries(self::entries_from_report_rows($reports, 'square_auto', $mode, $report_id), 'update');
+      // Saving a studio draft must not refresh current financial allocations.
 
       Settings::set_status([
         'sent_at' => '',
@@ -934,6 +1061,11 @@ class Reporter {
   }
 
   public static function send_saved_report(int $report_id): array {
+    try { return Store::with_refund_review_lock(static fn() => self::send_saved_report_locked($report_id)); }
+    catch (\Throwable $error) { return ['success' => false, 'message' => $error->getMessage()]; }
+  }
+
+  private static function send_saved_report_locked(int $report_id): array {
     $saved = Store::get_report($report_id);
     if (!$saved) {
       Store::insert_log('send_saved_report', 'saved-report', $report_id, null, false, 'Saved report not found.');
@@ -944,6 +1076,7 @@ class Reporter {
       ];
     }
 
+    if (!empty($saved['refund_review'])) return ['success' => false, 'message' => 'This emailed snapshot needs refund review. Pull and review a fresh draft instead of resending outdated figures.'];
     $summary = is_array($saved['summary'] ?? null) ? $saved['summary'] : [];
     $rows = is_array($saved['rows'] ?? null) ? $saved['rows'] : [];
     if (!$rows) {
@@ -955,9 +1088,7 @@ class Reporter {
       ];
     }
 
-    Store::upsert_history_rows($rows, 'saved-report', $report_id);
-    Store::upsert_entries(self::entries_from_report_rows($rows, 'saved_report', 'saved-report', $report_id), 'update');
-
+    Store::assert_refund_review_lock();
     $send = self::send_email($rows, $summary, 'saved-report');
     if (!$send['success']) {
       Store::insert_log('send_saved_report', 'saved-report', $report_id, (string) ($saved['report_end_date'] ?? ''), false, $send['message']);
@@ -987,12 +1118,17 @@ class Reporter {
     ];
   }
 
-  public static function build_reports(string $report_date, bool $include_empty = false): array {
+  public static function build_reports(string $report_date, bool $include_empty = false, ?RefundSnapshot $refund_snapshot = null): array {
     $reports = [];
     $showings_by_date = self::related_showings_by_date($report_date);
+    if ($showings_by_date && $refund_snapshot === null) {
+      $dates = array_keys($showings_by_date);
+      sort($dates);
+      $refund_snapshot = RefundSnapshot::load((string) $dates[0]);
+    }
 
     foreach ($showings_by_date as $date => $showings) {
-      foreach (self::build_reports_for_date_showings((string) $date, (array) $showings) as $report) {
+      foreach (self::build_reports_for_date_showings((string) $date, (array) $showings, $refund_snapshot) as $report) {
         $reports[] = $report;
       }
     }
@@ -1008,7 +1144,7 @@ class Reporter {
     }
 
     return array_values(array_filter($reports, static function (array $report): bool {
-      return (int) ($report['total_tickets'] ?? 0) > 0;
+      return (int) ($report['total_tickets'] ?? 0) > 0 || !empty($report['refund_adjusted']);
     }));
   }
 
@@ -1103,8 +1239,13 @@ class Reporter {
     }));
   }
 
-  private static function build_reports_for_date_showings(string $report_date, array $showings): array {
+  private static function build_reports_for_date_showings(string $report_date, array $showings, ?RefundSnapshot $refund_snapshot = null, bool $require_nominal_baseline = false): array {
     $orders = Square::fetch_orders_for_date($report_date);
+    $reconciliation = $refund_snapshot ? $refund_snapshot->reconcile_sale_day($report_date, $orders) : ['orders' => $orders, 'adjustments' => [], 'issues' => []];
+    if ($reconciliation['issues']) throw new \RuntimeException('Square returns for this original sale day need manual review (custom amount, unverified refund, or invalid item reference). No report was calculated or sent.');
+    $orders = $reconciliation['orders'];
+    $returned_lines = [];
+    foreach ($reconciliation['adjustments'] as $adjustment) $returned_lines[$adjustment['source_order_id']][$adjustment['source_line_item_uid']] = true;
     $prices = self::ticket_prices();
     $reports = [];
 
@@ -1130,6 +1271,35 @@ class Reporter {
       ];
     }
 
+    $showing_prices = [];
+    foreach ($orders as $order) {
+      $closed = self::order_closed_at($order);
+      foreach (($order['line_items'] ?? []) as $line) {
+        if (!isset($returned_lines[$order['id'] ?? ''][$line['uid'] ?? '']) || self::classify_ticket_variation($line) === '') continue;
+        $candidates = [];
+        foreach ($showings as $showing) if ($closed && ($showing['start_at'] ?? null) instanceof \DateTimeImmutable && abs($closed->getTimestamp() - $showing['start_at']->getTimestamp()) <= 90 * 60) $candidates[] = (int) $showing['id'];
+        if (count($candidates) !== 1 || !isset($reports[$candidates[0]])) throw new \RuntimeException('A refunded Square ticket cannot be uniquely linked to its original showing. Review it manually; no report was sent.');
+        $id = $candidates[0];
+        $reports[$id]['refund_adjusted'] = true;
+        if (!isset($showing_prices[$id])) {
+          $remaining_categories = [];
+          foreach ($orders as $remaining_order) {
+            $remaining_closed = self::order_closed_at($remaining_order);
+            if (!$remaining_closed || self::matching_showing_id_for_order_time($remaining_closed, $showings) !== $id) continue;
+            foreach (($remaining_order['line_items'] ?? []) as $remaining_line) {
+              $category = self::classify_ticket_variation($remaining_line);
+              if ($category !== '' && (float) ($remaining_line['quantity'] ?? 0) > 0) $remaining_categories[$category] = true;
+            }
+          }
+          if ($remaining_categories) {
+            $today = wp_date('Y-m-d', null, new \DateTimeZone(Settings::get_report_timezone()));
+            $strict = $require_nominal_baseline || $report_date < $today;
+            $showing_prices[$id] = Store::nominal_ticket_prices_for_showing($report_date, $id, $prices, $strict, array_keys($remaining_categories));
+          } else $showing_prices[$id] = $prices;
+        }
+      }
+    }
+
     foreach ($orders as $order) {
       $order_closed_at = self::order_closed_at($order);
       if (!$order_closed_at) {
@@ -1152,7 +1322,7 @@ class Reporter {
           continue;
         }
 
-        $gross = round($qty * (float) ($prices[$category] ?? 0), 2);
+        $gross = round($qty * (float) (($showing_prices[$showing_id] ?? $prices)[$category] ?? 0), 2);
         $reports[$showing_id][$category . '_qty'] += $qty;
         $reports[$showing_id][$category . '_gross'] += $gross;
         $reports[$showing_id]['total_tickets'] += $qty;
@@ -1173,7 +1343,17 @@ class Reporter {
     }
     unset($report);
 
+    if (self::contains_refund_correction(array_values($reports))) {
+      $flagged = Store::flag_emailed_refund_changes($report_date, array_values($reports));
+      if ($flagged) self::$refund_review_dates[$report_date] = true;
+    }
+
     return array_values($reports);
+  }
+
+  private static function contains_refund_correction(array $reports): bool {
+    foreach ($reports as $report) if (!empty($report['refund_adjusted'])) return true;
+    return false;
   }
 
   private static function related_showings_by_date(string $report_date): array {
@@ -1375,40 +1555,38 @@ class Reporter {
   }
 
   private static function square_line_item_total(array $line_item, int $qty): float {
-    foreach (['total_money', 'gross_sales_money', 'total_base_price_money'] as $money_key) {
-      $amount = isset($line_item[$money_key]['amount']) ? (int) $line_item[$money_key]['amount'] : null;
-      if ($amount !== null) {
-        $value = $money_key === 'total_base_price_money' ? ($amount / 100) * max(1, $qty) : ($amount / 100);
-        return round((float) $value, 2);
-      }
-    }
-
-    return 0.0;
+    // Square aggregate money fields already include all units in the line.
+    return round(self::square_line_item_total_cents($line_item) / 100, 2);
   }
 
   private static function square_line_item_total_cents(array $line_item): int {
-    foreach (['total_money', 'gross_sales_money', 'total_base_price_money'] as $money_key) {
-      if (isset($line_item[$money_key]['amount'])) {
-        $amount = max(0, (int) $line_item[$money_key]['amount']);
-        if ($money_key === 'total_base_price_money') {
-          $qty = isset($line_item['quantity']) ? max(1, (int) round((float) $line_item['quantity'])) : 1;
-          return $amount * $qty;
-        }
-        return $amount;
-      }
-    }
+    $total = self::square_money_cents($line_item, 'total_money');
+    if ($total !== null) return $total;
+    return self::square_line_item_concession_cents($line_item) + (self::square_money_cents($line_item, 'total_tax_money') ?? 0);
+  }
 
-    return 0;
+  private static function square_money_cents(array $line_item, string $key): ?int {
+    if (!array_key_exists($key, $line_item)) return null;
+    $money=$line_item[$key];
+    if (!is_array($money) || !isset($money['amount']) || !is_int($money['amount']) || $money['amount'] < 0 || (isset($money['currency']) && $money['currency'] !== 'USD')) {
+      throw new \RuntimeException('Square returned invalid or unsupported line-item money. No financial report was calculated.');
+    }
+    return $money['amount'];
   }
 
   private static function square_line_item_concession_cents(array $line_item): int {
-    $gross_cents = max(0, (int) ($line_item['gross_sales_money']['amount'] ?? 0));
-    $tax_cents = max(0, (int) ($line_item['total_tax_money']['amount'] ?? 0));
-    if ($gross_cents > 0) {
-      return max(0, $gross_cents - $tax_cents);
+    // Actual collected line revenue excluding sales tax; allocated charges retained.
+    // US gross_sales_money already excludes tax, but has not deducted discounts.
+    $total=self::square_money_cents($line_item, 'total_money');
+    if ($total !== null) return max(0, $total - (self::square_money_cents($line_item, 'total_tax_money') ?? 0));
+    $gross=self::square_money_cents($line_item, 'gross_sales_money');
+    if ($gross !== null) return max(0, $gross - (self::square_money_cents($line_item, 'total_discount_money') ?? 0) + (self::square_money_cents($line_item, 'total_service_charge_money') ?? 0));
+    // Legacy aggregate fallback is safe only when no inclusive/exclusive tax ambiguity exists.
+    $aggregate=self::square_money_cents($line_item, 'total_base_price_money');
+    if ($aggregate !== null && (self::square_money_cents($line_item, 'total_tax_money') ?? 0) === 0) {
+      return max(0, $aggregate - (self::square_money_cents($line_item, 'total_discount_money') ?? 0) + (self::square_money_cents($line_item, 'total_service_charge_money') ?? 0));
     }
-
-    return self::square_line_item_total_cents($line_item);
+    throw new \RuntimeException('Square line-item totals are missing or ambiguous. No financial report was calculated.');
   }
 
   private static function is_concession_line_item(array $line_item, array $showings = [], array $category_map = []): bool {
@@ -1439,6 +1617,17 @@ class Reporter {
     return false;
   }
 
+  private static function rebalance_concessions_for_report_dates(array $reports, string $requested_date): void {
+    $dates = [$requested_date => true];
+    foreach ($reports as $report) {
+      $date = (string) ($report['report_date'] ?? '');
+      if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) $dates[$date] = true;
+    }
+    $dates = array_keys($dates);
+    sort($dates, SORT_STRING);
+    foreach ($dates as $date) self::rebalance_concessions_for_date($date);
+  }
+
   private static function rebalance_concessions_for_date(string $report_date): array {
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date)) {
       return ['rows' => 0, 'updated' => 0, 'concessions_total' => 0.0];
@@ -1458,6 +1647,7 @@ class Reporter {
         'general_qty' => max(0, (int) ($row['general_qty'] ?? 0)),
         'discount_qty' => max(0, (int) ($row['discount_qty'] ?? 0)),
         'group_qty' => max(0, (int) ($row['group_qty'] ?? 0)),
+        '_is_locked' => !empty($row['is_locked']),
         'concessions_total' => 0.0,
       ];
     }
@@ -1476,6 +1666,7 @@ class Reporter {
         'online_qty' => max(0, (int) ($row['online_qty'] ?? 0)),
         'door_qty' => max(0, (int) ($row['door_qty'] ?? 0)),
         'group_sub_qty' => max(0, (int) ($row['group_sub_qty'] ?? 0)),
+        '_is_locked' => !empty($row['is_locked']),
         'concessions_total' => 0.0,
       ];
     }
@@ -1491,6 +1682,7 @@ class Reporter {
         '_start_at' => self::start_at_for_entry_row($report_date, (string) ($row['show_time'] ?? '')),
         'show_time' => (string) ($row['show_time'] ?? ''),
         'concessions_total' => 0.0,
+        '_is_locked' => !empty($row['is_locked']),
       ];
     }
 
@@ -1506,18 +1698,19 @@ class Reporter {
       $entry_id = (int) ($report['_entry_id'] ?? 0);
       $kind = (string) ($report['_entry_kind'] ?? '');
       $concessions = round((float) ($report['concessions_total'] ?? 0), 2);
-      $concessions_total += $concessions;
       if ($entry_id <= 0) {
         continue;
       }
 
-      if ($kind === 'movie' && Store::update_entry($entry_id, ['concessions_total' => $concessions])) {
-        $updated++;
-      } elseif ($kind === 'live' && Store::update_live_entry($entry_id, ['concessions_total' => $concessions])) {
-        $updated++;
-      } elseif ($kind === 'rental' && Store::update_rental_entry($entry_id, ['concessions_total' => $concessions])) {
-        $updated++;
-      }
+      if (!empty($report['_is_locked'])) continue;
+      $saved = $kind === 'movie'
+        ? Store::update_entry($entry_id, ['concessions_total' => $concessions])
+        : ($kind === 'live'
+          ? Store::update_live_entry($entry_id, ['concessions_total' => $concessions])
+          : Store::update_rental_entry($entry_id, ['concessions_total' => $concessions]));
+      if (!$saved) throw new \RuntimeException('Could not save the concessions allocation for ' . $report_date . '. The report refresh was not completed.');
+      $updated++;
+      $concessions_total += $concessions;
     }
 
     return [
@@ -1797,58 +1990,63 @@ class Reporter {
 
   private static function send_email(array $reports, array $summary, string $mode = 'scheduled'): array {
     $attachment = self::write_csv($reports);
-    $is_test_send = $mode === 'manual-test';
-    $to = $is_test_send ? self::test_email_list() : Settings::email_list();
-    if (!$to) {
-      @unlink($attachment);
-      return [
-        'success' => false,
-        'message' => $is_test_send
-          ? 'No admin alert email is configured for test sends.'
-          : 'No recipient emails are configured.',
-      ];
-    }
-
-    $subject = self::expand_tokens((string) Settings::get('email_subject', ''), $summary);
-    if ($is_test_send) {
-      $subject = '[TEST] ' . $subject;
-    }
-    $body = self::expand_tokens((string) Settings::get('email_body', ''), $summary);
-    if ($is_test_send) {
-      $body = "This is a test grosses email sent only to the configured admin alert address.\n\n" . $body;
-    }
-    $body .= "\n\nReport rows\n";
-      foreach ($reports as $report) {
-        $paid_tickets = max(0, (int) ($report['general_qty'] ?? 0))
-          + max(0, (int) ($report['discount_qty'] ?? 0))
-          + max(0, (int) ($report['group_qty'] ?? 0));
-        $body .= sprintf(
-          "%s %s | %s | General %d | Discount %d | Group %d | Total %d | Gross $%s\n",
-          $report['report_date'],
-          $report['show_time'],
-          $report['film_title'],
-          (int) $report['general_qty'],
-          (int) $report['discount_qty'],
-          (int) $report['group_qty'],
-          $paid_tickets,
-          number_format((float) $report['gross_total'], 2)
-        );
+    try {
+      $is_test_send = $mode === 'manual-test';
+      $is_provisional = $mode === 'scheduled-provisional';
+      $to = $is_test_send ? self::test_email_list() : Settings::email_list();
+      if (!$to) {
+        return [
+          'success' => false,
+          'message' => $is_test_send
+            ? 'No admin alert email is configured for test sends.'
+            : 'No recipient emails are configured.',
+        ];
       }
 
-    $sent = wp_mail($to, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
-    @unlink($attachment);
+      $subject = self::expand_tokens((string) Settings::get('email_subject', ''), $summary);
+      if ($is_provisional) $subject = '[PROVISIONAL — CLOSED-DAY REFRESH PENDING] ' . $subject;
+      if ($is_test_send) {
+        $subject = '[TEST] ' . $subject;
+      }
+      $body = self::expand_tokens((string) Settings::get('email_body', ''), $summary);
+      if ($is_provisional) $body = "PROVISIONAL GROSSES: this is the initial scheduled snapshot for the reporting day. A date-based after-midnight refresh will check for later Square sales and flag changes for manager review; no corrected report is sent automatically.\n\n" . $body;
+      if ($is_test_send) {
+        $body = "This is a test grosses email sent only to the configured admin alert address.\n\n" . $body;
+      }
+      $body .= "\n\nReport rows\n";
+        foreach ($reports as $report) {
+          $paid_tickets = max(0, (int) ($report['general_qty'] ?? 0))
+            + max(0, (int) ($report['discount_qty'] ?? 0))
+            + max(0, (int) ($report['group_qty'] ?? 0));
+          $body .= sprintf(
+            "%s %s | %s | General %d | Discount %d | Group %d | Total %d | Gross $%s\n",
+            $report['report_date'],
+            $report['show_time'],
+            $report['film_title'],
+            (int) $report['general_qty'],
+            (int) $report['discount_qty'],
+            (int) $report['group_qty'],
+            $paid_tickets,
+            number_format((float) $report['gross_total'], 2)
+          );
+        }
 
-    if (!$sent) {
+      $sent = wp_mail($to, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
+
+      if (!$sent) {
+        return [
+          'success' => false,
+          'message' => 'WordPress could not send the grosses email.',
+        ];
+      }
+
       return [
-        'success' => false,
-        'message' => 'WordPress could not send the grosses email.',
+        'success' => true,
+        'message' => 'Report sent to ' . implode(', ', $to) . '.',
       ];
+    } finally {
+      self::remove_csv_attachment($attachment);
     }
-
-    return [
-      'success' => true,
-      'message' => 'Report sent to ' . implode(', ', $to) . '.',
-    ];
   }
 
   private static function test_email_list(): array {
@@ -1862,60 +2060,63 @@ class Reporter {
 
   private static function send_live_grosses_email(array $row, array $recipients, bool $include_concessions, string $mode = 'manual-live-email'): array {
     $attachment = self::write_live_csv($row, $include_concessions);
-    $show_title = (string) ($row['show_title'] ?? 'Live Show');
-    $report_date = (string) ($row['report_date'] ?? '');
-    $show_time = (string) ($row['show_time'] ?? '');
-    $ticket_gross = round((float) ($row['gross_total'] ?? 0), 2);
-    $concessions = round((float) ($row['concessions_total'] ?? 0), 2);
-    $is_test_send = $mode === 'manual-live-test';
+    try {
+      $show_title = (string) ($row['show_title'] ?? 'Live Show');
+      $report_date = (string) ($row['report_date'] ?? '');
+      $show_time = (string) ($row['show_time'] ?? '');
+      $ticket_gross = round((float) ($row['gross_total'] ?? 0), 2);
+      $concessions = round((float) ($row['concessions_total'] ?? 0), 2);
+      $is_test_send = $mode === 'manual-live-test';
 
-    $subject = sprintf('Roxy live grosses for %s on %s', $show_title, $report_date);
-    if ($is_test_send) {
-      $subject = '[TEST] ' . $subject;
-    }
-    $body = Settings::get('theater_name', 'Newport Roxy Theater') . "\n";
-    if ($is_test_send) {
-      $body .= "This is a test live grosses email sent only to the configured admin alert address.\n\n";
-    }
-    $body .= "Live show grosses\n\n";
-    $body .= sprintf("Show: %s\n", $show_title);
-    $body .= sprintf("Date: %s\n", $report_date);
-    $body .= sprintf("Show time: %s\n\n", $show_time);
-    $body .= sprintf("Presale tickets: %s\n", number_format_i18n((int) ($row['presale_qty'] ?? 0)));
-    $body .= sprintf("Online tickets: %s\n", number_format_i18n((int) ($row['online_qty'] ?? 0)));
-    $body .= sprintf("Door tickets: %s\n", number_format_i18n((int) ($row['door_qty'] ?? 0)));
-    $body .= sprintf("Group/subscriber: %s\n", number_format_i18n((int) ($row['group_sub_qty'] ?? 0)));
-    $body .= sprintf("Total attendance: %s\n", number_format_i18n((int) ($row['total_tickets'] ?? 0)));
-    $body .= sprintf("Ticket gross: $%s\n", number_format($ticket_gross, 2));
-    if ($include_concessions) {
-      $body .= sprintf("Concessions gross: $%s\n", number_format($concessions, 2));
-      $body .= sprintf("Combined gross: $%s\n", number_format($ticket_gross + $concessions, 2));
-    }
-    $body .= "\nGenerated automatically by the Roxy Grosses plugin.";
+      $subject = sprintf('Roxy live grosses for %s on %s', $show_title, $report_date);
+      if ($is_test_send) {
+        $subject = '[TEST] ' . $subject;
+      }
+      $body = Settings::get('theater_name', 'Newport Roxy Theater') . "\n";
+      if ($is_test_send) {
+        $body .= "This is a test live grosses email sent only to the configured admin alert address.\n\n";
+      }
+      $body .= "Live show grosses\n\n";
+      $body .= sprintf("Show: %s\n", $show_title);
+      $body .= sprintf("Date: %s\n", $report_date);
+      $body .= sprintf("Show time: %s\n\n", $show_time);
+      $body .= sprintf("Presale tickets: %s\n", number_format_i18n((int) ($row['presale_qty'] ?? 0)));
+      $body .= sprintf("Online tickets: %s\n", number_format_i18n((int) ($row['online_qty'] ?? 0)));
+      $body .= sprintf("Door tickets: %s\n", number_format_i18n((int) ($row['door_qty'] ?? 0)));
+      $body .= sprintf("Group/subscriber: %s\n", number_format_i18n((int) ($row['group_sub_qty'] ?? 0)));
+      $body .= sprintf("Total attendance: %s\n", number_format_i18n((int) ($row['total_tickets'] ?? 0)));
+      $body .= sprintf("Ticket gross: $%s\n", number_format($ticket_gross, 2));
+      if ($include_concessions) {
+        $body .= sprintf("Concessions gross: $%s\n", number_format($concessions, 2));
+        $body .= sprintf("Combined gross: $%s\n", number_format($ticket_gross + $concessions, 2));
+      }
+      $body .= "\nGenerated automatically by the Roxy Grosses plugin.";
 
-    $sent = wp_mail($recipients, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
-    @unlink($attachment);
+      $sent = wp_mail($recipients, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
 
-    if (!$sent) {
-      Store::insert_log('send_live_grosses', $mode, null, $report_date, false, 'WordPress could not send the live grosses email.', [
+      if (!$sent) {
+        Store::insert_log('send_live_grosses', $mode, null, $report_date, false, 'WordPress could not send the live grosses email.', [
+          'live_entry_id' => (int) ($row['id'] ?? 0),
+          'include_concessions' => $include_concessions,
+        ]);
+        return [
+          'success' => false,
+          'message' => 'WordPress could not send the live grosses email.',
+        ];
+      }
+
+      Store::insert_log('send_live_grosses', $mode, null, $report_date, true, 'Live grosses email sent to ' . implode(', ', $recipients) . '.', [
         'live_entry_id' => (int) ($row['id'] ?? 0),
         'include_concessions' => $include_concessions,
       ]);
+
       return [
-        'success' => false,
-        'message' => 'WordPress could not send the live grosses email.',
+        'success' => true,
+        'message' => 'Live grosses email sent to ' . implode(', ', $recipients) . '.',
       ];
+    } finally {
+      self::remove_csv_attachment($attachment);
     }
-
-    Store::insert_log('send_live_grosses', $mode, null, $report_date, true, 'Live grosses email sent to ' . implode(', ', $recipients) . '.', [
-      'live_entry_id' => (int) ($row['id'] ?? 0),
-      'include_concessions' => $include_concessions,
-    ]);
-
-    return [
-      'success' => true,
-      'message' => 'Live grosses email sent to ' . implode(', ', $recipients) . '.',
-    ];
   }
 
   private static function expand_tokens(string $template, array $summary): string {
@@ -1928,109 +2129,156 @@ class Reporter {
     }
 
   private static function write_csv(array $reports): string {
-    $upload_dir = wp_upload_dir();
-    $dir = trailingslashit($upload_dir['basedir']) . 'roxy-grosses';
-    wp_mkdir_p($dir);
-
     $latest_date = $reports ? (string) $reports[count($reports) - 1]['report_date'] : wp_date('Y-m-d');
-    $path = trailingslashit($dir) . 'grosses-' . $latest_date . '.csv';
-    $handle = fopen($path, 'w');
-    if (!$handle) {
-      throw new \RuntimeException('Unable to create the grosses CSV attachment.');
-    }
+    return self::write_private_csv('grosses-' . $latest_date . '.csv', static function ($handle) use ($reports): void {
 
-    $total_general = 0;
-    $total_discount = 0;
-    $total_group = 0;
-    $total_paid = 0;
-    $total_gross = 0.0;
+      $total_general = 0;
+      $total_discount = 0;
+      $total_group = 0;
+      $total_paid = 0;
+      $total_gross = 0.0;
 
-    fputcsv($handle, ['Report Date', 'Show Time', 'Theater', 'Film Title', 'General', 'Discount', 'Group', 'Total Tickets', 'Gross']);
-    foreach ($reports as $report) {
-      $general_qty = max(0, (int) ($report['general_qty'] ?? 0));
-      $discount_qty = max(0, (int) ($report['discount_qty'] ?? 0));
-      $group_qty = max(0, (int) ($report['group_qty'] ?? 0));
-      $paid_tickets = $general_qty + $discount_qty + $group_qty;
-      $gross_total = round((float) ($report['gross_total'] ?? 0), 2);
+      self::put_attachment_row($handle, ['Report Date', 'Show Time', 'Theater', 'Film Title', 'General', 'Discount', 'Group', 'Total Tickets', 'Gross']);
+      foreach ($reports as $report) {
+        $general_qty = max(0, (int) ($report['general_qty'] ?? 0));
+        $discount_qty = max(0, (int) ($report['discount_qty'] ?? 0));
+        $group_qty = max(0, (int) ($report['group_qty'] ?? 0));
+        $paid_tickets = $general_qty + $discount_qty + $group_qty;
+        $gross_total = round((float) ($report['gross_total'] ?? 0), 2);
 
-      $total_general += $general_qty;
-      $total_discount += $discount_qty;
-      $total_group += $group_qty;
-      $total_paid += $paid_tickets;
-      $total_gross += $gross_total;
+        $total_general += $general_qty;
+        $total_discount += $discount_qty;
+        $total_group += $group_qty;
+        $total_paid += $paid_tickets;
+        $total_gross += $gross_total;
 
-      fputcsv($handle, [
-        $report['report_date'],
-        $report['show_time'],
-        $report['theater_name'],
-        $report['film_title'],
-        $general_qty,
-        $discount_qty,
-        $group_qty,
-        $paid_tickets,
-        '$' . number_format($gross_total, 2, '.', ''),
+        self::put_attachment_row($handle, [
+          $report['report_date'],
+          $report['show_time'],
+          $report['theater_name'] ?? (string) Settings::get('theater_name', 'Newport Roxy Theater'),
+          $report['film_title'],
+          $general_qty,
+          $discount_qty,
+          $group_qty,
+          $paid_tickets,
+          '$' . number_format($gross_total, 2, '.', ''),
+        ]);
+      }
+
+      self::put_attachment_row($handle, [
+        'Total',
+        '',
+        '',
+        '',
+        $total_general,
+        $total_discount,
+        $total_group,
+        $total_paid,
+        '$' . number_format($total_gross, 2, '.', ''),
       ]);
-    }
 
-    fputcsv($handle, [
-      'Total',
-      '',
-      '',
-      '',
-      $total_general,
-      $total_discount,
-      $total_group,
-      $total_paid,
-      '$' . number_format($total_gross, 2, '.', ''),
-    ]);
-
-      fclose($handle);
-      return $path;
-    }
+    });
+  }
 
   private static function write_live_csv(array $row, bool $include_concessions): string {
-    $upload_dir = wp_upload_dir();
-    $dir = trailingslashit($upload_dir['basedir']) . 'roxy-grosses';
-    wp_mkdir_p($dir);
-
     $report_date = (string) ($row['report_date'] ?? wp_date('Y-m-d'));
     $safe_title = sanitize_title((string) ($row['show_title'] ?? 'live-show'));
-    $path = trailingslashit($dir) . 'live-grosses-' . $report_date . '-' . ($safe_title !== '' ? $safe_title : 'live-show') . '.csv';
-    $handle = fopen($path, 'w');
-    if (!$handle) {
-      throw new \RuntimeException('Unable to create the live grosses CSV attachment.');
+    $filename = 'live-grosses-' . $report_date . '-' . ($safe_title !== '' ? $safe_title : 'live-show') . '.csv';
+    return self::write_private_csv($filename, static function ($handle) use ($row, $include_concessions, $report_date): void {
+
+      $header = ['Report Date', 'Show Time', 'Show', 'Presale Tickets', 'Online Tickets', 'Door Tickets', 'Group/Subscriber', 'Total Attendance', 'Ticket Gross'];
+      $record = [
+        $report_date,
+        (string) ($row['show_time'] ?? ''),
+        (string) ($row['show_title'] ?? ''),
+        (int) ($row['presale_qty'] ?? 0),
+        (int) ($row['online_qty'] ?? 0),
+        (int) ($row['door_qty'] ?? 0),
+        (int) ($row['group_sub_qty'] ?? 0),
+        (int) ($row['total_tickets'] ?? 0),
+        '$' . number_format((float) ($row['gross_total'] ?? 0), 2, '.', ''),
+      ];
+
+      if ($include_concessions) {
+        $ticket_gross = round((float) ($row['gross_total'] ?? 0), 2);
+        $concessions = round((float) ($row['concessions_total'] ?? 0), 2);
+        $header[] = 'Concessions Gross';
+        $header[] = 'Combined Gross';
+        $record[] = '$' . number_format($concessions, 2, '.', '');
+        $record[] = '$' . number_format($ticket_gross + $concessions, 2, '.', '');
+      }
+
+      self::put_attachment_row($handle, $header);
+      self::put_attachment_row($handle, $record);
+    });
+  }
+
+  /** Only files created by this request may be removed by the attachment cleanup. */
+  private static array $csv_attachments = [];
+
+  private static function write_private_csv(string $filename, callable $writer): string {
+    $temp = realpath(sys_get_temp_dir());
+    if ($temp === false || !is_dir($temp) || !is_writable($temp)) {
+      throw new \RuntimeException('Private report temporary storage is unavailable.');
     }
-
-    $header = ['Report Date', 'Show Time', 'Show', 'Presale Tickets', 'Online Tickets', 'Door Tickets', 'Group/Subscriber', 'Total Attendance', 'Ticket Gross'];
-    $record = [
-      $report_date,
-      (string) ($row['show_time'] ?? ''),
-      (string) ($row['show_title'] ?? ''),
-      (int) ($row['presale_qty'] ?? 0),
-      (int) ($row['online_qty'] ?? 0),
-      (int) ($row['door_qty'] ?? 0),
-      (int) ($row['group_sub_qty'] ?? 0),
-      (int) ($row['total_tickets'] ?? 0),
-      '$' . number_format((float) ($row['gross_total'] ?? 0), 2, '.', ''),
-    ];
-
-    if ($include_concessions) {
-      $ticket_gross = round((float) ($row['gross_total'] ?? 0), 2);
-      $concessions = round((float) ($row['concessions_total'] ?? 0), 2);
-      $header[] = 'Concessions Gross';
-      $header[] = 'Combined Gross';
-      $record[] = '$' . number_format($concessions, 2, '.', '');
-      $record[] = '$' . number_format($ticket_gross + $concessions, 2, '.', '');
+    foreach ([ABSPATH, defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : ABSPATH] as $web_root) {
+      $root = realpath($web_root);
+      if ($root !== false && ($temp === $root || str_starts_with($temp . DIRECTORY_SEPARATOR, rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR))) {
+        throw new \RuntimeException('Report temporary storage must be outside the website.');
+      }
     }
+    $dir = $temp . DIRECTORY_SEPARATOR . 'roxy-grosses-' . bin2hex(random_bytes(16));
+    if (!mkdir($dir, 0700)) {
+      throw new \RuntimeException('Unable to create private report storage.');
+    }
+    $stem = (string) preg_replace('/\.csv$/i', '', $filename);
+    $filename = substr((string) preg_replace('/[^a-zA-Z0-9._-]/', '-', $stem), 0, 176) . '.csv';
+    $path = $dir . DIRECTORY_SEPARATOR . $filename;
+    self::$csv_attachments[$path] = $dir;
+    register_shutdown_function(static function () use ($path): void { self::remove_csv_attachment($path); });
+    $handle = null;
+    try {
+      if (!chmod($dir, 0700)) throw new \RuntimeException('Unable to protect report storage.');
+      $handle = fopen($path, 'x+b');
+      if ($handle === false || !chmod($path, 0600)) throw new \RuntimeException('Unable to create private CSV attachment.');
+      $writer($handle);
+      if (!fflush($handle)) throw new \RuntimeException('Unable to finish writing CSV attachment.');
+      $closed = fclose($handle);
+      $handle = null;
+      if (!$closed) throw new \RuntimeException('Unable to close CSV attachment.');
+      return $path;
+    } catch (\Throwable $error) {
+      if (is_resource($handle)) fclose($handle);
+      self::remove_csv_attachment($path);
+      throw $error;
+    }
+  }
 
-    fputcsv($handle, $header);
-    fputcsv($handle, $record);
-    fclose($handle);
+  private static function put_attachment_row($handle, array $row): void {
+    if (fputcsv($handle, $row) === false) {
+      throw new \RuntimeException('Unable to write CSV attachment.');
+    }
+  }
 
-    return $path;
+  private static function remove_csv_attachment(string $path): void {
+    if (!isset(self::$csv_attachments[$path])) return;
+    $dir = self::$csv_attachments[$path];
+    if (is_file($path) && !@unlink($path)) {
+      error_log('Roxy Grosses: private CSV cleanup failed.');
+      return; // Keep ownership so shutdown can retry; never delete another run's file.
+    }
+    if (is_dir($dir) && !@rmdir($dir)) {
+      error_log('Roxy Grosses: private CSV directory cleanup failed.');
+      return;
+    }
+    unset(self::$csv_attachments[$path]);
   }
 
   public static function reconciliation_rows(string $date_from, string $date_to): array {
+    return Square::with_sale_snapshot(static fn() => self::reconciliation_rows_snapshot($date_from, $date_to));
+  }
+
+  private static function reconciliation_rows_snapshot(string $date_from, string $date_to): array {
     $date_from = sanitize_text_field($date_from);
     $date_to = sanitize_text_field($date_to);
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_from) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_to)) {
@@ -2316,9 +2564,7 @@ class Reporter {
         if ($catalog_object_id === '' || !Square::is_in_store_purchase_item($catalog_object_id, $category_map)) {
           continue;
         }
-        $gross_sales = (int) ($line_item['gross_sales_money']['amount'] ?? 0);
-        $total_tax = (int) ($line_item['total_tax_money']['amount'] ?? 0);
-        $total_cents += max(0, $gross_sales - $total_tax);
+        $total_cents += self::square_line_item_concession_cents($line_item);
       }
     }
 

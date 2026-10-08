@@ -122,13 +122,19 @@ class Frontend {
 
     public static function render_request_card(int $post_id, bool $detailed = false): string {
         $status = CPT::get_status($post_id);
-        $totals = roxy_rs_repo_backing_totals($post_id);
+        try {
+            $totals = roxy_rs_repo_backing_totals($post_id);
+        } catch (\Throwable $error) {
+            $totals = null;
+        }
         $goal = CPT::funding_goal_cents($post_id);
         $target_at = (string) get_post_meta($post_id, CPT::META_TARGET_AT, true);
         $deadline_at = (string) get_post_meta($post_id, CPT::META_DEADLINE_AT, true);
-        $summary = $totals['has_sponsor']
-            ? 'Sponsored'
-            : wp_strip_all_tags(wc_price(((int) $totals['charge_total']) / 100)) . ' / ' . wp_strip_all_tags(wc_price($goal / 100)) . ' pledged';
+        $summary = $totals === null || is_wp_error($goal)
+            ? 'Funding temporarily unavailable.'
+            : ($totals['has_sponsor']
+                ? 'Sponsored'
+                : wp_strip_all_tags(wc_price(((int) $totals['charge_total']) / 100)) . ' / ' . wp_strip_all_tags(wc_price($goal / 100)) . ' pledged');
 
         ob_start();
         echo '<article class="roxy-rs-card">';
@@ -149,7 +155,9 @@ class Frontend {
         echo '<p><strong>Status:</strong> ' . esc_html(CPT::statuses()[$status] ?? 'Pending Review') . '</p>';
         echo '<p><strong>Progress:</strong> ' . esc_html($summary) . '</p>';
         if ($detailed) {
-            echo self::render_backing_form($post_id, $status, $totals);
+            if ($totals === null) echo '<p>Backing is temporarily unavailable while funding totals are verified.</p>';
+            elseif (is_wp_error($goal)) echo '<p>Backing is unavailable pending currency review. Please contact the theater.</p>';
+            else echo self::render_backing_form($post_id, $status, $totals);
         } else {
             echo '<p><a class="roxy-rs-button roxy-rs-button-primary" href="' . esc_url(get_permalink($post_id)) . '">View request</a></p>';
         }
@@ -159,8 +167,6 @@ class Frontend {
     }
 
     private static function render_single_request(int $post_id): string {
-        $status = CPT::get_status($post_id);
-        $totals = roxy_rs_repo_backing_totals($post_id);
         ob_start();
         echo '<div class="roxy-rs-single-wrap">';
         echo self::render_request_card($post_id, true);
@@ -174,7 +180,14 @@ class Frontend {
         if ($profile === '') {
             $profile = 'movie_evening';
         }
-        $prices = self::ticket_prices($post_id);
+        $price_types = $profile === 'movie_matinee' ? ['matinee'] : ['general', 'discount'];
+        $prices = [];
+        foreach ($price_types as $price_type) {
+            $price_result = self::ticket_prices($post_id, [$price_type]);
+            if (!is_wp_error($price_result)) {
+                $prices += $price_result;
+            }
+        }
         $sponsor_amount = CPT::sponsor_commitment_cents($post_id, (int) $totals['charge_total']);
         $sponsor_tickets = CPT::sponsor_ticket_qty($post_id);
         $deadline_at = (string) get_post_meta($post_id, CPT::META_DEADLINE_AT, true);
@@ -183,6 +196,10 @@ class Frontend {
         $message = isset($_GET['message']) ? sanitize_text_field((string) wp_unslash($_GET['message'])) : '';
 
         ob_start();
+        if (is_wp_error($goal) || is_wp_error($sponsor_amount)) {
+            echo '<p class="roxy-rs-notice roxy-rs-notice-error">Saved currency values need review before this request can accept backing.</p>';
+            return (string) ob_get_clean();
+        }
         if ($trailer_url !== '') {
             echo '<p><a href="' . esc_url($trailer_url) . '" target="_blank" rel="noopener">Watch trailer</a></p>';
         }
@@ -202,8 +219,7 @@ class Frontend {
             return (string) ob_get_clean();
         }
 
-        $deadline_dt = self::parse_local_datetime($deadline_at);
-        if ($deadline_dt && $deadline_dt < self::current_site_datetime()) {
+        if (!self::backing_window_open($deadline_at)) {
             echo '<p>The backing window has closed.</p>';
             return (string) ob_get_clean();
         }
@@ -220,13 +236,26 @@ class Frontend {
         echo '<input type="hidden" name="action" value="roxy_rs_commit_backing">';
         echo '<input type="hidden" name="request_id" value="' . esc_attr((string) $post_id) . '">';
 
+        $paid_options = 0;
         if ($profile === 'movie_matinee') {
-            echo '<label>Matinee tickets (' . wp_kses_post(wc_price($prices['matinee'] / 100)) . ')<input type="number" min="0" step="1" name="general_qty" value="0"></label>';
-        } else {
+            if (isset($prices['matinee'])) {
+                echo '<label>Matinee tickets (' . wp_kses_post(wc_price($prices['matinee'] / 100)) . ')<input type="number" min="0" step="1" name="general_qty" value="0"></label>';
+                $paid_options++;
+            }
+        } elseif (isset($prices['general']) || isset($prices['discount'])) {
             echo '<div class="roxy-rs-two">';
-            echo '<label>General tickets (' . wp_kses_post(wc_price($prices['general'] / 100)) . ')<input type="number" min="0" step="1" name="general_qty" value="0"></label>';
-            echo '<label>Discount tickets (' . wp_kses_post(wc_price($prices['discount'] / 100)) . ')<input type="number" min="0" step="1" name="discount_qty" value="0"></label>';
+            if (isset($prices['general'])) {
+                echo '<label>General tickets (' . wp_kses_post(wc_price($prices['general'] / 100)) . ')<input type="number" min="0" step="1" name="general_qty" value="0"></label>';
+                $paid_options++;
+            }
+            if (isset($prices['discount'])) {
+                echo '<label>Discount tickets (' . wp_kses_post(wc_price($prices['discount'] / 100)) . ')<input type="number" min="0" step="1" name="discount_qty" value="0"></label>';
+                $paid_options++;
+            }
             echo '</div>';
+        }
+        if ($paid_options === 0) {
+            echo '<p class="roxy-rs-notice roxy-rs-notice-error">Paid ticket options are unavailable pending price review. Subscriber reservations can still be submitted.</p>';
         }
 
         echo '<label>Subscriber reservations (do not count toward the funding goal)<input type="number" min="0" step="1" name="subscriber_qty" value="0"></label>';
@@ -278,13 +307,19 @@ class Frontend {
 
         $deadline_at = self::deadline_for_target($target_at);
         $pricing_profile = (string) ($selected_slot['profile'] ?? 'movie_evening');
+        $default_goal = Settings::funding_goal_cents();
+        $default_sponsor = Settings::sponsor_amount_cents();
+        if (is_wp_error($default_goal) || is_wp_error($default_sponsor)) {
+            self::redirect_notice('error', 'Requested-showing currency defaults need administrator review. No request was created.');
+        }
 
         $post_id = wp_insert_post([
             'post_type' => CPT::POST_TYPE,
             'post_status' => 'draft',
             'post_title' => $title,
             'post_content' => $notes,
-            'post_excerpt' => 'Requested by ' . $requester_name . ' (' . $requester_email . ')',
+            // Contact belongs only in protected metadata, never in a public excerpt.
+            'post_excerpt' => '',
             'post_author' => get_current_user_id(),
         ], true);
 
@@ -296,11 +331,10 @@ class Frontend {
         update_post_meta($post_id, CPT::META_TARGET_AT, $target_at);
         update_post_meta($post_id, CPT::META_DEADLINE_AT, $deadline_at);
         update_post_meta($post_id, CPT::META_PRICING_PROFILE, $pricing_profile);
-        $default_goal = Settings::funding_goal_cents();
-        $default_sponsor = max($default_goal, Settings::sponsor_amount_cents());
         update_post_meta($post_id, CPT::META_MIN_SUPPORT, 0);
         update_post_meta($post_id, CPT::META_FUNDING_GOAL, $default_goal);
         update_post_meta($post_id, CPT::META_SPONSOR_AMOUNT, $default_sponsor);
+        update_post_meta($post_id, CPT::META_FUNDING_UNIT_VERSION, CPT::FUNDING_UNIT_CENTS_V1);
         update_post_meta($post_id, CPT::META_SPONSOR_TICKETS, Settings::sponsor_ticket_qty());
         update_post_meta($post_id, CPT::META_TRAILER_URL, '');
         update_post_meta($post_id, CPT::META_REQUESTER_NAME, $requester_name);
@@ -318,11 +352,19 @@ class Frontend {
         if (!is_user_logged_in()) {
             wp_die('Login required.');
         }
+        if (defined('ROXY_RS_SCHEMA_READY') && !ROXY_RS_SCHEMA_READY) {
+            self::redirect_request_notice((int) ($_POST['request_id'] ?? 0), 'error', 'Pledges are temporarily unavailable while the request data store is repaired. No backing was saved.');
+        }
 
         $request_id = (int) ($_POST['request_id'] ?? 0);
         $request = get_post($request_id);
         if (!$request || $request->post_type !== CPT::POST_TYPE) {
             self::redirect_request_notice($request_id, 'error', 'Requested showing not found.');
+        }
+        $saved_goal = CPT::funding_goal_cents($request_id);
+        $saved_sponsor = CPT::sponsor_amount_cents($request_id);
+        if (is_wp_error($saved_goal) || is_wp_error($saved_sponsor)) {
+            self::redirect_request_notice($request_id, 'error', 'Saved currency values need review. No backing was accepted.');
         }
 
         $status = CPT::get_status($request_id);
@@ -330,9 +372,19 @@ class Frontend {
             self::redirect_request_notice($request_id, 'error', 'This request is not currently accepting backers.');
         }
 
-        $general_qty = max(0, (int) wp_unslash($_POST['general_qty'] ?? 0));
-        $discount_qty = max(0, (int) wp_unslash($_POST['discount_qty'] ?? 0));
-        $subscriber_qty = max(0, (int) wp_unslash($_POST['subscriber_qty'] ?? 0));
+        // A stale form must not bypass the same deadline enforced during rendering.
+        if (!self::backing_window_open((string) get_post_meta($request_id, CPT::META_DEADLINE_AT, true))) {
+            self::redirect_request_notice($request_id, 'error', 'The backing window has closed.');
+        }
+
+        $general_qty = self::posted_quantity('general_qty');
+        $discount_qty = self::posted_quantity('discount_qty');
+        $subscriber_qty = self::posted_quantity('subscriber_qty');
+        if ($general_qty === null || $discount_qty === null || $subscriber_qty === null
+            || $general_qty > 4294967295 || $discount_qty > 4294967295 || $subscriber_qty > 4294967295
+            || $general_qty > 4294967295 - $discount_qty) {
+            self::redirect_request_notice($request_id, 'error', 'Ticket quantities must be whole nonnegative numbers. Please review and resubmit.');
+        }
         $sponsor_request = !empty($_POST['sponsor_request']);
         $token_id = max(0, (int) wp_unslash($_POST['payment_token_id'] ?? 0));
 
@@ -342,7 +394,11 @@ class Frontend {
         }
 
         $support_qty = $general_qty + $discount_qty;
-        $totals = roxy_rs_repo_backing_totals($request_id);
+        try {
+            $totals = roxy_rs_repo_backing_totals($request_id);
+        } catch (\Throwable $error) {
+            self::redirect_request_notice($request_id, 'error', 'Funding totals are temporarily unavailable. Your backing was not saved; please try again later.');
+        }
         if ($support_qty <= 0 && $subscriber_qty <= 0 && !$sponsor_request) {
             self::redirect_request_notice($request_id, 'error', 'Choose at least one ticket, subscriber reservation, or sponsorship.');
         }
@@ -364,14 +420,20 @@ class Frontend {
             self::redirect_request_notice($request_id, 'success', 'We already saved that backing request. Please refresh the page to see the latest progress.');
         }
 
+        // Capture a complete price book at pledge time so conversion cannot
+        // silently adopt prices edited after the customer made this backing.
         $prices = self::ticket_prices($request_id);
+        if (is_wp_error($prices)) {
+            self::redirect_request_notice($request_id, 'error', 'Ticket prices need review before backing can be accepted. No backing was saved.');
+        }
         $charge_total = 0;
         if ($profile === 'movie_matinee') {
-            $charge_total += $general_qty * $prices['matinee'];
+            if ($general_qty > 0) $charge_total = self::add_ticket_charge($charge_total, $general_qty, $prices['matinee']);
         } else {
-            $charge_total += $general_qty * $prices['general'];
-            $charge_total += $discount_qty * $prices['discount'];
+            if ($general_qty > 0) $charge_total = self::add_ticket_charge($charge_total, $general_qty, $prices['general']);
+            if ($charge_total !== null && $discount_qty > 0) $charge_total = self::add_ticket_charge($charge_total, $discount_qty, $prices['discount']);
         }
+        if ($charge_total === null) self::redirect_request_notice($request_id, 'error', 'The ticket total exceeds the supported payment range. Please reduce the quantity and try again.');
 
         $backing_type = 'backer';
         $sponsor_amount = 0;
@@ -380,10 +442,25 @@ class Frontend {
             if (!empty($totals['has_sponsor'])) {
                 self::redirect_request_notice($request_id, 'error', 'This request already has a sponsor. You can still back tickets or reserve subscriber seats.');
             }
+            $raw_sponsor_tickets = get_post_meta($request_id, CPT::META_SPONSOR_TICKETS, true);
+            if ($raw_sponsor_tickets !== '' && roxy_rs_repo_canonical_quantity($raw_sponsor_tickets) === null) {
+                self::redirect_request_notice($request_id, 'error', 'The sponsor ticket quantity is invalid. Please contact the theater before sponsoring.');
+            }
+            $request_settings = get_option(\RoxyRS\Settings::OPTION_KEY, []);
+            $default_sponsor_tickets = is_array($request_settings) ? ($request_settings['sponsor_ticket_qty'] ?? 2) : 2;
+            if (roxy_rs_repo_canonical_quantity($default_sponsor_tickets) === null) {
+                self::redirect_request_notice($request_id, 'error', 'The sponsor ticket quantity is invalid. Please contact the theater before sponsoring.');
+            }
             $backing_type = 'sponsor';
             $sponsor_amount = CPT::sponsor_commitment_cents($request_id, (int) $totals['charge_total'], $charge_total);
-            if ($sponsor_amount <= 0) {
+            if (is_wp_error($sponsor_amount)) {
+                self::redirect_request_notice($request_id, 'error', 'Saved sponsor currency values need review. No backing was saved.');
+            }
+            if ($sponsor_amount <= 0 || $sponsor_amount > 2147483647) {
                 self::redirect_request_notice($request_id, 'error', 'This request no longer needs a sponsor. You can still back tickets or reserve subscriber seats.');
+            }
+            if ($charge_total > 2147483647 - $sponsor_amount) {
+                self::redirect_request_notice($request_id, 'error', 'The total exceeds the supported payment range. Please contact the theater.');
             }
             $sponsor_ticket_qty = CPT::sponsor_ticket_qty($request_id);
             $charge_total += $sponsor_amount;
@@ -391,7 +468,7 @@ class Frontend {
             $backing_type = 'subscriber';
         }
 
-        $backing_id = roxy_rs_repo_insert_backing([
+        $backing_data = [
             'request_id' => $request_id,
             'user_id' => get_current_user_id(),
             'status' => 'pending',
@@ -404,7 +481,20 @@ class Frontend {
             'sponsor_amount' => $sponsor_amount,
             'sponsor_ticket_qty' => $sponsor_ticket_qty,
             'charge_total' => $charge_total,
-        ]);
+        ];
+        try {
+            $agreement_quote = Agreement::quote(
+                $request_id,
+                $profile,
+                $prices,
+                function_exists('get_woocommerce_currency') ? (string) get_woocommerce_currency() : '',
+                function_exists('wc_tax_enabled') ? (bool) wc_tax_enabled() : false
+            );
+            $backing_data['agreement_json'] = Agreement::build($agreement_quote, $backing_data);
+        } catch (\Throwable $error) {
+            self::redirect_request_notice($request_id, 'error', 'The ticket price agreement could not be safely saved. No backing was created; please contact the theater.');
+        }
+        $backing_id = roxy_rs_repo_insert_backing($backing_data);
 
         if (is_wp_error($backing_id)) {
             self::redirect_request_notice($request_id, 'error', $backing_id->get_error_message());
@@ -412,8 +502,15 @@ class Frontend {
 
         set_transient($lock_key, (int) $backing_id, 5 * MINUTE_IN_SECONDS);
 
-        Conversion::maybe_mark_request_ready($request_id);
-        self::redirect_request_notice($request_id, 'success', 'Your backing was saved. We will only charge the saved payment method after the showing is confirmed and scheduled.');
+        $review_pending = false;
+        try {
+            Conversion::maybe_mark_request_ready($request_id);
+        } catch (\Throwable $error) {
+            $review_pending = true;
+        }
+        self::redirect_request_notice($request_id, 'success', $review_pending
+            ? 'Your backing was saved, but funding could not be rechecked. It is pending theater review; do not submit it again.'
+            : 'Your backing was saved. We will only charge the saved payment method after the showing is confirmed and scheduled.');
     }
 
     public static function ajax_available_showtimes(): void {
@@ -429,7 +526,32 @@ class Frontend {
         ]);
     }
 
-    public static function ticket_prices(int $request_id): array {
+    public static function ticket_prices(int $request_id, ?array $required_types = null) {
+        if ($required_types !== null) {
+            $price_fields = [
+                'general' => [CPT::META_GENERAL_PRICE, 'general_price', 12],
+                'discount' => [CPT::META_DISCOUNT_PRICE, 'discount_price', 8],
+                'matinee' => [CPT::META_MATINEE_PRICE, 'matinee_price', 8],
+            ];
+            $prices = [];
+            foreach (array_values(array_unique($required_types)) as $type) {
+                if (!array_key_exists($type, $price_fields)) {
+                    return new \WP_Error('invalid_ticket_type', 'The requested ticket price type is invalid.');
+                }
+                [$meta_key, $setting_key, $default] = $price_fields[$type];
+                $value = (string) get_post_meta($request_id, $meta_key, true);
+                if ($value === '' && class_exists('\\RoxyST\\Settings')) {
+                    $value = (string) \RoxyST\Settings::get_price($setting_key, $default);
+                }
+                $cents = CPT::parse_currency_input($value);
+                if (is_wp_error($cents)) {
+                    return new \WP_Error('invalid_ticket_price', 'A required saved ticket price is invalid or unavailable.');
+                }
+                $prices[$type] = $cents;
+            }
+            return $prices;
+        }
+
         $general = (string) get_post_meta($request_id, CPT::META_GENERAL_PRICE, true);
         $discount = (string) get_post_meta($request_id, CPT::META_DISCOUNT_PRICE, true);
         $matinee = (string) get_post_meta($request_id, CPT::META_MATINEE_PRICE, true);
@@ -444,11 +566,34 @@ class Frontend {
             $matinee = (string) \RoxyST\Settings::get_price('matinee_price', 8);
         }
 
-        return [
-            'general' => (int) round((float) $general * 100),
-            'discount' => (int) round((float) $discount * 100),
-            'matinee' => (int) round((float) $matinee * 100),
-        ];
+        $values = ['general' => $general, 'discount' => $discount, 'matinee' => $matinee];
+        $types = $required_types ?? array_keys($values);
+        $prices = [];
+        foreach (array_values(array_unique($types)) as $type) {
+            if (!array_key_exists($type, $values)) {
+                return new \WP_Error('invalid_ticket_type', 'The requested ticket price type is invalid.');
+            }
+            $value = $values[$type];
+            $cents = CPT::parse_currency_input($value);
+            if (is_wp_error($cents)) {
+                return new \WP_Error('invalid_ticket_price', 'A required saved ticket price is invalid or unavailable.');
+            }
+            $prices[$type] = $cents;
+        }
+        return $prices;
+    }
+
+    private static function posted_quantity(string $key): ?int {
+        if (!array_key_exists($key, $_POST)) return 0;
+        return function_exists('roxy_rs_repo_canonical_quantity')
+            ? roxy_rs_repo_canonical_quantity(wp_unslash($_POST[$key]))
+            : null;
+    }
+
+    private static function add_ticket_charge(int $total, int $quantity, int $unit_cents): ?int {
+        if ($total < 0 || $total > 2147483647 || $quantity < 0 || $unit_cents < 0 || $unit_cents > 2147483647) return null;
+        if ($unit_cents > 0 && $quantity > intdiv(2147483647 - $total, $unit_cents)) return null;
+        return $total + ($quantity * $unit_cents);
     }
 
     private static function redirect_notice(string $notice, string $message): void {
@@ -682,6 +827,12 @@ class Frontend {
         return current_datetime();
     }
 
+    public static function backing_window_open(string $deadline, ?\DateTimeImmutable $now = null): bool {
+        if (trim($deadline) === '') return true; // Preserve explicitly undated requests.
+        $deadline_dt = self::parse_local_datetime($deadline);
+        return $deadline_dt !== null && $deadline_dt > ($now ?? self::current_site_datetime());
+    }
+
     public static function parse_local_datetime(string $value): ?\DateTimeImmutable {
         $value = trim($value);
         if ($value === '') {
@@ -691,7 +842,7 @@ class Frontend {
         $timezone = wp_timezone();
         $formats = ['Y-m-d\TH:i:s', 'Y-m-d\TH:i', 'Y-m-d H:i:s', 'Y-m-d H:i'];
         foreach ($formats as $format) {
-            $dt = \DateTimeImmutable::createFromFormat($format, $value, $timezone);
+            $dt = \DateTimeImmutable::createFromFormat('!' . $format, $value, $timezone);
             if ($dt instanceof \DateTimeImmutable) {
                 return $dt;
             }

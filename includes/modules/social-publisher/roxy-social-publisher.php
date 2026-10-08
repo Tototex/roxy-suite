@@ -5,6 +5,7 @@
 
 if (!defined('ABSPATH')) exit;
 
+require_once __DIR__ . '/includes/class-roxy-social-secrets.php';
 require_once __DIR__ . '/includes/class-roxy-social-store.php';
 require_once __DIR__ . '/includes/class-roxy-social-campaigns.php';
 require_once __DIR__ . '/includes/class-roxy-social-admin.php';
@@ -12,6 +13,7 @@ require_once __DIR__ . '/includes/class-roxy-social-hangar.php';
 require_once __DIR__ . '/includes/class-roxy-social-meta.php';
 require_once __DIR__ . '/includes/class-roxy-social-publisher.php';
 require_once __DIR__ . '/includes/class-roxy-social-ai.php';
+add_action('admin_init',['\\RoxySocial\\Secrets','migrate_legacy_options'],1);
 
 add_action('plugins_loaded', function () {
     if (get_option('roxy_social_schema_version') !== '1.6') {

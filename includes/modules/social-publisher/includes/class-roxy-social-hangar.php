@@ -9,13 +9,15 @@ final class Hangar {
     private const USER_OPTION = 'roxy_social_hangar_user';
     private const PASS_OPTION = 'roxy_social_hangar_pass';
 
-    public static function save_credentials(string $user, string $password): void {
+    public static function save_credentials(string $user, string $password): bool {
+        try { $encrypted=self::encrypt($password); } catch (\Throwable $error) { return false; }
         update_option(self::USER_OPTION, sanitize_text_field($user), false);
-        update_option(self::PASS_OPTION, self::encrypt($password), false);
+        update_option(self::PASS_OPTION, $encrypted, false);
+        return (string)get_option(self::USER_OPTION,'')===sanitize_text_field($user) && hash_equals($encrypted,(string)get_option(self::PASS_OPTION,''));
     }
 
     public static function has_credentials(): bool {
-        return (string) get_option(self::USER_OPTION, '') !== '' && (string) get_option(self::PASS_OPTION, '') !== '';
+        return (string) get_option(self::USER_OPTION, '') !== '' && self::decrypt((string) get_option(self::PASS_OPTION, '')) !== '';
     }
 
     public static function search(string $term, string $type = '', string $date_sort = ''): array {
@@ -42,7 +44,7 @@ final class Hangar {
                 'runtime' => sanitize_text_field((string) ($asset['file_human_attribute'] ?? '')),
                 'start_date' => sanitize_text_field((string) ($asset['start_date'] ?? '')),
                 'expiration_date' => sanitize_text_field((string) ($asset['expiration_date'] ?? '')),
-                'thumbnail_url' => esc_url_raw((string) ($asset['thumbFilePath'] ?? '')),
+                'thumbnail_url' => self::validated_thumbnail_url((string) ($asset['thumbFilePath'] ?? '')) ?? '',
             ];
             if ($results[count($results) - 1]['thumbnail_url'] !== '') {
                 set_transient('roxy_social_hangar_thumb_' . (int) $asset['asset_id'], $results[count($results) - 1]['thumbnail_url'], HOUR_IN_SECONDS);
@@ -57,6 +59,8 @@ final class Hangar {
         $extension = strtolower((string) pathinfo($filename, PATHINFO_EXTENSION));
         $allowed = ['jpg', 'jpeg', 'png', 'webp', 'mp4', 'mov', 'm4v'];
         if ($asset_id <= 0 || $draft_id <= 0 || !in_array($extension, $allowed, true) || !self::has_credentials()) return 0;
+        $draft = Store::find($draft_id);
+        if (!$draft || (string) $draft['status'] !== 'draft' || !empty($draft['facebook_post_id']) || !empty($draft['instagram_media_id']) || !empty($draft['instagram_container_id'])) return 0;
         $tmp = wp_tempnam($filename);
         if (!$tmp) return 0;
         $response = wp_remote_get(self::download_url($asset_id), [
@@ -75,8 +79,12 @@ final class Hangar {
         require_once ABSPATH . 'wp-admin/includes/image.php';
         $attachment_id = media_handle_sideload(['name' => sanitize_file_name($filename), 'tmp_name' => $tmp], $post_id);
         if (is_wp_error($attachment_id)) { @unlink($tmp); return 0; }
-        $draft = Store::find($draft_id);
-        if (!$draft || !Store::update_imported_media($draft_id, (int) $attachment_id, in_array($extension, ['mp4', 'mov', 'm4v'], true) ? 'video' : 'image', self::cleanup_time($draft), $asset_id, $filename)) return 0;
+        if (!Store::update_imported_media($draft_id, (int) $attachment_id, in_array($extension, ['mp4', 'mov', 'm4v'], true) ? 'video' : 'image', self::cleanup_time($draft), $asset_id, $filename, $draft)) {
+            // This new upload was never assigned. Do not touch the previously
+            // selected media or any approved publication on a stale response.
+            wp_delete_attachment((int) $attachment_id, true);
+            return 0;
+        }
         update_post_meta((int) $attachment_id, '_roxy_social_temporary', in_array($extension, ['mp4', 'mov', 'm4v'], true) ? '1' : '0');
         update_post_meta((int) $attachment_id, '_roxy_hangar_asset_id', $asset_id);
         if (in_array($extension, ['mp4', 'mov', 'm4v'], true)) self::save_video_thumbnail((int) $attachment_id, $asset_id, $filename);
@@ -86,17 +94,12 @@ final class Hangar {
     private static function save_video_thumbnail(int $attachment_id, int $asset_id, string $filename): void {
         $thumbnail = (string) get_transient('roxy_social_hangar_thumb_' . $asset_id);
         if ($thumbnail === '') return;
-        if (strpos($thumbnail, 'http') !== 0) $thumbnail = self::BASE_URL . ltrim($thumbnail, '/');
-        $response = wp_remote_get($thumbnail, ['timeout' => 30, 'redirection' => 3, 'cookies' => self::login_cookies(), 'limit_response_size' => 5 * 1024 * 1024]);
-        if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) >= 400) return;
-        $content_type = (string) wp_remote_retrieve_header($response, 'content-type');
-        if (strpos($content_type, 'image/') !== 0) return;
-        $body = wp_remote_retrieve_body($response);
-        if ($body === '') return;
+        $image = self::fetch_thumbnail($thumbnail, 5 * 1024 * 1024);
+        if (!$image) return;
         $uploads = wp_upload_dir();
         if (!empty($uploads['error']) || !wp_mkdir_p($uploads['path'])) return;
-        $poster_name = wp_unique_filename($uploads['path'], sanitize_file_name(pathinfo($filename, PATHINFO_FILENAME) . '-poster.jpg'));
-        if (false === file_put_contents(trailingslashit($uploads['path']) . $poster_name, $body)) return;
+        $poster_name = wp_unique_filename($uploads['path'], sanitize_file_name(pathinfo($filename, PATHINFO_FILENAME) . '-poster.' . $image['extension']));
+        if (false === file_put_contents(trailingslashit($uploads['path']) . $poster_name, $image['body'])) return;
         update_post_meta($attachment_id, '_roxy_social_video_poster_url', trailingslashit($uploads['url']) . $poster_name);
         update_post_meta($attachment_id, '_roxy_social_video_poster_file', trailingslashit($uploads['path']) . $poster_name);
     }
@@ -118,21 +121,76 @@ final class Hangar {
 
     public static function thumbnail_response(int $asset_id): void {
         $path = (string) get_transient('roxy_social_hangar_thumb_' . $asset_id);
-        if ($path === '' || !self::has_credentials()) {
+        $url = self::validated_thumbnail_url($path);
+        if ($url === null || !self::has_credentials()) {
             status_header(404);
             exit;
         }
-        if (strpos($path, 'http') !== 0) $path = self::BASE_URL . ltrim($path, '/');
-        $response = wp_remote_get($path, ['timeout' => 20, 'redirection' => 3, 'cookies' => self::login_cookies(), 'limit_response_size' => 2 * 1024 * 1024]);
-        if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) >= 400) {
+        $image = self::fetch_thumbnail($url, 2 * 1024 * 1024);
+        if (!$image) {
             status_header(404);
             exit;
         }
-        $type = wp_remote_retrieve_header($response, 'content-type');
-        if (is_string($type) && strpos($type, 'image/') === 0) header('Content-Type: ' . $type);
+        header('Content-Type: ' . $image['mime']);
+        header('X-Content-Type-Options: nosniff');
         header('Cache-Control: private, max-age=3600');
-        echo wp_remote_retrieve_body($response);
+        echo $image['body'];
         exit;
+    }
+
+    /** Return a canonical Hangar URL; never accept a caller-controlled host. */
+    private static function validated_thumbnail_url(string $path): ?string {
+        if ($path === '' || preg_match('/[\x00-\x20\x7f\\\\]/', $path) || strpos($path, '//') === 0) return null;
+        if (preg_match('#^https://#i', $path)) {
+            $parts = parse_url($path);
+            if (!is_array($parts) || strtolower((string) ($parts['scheme'] ?? '')) !== 'https'
+                || strtolower((string) ($parts['host'] ?? '')) !== strtolower((string) parse_url(self::BASE_URL, PHP_URL_HOST))
+                || isset($parts['user']) || isset($parts['pass'])
+                || (isset($parts['port']) && (int) $parts['port'] !== 443)) return null;
+            $relative = (string) ($parts['path'] ?? '/');
+            if (isset($parts['query'])) $relative .= '?' . $parts['query'];
+        } else {
+            $relative = $path;
+            if (preg_match('#^[a-z][a-z0-9+.-]*:#i', $relative)) return null;
+        }
+        $path_only = explode('?', $relative, 2)[0];
+        $decoded = $path_only;
+        for ($i = 0; $i < 8; $i++) {
+            $next = rawurldecode($decoded);
+            if ($next === $decoded) break;
+            $decoded = $next;
+            if ($i === 7) return null;
+        }
+        if (preg_match('/[\x00-\x20\x7f\\\\]/', $decoded)) return null;
+        foreach (explode('/', $decoded) as $segment) if ($segment === '..' || $segment === '.') return null;
+        return rtrim(self::BASE_URL, '/') . '/' . ltrim($relative, '/');
+    }
+
+    /** Fetch and verify raster bytes before either proxying or saving them. */
+    private static function fetch_thumbnail(string $url, int $max_bytes): ?array {
+        $url = self::validated_thumbnail_url($url);
+        if ($url === null) return null;
+        $response = wp_remote_get($url, [
+            'timeout' => 20,
+            'redirection' => 0,
+            'cookies' => self::login_cookies(),
+            'limit_response_size' => $max_bytes,
+        ]);
+        if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) !== 200) return null;
+        $body = wp_remote_retrieve_body($response);
+        if (!is_string($body) || $body === '' || strlen($body) > $max_bytes || !function_exists('getimagesizefromstring')) return null;
+        $info = @getimagesizefromstring($body);
+        if (!is_array($info)) return null;
+        $formats = [
+            IMAGETYPE_JPEG => ['mime' => 'image/jpeg', 'extension' => 'jpg'],
+            IMAGETYPE_PNG => ['mime' => 'image/png', 'extension' => 'png'],
+            IMAGETYPE_GIF => ['mime' => 'image/gif', 'extension' => 'gif'],
+            IMAGETYPE_WEBP => ['mime' => 'image/webp', 'extension' => 'webp'],
+        ];
+        $format = $formats[$info[2] ?? 0] ?? null;
+        $header_type = strtolower(trim(explode(';', (string) wp_remote_retrieve_header($response, 'content-type'))[0]));
+        if (!$format || $header_type !== $format['mime'] || strtolower((string) ($info['mime'] ?? '')) !== $format['mime']) return null;
+        return ['body' => $body, 'mime' => $format['mime'], 'extension' => $format['extension']];
     }
 
     public static function import_featured_image(int $asset_id, string $filename, int $post_id): int {
@@ -168,31 +226,25 @@ final class Hangar {
     }
 
     private static function login_cookies(): array {
+        $password=self::decrypt((string)get_option(self::PASS_OPTION,''));
+        if ($password==='') return [];
         $login = wp_remote_post(self::BASE_URL . 'login.php', [
             'timeout' => 20,
-            'redirection' => 3,
+            'redirection' => 0,
             'body' => [
                 'user' => (string) get_option(self::USER_OPTION, ''),
-                'pass' => self::decrypt((string) get_option(self::PASS_OPTION, '')),
+                'pass' => $password,
             ],
         ]);
-        if (is_wp_error($login) || (int) wp_remote_retrieve_response_code($login) >= 400) return [];
+        if (is_wp_error($login) || !in_array((int) wp_remote_retrieve_response_code($login), [200, 302], true)) return [];
         return wp_remote_retrieve_cookies($login);
     }
 
     private static function encrypt(string $value): string {
-        if ($value === '' || !function_exists('openssl_encrypt')) return '';
-        $key = hash('sha256', wp_salt('auth'), true);
-        $iv = random_bytes(16);
-        $encrypted = openssl_encrypt($value, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
-        return base64_encode($iv . $encrypted);
+        return Secrets::encrypt($value);
     }
 
     private static function decrypt(string $value): string {
-        if ($value === '' || !function_exists('openssl_decrypt')) return '';
-        $raw = base64_decode($value, true);
-        if (!is_string($raw) || strlen($raw) <= 16) return '';
-        $key = hash('sha256', wp_salt('auth'), true);
-        return (string) openssl_decrypt(substr($raw, 16), 'AES-256-CBC', $key, OPENSSL_RAW_DATA, substr($raw, 0, 16));
+        return Secrets::decrypt($value);
     }
 }

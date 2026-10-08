@@ -98,6 +98,7 @@
 
 /* Event color (marketing): #66cccc */
 .roxy-eb-wrap .fc .roxy-eb-booking-fg,
+.roxy-eb-wrap .fc .roxy-eb-booking-bg,
 .roxy-eb-wrap .fc .roxy-eb-block {
   background-color: #66cccc !important;
   border-color: #66cccc !important;

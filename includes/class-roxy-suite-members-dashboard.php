@@ -19,7 +19,11 @@ class Members_Dashboard {
         self::handle_settings_update();
 
         $filters = self::filters();
-        $snapshot = self::snapshot($filters);
+        try { $snapshot = self::snapshot($filters); }
+        catch(\Throwable $e) {
+            echo '<div class="notice notice-error"><p>Membership report unavailable. Refresh and retry; no partial totals are displayed.</p></div>';
+            return;
+        }
         $visit_cost = self::visit_cost();
         $fixed_cost = self::fixed_cost();
         $scan_log_url = admin_url('admin.php?page=roxy-ticket-ops&tab=member-check-log');
@@ -64,8 +68,8 @@ class Members_Dashboard {
                 <?php self::kpi('Active Subs', number_format_i18n($snapshot['active_subs']), 'Quantity across counted active and pending-cancel subscriptions.'); ?>
                 <?php self::kpi('Woo Subscription Records', number_format_i18n($snapshot['active_subscriptions']), 'Counted Woo subscription records.'); ?>
                 <?php self::kpi('Monthly Revenue', self::money($snapshot['mrr']), 'Normalized to monthly recurring revenue.'); ?>
-                <?php self::kpi('Visits This Month', number_format_i18n($snapshot['visits_month']), 'From the Roxy member scan log.'); ?>
-                <?php self::kpi('Estimated Monthly Cost', self::money($snapshot['estimated_cost']), self::money($visit_cost) . ' per scan + fixed monthly cost.'); ?>
+                <?php self::kpi('Visits This Month', number_format_i18n($snapshot['visits_month']), 'People recorded in active admission events; lookups and inactive scans excluded.'); ?>
+                <?php self::kpi('Estimated Monthly Cost', self::money($snapshot['estimated_cost']), self::money($visit_cost) . ' per admitted person + fixed monthly cost.'); ?>
                 <?php self::kpi('Estimated Net', self::money($snapshot['estimated_net']), 'Monthly revenue minus estimated visit and fixed costs.'); ?>
                 <?php self::kpi('Missing Photos', number_format_i18n($snapshot['missing_photos']), 'Click a missing photo cell to add one.'); ?>
                 <?php self::kpi('Trade / Comp Records', number_format_i18n($snapshot['trade_records']), 'Flagged subscriptions excluded from totals.'); ?>
@@ -182,6 +186,7 @@ class Members_Dashboard {
                 <?php endif; ?>
                 </tbody>
             </table>
+            <?php self::pagination($snapshot, $filters); ?>
         </section>
         <script>
         (function($){
@@ -297,24 +302,38 @@ class Members_Dashboard {
             ];
         }
 
-        $subscriptions = wcs_get_subscriptions([
-            'subscription_status' => ['active', 'pending-cancel'],
-            'subscriptions_per_page' => -1,
+        // Preserve extensions that filter the subscription query or returned objects.
+        $filtered_subscriptions = null;
+        if (has_filter('woocommerce_get_subscriptions_query_args') || has_filter('woocommerce_got_subscriptions')) {
+            $filtered_subscriptions = wcs_get_subscriptions([
+                'subscription_status' => ['active', 'pending-cancel'],
+                'subscriptions_per_page' => -1, 'orderby' => 'ID', 'order' => 'DESC',
+            ]);
+            if (!is_array($filtered_subscriptions)) throw new \RuntimeException('Subscriptions could not be read');
+            $filtered_subscriptions = array_column(array_map(static function ($sub) {
+                return ['id' => (int) $sub->get_id(), 'subscription' => $sub];
+            }, $filtered_subscriptions), 'subscription', 'id');
+        }
+        // Capture lightweight identities when no extension requires the complete collection.
+        if(!function_exists('wcs_get_orders_with_meta_query') || !function_exists('wcs_get_subscription'))throw new \RuntimeException('Subscription query API unavailable');
+        $subscription_ids = $filtered_subscriptions !== null ? array_keys($filtered_subscriptions) : wcs_get_orders_with_meta_query([
+            'type' => 'shop_subscription',
+            'status' => ['wc-active', 'wc-pending-cancel'],
+            'limit' => -1,
+            'return' => 'ids',
             'orderby' => 'ID',
             'order' => 'DESC',
         ]);
-
-        if (!is_array($subscriptions)) $subscriptions = [];
-        $subscription_ids = array_values(array_filter(array_map(static function ($subscription) {
-            return (is_object($subscription) && method_exists($subscription, 'get_id')) ? (int) $subscription->get_id() : 0;
-        }, $subscriptions)));
-        if ($subscription_ids) {
-            update_meta_cache('post', $subscription_ids);
-        }
-        $scan_stats_map = self::scan_stats_map($subscription_ids);
-
-        foreach ($subscriptions as $subscription) {
-            if (!is_object($subscription) || !method_exists($subscription, 'get_id')) continue;
+        global $wpdb;
+        if(!empty($wpdb->last_error) || !is_array($subscription_ids))throw new \RuntimeException('Subscription identities could not be read');
+        $subscription_ids=array_values(array_unique(array_filter(array_map('intval',$subscription_ids),static fn($id)=>$id>0)));
+        $ranks=[];
+        foreach(array_chunk($subscription_ids,100) as $batch) {
+          update_meta_cache('post',$batch);
+          $scan_stats_map=self::scan_stats_map($batch);
+          foreach($batch as $sub_id) {
+            $subscription=$filtered_subscriptions[$sub_id] ?? wcs_get_subscription($sub_id);
+            if (!is_object($subscription) || !method_exists($subscription, 'get_id'))throw new \RuntimeException('Subscription changed while reading report');
 
             $sub_id = (int) $subscription->get_id();
             $subs = self::subscription_quantity($subscription);
@@ -340,22 +359,8 @@ class Members_Dashboard {
             if ($filters['trade'] === 'counted' && $trade) continue;
             if ($filters['trade'] === 'trade' && !$trade) continue;
 
-            $rows[] = [
-                'subscription_id' => $sub_id,
-                'name' => $name,
-                'email' => $email,
-                'photo_url' => $photo_url,
-                'products' => $products,
-                'subs' => $subs,
-                'monthly_revenue' => $monthly_revenue,
-                'visits_month' => (int) $scan_stats['month'],
-                'visits_lifetime' => (int) $scan_stats['lifetime'],
-                'last_visit' => self::format_datetime($scan_stats['last']),
-                'next_payment' => $next_payment ? date_i18n(get_option('date_format'), strtotime($next_payment)) : '',
-                'status' => $status,
-                'trade' => $trade,
-                'edit_url' => admin_url('post.php?post=' . $sub_id . '&action=edit'),
-            ];
+            // Preserve global visit/revenue/ID ordering with compact ranking keys.
+            $ranks[]= [(int)$scan_stats['month'],$monthly_revenue,$sub_id];
 
             if ($photo_url === '') $missing_photos++;
 
@@ -365,11 +370,21 @@ class Members_Dashboard {
                 $mrr += $monthly_revenue;
                 $visits_month += (int) $scan_stats['month'];
             }
+          }
+          unset($subscription,$scan_stats_map);
         }
-
-        usort($rows, function ($a, $b) {
-            return [$b['visits_month'], $b['monthly_revenue'], $b['subscription_id']] <=> [$a['visits_month'], $a['monthly_revenue'], $a['subscription_id']];
-        });
+        usort($ranks,static fn($a,$b)=>$b<=>$a);
+        $total_rows=count($ranks);$pages=max(1,(int)ceil($total_rows/50));
+        $requested=isset($_GET['member_page']) && is_scalar($_GET['member_page']) ? max(1,(int)$_GET['member_page']) : 1;
+        $page=min($requested,$pages);
+        $selected_ids=array_column(array_slice($ranks,($page-1)*50,50),2);
+        $selected_stats=self::scan_stats_map($selected_ids);
+        foreach($selected_ids as $sub_id) {
+          $subscription=$filtered_subscriptions[$sub_id] ?? wcs_get_subscription($sub_id);
+          if(!is_object($subscription))throw new \RuntimeException('Subscription changed while reading report');
+          $user=$subscription->get_user();$scan=$selected_stats[$sub_id]??['month'=>0,'lifetime'=>0,'last'=>''];$next=$subscription->get_date('next_payment');
+          $rows[]=['subscription_id'=>$sub_id,'name'=>self::customer_name($subscription,$user),'email'=>is_object($user)?(string)$user->user_email:'','photo_url'=>self::photo_url($sub_id),'products'=>self::product_summary($subscription),'subs'=>self::subscription_quantity($subscription),'monthly_revenue'=>self::monthly_revenue($subscription),'visits_month'=>(int)$scan['month'],'visits_lifetime'=>(int)$scan['lifetime'],'last_visit'=>self::format_datetime($scan['last']),'next_payment'=>$next?date_i18n(get_option('date_format'),strtotime($next)):'','status'=>$subscription->get_status(),'trade'=>self::is_trade_subscription($sub_id),'edit_url'=>admin_url('post.php?post='.$sub_id.'&action=edit')];
+        }
 
         $estimated_cost = ($visits_month * self::visit_cost()) + self::fixed_cost();
 
@@ -384,6 +399,7 @@ class Members_Dashboard {
             'missing_photos' => $missing_photos,
             'trade_records' => $trade_records,
             'rows' => $rows,
+            'total_rows'=>$total_rows,'page'=>$page,'pages'=>$pages,
         ];
     }
 
@@ -432,7 +448,7 @@ class Members_Dashboard {
         $month_start = wp_date('Y-m-01 00:00:00');
 
         if (!self::scan_table_exists($table)) {
-            return [];
+            throw new \RuntimeException('Member attendance storage unavailable');
         }
 
         $placeholders = implode(',', array_fill(0, count($sub_ids), '%d'));
@@ -441,16 +457,19 @@ class Members_Dashboard {
             $wpdb->prepare(
                 "SELECT
                     subscription_id,
-                    SUM(CASE WHEN scanned_at >= %s THEN 1 ELSE 0 END) AS visits_month,
-                    COUNT(*) AS visits_lifetime,
+                    SUM(CASE WHEN scanned_at >= %s THEN quantity ELSE 0 END) AS visits_month,
+                    SUM(quantity) AS visits_lifetime,
                     MAX(scanned_at) AS last_visit
                  FROM {$table}
                  WHERE subscription_id IN ({$placeholders})
+                   AND is_active=1
+                   AND source IN ('manual_admit','nfc_admit','manual_admit_reserved','nfc_admit_reserved','manual_admit_walkup','nfc_admit_walkup')
                  GROUP BY subscription_id",
                 $params
             ),
             ARRAY_A
         );
+        if(!empty($wpdb->last_error) || !is_array($rows))throw new \RuntimeException('Member attendance totals could not be read');
 
         $stats = [];
         foreach ($sub_ids as $sub_id) {
@@ -480,6 +499,19 @@ class Members_Dashboard {
         global $wpdb;
         $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table)) === $table;
         return $exists;
+    }
+
+    private static function pagination(array $snapshot,array $filters): void {
+        if(!isset($snapshot['total_rows']))return;
+        $page=(int)$snapshot['page'];$pages=(int)$snapshot['pages'];$count=(int)$snapshot['total_rows'];
+        echo '<p>Showing '.esc_html((string)count($snapshot['rows'])).' of '.esc_html((string)$count).' memberships. Totals cover all matching memberships, not just this page.</p>';
+        if($pages<=1)return;
+        $base=add_query_arg(['page'=>'roxy-suite','tab'=>'membership','member_search'=>$filters['search'],'member_status'=>$filters['status'],'member_photo'=>$filters['photo'],'member_trade'=>$filters['trade']],admin_url('admin.php'));
+        echo '<nav aria-label="Membership pages">';
+        if($page>1)echo '<a class="button" href="'.esc_url(add_query_arg('member_page',$page-1,$base)).'">Previous members</a> ';
+        echo 'Page '.esc_html((string)$page).' of '.esc_html((string)$pages).' ';
+        if($page<$pages)echo '<a class="button" href="'.esc_url(add_query_arg('member_page',$page+1,$base)).'">Next members</a>';
+        echo '</nav>';
     }
 
     private static function customer_name($sub, $user): string {

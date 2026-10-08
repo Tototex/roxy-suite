@@ -34,8 +34,10 @@ function roxy_eb_enqueue_calendar_assets(): void {
     wp_enqueue_style('roxy-eb-fullcalendar', 'https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css', [], ROXY_EB_VERSION);
     wp_enqueue_script('roxy-eb-fullcalendar', 'https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js', [], ROXY_EB_VERSION, true);
 
-    wp_enqueue_style('roxy-eb', ROXY_EB_ASSETS_URL . 'roxy-eb.css', [], ROXY_EB_VERSION);
-    wp_enqueue_script('roxy-eb', ROXY_EB_ASSETS_URL . 'roxy-eb.js', ['jquery', 'roxy-eb-fullcalendar'], ROXY_EB_VERSION, true);
+    $css_version = (string) (@filemtime(ROXY_EB_ASSETS_DIR . 'roxy-eb.css') ?: ROXY_EB_VERSION);
+    $js_version = (string) (@filemtime(ROXY_EB_ASSETS_DIR . 'roxy-eb.js') ?: ROXY_EB_VERSION);
+    wp_enqueue_style('roxy-eb', ROXY_EB_ASSETS_URL . 'roxy-eb.css', [], $css_version);
+    wp_enqueue_script('roxy-eb', ROXY_EB_ASSETS_URL . 'roxy-eb.js', ['jquery', 'roxy-eb-fullcalendar'], $js_version, true);
 
     static $localized = false;
     if ($localized) return;
@@ -292,6 +294,7 @@ function roxy_eb_ajax_calendar_blocks() {
 
     nocache_headers();
     $items = roxy_eb_get_calendar_blocks($rangeStart, $rangeEnd);
+    if (is_wp_error($items)) wp_send_json_error(['message' => $items->get_error_message()], 503);
     wp_send_json_success(['items' => $items]);
 }
 

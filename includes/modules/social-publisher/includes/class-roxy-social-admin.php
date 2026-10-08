@@ -13,12 +13,14 @@ final class Admin {
         add_action('admin_post_roxy_social_meta_callback', ['\\RoxySocial\\Meta', 'handle_callback']);
         add_action('admin_post_roxy_social_meta_verify', ['\\RoxySocial\\Meta', 'verify_connection']);
         add_action('admin_post_roxy_social_update_draft', [__CLASS__, 'update_draft']);
+        add_action('wp_ajax_roxy_social_update_draft', [__CLASS__, 'update_draft']);
         add_action('admin_post_roxy_social_delete_draft', [__CLASS__, 'delete_draft']);
         add_action('admin_post_roxy_social_publish_now', [__CLASS__, 'publish_now']);
         add_action('admin_post_roxy_social_remove_published', [__CLASS__, 'remove_published']);
         add_action('admin_post_roxy_social_create_manual', [__CLASS__, 'create_manual']);
         add_action('admin_post_roxy_social_remove_media', [__CLASS__, 'remove_media']);
         add_action('admin_post_roxy_social_auto_approve', [__CLASS__, 'save_auto_approve']);
+        add_action('admin_post_roxy_social_retry_ai', [__CLASS__, 'retry_ai']);
         add_action('wp_ajax_roxy_social_hangar_search', [__CLASS__, 'ajax_hangar_search']);
         add_action('wp_ajax_roxy_social_hangar_assign', [__CLASS__, 'ajax_hangar_assign']);
         add_action('wp_ajax_roxy_social_hangar_import_featured', [__CLASS__, 'ajax_hangar_import_featured']);
@@ -67,17 +69,27 @@ final class Admin {
         echo '<p style="margin:10px 0 0 24px"><button type="submit" class="button">Save auto-approve setting</button></p></form>';
         self::render_manual_form();
         $rows = Store::all_recent();
-        $filter = isset($_GET['status']) ? sanitize_key((string) $_GET['status']) : 'all';
+        $filter = self::list_filter((string) ($_GET['status'] ?? 'draft'));
         if ($filter !== 'all') $rows = array_values(array_filter($rows, static function ($row) use ($filter) { return (string) $row['status'] === $filter; }));
         echo '<p>Review showing-based drafts here. Only approved posts publish when their scheduled time arrives.</p>';
+        if (isset($_GET['removed_live'])) {
+            $removed = (string) $_GET['removed_live'] === '1';
+            echo '<div class="notice ' . ($removed ? 'notice-success' : 'notice-error') . '"><p>' . ($removed ? 'The recorded live posts were removed.' : 'Removal was not confirmed. Review the draft error and the remote accounts before retrying; unconfirmed IDs have been retained.') . '</p></div>';
+        }
+        if (isset($_GET['updated'])) {
+            $saved = (string) $_GET['updated'] === '1';
+            echo '<div class="notice ' . ($saved ? 'notice-success' : 'notice-error') . '"><p>' . ($saved ? 'Draft saved. Changes require approval again before publishing.' : 'The draft changed or is being published. Your changes were not saved. Reload and review the current draft.') . '</p></div>';
+        }
+        if (isset($_GET['status_changed']) && (string) $_GET['status_changed'] === '0') echo '<div class="notice notice-error"><p>The draft changed or is being published. Its status was not changed. Reload and review it.</p></div>';
         echo '<p><strong>After publishing:</strong> View, edit, or delete live posts in <a href="https://business.facebook.com/latest/posts/published_posts/?asset_id=297533574006330&amp;ir_qe_exposed=1&amp;business_id=624729991216395" target="_blank" rel="noopener noreferrer">Meta Business Suite</a>.</p>';
         echo '<p><strong>Show:</strong> ';
-        foreach (['all' => 'All', 'draft' => 'Drafts', 'approved' => 'Approved', 'publishing' => 'Publishing', 'posted' => 'Posted', 'failed' => 'Failed'] as $key => $label) echo '<a class="button' . ($filter === $key ? ' button-primary' : '') . '" style="margin-right:5px" href="' . esc_url(add_query_arg(['page' => 'roxy-social-posts', 'status' => $key], admin_url('admin.php'))) . '">' . esc_html($label) . '</a>';
+        foreach (['draft' => 'Drafts', 'approved' => 'Approved', 'publishing' => 'Publishing', 'posted' => 'Posted', 'needs_review' => 'Needs Review', 'failed' => 'Failed', 'all' => 'All'] as $key => $label) echo '<a class="button' . ($filter === $key ? ' button-primary' : '') . '" style="margin-right:5px" href="' . esc_url(add_query_arg(['page' => 'roxy-social-posts', 'status' => $key], admin_url('admin.php'))) . '">' . esc_html($label) . '</a>';
         echo '</p>';
         if (!$rows) {
             echo '<div class="notice notice-info"><p>Save a Friday, Saturday, or Sunday showing to create its five-post campaign.</p></div></div>';
             return;
         }
+        echo '<p><button type="button" class="button button-primary roxy-social-save-all">Save All</button> <span class="roxy-social-save-message" role="status" aria-live="polite"></span></p>';
         echo '<table class="widefat striped"><thead><tr><th>Scheduled</th><th>Campaign</th><th>Post</th><th>Media</th><th>Status</th><th>Action</th></tr></thead><tbody>';
         foreach ($rows as $row) {
             $status = (string) $row['status'];
@@ -94,16 +106,20 @@ final class Admin {
                 $dimensions = self::video_dimensions((string) $row['media_url']);
                 if ($dimensions && ($dimensions[0] / max(1, $dimensions[1]) < 0.50 || $dimensions[0] / max(1, $dimensions[1]) > 0.65)) echo '<p class="description" style="color:#996800"><strong>Instagram note:</strong> ' . (int) $dimensions[0] . 'x' . (int) $dimensions[1] . ' is not a vertical 9:16 video. Review before approving.</p>';
             }
-            if (!in_array($status, ['publishing', 'posted', 'removed'], true)) {
+            if ($status === 'draft') {
                 echo '<p style="margin-top:6px"><button type="button" class="button roxy-social-media-button" data-form="roxy-social-draft-' . (int) $row['id'] . '">Choose new media</button></p>';
                 if ($row['media_url']) echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:6px"><input type="hidden" name="action" value="roxy_social_remove_media"><input type="hidden" name="id" value="' . (int) $row['id'] . '">' . wp_nonce_field('roxy_social_remove_media_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit" onclick="return confirm(\'Remove the selected media from this draft?\')">Remove media</button></form>';
             }
             $facebook_state = !empty($row['facebook_post_id']) ? 'Posted' : (($status === 'publishing') ? 'Publishing' : (($status === 'approved') ? 'Scheduled' : (($status === 'failed' && strpos((string) $row['last_error'], 'Facebook:') !== false) ? 'Failed' : 'Not posted')));
             $instagram_state = !empty($row['instagram_media_id']) ? 'Posted' : (($status === 'publishing') ? 'Publishing' : (($status === 'approved') ? 'Scheduled' : (($status === 'failed' && stripos((string) $row['last_error'], 'Instagram video is still processing') !== false) ? 'Processing' : (($status === 'failed' && strpos((string) $row['last_error'], 'Instagram:') !== false) ? 'Failed' : 'Not posted'))));
-            echo '</td><td><strong>' . esc_html(ucwords(str_replace('_', ' ', $status))) . '</strong><br><span class="description">Facebook: ' . esc_html($facebook_state) . '<br>Instagram: ' . esc_html($instagram_state) . '</span></td><td><form id="roxy-social-draft-' . (int) $row['id'] . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_update_draft"><input type="hidden" name="id" value="' . (int) $row['id'] . '"><input type="hidden" name="media_url" value="' . esc_attr((string) $row['media_url']) . '"><input type="hidden" name="media_type" value="' . esc_attr((string) $row['media_type']) . '"><input type="hidden" name="media_changed" value="0">' . wp_nonce_field('roxy_social_update_draft_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit">Save</button></form>';
+            echo '</td><td><strong>' . esc_html(ucwords(str_replace('_', ' ', $status))) . '</strong><br><span class="description">Facebook: ' . esc_html($facebook_state) . '<br>Instagram: ' . esc_html($instagram_state) . '</span></td><td><form id="roxy-social-draft-' . (int) $row['id'] . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_update_draft"><input type="hidden" name="return_status" value="' . esc_attr($filter) . '"><input type="hidden" name="id" value="' . (int) $row['id'] . '"><input type="hidden" name="media_url" value="' . esc_attr((string) $row['media_url']) . '"><input type="hidden" name="media_type" value="' . esc_attr((string) $row['media_type']) . '"><input type="hidden" name="media_changed" value="0"><input type="hidden" name="draft_revision" value="' . esc_attr(Store::draft_revision($row)) . '">' . wp_nonce_field('roxy_social_update_draft_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit" hidden style="display:none!important"' . ((!in_array($status, ['draft', 'approved', 'needs_review', 'failed'], true) || !empty($row['facebook_post_id']) || !empty($row['instagram_media_id']) || !empty($row['instagram_container_id'])) ? ' disabled' : '') . '>Save</button></form>';
             $has_published_ids = !empty($row['facebook_post_id']) || !empty($row['instagram_media_id']);
-            if (in_array($status, ['draft', 'needs_review', 'failed'], true) && !($status === 'failed' && $has_published_ids)) self::action_link((int) $row['id'], 'approved', 'Approve');
-            if ($status === 'approved') self::action_link((int) $row['id'], 'draft', 'Un-approve');
+            if ($status === 'needs_review' && ($row['ai_status'] ?? '') === 'pending' && !$has_published_ids && empty($row['instagram_container_id'])) {
+                $retry_url = wp_nonce_url(add_query_arg(['action' => 'roxy_social_retry_ai', 'id' => (int) $row['id'], 'draft_revision' => Store::draft_revision($row)], admin_url('admin-post.php')), 'roxy_social_retry_ai_' . (int) $row['id']);
+                echo '<a class="button" href="' . esc_url($retry_url) . '">Retry AI</a> ';
+            }
+            if (in_array($status, ['draft', 'needs_review', 'failed'], true) && !($status === 'failed' && $has_published_ids)) self::action_link((int) $row['id'], 'approved', $status === 'needs_review' ? 'Approve after remote review' : 'Approve', $status === 'needs_review', Store::draft_revision($row));
+            if ($status === 'approved') self::action_link((int) $row['id'], 'draft', 'Un-approve', false, Store::draft_revision($row));
             if ($status === 'approved') {
                 $publish_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_publish_now&id=' . (int) $row['id']), 'roxy_social_publish_now_' . (int) $row['id']);
                 echo ' <a class="button button-primary" href="' . esc_url($publish_url) . '" onclick="return confirm(\'Post this approved draft now to its selected social accounts?\')">Post now</a>';
@@ -112,12 +128,14 @@ final class Admin {
                 $publish_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_publish_now&id=' . (int) $row['id']), 'roxy_social_publish_now_' . (int) $row['id']);
                 echo ' <a class="button button-primary" href="' . esc_url($publish_url) . '" onclick="return confirm(\'Retry publishing the missing social account?\')">Retry publish</a>';
             }
-            if ($status === 'failed' && $has_published_ids) {
+            if (in_array($status, ['failed', 'needs_review'], true) && $has_published_ids) {
                 $remove_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_remove_published&id=' . (int) $row['id']), 'roxy_social_remove_published_' . (int) $row['id']);
                 echo '<a class="button" style="margin-top:6px" href="' . esc_url($remove_url) . '" onclick="return confirm(\'Remove this post from Facebook and Instagram?\')">Retry remove</a>';
                 $delete_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_delete_draft&id=' . (int) $row['id']), 'roxy_social_delete_draft_' . (int) $row['id']);
                 echo ' <a class="button" href="' . esc_url($delete_url) . '" onclick="return confirm(\'Delete this local draft? Any remaining social post must be removed in Meta Business Suite.\')">Delete</a>';
             } elseif ($status === 'posted') {
+                $remove_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_remove_published&id=' . (int) $row['id']), 'roxy_social_remove_published_' . (int) $row['id']);
+                echo '<a class="button" href="' . esc_url($remove_url) . '" onclick="return confirm(\'Remove the recorded live posts?\')">Remove live post</a>';
                 $delete_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_delete_draft&id=' . (int) $row['id']), 'roxy_social_delete_draft_' . (int) $row['id']);
                 echo ' <a class="button" href="' . esc_url($delete_url) . '" onclick="return confirm(\'Delete this local draft? The live Facebook and Instagram posts will remain in Meta Business Suite.\')">Delete</a>';
             } elseif (!in_array($status, ['publishing', 'posted', 'removed'], true)) {
@@ -127,13 +145,10 @@ final class Admin {
             if (!empty($row['last_error'])) echo '<p class="description" style="color:#b32d2e">' . esc_html($row['last_error']) . '</p>';
             echo '</td></tr>';
         }
-        echo '</tbody></table></div>';
-        echo '<script>window.roxySocialPicker=' . wp_json_encode(['ajaxurl' => admin_url('admin-ajax.php'), 'searchNonce' => wp_create_nonce('roxy_social_hangar_search'), 'assignNonce' => wp_create_nonce('roxy_social_hangar_assign')]) . ';</script><script src="' . esc_url(content_url('plugins/roxy-suite/includes/modules/social-publisher/assets/draft-media-picker.js?ver=2')) . '"></script>';
-        echo '<script>(function(){var activeForm=null;document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest(".roxy-social-media-button");if(!b)return;activeForm=document.getElementById(b.dataset.form);e.preventDefault();e.stopImmediatePropagation();var m=document.createElement("div");m.style="position:fixed;z-index:100000;inset:8% 12%;background:#fff;border:1px solid #8c8f94;box-shadow:0 4px 18px rgba(0,0,0,.25);padding:18px;overflow:auto";m.innerHTML="<button type=button class=\"button\">Close</button><h2>Choose draft media</h2><p><button type=button class=\"button button-primary\">Media Library</button> <button type=button class=\"button\">Hangar</button></p><div></div>";document.body.appendChild(m);m.querySelector("button").onclick=function(){m.remove();};var buttons=m.querySelectorAll("h2+p button"),panel=m.querySelector("div");buttons[0].onclick=function(){if(!window.wp||!wp.media){alert("The WordPress media library is not available. Reload and try again.");return;}var f=wp.media({title:"Choose draft media",button:{text:"Use this media"},multiple:false});f.on("select",function(){var a=f.state().get("selection").first().toJSON(),url=a.url||"",low=url.toLowerCase(),type=low.indexOf(".mp4")>=0||low.indexOf(".mov")>=0||low.indexOf(".m4v")>=0||low.indexOf(".webm")>=0?"video":"image";activeForm.querySelector("[name=media_url]").value=url;activeForm.querySelector("[name=media_type]").value=type;activeForm.querySelector("[name=media_changed]").value="1";m.remove();});f.open();};buttons[1].onclick=function(){var saved=null;try{saved=JSON.parse(localStorage.getItem("roxy_social_hangar_results")||"null");}catch(x){}if(!saved||!saved.html){panel.innerHTML="<p>No saved Hangar search. Search from the Hangar Assets tab first.</p>";return;}var holder=document.createElement("div");holder.innerHTML=saved.html;var table=holder.querySelector("table");panel.innerHTML="<p class=description>Showing the last Hangar search. Use the Hangar tab to refresh it.</p>";if(!table)return panel.innerHTML+="<p>No saved Hangar results.</p>";panel.appendChild(table);table.querySelectorAll("button[data-id]").forEach(function(use){use.removeAttribute("onclick");use.onclick=function(){use.disabled=true;use.textContent="Importing...";var d=new URLSearchParams({action:"roxy_social_hangar_assign",nonce:"' . esc_js(wp_create_nonce('roxy_social_hangar_assign')) . '",post_id:activeForm.querySelector("[name=id]").value,asset_id:use.dataset.id,filename:use.dataset.name});fetch(ajaxurl,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:d}).then(function(r){return r.json();}).then(function(x){if(!x.success){use.disabled=false;use.textContent="Try again";return;}activeForm.querySelector("[name=media_url]").value=x.data.url;activeForm.querySelector("[name=media_type]").value=x.data.media_type;activeForm.querySelector("[name=media_changed]").value="0";m.remove();});};});};})();</script>';
-        echo '<script>(function(){var activeForm=null;document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest(".roxy-social-media-button");if(b)activeForm=document.getElementById(b.dataset.form);},true);function bind(m){if(m.dataset.roxyBound||!activeForm)return;m.dataset.roxyBound="1";var close=m.querySelector("button"),heading=m.querySelector("h2"),tabs=heading?heading.nextElementSibling.querySelectorAll("button"):[],panel=m.querySelector("div");if(close)close.onclick=function(){m.remove();};if(tabs.length<2||!panel)return;tabs[0].onclick=function(){if(!window.wp||!wp.media){alert("The WordPress media library is not available. Reload and try again.");return;}var frame=wp.media({title:"Choose draft media",button:{text:"Use this media"},multiple:false});frame.on("select",function(){var a=frame.state().get("selection").first().toJSON(),url=a.url||"",type=(a.mime||"").indexOf("video/")===0||/\\.(mp4|mov|m4v|webm|avi|mkv)(?:[?#]|$)/i.test(url)?"video":"image";activeForm.querySelector("[name=media_url]").value=url;activeForm.querySelector("[name=media_type]").value=type;activeForm.querySelector("[name=media_changed]").value="1";activeForm.dataset.roxyMediaReady="1";m.remove();});frame.open();};tabs[1].onclick=function(){var input=panel.querySelector("input[type=search]"),search=panel.querySelector("button"),out=panel.querySelector("div")||panel;if(!input||!search)return;search.onclick=function(){out.textContent="Searching...";var d=new URLSearchParams({action:"roxy_social_hangar_search",nonce:"' . esc_js(wp_create_nonce('roxy_social_hangar_search')) . '",term:input.value});fetch(ajaxurl,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:d}).then(function(r){return r.json();}).then(function(r){if(!r.success||!r.data.length){out.textContent="No Hangar assets found.";return;}out.innerHTML="<table class=\"widefat striped\"><thead><tr><th>Asset</th><th>Type</th><th>Details</th><th>Action</th></tr></thead><tbody>"+r.data.map(function(a){return "<tr><td>"+String(a.filename||a.asset_name).replace(/[&<>]/g,function(c){return ({"&":"&amp;","<":"&lt;",">":"&gt;"})[c];})+"</td><td>"+String(a.asset_category||a.file_type)+"</td><td>"+String(a.runtime||"")+"</td><td><button type=button class=\"button\" data-id=\""+Number(a.asset_id)+"\" data-name=\""+String(a.filename||"").replace(/\"/g,"&quot;")+"">Use</button></td></tr>";}).join("")+"</tbody></table>";out.querySelectorAll("button[data-id]").forEach(function(use){use.onclick=function(){use.disabled=true;use.textContent="Importing...";var d=new URLSearchParams({action:"roxy_social_hangar_assign",nonce:"' . esc_js(wp_create_nonce('roxy_social_hangar_assign')) . '",post_id:activeForm.querySelector("[name=id]").value,asset_id:use.dataset.id,filename:use.dataset.name});fetch(ajaxurl,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:d}).then(function(r){return r.json();}).then(function(x){if(!x.success){use.disabled=false;use.textContent="Try again";return;}activeForm.querySelector("[name=media_url]").value=x.data.url;activeForm.querySelector("[name=media_type]").value=x.data.media_type;activeForm.querySelector("[name=media_changed]").value="0";m.remove();});};});});};};tabs[1].click();}var observer=new MutationObserver(function(){document.querySelectorAll("div[style*=position\\:fixed]").forEach(bind);});observer.observe(document.body,{childList:true});})();</script>';
-        echo '<script>(function(){document.addEventListener("click",function(event){var button=event.target.closest&&event.target.closest(".roxy-social-media-button");if(!button)return;var saved;try{saved=JSON.parse(localStorage.getItem("roxy_social_hangar_results")||"null");}catch(e){saved=null;}if(!saved||!saved.html)return;event.preventDefault();event.stopImmediatePropagation();var form=document.getElementById(button.dataset.form),modal=document.createElement("div");modal.style="position:fixed;z-index:100000;inset:8% 12%;background:#fff;border:1px solid #8c8f94;box-shadow:0 4px 18px rgba(0,0,0,.25);padding:18px;overflow:auto";modal.innerHTML="<button type=button class=\"button\" style=\"float:right\">Close</button><h2 style=\"margin-top:0\">Choose draft media</h2><p><button type=button class=\"button\">Media Library</button> <button type=button class=\"button button-primary\">Hangar</button></p><p class=description>Showing the last Hangar search. Use the Hangar tab to refresh it.</p><div></div>";document.body.appendChild(modal);modal.querySelector("button").onclick=function(){modal.remove();};var panel=modal.querySelector("h2+p+div"),holder=document.createElement("div");holder.innerHTML=saved.html;panel.appendChild(holder.firstElementChild||holder);var table=panel.querySelector("table"),sortKey="",sortDir=1;function sort(){var body=table&&table.querySelector("tbody");if(!body)return;var rows=Array.from(body.querySelectorAll("tr"));rows.sort(function(a,b){var av=a.dataset[sortKey]||"",bv=b.dataset[sortKey]||"";return av<bv?-1*sortDir:av>bv?1*sortDir:0;});rows.forEach(function(row){body.appendChild(row);});}if(table)table.querySelectorAll("[data-sort]").forEach(function(head){head.onclick=function(){if(sortKey===head.dataset.sort)sortDir*=-1;else{sortKey=head.dataset.sort;sortDir=1;}sort();};});if(table)table.querySelectorAll("button[data-id]").forEach(function(use){use.removeAttribute("onclick");use.onclick=function(){use.disabled=true;use.textContent="Importing...";var d=new URLSearchParams({action:"roxy_social_hangar_assign",nonce:"' . esc_js(wp_create_nonce('roxy_social_hangar_assign')) . '",post_id:form.querySelector("[name=id]").value,asset_id:use.dataset.id,filename:use.dataset.name});fetch(ajaxurl,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:d}).then(function(r){return r.json();}).then(function(x){if(!x.success){use.disabled=false;use.textContent="Try again";return;}form.querySelector("[name=media_url]").value=x.data.url;form.querySelector("[name=media_type]").value=x.data.media_type;form.querySelector("[name=media_changed]").value="0";button.textContent="Media selected - click Save";modal.remove();});};});},true);})();</script>';
-        echo '<script>(function(){document.addEventListener("click",function(event){var button=event.target.closest&&event.target.closest(".roxy-social-media-button");if(!button)return;event.preventDefault();event.stopImmediatePropagation();var form=document.getElementById(button.dataset.form),modal=document.createElement("div");modal.style="position:fixed;z-index:100000;inset:8% 12%;background:#fff;border:1px solid #8c8f94;box-shadow:0 4px 18px rgba(0,0,0,.25);padding:18px;overflow:auto";modal.innerHTML="<button type=button class=\"button\" style=\"float:right\">Close</button><h2 style=\"margin-top:0\">Choose draft media</h2><p><button type=button class=\"button button-primary\">Media Library</button> <button type=button class=\"button\">Hangar</button></p><div><p><input type=search class=regular-text placeholder=\"Movie title\"> <button type=button class=\"button button-primary\">Search Hangar</button></p><div></div></div>";document.body.appendChild(modal);modal.querySelector("body");modal.querySelector("button").onclick=function(){modal.remove();};var formUrl=form.querySelector("[name=media_url]"),formType=form.querySelector("[name=media_type]"),changed=form.querySelector("[name=media_changed]"),tabs=modal.querySelectorAll("p:first-of-type button"),panel=modal.querySelector("h2+p+div"),input=panel.querySelector("input"),search=panel.querySelector("button"),out=panel.querySelector("div");function select(url,type,isChanged){formUrl.value=url;formType.value=type;changed.value=isChanged?"1":"0";button.textContent="Media selected - click Save";modal.remove();}tabs[0].onclick=function(){if(!window.wp||!wp.media){alert("The WordPress media library is not available. Reload and try again.");return;}var frame=wp.media({title:"Choose draft media",button:{text:"Use this media"},multiple:false});frame.on("select",function(){var a=frame.state().get("selection").first().toJSON(),url=a.url||"",type=(a.mime||"").indexOf("video/")===0||/\\.(mp4|mov|m4v|webm|avi|mkv)(?:[?#]|$)/i.test(url)?"video":"image";select(url,type,true);});frame.open();};tabs[1].onclick=function(){panel.style.display="block";};search.onclick=function(){out.textContent="Searching...";var d=new URLSearchParams({action:"roxy_social_hangar_search",nonce:"' . esc_js(wp_create_nonce('roxy_social_hangar_search')) . '",term:input.value});fetch(ajaxurl,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:d}).then(function(r){return r.json();}).then(function(r){if(!r.success||!r.data.length){out.textContent="No Hangar assets found.";return;}out.innerHTML="<table class=\"widefat striped\"><tbody>"+r.data.map(function(a){return "<tr><td>"+String(a.filename||a.asset_name).replace(/[&<>]/g,function(c){return ({"&":"&amp;","<":"&lt;",">":"&gt;"})[c];})+"</td><td><button type=button class=\"button\" data-id=\""+Number(a.asset_id)+"\" data-name=\""+String(a.filename||"").replace(/\"/g,"&quot;")+"\">Use</button></td></tr>";}).join("")+"</tbody></table>";out.querySelectorAll("button[data-id]").forEach(function(use){use.onclick=function(){use.disabled=true;use.textContent="Importing...";var d=new URLSearchParams({action:"roxy_social_hangar_assign",nonce:"' . esc_js(wp_create_nonce('roxy_social_hangar_assign')) . '",post_id:form.querySelector("[name=id]").value,asset_id:use.dataset.id,filename:use.dataset.name});fetch(ajaxurl,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:d}).then(function(r){return r.json();}).then(function(x){if(!x.success){use.disabled=false;use.textContent="Try again";return;}select(x.data.url,x.data.media_type,false);});};});}).catch(function(){out.textContent="Hangar search failed.";});};},true);})();</script>';
-        echo '<script>(function(){document.querySelectorAll(".roxy-social-media-button").forEach(function(b){b.addEventListener("click",function(){if(!window.wp||!wp.media){window.alert("The WordPress media library is not available. Please reload this page and try again.");return;}var f=document.getElementById(b.dataset.form),url=f.querySelector("[name=media_url]"),type=f.querySelector("[name=media_type]"),frame=wp.media({title:"Choose draft media",button:{text:"Use this media"},multiple:false});frame.on("select",function(){var a=frame.state().get("selection").first().toJSON(),mime=a.mime||"",value=a.url||"";url.value=value;type.value=mime.indexOf("video/")===0||/\\.(mp4|mov|m4v|webm|avi|mkv)(?:[?#]|$)/i.test(value)?"video":"image";b.textContent="Media selected - click Save";});frame.open();});});})();</script>';
+        echo '</tbody></table><p><button type="button" class="button button-primary roxy-social-save-all">Save All</button> <span class="roxy-social-save-message" role="status" aria-live="polite"></span></p></div>';
+        echo '<script src="' . esc_url(content_url('plugins/roxy-suite/includes/modules/social-publisher/assets/draft-bulk-editor.js?ver=' . filemtime(dirname(__DIR__) . '/assets/draft-bulk-editor.js'))) . '"></script>';
+        $picker_version=(string) filemtime(dirname(__DIR__) . '/assets/draft-media-picker.js');
+        echo '<script>window.roxySocialPicker=' . wp_json_encode(['ajaxurl' => admin_url('admin-ajax.php'), 'searchNonce' => wp_create_nonce('roxy_social_hangar_search'), 'assignNonce' => wp_create_nonce('roxy_social_hangar_assign')], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ';</script><script src="' . esc_url(content_url('plugins/roxy-suite/includes/modules/social-publisher/assets/draft-media-picker.js?ver=' . $picker_version)) . '"></script>';
     }
 
     private static function video_dimensions(string $url): ?array {
@@ -149,21 +164,52 @@ final class Admin {
         if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
         $id = isset($_POST['id']) ? (int) $_POST['id'] : 0;
         check_admin_referer('roxy_social_update_draft_' . $id);
-        $text = sanitize_textarea_field((string) ($_POST['post_text'] ?? ''));
-        $scheduled = sanitize_text_field((string) ($_POST['scheduled_for'] ?? ''));
+        $text = sanitize_textarea_field(wp_unslash((string) ($_POST['post_text'] ?? '')));
+        $scheduled = sanitize_text_field(wp_unslash((string) ($_POST['scheduled_for'] ?? '')));
         $parsed = date_create($scheduled, wp_timezone());
         $media_url = isset($_POST['media_url']) ? esc_url_raw((string) $_POST['media_url']) : null;
         $media_type = isset($_POST['media_type']) ? sanitize_key((string) $_POST['media_type']) : null;
         $media_changed = isset($_POST['media_changed']) && (string) $_POST['media_changed'] === '1';
         if (!$media_changed) $media_url = null;
-        if ($id > 0 && $text !== '' && $parsed) {
-            $old = Store::find($id);
-            $old_temporary = $old && $media_url !== null && (string) $old['media_url'] !== $media_url ? (int) ($old['temporary_attachment_id'] ?? 0) : 0;
-            Store::update_draft($id, $text, $parsed->format('Y-m-d H:i:s'), $media_url, $media_type);
-            if ($old_temporary) wp_delete_attachment($old_temporary, true);
+        $saved = $id > 0 && $text !== '' && $parsed && Store::update_draft($id, $text, $parsed->format('Y-m-d H:i:s'), $media_url, $media_type, (string) ($_POST['draft_revision'] ?? ''));
+        if (wp_doing_ajax()) {
+            if (!$saved) wp_send_json_error(['message' => 'This post changed or could not be saved. Your edits are still on this page.'], 409);
+            wp_send_json_success(['revision' => Store::draft_revision(Store::find($id))]);
         }
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&updated=1'));
+        wp_safe_redirect(self::drafts_url(['updated' => ($saved ? '1' : '0')]));
         exit;
+    }
+
+    private static function list_filter(string $filter): string {
+        $filter = sanitize_key($filter);
+        return in_array($filter, ['draft', 'approved', 'publishing', 'posted', 'needs_review', 'failed', 'all'], true) ? $filter : 'draft';
+    }
+
+    public static function retry_ai(): void {
+        if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
+        $id = (int) ($_GET['id'] ?? 0);
+        check_admin_referer('roxy_social_retry_ai_' . $id);
+        $row = Store::find($id);
+        if ($row && AI::enabled() && hash_equals(Store::draft_revision($row), (string) ($_GET['draft_revision'] ?? ''))) {
+            $args = [$id, (string) $row['campaign_key']];
+            if (Store::retry_ai_snapshot($row)) {
+                if (!wp_next_scheduled('roxy_social_generate_ai_text', $args) && !wp_schedule_single_event(time() + 1, 'roxy_social_generate_ai_text', $args)) {
+                    Store::review_snapshot(Store::find($id), 'AI retry could not be queued. Please try again.');
+                }
+            }
+        }
+        wp_safe_redirect(self::drafts_url());
+        exit;
+    }
+
+    private static function drafts_url(array $args = []): string {
+        $filter = (string) ($_REQUEST['return_status'] ?? '');
+        if ($filter === '') {
+            $query = [];
+            parse_str((string) wp_parse_url(wp_get_referer() ?: '', PHP_URL_QUERY), $query);
+            if (($query['page'] ?? '') === 'roxy-social-posts') $filter = (string) ($query['status'] ?? 'draft');
+        }
+        return add_query_arg(array_merge(['page' => 'roxy-social-posts', 'status' => self::list_filter($filter)], $args), admin_url('admin.php'));
     }
 
     public static function create_manual(): void {
@@ -173,8 +219,8 @@ final class Admin {
         $scheduled = date_create(sanitize_text_field((string) ($_POST['scheduled_for'] ?? '')), wp_timezone());
         $media_url = esc_url_raw((string) ($_POST['media_url'] ?? ''));
         $media_type = self::media_type_from_url($media_url);
-        if ($text === '' || !$scheduled) wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&manual_error=missing'));
-        else { Store::create_manual(['post_text' => $text, 'scheduled_for' => $scheduled->format('Y-m-d H:i:s'), 'platform' => sanitize_key((string) ($_POST['platform'] ?? 'both')), 'media_url' => $media_url, 'media_type' => $media_type]); wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&manual_created=1')); }
+        if ($text === '' || !$scheduled) wp_safe_redirect(self::drafts_url(['manual_error' => 'missing']));
+        else { Store::create_manual(['post_text' => $text, 'scheduled_for' => $scheduled->format('Y-m-d H:i:s'), 'platform' => sanitize_key((string) ($_POST['platform'] ?? 'both')), 'media_url' => $media_url, 'media_type' => $media_type]); wp_safe_redirect(self::drafts_url(['manual_created' => '1'])); }
         exit;
     }
 
@@ -201,7 +247,7 @@ final class Admin {
         check_admin_referer('roxy_social_remove_media_' . $id);
         $temporary_id = $id > 0 ? Store::clear_media($id) : null;
         if ($temporary_id) wp_delete_attachment($temporary_id, true);
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&removed_media=1'));
+        wp_safe_redirect(self::drafts_url(['removed_media' => '1']));
         exit;
     }
 
@@ -211,7 +257,7 @@ final class Admin {
         check_admin_referer('roxy_social_delete_draft_' . $id);
         $temporary_id = $id > 0 ? Store::delete_unposted($id) : null;
         if ($temporary_id) wp_delete_attachment($temporary_id, true);
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&deleted_draft=1'));
+        wp_safe_redirect(self::drafts_url(['deleted_draft' => '1']));
         exit;
     }
 
@@ -220,7 +266,7 @@ final class Admin {
         $id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
         check_admin_referer('roxy_social_publish_now_' . $id);
         \RoxySocial\Publisher::queue_publish_now($id);
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&published_now=1'));
+        wp_safe_redirect(self::drafts_url(['published_now' => '1']));
         exit;
     }
 
@@ -228,13 +274,14 @@ final class Admin {
         if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
         $id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
         check_admin_referer('roxy_social_remove_published_' . $id);
-        Publisher::remove_published($id);
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&removed_live=1'));
+        $removed = Publisher::remove_published($id);
+        wp_safe_redirect(self::drafts_url(['removed_live' => ($removed ? '1' : '0')]));
         exit;
     }
 
     private static function render_hangar_page(): void {
         echo '<h2>Hangar Connection</h2><p>Connect your Hangar account to search approved campaign assets. Credentials are encrypted before storage.</p>';
+        if ((string)get_option('roxy_social_hangar_pass','')!=='' && !Hangar::has_credentials()) echo '<div class="notice notice-error"><p>The saved Hangar credentials could not be read. Re-enter the connection details. The saved password has not been erased.</p></div>';
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="max-width:560px">';
         echo '<input type="hidden" name="action" value="roxy_social_hangar_settings">';
         wp_nonce_field('roxy_social_hangar_settings');
@@ -245,8 +292,7 @@ final class Admin {
         echo '<hr><h2>Search Assets</h2><p><label for="roxy-hangar-target"><strong>Assign to draft</strong></label> <select id="roxy-hangar-target"><option value="0">Choose a draft</option>';
         foreach ($drafts as $draft) { $scheduled = date_create((string) $draft['scheduled_for'], wp_timezone()); $label = ($scheduled ? wp_date('M j', $scheduled->getTimestamp(), wp_timezone()) : (string) $draft['scheduled_for']) . ' — ' . $draft['campaign_key']; if (!empty($draft['hangar_asset_id'])) $label .= ' [Hangar assigned]'; echo '<option value="' . (int) $draft['id'] . '">' . esc_html($label) . '</option>'; }
         echo '</select> <label for="roxy-hangar-type"><strong>Type</strong></label> <select id="roxy-hangar-type"><option value="">All types</option><option>Social Media Graphic</option><option>Social Media Video</option><option>Digital Lobby Poster</option><option>Production Still</option><option>Web Banners - Static</option></select></p><p><input id="roxy-hangar-search" type="search" class="regular-text" placeholder="Movie title"><button type="button" class="button button-primary" id="roxy-hangar-search-button">Search</button></p><p class="description">Click a column heading to sort. Click it again to reverse the order. Type filters the results already loaded.</p><div id="roxy-hangar-results"></div>';
-        echo '<script>(function(){var b=document.getElementById("roxy-hangar-search-button"),q=document.getElementById("roxy-hangar-search"),o=document.getElementById("roxy-hangar-results"),t=document.getElementById("roxy-hangar-target"),typeFilter=document.getElementById("roxy-hangar-type");if(!b)return;var sortKey="",sortDir=1;function esc(v){return String(v||"").replace(/[&<>"\x27]/g,function(c){return ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","\x27":"&#039;"})[c];});}function renderRows(){var table=o.querySelector("table"),body=table&&table.querySelector("tbody");if(!body)return;var rows=Array.from(body.querySelectorAll("tr"));rows.forEach(function(row){row.style.display=!typeFilter.value||row.dataset.type===typeFilter.value?"":"none";});rows.sort(function(a,b){var av=a.dataset[sortKey]||"",bv=b.dataset[sortKey]||"";if(sortKey==="date"){av=Date.parse(av)||0;bv=Date.parse(bv)||0;}else{av=av.toLowerCase();bv=bv.toLowerCase();}return av<bv?-1*sortDir:av>bv?1*sortDir:0;});rows.forEach(function(row){body.appendChild(row);});}window.roxyAssignHangar=function(id,name,button){if(!t||!t.value){alert("Choose a draft first.");return;}button.disabled=true;button.textContent="Downloading...";var d=new URLSearchParams({action:"roxy_social_hangar_assign",nonce:"' . esc_js(wp_create_nonce('roxy_social_hangar_assign')) . '",post_id:t.value,asset_id:id,filename:name});fetch(ajaxurl,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:d}).then(function(r){return r.json()}).then(function(r){button.textContent=r.success?"Assigned":"Try again";if(!r.success)button.disabled=false;}).catch(function(){button.textContent="Try again";button.disabled=false;});};b.onclick=function(){o.innerHTML="Searching...";var d=new URLSearchParams({action:"roxy_social_hangar_search",nonce:"' . esc_js(wp_create_nonce('roxy_social_hangar_search')) . '",term:q.value});fetch(ajaxurl,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:d}).then(function(r){return r.json()}).then(function(r){if(!r.success){o.innerHTML="<p>Search failed. Check the Hangar connection.</p>";return;}if(!r.data.length){o.innerHTML="<p>No assets found.</p>";return;}o.innerHTML="<table class=\"widefat striped\"><thead><tr><th><button type=\"button\" class=\"button-link\" data-sort=\"name\">Asset</button></th><th><button type=\"button\" class=\"button-link\" data-sort=\"type\">Type</button></th><th><button type=\"button\" class=\"button-link\" data-sort=\"date\">Date</button></th><th>Details</th><th>Action</th></tr></thead><tbody>"+r.data.map(function(a){var thumb=ajaxurl+"?action=roxy_social_hangar_thumbnail&nonce=' . esc_js(wp_create_nonce('roxy_social_hangar_thumbnail')) . '&asset_id="+Number(a.asset_id);return "<tr data-name=\""+esc(a.asset_name||a.filename)+"\" data-type=\""+esc(a.asset_category||a.file_type)+"\" data-date=\""+esc(a.start_date)+"\"><td><img src=\""+thumb+"\" alt=\"\" style=\"width:72px;height:96px;object-fit:contain;background:#f0f0f1;vertical-align:middle;margin-right:8px\"><strong>"+esc(a.asset_name)+"</strong><br>"+esc(a.filename)+"</td><td>"+esc(a.asset_category||a.file_type)+"</td><td>"+esc(a.start_date)+"</td><td>"+esc(a.runtime)+"<br>"+esc(a.description)+"</td><td><button type=\"button\" class=\"button\" data-id=\""+Number(a.asset_id)+"\" data-name=\""+esc(a.filename)+"\" onclick=\"roxyAssignHangar(Number(this.dataset.id),this.dataset.name,this)\">Use for Draft</button></td></tr>"}).join("")+"</tbody></table>";o.querySelectorAll("[data-sort]").forEach(function(button){button.onclick=function(){if(sortKey===button.dataset.sort)sortDir*=-1;else{sortKey=button.dataset.sort;sortDir=1;}renderRows();};});renderRows();}).catch(function(){o.innerHTML="<p>Search failed.</p>";});};if(typeFilter)typeFilter.onchange=renderRows;if(q)q.onkeydown=function(event){if(event.key==="Enter"){event.preventDefault();b.click();}};function esc(v){return String(v||"").replace(/[&<>\"\x27]/g,function(c){return ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","\x27":"&#039;"})[c];});}})();</script>';
-        echo '<script>(function(){var root=document.getElementById("roxy-hangar-results"),query=document.getElementById("roxy-hangar-search");if(!root)return;try{var saved=JSON.parse(localStorage.getItem("roxy_social_hangar_results")||"null");if(saved&&saved.html){if(query)query.value=saved.term||"";root.innerHTML=saved.html;}}catch(e){}var observer=new MutationObserver(function(){if(root.innerHTML&&root.innerHTML.indexOf("Searching...")===-1&&root.innerHTML.indexOf("Search failed")===-1){try{localStorage.setItem("roxy_social_hangar_results",JSON.stringify({term:query?query.value:"",html:root.innerHTML}));}catch(e){}}});observer.observe(root,{childList:true,subtree:true});})();</script>';
+        echo '<script>(function(){var b=document.getElementById("roxy-hangar-search-button"),q=document.getElementById("roxy-hangar-search"),o=document.getElementById("roxy-hangar-results"),t=document.getElementById("roxy-hangar-target"),typeFilter=document.getElementById("roxy-hangar-type");if(!b)return;var sortKey="",sortDir=1;function esc(v){return String(v||"").replace(/[&<>"\x27]/g,function(c){return ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","\x27":"&#039;"})[c];});}function renderRows(){var table=o.querySelector("table"),body=table&&table.querySelector("tbody");if(!body)return;var rows=Array.from(body.querySelectorAll("tr"));rows.forEach(function(row){row.style.display=!typeFilter.value||row.dataset.type===typeFilter.value?"":"none";});rows.sort(function(a,b){var av=a.dataset[sortKey]||"",bv=b.dataset[sortKey]||"";if(sortKey==="date"){av=Date.parse(av)||0;bv=Date.parse(bv)||0;}else{av=av.toLowerCase();bv=bv.toLowerCase();}return av<bv?-1*sortDir:av>bv?1*sortDir:0;});rows.forEach(function(row){body.appendChild(row);});}window.roxyAssignHangar=function(id,name,button){if(!t||!t.value){alert("Choose a draft first.");return;}button.disabled=true;button.textContent="Downloading...";var d=new URLSearchParams({action:"roxy_social_hangar_assign",nonce:"' . esc_js(wp_create_nonce('roxy_social_hangar_assign')) . '",post_id:t.value,asset_id:id,filename:name});fetch(ajaxurl,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:d}).then(function(r){return r.json()}).then(function(r){button.textContent=r.success?"Assigned":"Try again";if(!r.success)button.disabled=false;}).catch(function(){button.textContent="Try again";button.disabled=false;});};b.onclick=function(){o.innerHTML="Searching...";var d=new URLSearchParams({action:"roxy_social_hangar_search",nonce:"' . esc_js(wp_create_nonce('roxy_social_hangar_search')) . '",term:q.value});fetch(ajaxurl,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:d}).then(function(r){return r.json()}).then(function(r){if(!r.success){o.innerHTML="<p>Search failed. Check the Hangar connection.</p>";return;}try{localStorage.setItem("roxy_social_hangar_results",JSON.stringify({version:2,term:q.value,assets:r.data}));}catch(e){}if(!r.data.length){o.innerHTML="<p>No assets found.</p>";return;}o.innerHTML="<table class=\"widefat striped\"><thead><tr><th><button type=\"button\" class=\"button-link\" data-sort=\"name\">Asset</button></th><th><button type=\"button\" class=\"button-link\" data-sort=\"type\">Type</button></th><th><button type=\"button\" class=\"button-link\" data-sort=\"date\">Date</button></th><th>Details</th><th>Action</th></tr></thead><tbody>"+r.data.map(function(a){var thumb=ajaxurl+"?action=roxy_social_hangar_thumbnail&nonce=' . esc_js(wp_create_nonce('roxy_social_hangar_thumbnail')) . '&asset_id="+Number(a.asset_id);return "<tr data-name=\""+esc(a.asset_name||a.filename)+"\" data-type=\""+esc(a.asset_category||a.file_type)+"\" data-date=\""+esc(a.start_date)+"\"><td><img src=\""+thumb+"\" alt=\"\" style=\"width:72px;height:96px;object-fit:contain;background:#f0f0f1;vertical-align:middle;margin-right:8px\"><strong>"+esc(a.asset_name)+"</strong><br>"+esc(a.filename)+"</td><td>"+esc(a.asset_category||a.file_type)+"</td><td>"+esc(a.start_date)+"</td><td>"+esc(a.runtime)+"<br>"+esc(a.description)+"</td><td><button type=\"button\" class=\"button\" data-id=\""+Number(a.asset_id)+"\" data-name=\""+esc(a.filename)+"\" onclick=\"roxyAssignHangar(Number(this.dataset.id),this.dataset.name,this)\">Use for Draft</button></td></tr>"}).join("")+"</tbody></table>";o.querySelectorAll("[data-sort]").forEach(function(button){button.onclick=function(){if(sortKey===button.dataset.sort)sortDir*=-1;else{sortKey=button.dataset.sort;sortDir=1;}renderRows();};});renderRows();}).catch(function(){o.innerHTML="<p>Search failed.</p>";});};if(typeFilter)typeFilter.onchange=renderRows;if(q)q.onkeydown=function(event){if(event.key==="Enter"){event.preventDefault();b.click();}};function esc(v){return String(v||"").replace(/[&<>\"\x27]/g,function(c){return ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","\x27":"&#039;"})[c];});}})();</script>';
         $assigned_assets = [];
         foreach ($drafts as $draft) if (!empty($draft['hangar_asset_id'])) $assigned_assets[] = (int) $draft['hangar_asset_id'];
         echo '<script>(function(){var assigned=' . wp_json_encode(array_values(array_unique($assigned_assets))) . ';var root=document.getElementById("roxy-hangar-results");if(!root)return;var update=function(){root.querySelectorAll("button[data-id]").forEach(function(button){if(assigned.indexOf(Number(button.dataset.id))!==-1){button.disabled=true;button.textContent="Assigned";}});};update();setInterval(update,1000);})();</script>';
@@ -267,11 +313,29 @@ final class Admin {
         echo '<tr><th><label for="roxy-ai-model">Model</label></th><td><input class="regular-text" id="roxy-ai-model" name="ai_model" value="' . esc_attr($model) . '"><p class="description">The model name installed in Ollama, for example <code>llama3.2:latest</code>.</p></td></tr>';
         echo '<tr><th><label for="roxy-ai-style">Writing style</label></th><td><textarea class="large-text" rows="4" id="roxy-ai-style" name="ai_style">' . esc_textarea($style) . '</textarea><p class="description">Describe the Roxy voice and any boundaries you want the captions to follow.</p></td></tr></table>';
         echo '<table class="form-table"><tr><th><label for="roxy-ai-examples">Style examples and patterns</label></th><td><textarea class="large-text" rows="10" id="roxy-ai-examples" name="ai_examples">' . esc_textarea(trim($examples)) . '</textarea><p class="description">These examples guide the tone and structure of every caption. Schedule accuracy and the ticket footer remain enforced by the application.</p></td></tr></table>';
+        echo '<h3>Film References</h3><input type="hidden" name="film_references_present" value="1"><div style="overflow-x:auto"><table class="widefat striped"><colgroup><col style="width:16%"><col style="width:90px"><col style="width:14%"><col style="width:40%"><col style="width:20%"></colgroup><thead><tr><th>Film</th><th>Release Year</th><th>Genre</th><th>Synopsis</th><th>Source</th></tr></thead><tbody>';
+        $references = array_values((array) get_option('roxy_social_film_references', []));
+        $references[] = ['title' => '', 'release_year' => '', 'genre' => '', 'synopsis' => '', 'source_url' => ''];
+        foreach ($references as $index => $reference) {
+            if (!is_array($reference)) continue;
+            echo '<tr>';
+            foreach (['title', 'release_year', 'genre', 'synopsis', 'source_url'] as $field) {
+                $name = 'film_references[' . $index . '][' . $field . ']';
+                $label = ($reference['title'] ?? '') . ' ' . str_replace('_', ' ', $field);
+                echo '<td>';
+                if ($field === 'synopsis') echo '<textarea rows="5" style="width:100%;min-width:260px" name="' . esc_attr($name) . '" aria-label="' . esc_attr($label) . '">' . esc_textarea((string) ($reference[$field] ?? '')) . '</textarea>';
+                else echo '<input type="' . ($field === 'release_year' ? 'number' : ($field === 'source_url' ? 'url' : 'text')) . '" style="width:100%;min-width:' . ($field === 'release_year' ? '80' : '140') . 'px" name="' . esc_attr($name) . '" aria-label="' . esc_attr($label) . '" value="' . esc_attr((string) ($reference[$field] ?? '')) . '">';
+                echo '</td>';
+            }
+            echo '</tr>';
+        }
+        echo '</tbody></table></div>';
         submit_button('Save AI Settings');
         echo '</form><form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:12px"><input type="hidden" name="action" value="roxy_social_ai_test">' . wp_nonce_field('roxy_social_ai_test', '_wpnonce', true, false) . '<button type="submit" class="button">Test Ollama connection</button></form>';
     }
 
     private static function render_meta_page(): void {
+        if (Meta::credentials_unreadable()) echo '<div class="notice notice-error"><p>Saved Meta credentials could not be read. Reconnect or re-enter the credentials. Existing values have not been erased.</p></div>';
         $guide_url = content_url('plugins/roxy-suite/docs/meta-social-connection-setup.txt');
         echo '<h2>Meta Connection</h2><p>Connect the Facebook Page and Instagram professional account used for Roxy social posts. Nothing will publish until a draft is approved. <a href="' . esc_url($guide_url) . '" target="_blank" rel="noopener">Meta setup instructions</a></p>';
         if (isset($_GET['saved'])) echo '<div class="notice notice-success is-dismissible"><p>Meta connection settings saved.</p></div>';
@@ -281,6 +345,9 @@ final class Admin {
         if ($verified === 'success') echo '<div class="notice notice-success is-dismissible"><p>Meta connection verified for ' . esc_html(Meta::page_name()) . ' and Instagram @' . esc_html(Meta::instagram_username()) . '.</p></div>';
         elseif ($verified === 'no_instagram') echo '<div class="notice notice-warning is-dismissible"><p>Facebook Page verified, but no linked Instagram professional account was found.</p></div>';
         elseif ($verified === 'missing') echo '<div class="notice notice-error is-dismissible"><p>Authorize Meta first, then verify the connection.</p></div>';
+        elseif ($verified === 'select_page') echo '<div class="notice notice-error is-dismissible"><p>Enter and save the Facebook Page ID you intend to use, then verify it. No account was selected automatically.</p></div>';
+        elseif ($verified === 'page_missing') echo '<div class="notice notice-error is-dismissible"><p>The configured Facebook Page was not returned for this authorization. Check its ID and permissions. Existing account settings were not replaced.</p></div>';
+        elseif ($verified === 'instagram_mismatch') echo '<div class="notice notice-error is-dismissible"><p>The configured Instagram account does not match the account returned for this Facebook Page. Review the IDs and permissions. Existing account settings were not replaced.</p></div>';
         elseif ($verified === 'failed') echo '<div class="notice notice-error is-dismissible"><p>Meta could not return any Pages for this authorization. Check the Page permissions and try again.</p></div>';
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="max-width:720px">';
         echo '<input type="hidden" name="action" value="roxy_social_meta_settings">';
@@ -301,8 +368,9 @@ final class Admin {
         check_admin_referer('roxy_social_hangar_settings');
         $user = sanitize_text_field((string) ($_POST['hangar_user'] ?? ''));
         $pass = (string) ($_POST['hangar_pass'] ?? '');
-        if ($user !== '') update_option('roxy_social_hangar_user', $user, false);
-        if ($pass !== '') Hangar::save_credentials($user ?: (string) get_option('roxy_social_hangar_user', ''), $pass);
+        if ($pass !== '') {
+            if (!Hangar::save_credentials($user ?: (string) get_option('roxy_social_hangar_user', ''), (string)wp_unslash($pass))) wp_die('Secure credential storage failed. The existing password was not cleared. Please retry or contact the administrator.');
+        } elseif ($user !== '') update_option('roxy_social_hangar_user', $user, false);
         if (Hangar::has_credentials()) foreach (Store::all_recent() as $draft) {
             $showing_ids = array_filter(array_map('absint', explode(',', (string) $draft['showing_ids'])));
             $title = $showing_ids ? trim((string) get_the_title((int) reset($showing_ids))) : '';
@@ -316,7 +384,7 @@ final class Admin {
         if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
         check_admin_referer('roxy_social_auto_approve');
         update_option('roxy_social_auto_approve', !empty($_POST['auto_approve']), false);
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&auto_approve_saved=1'));
+        wp_safe_redirect(self::drafts_url(['auto_approve_saved' => '1']));
         exit;
     }
 
@@ -339,11 +407,13 @@ final class Admin {
         $filename = sanitize_text_field((string) ($_POST['filename'] ?? ''));
         if ($post_id <= 0 || $asset_id <= 0 || $filename === '') wp_send_json_error('Invalid asset assignment', 400);
         $draft = Store::find($post_id);
+        $revision = (string) ($_POST['draft_revision'] ?? '');
+        if (!$draft || $revision === '' || !hash_equals(Store::draft_revision($draft), $revision)) wp_send_json_error('The draft changed. Reload before assigning media.', 409);
         $showing_ids = $draft ? explode(',', (string) $draft['showing_ids']) : [];
         $showing_id = !empty($showing_ids[0]) ? (int) $showing_ids[0] : 0;
         $attachment_id = Hangar::import_social_asset($asset_id, $filename, $showing_id, $post_id);
         if (!$attachment_id) wp_send_json_error('Download or assignment failed', 500);
-        wp_send_json_success(['post_id' => $post_id, 'asset_id' => $asset_id, 'attachment_id' => $attachment_id, 'url' => wp_get_attachment_url($attachment_id) ?: '', 'media_type' => in_array(strtolower((string) pathinfo($filename, PATHINFO_EXTENSION)), ['mp4', 'mov', 'm4v'], true) ? 'video' : 'image']);
+        wp_send_json_success(['draft_revision' => Store::draft_revision(Store::find($post_id)), 'post_id' => $post_id, 'asset_id' => $asset_id, 'attachment_id' => $attachment_id, 'url' => wp_get_attachment_url($attachment_id) ?: '', 'media_type' => in_array(strtolower((string) pathinfo($filename, PATHINFO_EXTENSION)), ['mp4', 'mov', 'm4v'], true) ? 'video' : 'image']);
     }
 
     public static function ajax_hangar_import_featured(): void {
@@ -367,17 +437,28 @@ final class Admin {
         Hangar::thumbnail_response(isset($_GET['asset_id']) ? (int) $_GET['asset_id'] : 0);
     }
 
-    private static function action_link(int $id, string $status, string $label): void {
-        $url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_status&id=' . $id . '&status=' . $status), 'roxy_social_status_' . $id);
-        echo '<a class="button" style="margin:0 4px 4px 0" href="' . esc_url($url) . '">' . esc_html($label) . '</a>';
+    private static function action_link(int $id, string $status, string $label, bool $remote_review = false, string $revision = ''): void {
+        if ($revision === '') return;
+        if ($remote_review) {
+            echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="display:inline-block;margin:0 4px 4px 0"><input type="hidden" name="action" value="roxy_social_status"><input type="hidden" name="id" value="' . $id . '"><input type="hidden" name="status" value="' . esc_attr($status) . '"><input type="hidden" name="draft_revision" value="' . esc_attr($revision) . '"><input type="hidden" name="remote_review_confirmed" value="1">' . wp_nonce_field('roxy_social_status_' . $id, '_wpnonce', true, false) . '<button class="button" type="submit" onclick="return confirm(\'Have you checked the remote accounts and confirmed that retrying will not duplicate a post?\')">' . esc_html($label) . '</button></form>';
+            return;
+        }
+        $url = wp_nonce_url(add_query_arg(['action' => 'roxy_social_status', 'id' => $id, 'status' => $status, 'draft_revision' => $revision], admin_url('admin-post.php')), 'roxy_social_status_' . $id);
+        echo '<a class="button" style="margin:0 4px 4px 0" href="' . esc_url($url) . '"' . ($remote_review ? ' onclick="return confirm(\'Have you checked the remote accounts and confirmed that retrying will not duplicate a post?\')"' : '') . '>' . esc_html($label) . '</a>';
     }
 
     public static function handle_status(): void {
         if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
-        $id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
+        $is_post = (string) ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST';
+        $request = $is_post ? $_POST : $_GET;
+        $id = isset($request['id']) ? (int) $request['id'] : 0;
         check_admin_referer('roxy_social_status_' . $id);
-        Store::update_status($id, sanitize_key((string) ($_GET['status'] ?? '')));
-        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts'));
+        $status = sanitize_key((string) ($request['status'] ?? ''));
+        $row = Store::find($id);
+        $review_required = $row && $row['status'] === 'needs_review' && $status === 'approved';
+        $review_confirmed = $is_post && (string) ($request['remote_review_confirmed'] ?? '') === '1';
+        $changed = (!$review_required || $review_confirmed) && Store::update_status($id, $status, (string) ($request['draft_revision'] ?? ''));
+        wp_safe_redirect(self::drafts_url(['status_changed' => ($changed ? '1' : '0')]));
         exit;
     }
 }

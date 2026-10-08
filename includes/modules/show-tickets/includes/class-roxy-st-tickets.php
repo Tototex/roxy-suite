@@ -11,6 +11,7 @@ class Tickets {
   const META_SHOWING_ID = '_roxy_ticket_showing_id';
   const META_PRODUCT_ID = '_roxy_ticket_product_id';
   const META_ORDER_ITEM_ID = '_roxy_ticket_order_item_id';
+  const META_REFUNDED = '_roxy_ticket_refunded';
   const META_TICKET_TYPE = '_roxy_ticket_type';
   const META_CHECKED_IN = '_roxy_checked_in';
   const META_CHECKED_IN_AT = '_roxy_checked_in_at';
@@ -19,12 +20,15 @@ class Tickets {
   private const QR_RATE_LIMIT_WINDOW = 60;
   private const QR_RATE_LIMIT_MAX = 60;
   private const DOOR_STATS_CACHE_TTL = 5;
+  private static ?Issuance $issuance = null;
 
   public static function init(): void {
     add_action('init', [__CLASS__, 'register_post_type']);
     add_action('woocommerce_checkout_order_processed', [__CLASS__, 'on_order_changed'], 30, 1);
     add_action('woocommerce_order_status_changed', [__CLASS__, 'on_order_changed'], 30, 1);
     add_action('woocommerce_refund_created', [__CLASS__, 'on_refund_created'], 30, 2);
+    add_action('woocommerce_refund_deleted', [__CLASS__, 'on_refund_deleted'], 30, 2);
+    add_action('roxy_st_retry_order_tickets', [__CLASS__, 'on_order_changed'], 10, 2);
 
     add_action('admin_post_roxy_st_check_in_ticket', [__CLASS__, 'handle_check_in']);
     add_action('admin_post_roxy_st_uncheck_in_ticket', [__CLASS__, 'handle_uncheck_in']);
@@ -98,28 +102,56 @@ class Tickets {
     ]);
   }
 
-  public static function on_order_changed(int $order_id): void {
-    self::sync_order_tickets($order_id);
+  public static function on_order_changed(int $order_id, int $attempt = 0): void {
+    self::sync_order_tickets($order_id, $attempt);
   }
 
   public static function on_refund_created(int $refund_id, array $args = []): void {
     $order_id = isset($args['order_id']) ? (int) $args['order_id'] : 0;
     if ($order_id <= 0) return;
 
-    if (!empty($args['line_items']) && is_array($args['line_items'])) {
-      self::invalidate_refunded_line_items($order_id, $args['line_items']);
-    }
+    // Reconcile cumulative persisted refunds, not just this callback's delta.
     self::sync_order_tickets($order_id);
   }
 
-  public static function sync_order_tickets(int $order_id): void {
+  public static function on_refund_deleted(int $refund_id, int $order_id): void {
+    if ($order_id > 0) self::sync_order_tickets($order_id);
+  }
+
+  public static function sync_order_tickets(int $order_id, int $attempt = 0): bool {
+    if ($order_id <= 0) return false;
+    if (self::$issuance !== null) return false;
+    $attempt = max(0, $attempt);
+    try {
+      $operation = new Issuance($order_id);
+      $operation->run(static function (Issuance $operation) use ($order_id): void {
+        self::$issuance = $operation;
+        try {
+          clean_post_cache($order_id);
+          wp_cache_delete('order-items-'.$order_id, 'orders');
+          self::sync_order_tickets_locked($order_id);
+        } finally { self::$issuance = null; }
+      });
+      self::invalidate_door_stats_cache_for_order($order_id);
+      return true;
+    } catch (\Throwable $e) {
+      // Payment may already be complete: never retry charging, expose SQL/PII, or claim tickets saved.
+      Log::error('Ticket issuance incomplete; reconciliation required', ['order_id'=>$order_id,'attempt'=>$attempt]);
+      if ($attempt < 3) {
+        $retry_args = [$order_id, $attempt + 1];
+        if (!wp_next_scheduled('roxy_st_retry_order_tickets', $retry_args)) wp_schedule_single_event(time() + [60,300,900][$attempt], 'roxy_st_retry_order_tickets', $retry_args);
+      }
+      return false;
+    }
+  }
+
+  private static function sync_order_tickets_locked(int $order_id): void {
     $order = wc_get_order($order_id);
     if (!$order) return;
 
     $order_status = (string) $order->get_status();
     $state_for_order = self::state_for_order_status($order_status);
-    $order_changed = false;
-    $used_ticket_ids = [];
+    if((int)self::read_ticket_meta($order_id,'_roxy_seat_review')===1)$state_for_order='pending';
 
     foreach ($order->get_items() as $item_id => $item) {
       $product_id = (int) $item->get_product_id();
@@ -130,36 +162,61 @@ class Tickets {
 
       $ticket_type = (string) get_post_meta($product_id, ROXY_ST_META_TICKET_TYPE, true);
       $qty = max(0, (int) $item->get_quantity());
+      $item->read_meta_data(true);
       $existing = self::normalize_ticket_ids($item->get_meta('_roxy_ticket_ids', true));
+      $owned = self::$issuance->tickets_for_item($order_id, (int)$item_id);
+      foreach ($existing as $ticket_id) {
+        wp_cache_delete($ticket_id, 'post_meta');
+        if (self::is_ticket_record($ticket_id) && ((int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID) !== $order_id || (int)self::read_ticket_meta($ticket_id,self::META_ORDER_ITEM_ID) !== (int)$item_id)) throw new \RuntimeException('Ticket issuance identity mismatch');
+      }
 
       $keep = [];
       for ($i = 0; $i < $qty; $i++) {
         $ticket_id = isset($existing[$i]) ? (int) $existing[$i] : 0;
-        if ($ticket_id > 0 && get_post_type($ticket_id) === self::POST_TYPE) {
+        $canonical = self::$issuance->ticket_for_sequence($order_id, (int)$item_id, $i + 1);
+        if ($canonical > 0) $ticket_id = $canonical;
+        if ($ticket_id > 0 && self::is_ticket_record($ticket_id)) {
+          wp_cache_delete($ticket_id, 'post_meta');
+          if ((int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID) !== $order_id || (int)self::read_ticket_meta($ticket_id,self::META_ORDER_ITEM_ID) !== (int)$item_id) throw new \RuntimeException('Ticket issuance identity mismatch');
           self::update_ticket_record($ticket_id, $order, $item, $showing_id, $ticket_type, $state_for_order);
         } else {
+          // Do not replace an unlinked legacy ticket when its sequence cannot be proven.
+          foreach (array_diff($owned, $existing) as $unlinked) {
+            if (self::read_ticket_meta($unlinked, '_roxy_ticket_sequence') === '') throw new \RuntimeException('Legacy ticket references require review');
+          }
           $ticket_id = self::create_ticket_record($order, $item, $showing_id, $ticket_type, $state_for_order, $i + 1);
         }
         if ($ticket_id > 0) {
+          self::write_ticket_meta($ticket_id, '_roxy_ticket_sequence', $i + 1);
           $keep[] = $ticket_id;
-          $used_ticket_ids[$ticket_id] = $ticket_id;
         }
       }
 
-      foreach (array_slice($existing, $qty) as $extra_id) {
+      foreach (array_diff($owned, $keep) as $extra_id) {
         self::set_ticket_state((int) $extra_id, self::invalid_state_for_order($order_status));
       }
+      self::sync_item_refund_allocation($order, (int) $item_id, $keep, $state_for_order);
 
       if ($existing !== $keep) {
+        self::$issuance->item_ids((int)$item_id, $keep);
         $item->update_meta_data('_roxy_ticket_ids', $keep);
-        $order_changed = true;
       }
     }
+  }
 
-    if ($order_changed) {
-      $order->save();
-    }
-    self::invalidate_door_stats_cache_for_order($order_id);
+  private static function write_ticket_meta(int $id, string $key, $value): void {
+    if (self::$issuance !== null) self::$issuance->post_meta($id, $key, $value);
+    else update_post_meta($id, $key, $value);
+  }
+  private static function read_ticket_meta(int $id, string $key) {
+    return self::$issuance !== null ? self::$issuance->post_meta_value($id, $key) : get_post_meta($id, $key, true);
+  }
+  private static function is_ticket_record(int $id): bool {
+    return self::$issuance !== null ? self::$issuance->is_ticket($id) : get_post_type($id) === self::POST_TYPE;
+  }
+  private static function remove_ticket_meta(int $id, string $key): void {
+    if (self::$issuance !== null) self::$issuance->post_meta($id, $key, null, true);
+    else delete_post_meta($id, $key);
   }
 
   private static function create_ticket_record($order, $item, int $showing_id, string $ticket_type, string $state, int $sequence): int {
@@ -169,18 +226,9 @@ class Tickets {
     $ticket_label = self::ticket_label($showing_id, $ticket_type);
     $title = trim(sprintf('%s — %s — Order #%d — Ticket %d', $showing_title, $ticket_label, $order_id, $sequence));
 
-    $ticket_id = wp_insert_post([
-      'post_type' => self::POST_TYPE,
-      'post_status' => 'publish',
-      'post_title' => $title,
-    ], true);
-
-    if (is_wp_error($ticket_id) || !$ticket_id) {
-      return 0;
-    }
-
-    update_post_meta($ticket_id, self::META_TOKEN, self::generate_token());
-    update_post_meta($ticket_id, self::META_QR_URL, self::qr_image_url((string) get_post_meta($ticket_id, self::META_TOKEN, true)));
+    $ticket_id = self::$issuance->create($title);
+    self::write_ticket_meta($ticket_id, self::META_TOKEN, self::generate_token());
+    self::write_ticket_meta($ticket_id, self::META_QR_URL, self::qr_image_url((string) self::read_ticket_meta($ticket_id, self::META_TOKEN)));
     self::update_ticket_record((int) $ticket_id, $order, $item, $showing_id, $ticket_type, $state);
     return (int) $ticket_id;
   }
@@ -189,28 +237,60 @@ class Tickets {
     $order_id = (int) $order->get_id();
     $product_id = (int) $item->get_product_id();
     $ticket_label = self::ticket_label($showing_id, $ticket_type);
-    $token = (string) get_post_meta($ticket_id, self::META_TOKEN, true);
+    $token = (string) self::read_ticket_meta($ticket_id, self::META_TOKEN);
     if ($token === '') {
       $token = self::generate_token();
-      update_post_meta($ticket_id, self::META_TOKEN, $token);
+      self::write_ticket_meta($ticket_id, self::META_TOKEN, $token);
     }
-    update_post_meta($ticket_id, self::META_QR_URL, self::qr_image_url($token));
+    self::write_ticket_meta($ticket_id, self::META_QR_URL, self::qr_image_url($token));
 
-    update_post_meta($ticket_id, self::META_ORDER_ID, $order_id);
-    update_post_meta($ticket_id, self::META_SHOWING_ID, $showing_id);
-    update_post_meta($ticket_id, self::META_PRODUCT_ID, $product_id);
-    update_post_meta($ticket_id, self::META_ORDER_ITEM_ID, (int) $item->get_id());
-    update_post_meta($ticket_id, self::META_TICKET_TYPE, $ticket_type);
-    update_post_meta($ticket_id, '_roxy_ticket_order_number', $order->get_order_number());
-    update_post_meta($ticket_id, '_roxy_ticket_ticket_label', $ticket_label);
-    update_post_meta($ticket_id, '_roxy_ticket_showing_title', get_the_title($showing_id));
-    update_post_meta($ticket_id, '_roxy_ticket_customer_name', trim($order->get_formatted_billing_full_name()));
-    update_post_meta($ticket_id, '_roxy_ticket_customer_email', (string) $order->get_billing_email());
+    self::write_ticket_meta($ticket_id, self::META_ORDER_ID, $order_id);
+    self::write_ticket_meta($ticket_id, self::META_SHOWING_ID, $showing_id);
+    self::write_ticket_meta($ticket_id, self::META_PRODUCT_ID, $product_id);
+    self::write_ticket_meta($ticket_id, self::META_ORDER_ITEM_ID, (int) $item->get_id());
+    self::write_ticket_meta($ticket_id, self::META_TICKET_TYPE, $ticket_type);
+    self::write_ticket_meta($ticket_id, '_roxy_ticket_order_number', $order->get_order_number());
+    self::write_ticket_meta($ticket_id, '_roxy_ticket_ticket_label', $ticket_label);
+    self::write_ticket_meta($ticket_id, '_roxy_ticket_showing_title', get_the_title($showing_id));
+    self::write_ticket_meta($ticket_id, '_roxy_ticket_customer_name', trim($order->get_formatted_billing_full_name()));
+    self::write_ticket_meta($ticket_id, '_roxy_ticket_customer_email', (string) $order->get_billing_email());
 
-    $current_state = (string) get_post_meta($ticket_id, self::META_STATE, true);
+    $current_state = (string) self::read_ticket_meta($ticket_id, self::META_STATE);
     if ($current_state !== 'checked_in') {
-      update_post_meta($ticket_id, self::META_STATE, $state);
+      self::write_ticket_meta($ticket_id, self::META_STATE, $state);
     }
+  }
+
+  private static function sync_item_refund_allocation($order, int $item_id, array $ticket_ids, string $order_state): void {
+    $allocated = self::refunded_ticket_ids($order, $item_id, $ticket_ids);
+    foreach ($ticket_ids as $ticket_id) {
+      if (isset($allocated[$ticket_id])) {
+        self::write_ticket_meta($ticket_id, self::META_REFUNDED, '1');
+        self::set_ticket_state($ticket_id, 'refunded');
+      } else {
+        self::remove_ticket_meta($ticket_id, self::META_REFUNDED);
+        self::set_ticket_state($ticket_id, (int) self::read_ticket_meta($ticket_id, self::META_CHECKED_IN) === 1 ? 'checked_in' : $order_state);
+      }
+    }
+  }
+
+  private static function refunded_ticket_ids($order, int $item_id, array $ticket_ids): array {
+    $refund_qty = min(count($ticket_ids), (int) ceil(abs((float) $order->get_qty_refunded_for_item($item_id))));
+    $allocated = [];
+    // Preserve previously allocated identities while the cumulative refund still exists.
+    foreach ($ticket_ids as $ticket_id) {
+      if ((int) self::read_ticket_meta($ticket_id, self::META_REFUNDED) === 1 && count($allocated) < $refund_qty) $allocated[$ticket_id] = true;
+    }
+    // Prefer unused tickets, but a refund of an already-used ticket must survive undo too.
+    foreach ([false, true] as $checked) {
+      foreach (array_reverse($ticket_ids) as $ticket_id) {
+        if (count($allocated) >= $refund_qty) break;
+        if (isset($allocated[$ticket_id])) continue;
+        if (((int) self::read_ticket_meta($ticket_id, self::META_CHECKED_IN) === 1) !== $checked) continue;
+        $allocated[$ticket_id] = true;
+      }
+    }
+    return $allocated;
   }
 
   private static function invalidate_refunded_line_items(int $order_id, array $line_items): void {
@@ -280,6 +360,7 @@ class Tickets {
       'post_status' => 'publish',
       'numberposts' => 40,
       'meta_key' => '_roxy_start',
+      'meta_query' => [['key' => '_roxy_start', 'value' => wp_date('Y-m-d', time() - DAY_IN_SECONDS), 'compare' => '>=']],
       'orderby' => 'meta_value',
       'order' => 'ASC',
       'no_found_rows' => true,
@@ -312,8 +393,8 @@ class Tickets {
       'order' => 'ASC',
       'meta_query' => [[
         'key' => '_roxy_start',
-        'value' => '',
-        'compare' => '!=',
+        'value' => wp_date('Y-m-d', time() - DAY_IN_SECONDS),
+        'compare' => '>=',
       ]],
       'no_found_rows' => true,
     ]);
@@ -366,9 +447,6 @@ class Tickets {
     $ticket_checked_in = self::count_checked_in_for_showing($showing_id);
     $checked_in = $ticket_checked_in + $member_walkups;
     $remaining = Capacity::remaining_seats_for_showing($showing_id);
-    if (!is_null($remaining)) {
-      $remaining = max(0, (int) $remaining - (int) $member_walkups);
-    }
 
     $payload = [
       'showing_id' => $showing_id,
@@ -414,40 +492,133 @@ class Tickets {
     return $out;
   }
 
-  public static function check_in_ticket(int $ticket_id, int $user_id = 0): bool {
-    if ($ticket_id <= 0 || get_post_type($ticket_id) !== self::POST_TYPE) {
+  private static function ticket_operation(int $ticket_id, callable $callback): bool {
+    if ($ticket_id <= 0 || get_post_type($ticket_id) !== self::POST_TYPE || self::$issuance !== null) return false;
+    $order_id = (int)get_post_meta($ticket_id, self::META_ORDER_ID, true);
+    if ($order_id <= 0) return false;
+    try {
+      $result = (new Issuance($order_id))->run(static function (Issuance $operation) use ($ticket_id,$order_id,$callback): bool {
+        self::$issuance = $operation;
+        try {
+          clean_post_cache($order_id);
+          wp_cache_delete('order-items-'.$order_id, 'orders');
+          if (!self::is_ticket_record($ticket_id) || (int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID) !== $order_id) return false;
+          return (bool)$callback();
+        } finally { self::$issuance = null; }
+      });
+      if ($result) self::invalidate_door_stats_cache_for_ticket($ticket_id);
+      return (bool)$result;
+    } catch (\Throwable $e) {
+      Log::error('Ticket admission change was not saved; staff must refresh and retry', ['ticket_id'=>$ticket_id,'order_id'=>$order_id]);
+      // Never replay an admission later without a staff member present.
       return false;
     }
-    if (!self::can_check_in($ticket_id)) {
-      return false;
-    }
-
-    if ($user_id <= 0) {
-      $user_id = get_current_user_id();
-    }
-
-    update_post_meta($ticket_id, self::META_CHECKED_IN, '1');
-    update_post_meta($ticket_id, self::META_CHECKED_IN_AT, current_time('mysql'));
-    update_post_meta($ticket_id, self::META_CHECKED_IN_BY, (int) $user_id);
-    update_post_meta($ticket_id, self::META_STATE, 'checked_in');
-    self::invalidate_door_stats_cache_for_ticket($ticket_id);
-    return true;
   }
 
-  public static function undo_check_in_ticket(int $ticket_id): bool {
-    if ($ticket_id <= 0 || get_post_type($ticket_id) !== self::POST_TYPE) {
-      return false;
+  public static function check_in_ticket(int $ticket_id, int $user_id = 0, string $source = 'ticket'): bool {
+    // Member source must use the coupled reservation/visit path, never a bare ticket write.
+    if (!in_array($source,['ticket','will_call'],true)) return false;
+    return self::ticket_operation($ticket_id, static function () use ($ticket_id,$user_id,$source): bool {
+      return self::apply_admission($ticket_id,$user_id,$source);
+    });
+  }
+
+  private static function apply_admission(int $ticket_id, int $user_id, string $source): bool {
+      if (!self::$issuance || !self::can_check_in($ticket_id)) return false;
+      self::write_ticket_meta($ticket_id, self::META_CHECKED_IN, '1');
+      self::write_ticket_meta($ticket_id, self::META_CHECKED_IN_AT, current_time('mysql'));
+      self::write_ticket_meta($ticket_id, self::META_CHECKED_IN_BY, $user_id > 0 ? $user_id : get_current_user_id());
+      self::write_ticket_meta($ticket_id, '_roxy_checked_in_source', $source);
+      self::write_ticket_meta($ticket_id, self::META_STATE, 'checked_in');
+      return true;
+  }
+
+  public static function undo_check_in_ticket(int $ticket_id, string $expected_source = ''): bool {
+    return self::ticket_operation($ticket_id, static function () use ($ticket_id,$expected_source): bool {
+      return self::apply_undo($ticket_id,$expected_source);
+    });
+  }
+
+  private static function apply_undo(int $ticket_id, string $expected_source): bool {
+      if (!self::$issuance || (int)self::read_ticket_meta($ticket_id,self::META_CHECKED_IN) !== 1) return false;
+      if ($expected_source !== '' && self::read_ticket_meta($ticket_id,'_roxy_checked_in_source') !== $expected_source) return false;
+      if(self::read_ticket_meta($ticket_id,'_roxy_checked_in_source')==='member') {
+        $visit_id=(int)self::read_ticket_meta($ticket_id,'_roxy_member_visit_id');
+        $sub_id=(int)self::read_ticket_meta($ticket_id,'_roxy_member_visit_subscription_id');
+        // No guessing by name/time: historical unlinked arrivals require review.
+        if($visit_id<=0 || $sub_id<=0 || self::read_ticket_meta($ticket_id,self::META_TICKET_TYPE)!=='subscriber')return false;
+        $order_id=(int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID);
+        $user_id=(int)self::$issuance->post_meta_value($order_id,'_customer_user');
+        $audit=self::$issuance->undo_member_visit($visit_id,$sub_id,(int)self::read_ticket_meta($ticket_id,self::META_SHOWING_ID),$user_id);
+        $history=self::read_ticket_meta($ticket_id,'_roxy_member_visit_undo_history');
+        if($history!=='' && !is_array($history))throw new \RuntimeException('Member undo history requires review');
+        $history=is_array($history)?$history:[];$history[]=$audit;
+        self::write_ticket_meta($ticket_id,'_roxy_member_visit_undo_history',$history);
+        self::remove_ticket_meta($ticket_id,'_roxy_member_visit_id');
+        self::remove_ticket_meta($ticket_id,'_roxy_member_visit_subscription_id');
+      }
+      foreach ([self::META_CHECKED_IN,self::META_CHECKED_IN_AT,self::META_CHECKED_IN_BY,'_roxy_checked_in_source'] as $key) self::remove_ticket_meta($ticket_id,$key);
+      $order = wc_get_order((int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID));
+      self::write_ticket_meta($ticket_id,self::META_STATE,(int)self::read_ticket_meta($ticket_id,self::META_REFUNDED) === 1 ? 'refunded' : ($order ? self::state_for_order_status((string)$order->get_status()) : 'cancelled'));
+      return true;
+  }
+
+  /** Will Call group, optionally with its summary: commit every change or none. */
+  public static function apply_will_call_group(array $ticket_ids, int $quantity, bool $allow_undo = false, ?array $summary = null, ?callable $validate = null): array {
+    if (self::$issuance !== null || $quantity<0) throw new \RuntimeException('Invalid group admission request.');
+    $identities=[];
+    foreach (array_unique(array_map('intval',$ticket_ids)) as $id) {
+      $order_id=(int)get_post_meta($id,self::META_ORDER_ID,true);
+      if ($id<=0 || get_post_type($id)!==self::POST_TYPE || $order_id<=0) throw new \RuntimeException('Ticket identity changed. Refresh the list.');
+      $identities[$id]=$order_id;
     }
-
-    delete_post_meta($ticket_id, self::META_CHECKED_IN);
-    delete_post_meta($ticket_id, self::META_CHECKED_IN_AT);
-    delete_post_meta($ticket_id, self::META_CHECKED_IN_BY);
-
-    $order_id = (int) get_post_meta($ticket_id, self::META_ORDER_ID, true);
-    $order = wc_get_order($order_id);
-    update_post_meta($ticket_id, self::META_STATE, self::state_for_order_status($order ? (string) $order->get_status() : 'processing'));
-    self::invalidate_door_stats_cache_for_ticket($ticket_id);
-    return true;
+    $scope=$summary ? 'will_call:'.(int)$summary['context_id'].':'.hash('sha256',(string)$summary['customer_key']) : '';
+    if (!$identities && !$summary) {
+      if ($quantity===0) return [];
+      throw new \RuntimeException('No eligible tickets.');
+    }
+    try {
+      $checked=(new Issuance(array_values($identities),$scope))->run(static function(Issuance $operation)use($identities,$quantity,$allow_undo,$summary,$validate):array {
+        self::$issuance=$operation;
+        try {
+          foreach(array_unique($identities) as $order_id){clean_post_cache($order_id);wp_cache_delete('order-items-'.$order_id,'orders');}
+          $checked=[];$available=[];
+          foreach($identities as $id=>$order_id) {
+            if (!self::is_ticket_record($id) || (int)self::read_ticket_meta($id,self::META_ORDER_ID)!==$order_id) throw new \RuntimeException('Ticket identity changed. Refresh the list.');
+            if (!self::ticket_is_eligible($id)) continue;
+            if ((int)self::read_ticket_meta($id,self::META_CHECKED_IN)===1) $checked[]=$id;
+            else $available[]=$id;
+          }
+          if ($summary) {
+            $stored=$operation->will_call_quantity((int)$summary['context_id'],(string)$summary['customer_key']);
+            $current=$identities ? count($checked) : $stored;
+            if ($current!==(int)$summary['baseline_used']) throw new \RuntimeException('Another admission changed this customer. Refresh before retrying.');
+            if (!$identities && $quantity<$stored && !$allow_undo) throw new \RuntimeException('Reducing admission requires explicit Undo confirmation.');
+          }
+          if ($validate) $validate(); // Read-only paid/customer validation, under the same locks.
+          if ($identities && $quantity>count($checked)+count($available)) throw new \RuntimeException('Quantity exceeds eligible paid, unrefunded tickets. Refresh the list.');
+          if ($quantity<count($checked)) {
+            if (!$allow_undo) throw new \RuntimeException('Reducing admission requires explicit Undo confirmation.');
+            $undoable=array_values(array_filter(array_reverse($checked),static fn($id)=>self::read_ticket_meta($id,'_roxy_checked_in_source')==='will_call'));
+            $needed=count($checked)-$quantity;
+            if (count($undoable)<$needed) throw new \RuntimeException('A QR or manual admission cannot be undone here. Use the ticket Undo Check-In control.');
+            foreach(array_slice($undoable,0,$needed) as $id) {
+              if(!self::apply_undo($id,'will_call')) throw new \RuntimeException('Admission could not be undone. Refresh the list.');
+              $checked=array_values(array_diff($checked,[$id]));
+            }
+          } else {
+            foreach($available as $id){if(count($checked)>=$quantity)break;if(!self::apply_admission($id,get_current_user_id(),'will_call'))throw new \RuntimeException('Ticket eligibility changed. Refresh the list.');$checked[]=$id;}
+          }
+          if ($summary) $operation->will_call_summary((int)$summary['context_id'],(string)$summary['customer_key'],$quantity);
+          return $checked;
+        } finally {self::$issuance=null;}
+      });
+      foreach(array_keys($identities) as $id)self::invalidate_door_stats_cache_for_ticket($id);
+      return $checked;
+    } catch (\Throwable $e) {
+      Log::error('Group admission was not saved; staff must refresh and retry', ['ticket_count'=>count($identities)]);
+      throw new \RuntimeException('Group admission was not saved. '.$e->getMessage(),0,$e);
+    }
   }
 
   public static function set_order_item_check_in_qty(int $order_id, int $item_id, int $target_qty, int $user_id = 0): array {
@@ -524,9 +695,23 @@ class Tickets {
     $order_id = (int) $order->get_id();
     if (isset($rendered[$order_id])) return;
     $rendered[$order_id] = true;
+    if((int)get_post_meta($order_id,'_roxy_seat_review',true)===1) {
+      echo '<section class="woocommerce-order-details roxy-st-tickets"><h2>Your Tickets</h2><p>Your order requires a seat availability review. Please contact the theater. Payment records are preserved; no automatic refund was made. Tickets are not valid for admission until this is resolved.</p></section>';
+      return;
+    }
 
     $ticket_ids = self::get_order_ticket_ids($order_id);
-    if (!$ticket_ids) return;
+    if (!$ticket_ids) {
+      foreach ($order->get_items() as $item) {
+        if ((int)get_post_meta((int)$item->get_product_id(), ROXY_ST_META_SHOWING_ID, true) <= 0) continue;
+        $message = in_array($order->get_status(), ['processing','completed'], true)
+          ? 'Your tickets are being prepared. Please check My Account → My Orders → View Order again shortly. Contact the theater if they do not appear.'
+          : 'Your tickets will appear here once your order is confirmed.';
+        echo '<section class="woocommerce-order-details roxy-st-tickets"><h2>Your Tickets</h2><p>'.esc_html($message).'</p></section>';
+        break;
+      }
+      return;
+    }
 
     echo '<section class="woocommerce-order-details roxy-st-tickets" style="margin-top:24px">';
     echo '<h2 class="woocommerce-order-details__title">Your Tickets</h2>';
@@ -810,6 +995,7 @@ class Tickets {
 
     echo '<div style="max-width:900px;background:#fff;border:1px solid #dcdcde;border-radius:14px;padding:16px;margin:16px 0">';
     echo '<h2 style="margin-top:0">Manual Member Admit</h2>';
+    echo '<p>Choose the total number arrived for this member and showing, not an additional quantity. Repeating the same total does not admit anyone again; increase it when more people arrive.</p>';
     echo '<p>Use this when an NFC card is missing or the scanner is not cooperating. Manual admit requires a selected showing.</p>';
     echo '<form method="get" action="" style="display:grid;gap:12px;grid-template-columns:1fr 1fr auto;align-items:end">';
     echo '<input type="hidden" name="page" value="roxy-ticket-ops">';
@@ -1018,6 +1204,12 @@ class Tickets {
 
     echo '<div style="border:1px solid #ddd;border-radius:14px;padding:16px;background:#fff">';
     echo '<div style="font-size:22px;font-weight:800;color:' . esc_attr(self::state_color($state, $checked_in)) . ';margin-bottom:8px">' . esc_html(self::state_label($state, $checked_in)) . '</div>';
+    if($checked_in && get_post_meta($ticket_id,'_roxy_checked_in_source',true)==='member' && !(int)get_post_meta($ticket_id,'_roxy_member_visit_id',true))echo '<p class="notice notice-warning">This historical member arrival has no exact visit link. Undo is blocked until a manager reconciles its visit record.</p>';
+    $undo_history=get_post_meta($ticket_id,'_roxy_member_visit_undo_history',true);
+    if(is_array($undo_history) && $undo_history) {
+      $last=end($undo_history);
+      if(is_array($last))echo '<p>Member visit Undo recorded '.esc_html((string)($last['undone_at']??'')).'; visit quantity '.esc_html((string)(int)($last['visit_before']['quantity']??0)).' → '.esc_html((string)(int)($last['quantity_after']??0)).'.</p>';
+    }
     echo '<div style="font-weight:700;margin-bottom:4px">' . esc_html($showing_title) . '</div>';
     echo '<div style="opacity:.8;margin-bottom:8px">' . esc_html($ticket_label) . '</div>';
     echo '<div style="font-size:14px;margin-bottom:4px"><strong>Order:</strong> #' . esc_html((string) $order_id) . '</div>';
@@ -1070,11 +1262,8 @@ class Tickets {
       wp_die('Invalid request.');
     }
 
-    if ($check_in) {
-      self::check_in_ticket($ticket_id, get_current_user_id());
-    } else {
-      self::undo_check_in_ticket($ticket_id);
-    }
+    $changed = $check_in ? self::check_in_ticket($ticket_id, get_current_user_id()) : self::undo_check_in_ticket($ticket_id);
+    if (!$changed) wp_die('This admission change was not saved. It may have already changed, become ineligible, or failed to save. Refresh the ticket and try again.', 'Admission not changed', ['response'=>409]);
 
     $tab = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : 'check-in';
     if (!in_array($tab, ['check-in', 'manual-checkin', 'door-mode'], true)) {
@@ -1143,11 +1332,7 @@ class Tickets {
     if ($showing_id <= 0 || !class_exists('\Roxy_Sub_Check') || !method_exists('\Roxy_Sub_Check', 'showing_admit_rows')) {
       return 0;
     }
-    $total = 0;
-    foreach ((array) \Roxy_Sub_Check::showing_admit_rows($showing_id) as $row) {
-      $total += max(0, (int) ($row['qty'] ?? 0));
-    }
-    return $total;
+    return \Roxy_Sub_Check::walkup_quantity_for_showing($showing_id);
   }
 
   private static function find_reserved_subscriber_tickets(int $showing_id, array $member_payload): array {
@@ -1181,6 +1366,83 @@ class Tickets {
     return $matches;
   }
 
+  /** Reserved admission and its visit log share all QR/Will Call order locks. */
+  private static function admit_member_reservation(int $sub_id, int $showing_id, int $quantity, string $source, array $ticket_ids): array {
+    if (self::$issuance !== null || !\Roxy_Sub_Check::prepare_admission_log()) throw new \RuntimeException('Membership log is unavailable.');
+    $identities=[];
+    foreach($ticket_ids as $id) {
+      $order_id=(int)get_post_meta($id,self::META_ORDER_ID,true);
+      if($order_id<=0) throw new \RuntimeException('Reservation identity changed. Refresh and retry.');
+      $identities[(int)$id]=$order_id;
+    }
+    $result=(new Issuance(array_values($identities),['member:'.$sub_id.':'.$showing_id,'walkup:'.$showing_id]))->run(static function(Issuance $operation)use($identities,$sub_id,$showing_id,$quantity,$source):array {
+      self::$issuance=$operation;
+      try {
+        clean_post_cache($sub_id);
+        foreach(array_unique($identities) as $order_id){clean_post_cache($order_id);wp_cache_delete('order-items-'.$order_id,'orders');}
+        foreach(array_keys($identities) as $id) clean_post_cache($id);
+        $member=\Roxy_Sub_Check::get_member_payload($sub_id,false);
+        if(empty($member['found']) || ($member['status']??'')!=='valid') throw new \RuntimeException('Membership is not active.');
+        $fresh=self::find_reserved_subscriber_tickets($showing_id,$member);
+        $expected=array_keys($identities);sort($fresh);sort($expected);
+        if($fresh!==$expected) throw new \RuntimeException('Reservation changed. Refresh and retry.');
+        $walkups=$operation->member_walkup_quantity($showing_id,$sub_id);
+        $target=min($quantity,count($identities)+$walkups,max(1,(int)($member['membership_qty']??1)));
+        $checked=$walkups;$available=[];
+        foreach($identities as $id=>$order_id) {
+          if(!self::is_ticket_record($id) || (int)self::read_ticket_meta($id,self::META_ORDER_ID)!==$order_id || (int)self::read_ticket_meta($id,self::META_SHOWING_ID)!==$showing_id || self::read_ticket_meta($id,self::META_TICKET_TYPE)!=='subscriber') throw new \RuntimeException('Reservation identity changed. Refresh and retry.');
+          if(!self::ticket_is_eligible($id,true)) continue;
+          if((int)self::read_ticket_meta($id,self::META_CHECKED_IN)===1) $checked++;
+          else $available[]=$id;
+        }
+        $changed=0;$changed_ids=[];
+        foreach($available as $id) {
+          if($checked+$changed >= $target) break;
+          if(!self::apply_admission($id,get_current_user_id(),'member')) throw new \RuntimeException('Reservation admission failed.');
+          $changed++;
+          $changed_ids[]=$id;
+        }
+        $visit=null;
+        if($changed>0) {
+          $visit=\Roxy_Sub_Check::log_member_visit($sub_id,$showing_id,$changed,$source,static fn(array $row):bool=>$operation->member_visit($row));
+          if(empty($visit['ok'])) throw new \RuntimeException('Membership visit was not saved. Refresh and retry.');
+          $visit_id=$operation->member_visit_id();
+          if($visit_id<=0)throw new \RuntimeException('Membership visit identity missing');
+          foreach($changed_ids as $id) {
+            self::write_ticket_meta($id,'_roxy_member_visit_id',$visit_id);
+            self::write_ticket_meta($id,'_roxy_member_visit_subscription_id',$sub_id);
+          }
+        }
+        return ['changed'=>$changed,'already'=>$checked,'target'=>$target,'visit'=>$visit];
+      } finally {self::$issuance=null;}
+    });
+    if($result['changed']>0) self::invalidate_door_stats_cache($showing_id);
+    return $result;
+  }
+
+  private static function admit_member_walkup(int $sub_id, int $showing_id, int $quantity, string $source): array {
+    if(self::$issuance!==null || !\Roxy_Sub_Check::prepare_admission_log()) throw new \RuntimeException('Membership log is unavailable.');
+    return (new Issuance([],'walkup:'.$showing_id))->run(static function(Issuance $operation)use($sub_id,$showing_id,$quantity,$source):array {
+      clean_post_cache($sub_id);clean_post_cache($showing_id);
+      $member=\Roxy_Sub_Check::get_member_payload($sub_id,false);
+      if(empty($member['found']) || ($member['status']??'')!=='valid') throw new \RuntimeException('Membership is not active.');
+      if(self::find_reserved_subscriber_tickets($showing_id,$member)) throw new \RuntimeException('A reservation is now available. Refresh and use its tickets.');
+      $max=max(1,(int)($member['membership_qty']??1));
+      $used=$operation->member_walkup_quantity($showing_id,$sub_id);
+      $target=min($quantity,$max);
+      if($used >= $target) return ['ok'=>false,'message'=>'This subscriber is already admitted for this showing.','payload'=>$member+['already_admitted'=>true,'admit_quantity'=>$used]];
+      $quantity=$target-$used;
+      $raw=$operation->post_meta_value($showing_id,'_roxy_capacity');
+      if($raw!=='' && $raw!==null) {
+        $remaining=max(0,(int)$raw)-$operation->reserved_seats($showing_id)-$operation->member_walkup_quantity($showing_id);
+        if($quantity>$remaining) return ['ok'=>false,'message'=>'Not enough seats remain for this member group. Refresh and choose a smaller quantity if appropriate.','payload'=>$member];
+      }
+      $visit=\Roxy_Sub_Check::log_member_visit($sub_id,$showing_id,$quantity,$source,static fn(array $row):bool=>$operation->member_visit($row));
+      if(empty($visit['ok'])) throw new \RuntimeException('Membership visit was not saved.');
+      return $visit;
+    });
+  }
+
   private static function member_admission_payload(int $sub_id, int $showing_id, int $quantity, string $source_prefix): array {
     if (!class_exists('\Roxy_Sub_Check') || !method_exists('\Roxy_Sub_Check', 'get_member_payload')) {
       return ['ok' => false, 'message' => 'Membership tools are unavailable.'];
@@ -1200,23 +1462,22 @@ class Tickets {
     $source = $source_prefix . '_walkup';
     $reserved_changed = 0;
     $reserved_count = count($reserved_tickets);
+    $visit = null;
 
     if ($reserved_tickets) {
       $source = $source_prefix . '_reserved';
-      $target = min($quantity, $reserved_count);
-      $already_checked = 0;
-      $available = 0;
-      foreach ($reserved_tickets as $ticket_id) {
-        if ((int) get_post_meta($ticket_id, self::META_CHECKED_IN, true) === 1) {
-          $already_checked++;
-          continue;
-        }
-        if ($available >= $target) break;
-        if (self::check_in_ticket($ticket_id, get_current_user_id())) {
-          $reserved_changed++;
-          $available++;
-        }
+      try {
+        $reservation=self::admit_member_reservation($sub_id,$showing_id,$quantity,$source,$reserved_tickets);
+      } catch (\Throwable $e) {
+        Log::error('Member reservation admission was not saved; staff must refresh and retry',['subscription_id'=>$sub_id,'showing_id'=>$showing_id]);
+        $member_payload['admitted']=false;
+        $member_payload['admit_quantity']=0;
+        return ['ok'=>false,'message'=>'Member admission was not saved. Refresh and retry before admitting the guest.','payload'=>$member_payload];
       }
+      $target=$reservation['target'];
+      $already_checked=$reservation['already'];
+      $reserved_changed=$reservation['changed'];
+      $visit=$reservation['visit'];
       if ($reserved_changed <= 0 && $already_checked >= $target) {
         $member_payload['admitted'] = false;
         $member_payload['already_admitted'] = true;
@@ -1229,26 +1490,27 @@ class Tickets {
         $member_payload['attendance'] = self::door_stats_payload($showing_id);
         return ['ok' => false, 'message' => 'This subscriber reservation is already marked arrived.', 'payload' => $member_payload];
       }
-    } elseif (method_exists('\Roxy_Sub_Check', 'admitted_quantity_for_showing')) {
-      $already_walkup = \Roxy_Sub_Check::admitted_quantity_for_showing($sub_id, $showing_id, '%_walkup');
-      if ($already_walkup >= $max_qty) {
-        $member_payload['admitted'] = false;
-        $member_payload['already_admitted'] = true;
-        $member_payload['admit_quantity'] = $already_walkup;
-        $member_payload['admit_source'] = $source;
-        $member_payload['admit_showing_id'] = $showing_id;
-        $member_payload['showing_title'] = get_the_title($showing_id);
-        $member_payload['attendance'] = self::door_stats_payload($showing_id);
-        return ['ok' => false, 'message' => 'This subscriber is already admitted for this showing.', 'payload' => $member_payload];
+      if ($reserved_changed <= 0) {
+        $member_payload['admitted']=false;
+        $member_payload['admit_quantity']=0;
+        return ['ok'=>false,'message'=>'No eligible subscriber reservation could be admitted. Review its order and refund status.','payload'=>$member_payload];
       }
-      $quantity = min($quantity, max(1, $max_qty - $already_walkup));
+      // Record only the tickets this request actually changed, never the requested count.
+      $quantity=$reserved_changed;
+    } else {
+      try {
+        $visit=self::admit_member_walkup($sub_id,$showing_id,$quantity,$source);
+      } catch (\Throwable $e) {
+        Log::error('Member walk-up admission was not saved; staff must refresh and retry',['subscription_id'=>$sub_id,'showing_id'=>$showing_id]);
+        $visit=['ok'=>false,'message'=>'Member admission was not saved. Refresh and retry before admitting the guest.','payload'=>$member_payload];
+      }
     }
 
-    $visit = \Roxy_Sub_Check::log_member_visit($sub_id, $showing_id, $quantity, $source);
+    if ($visit === null) $visit = \Roxy_Sub_Check::log_member_visit($sub_id, $showing_id, $quantity, $source);
     $payload = is_array($visit['payload'] ?? null) ? $visit['payload'] : $member_payload;
     self::invalidate_door_stats_cache($showing_id);
     $payload['admitted'] = !empty($visit['ok']);
-    $payload['admit_quantity'] = $quantity;
+    $payload['admit_quantity'] = !empty($visit['ok']) ? (int) ($payload['admit_quantity'] ?? $quantity) : 0;
     $payload['admit_source'] = $source;
     $payload['admit_reserved_count'] = $reserved_count;
     $payload['admit_reserved_changed'] = $reserved_changed;
@@ -1271,13 +1533,14 @@ class Tickets {
 
     $token = isset($_POST['token']) ? sanitize_text_field(wp_unslash($_POST['token'])) : '';
     $lock_showing_id = isset($_POST['lock_showing_id']) ? max(0, (int) $_POST['lock_showing_id']) : 0;
+    $auto_admit = isset($_POST['auto_admit']) && (string) $_POST['auto_admit'] === '1';
     if ($token === '') {
       wp_send_json_error(['message' => 'Missing ticket token.'], 400);
     }
 
     $member_payload = self::member_payload_from_value($token);
     if (is_array($member_payload)) {
-      if ($lock_showing_id > 0 && !empty($member_payload['subscription_id']) && ($member_payload['status'] ?? '') === 'valid') {
+      if ($auto_admit && $lock_showing_id > 0 && !empty($member_payload['subscription_id']) && ($member_payload['status'] ?? '') === 'valid') {
         $admit = self::member_admission_payload((int) $member_payload['subscription_id'], $lock_showing_id, 1, 'nfc_admit');
         if (!empty($admit['ok'])) {
           wp_send_json_success($admit['payload']);
@@ -1286,8 +1549,6 @@ class Tickets {
           $member_payload = $admit['payload'];
         }
         $member_payload['admit_error'] = (string) ($admit['message'] ?? 'Unable to admit member.');
-      } elseif ($lock_showing_id <= 0 && !empty($member_payload['subscription_id']) && class_exists('\Roxy_Sub_Check') && method_exists('\Roxy_Sub_Check', 'log_member_visit')) {
-        \Roxy_Sub_Check::log_member_visit((int) $member_payload['subscription_id'], 0, 1, 'nfc_scan');
       }
       if ($lock_showing_id > 0) {
         $member_payload['attendance'] = self::door_stats_payload($lock_showing_id);
@@ -1337,7 +1598,7 @@ class Tickets {
     }
 
     if ($undo) {
-      self::undo_check_in_ticket($ticket_id);
+      if (!self::undo_check_in_ticket($ticket_id)) wp_send_json_error(['message'=>'Admission was not undone. Refresh the ticket before trying again.'],409);
     } else {
       if (!self::check_in_ticket($ticket_id, get_current_user_id())) {
         wp_send_json_error(['message' => 'Ticket is not eligible for check-in.'], 400);
@@ -1538,9 +1799,26 @@ class Tickets {
   }
 
   private static function can_check_in(int $ticket_id): bool {
-    $state = (string) get_post_meta($ticket_id, self::META_STATE, true);
-    $checked_in = (int) get_post_meta($ticket_id, self::META_CHECKED_IN, true) === 1;
-    return !$checked_in && $state === 'valid';
+    return self::ticket_is_eligible($ticket_id, false);
+  }
+
+  public static function ticket_is_eligible(int $ticket_id, bool $include_checked_in = true): bool {
+    if ($ticket_id <= 0 || !self::is_ticket_record($ticket_id)) return false;
+    $state = (string) self::read_ticket_meta($ticket_id, self::META_STATE);
+    $checked_in = (int) self::read_ticket_meta($ticket_id, self::META_CHECKED_IN) === 1;
+    if ((!$include_checked_in && $checked_in) || !in_array($state, $include_checked_in ? ['valid','checked_in'] : ['valid'], true) || (int) self::read_ticket_meta($ticket_id, self::META_REFUNDED) === 1) return false;
+    // Do not trust stale ticket metadata after payment/order state changes.
+    $order = wc_get_order((int) self::read_ticket_meta($ticket_id, self::META_ORDER_ID));
+    if (!$order || self::state_for_order_status((string) $order->get_status()) !== 'valid') return false;
+    if((int)self::read_ticket_meta((int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID),'_roxy_seat_review')===1)return false;
+    $item_id = (int) self::read_ticket_meta($ticket_id, self::META_ORDER_ITEM_ID);
+    $item = $order->get_item($item_id);
+    if (!$item) return false;
+    if (self::$issuance !== null && method_exists($item,'read_meta_data')) $item->read_meta_data(true);
+    $ticket_ids = self::normalize_ticket_ids($item->get_meta('_roxy_ticket_ids', true));
+    if (!in_array($ticket_id, $ticket_ids, true)) return false;
+    // Protect historical partial refunds too, before their next resynchronization.
+    return !isset(self::refunded_ticket_ids($order, $item_id, $ticket_ids)[$ticket_id]);
   }
 
   private static function normalize_ticket_ids($raw): array {
@@ -1601,7 +1879,9 @@ class Tickets {
   }
 
   private static function state_for_order_status(string $status): string {
-    return in_array($status, ['refunded', 'cancelled', 'failed'], true) ? self::invalid_state_for_order($status) : 'valid';
+    // Zero-total subscriber/complimentary checkout still becomes processing/completed.
+    // Pending, on-hold and draft orders have not been confirmed for admission.
+    return in_array($status, ['processing', 'completed'], true) ? 'valid' : self::invalid_state_for_order($status);
   }
 
   private static function invalid_state_for_order(string $status): string {
@@ -1611,8 +1891,8 @@ class Tickets {
   }
 
   private static function set_ticket_state(int $ticket_id, string $state): void {
-    if ($ticket_id <= 0 || get_post_type($ticket_id) !== self::POST_TYPE) return;
-    update_post_meta($ticket_id, self::META_STATE, $state);
+    if ($ticket_id <= 0 || !self::is_ticket_record($ticket_id)) return;
+    self::write_ticket_meta($ticket_id, self::META_STATE, $state);
   }
 
   private static function state_label(string $state, bool $checked_in): string {

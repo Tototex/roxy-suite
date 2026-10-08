@@ -106,7 +106,7 @@ class Capacity {
     if ($capacity === null) return $passed;
 
     $in_cart = self::cart_qty_for_showing($sid);
-    $sold = self::sold_qty_for_showing($sid);
+    $sold = self::sold_qty_for_showing($sid, true);
 
     if (($sold + $in_cart + $quantity) > $capacity) {
       wc_add_notice('This show is sold out (or does not have enough seats remaining).', 'error');
@@ -131,7 +131,8 @@ class Capacity {
         return false;
       }
       $current_item_qty = (int) ($values['quantity'] ?? 0);
-      $allowed_for_this_line = $remaining_excluding_this + max(0, $current_item_qty);
+      $other_subscriber_qty=max(0,self::cart_qty_for_showing_type($sid,'subscriber')-$current_item_qty);
+      $allowed_for_this_line = max(0,$remaining_excluding_this-$other_subscriber_qty);
       if ($quantity > $allowed_for_this_line) {
         wc_add_notice('Subscriber tickets are limited to ' . (int) $allowed_for_this_line . ' remaining for this show on your account.', 'error');
         return false;
@@ -142,7 +143,7 @@ class Capacity {
     if ($capacity === null) return $passed;
 
     $other_qty = max(0, self::cart_qty_for_showing($sid) - (int) ($values['quantity'] ?? 0));
-    $sold = self::sold_qty_for_showing($sid);
+    $sold = self::sold_qty_for_showing($sid, true);
     if (($sold + $other_qty + $quantity) > $capacity) {
       wc_add_notice('This show does not have enough seats remaining.', 'error');
       return false;
@@ -182,7 +183,7 @@ class Capacity {
     foreach ($by_showing as $sid => $qty) {
       $capacity = self::capacity_limit_for_showing($sid);
       if ($capacity === null) continue;
-      $sold = self::sold_qty_for_showing($sid);
+      $sold = self::sold_qty_for_showing($sid, true);
       if (($sold + $qty) > $capacity) {
         wc_add_notice('Not enough remaining seats for: ' . esc_html(get_the_title($sid)) . '.', 'error');
       }
@@ -247,6 +248,8 @@ class Capacity {
     if ($entitlement <= 0) return 0;
 
     $used = self::purchased_subscriber_qty_for_showing_user($showing_id, (int) $user_id);
+    try { if(class_exists('\Roxy_Sub_Check')) $used+=\Roxy_Sub_Check::walkup_quantity_for_showing($showing_id,(int)$user_id); }
+    catch(\Throwable $e){return 0;} // Unknown arrivals cannot grant more entitlement.
     $remaining = max(0, $entitlement - $used);
 
     if ($include_cart) {
@@ -294,7 +297,14 @@ class Capacity {
     return $qty;
   }
 
-  private static function sold_qty_for_showing(int $showing_id): int {
-    return Sales::sold_qty_for_showing($showing_id);
+  private static function sold_qty_for_showing(int $showing_id, bool $checkout_retry = false): int {
+    try { $walkups=class_exists('\Roxy_Sub_Check') ? \Roxy_Sub_Check::walkup_quantity_for_showing($showing_id) : 0; }
+    catch(\Throwable $e){return PHP_INT_MAX;} // Fail closed without crashing public pages.
+    try {
+      $exclude=$checkout_retry && class_exists(__NAMESPACE__.'\\Holds') ? Holds::retry_order_id() : 0;
+      $reserved=Reservations::quantity_for_showing($showing_id,$exclude);
+      if($reserved>PHP_INT_MAX-$walkups)return PHP_INT_MAX;
+      return $reserved+$walkups;
+    } catch(\Throwable $e){return PHP_INT_MAX;}
   }
 }

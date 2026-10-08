@@ -83,25 +83,11 @@ class Frontend {
     $request_showings_url = trim((string) ($args['request_showings_url'] ?? ''));
     $request_showings_label = trim((string) ($args['request_showings_label'] ?? 'Ask us to build a crowd-backed showing for the movie you want to see.'));
 
-    $now = current_time('timestamp');
-    $end = $now + ($days * DAY_IN_SECONDS);
-
-    $q = new \WP_Query([
-      'post_type' => CPT::POST_TYPE,
-      'posts_per_page' => $limit,
-      'post_status' => 'publish',
-      'meta_key' => '_roxy_start',
-      'orderby' => 'meta_value',
-      'order' => 'ASC',
-      'meta_query' => [
-        [
-          'key' => '_roxy_start',
-          'value' => [date('Y-m-d\TH:i', $now), date('Y-m-d\TH:i', $end)],
-          'compare' => 'BETWEEN',
-          'type' => 'CHAR',
-        ]
-      ]
-    ]);
+    $now = current_datetime();
+    $window_end = $now->modify('+' . $days . ' days');
+    $query_start = $now->setTimestamp($now->getTimestamp() - 10080 * 60);
+    $page_size = 100;
+    $posts = self::eligible_listing_showings($now, $window_end, $limit);
 
     ob_start();
 
@@ -134,8 +120,6 @@ class Frontend {
     }
 
     // Collect posts so we can optionally inject a pinned live event
-    $posts = $q->posts;
-
     // Pin the next upcoming live event into the last slot when it isn't already in the set
     if (!empty($args['pin_next_live'])) {
       $has_live = false;
@@ -146,27 +130,39 @@ class Frontend {
         }
       }
       if (!$has_live) {
-        $live_posts = get_posts([
-          'post_type'      => CPT::POST_TYPE,
-          'posts_per_page' => 1,
-          'post_status'    => 'publish',
-          'meta_key'       => '_roxy_start',
-          'orderby'        => 'meta_value',
-          'order'          => 'ASC',
-          'no_found_rows'  => true,
-          'meta_query'     => [
-            'relation' => 'AND',
-            ['key' => '_roxy_start',          'value' => date('Y-m-d\TH:i', $now), 'compare' => '>=',  'type' => 'CHAR'],
-            ['key' => '_roxy_pricing_profile', 'value' => 'live_event',             'compare' => '='],
-          ],
-        ]);
-        if (!empty($live_posts)) {
-          $pinned_id = (int) $live_posts[0]->ID;
+        $pinned_live = null;
+        $live_page = 1;
+        do {
+          $live_posts = new \WP_Query([
+            'post_type' => CPT::POST_TYPE,
+            'posts_per_page' => $page_size,
+            'paged' => $live_page,
+            'post_status' => 'publish',
+            'meta_key' => '_roxy_start',
+            'orderby' => ['meta_value' => 'ASC', 'ID' => 'ASC'],
+            'no_found_rows' => true,
+            'meta_query' => [
+              'relation' => 'AND',
+              ['key' => '_roxy_start', 'value' => $query_start->format('Y-m-d\TH:i'), 'compare' => '>=', 'type' => 'CHAR'],
+              ['key' => '_roxy_pricing_profile', 'value' => 'live_event', 'compare' => '='],
+            ],
+          ]);
+          foreach ($live_posts->posts as $candidate) {
+            if (Eligibility::showing_sales_open((int) $candidate->ID, $now->getTimestamp())) {
+              $pinned_live = $candidate;
+              break;
+            }
+          }
+          $has_full_live_page = count($live_posts->posts) === $page_size;
+          $live_page++;
+        } while (!$pinned_live && $has_full_live_page);
+        if ($pinned_live) {
+          $pinned_id = (int) $pinned_live->ID;
           $already_in = false;
           foreach ($posts as $p) { if ((int) $p->ID === $pinned_id) { $already_in = true; break; } }
           if (!$already_in) {
             if (count($posts) >= $limit) { array_pop($posts); } // free up the last slot
-            $posts[] = $live_posts[0];
+            $posts[] = $pinned_live;
             // Re-sort chronologically — live event naturally ends up last when it's far out
             usort($posts, function($a, $b) {
               return strcmp(
@@ -232,7 +228,44 @@ class Frontend {
     return (string) ob_get_clean();
   }
 
+  private static function eligible_listing_showings(\DateTimeImmutable $now, \DateTimeImmutable $window_end, int $limit): array {
+    $posts = [];
+    $page = 1;
+    $page_size = 100;
+    $query_start = $now->setTimestamp($now->getTimestamp() - 10080 * 60);
+    do {
+      $q = new \WP_Query([
+        'post_type' => CPT::POST_TYPE,
+        'posts_per_page' => $page_size,
+        'paged' => $page,
+        'post_status' => 'publish',
+        'meta_key' => '_roxy_start',
+        'orderby' => ['meta_value' => 'ASC', 'ID' => 'ASC'],
+        'no_found_rows' => true,
+        'meta_query' => [[
+          'key' => '_roxy_start',
+          'value' => [$query_start->format('Y-m-d\TH:i'), $window_end->format('Y-m-d\TH:i')],
+          'compare' => 'BETWEEN',
+          'type' => 'CHAR',
+        ]],
+      ]);
+      foreach ($q->posts as $showing) {
+        if (Eligibility::showing_sales_open((int) $showing->ID, $now->getTimestamp())) {
+          $posts[] = $showing;
+          if (count($posts) >= $limit) break;
+        }
+      }
+      $has_full_page = count($q->posts) === $page_size;
+      $page++;
+    } while (count($posts) < $limit && $has_full_page);
+
+    return $posts;
+  }
+
   private static function render_ticket_form(int $showing_id, string $profile, ?int $remaining_seats = null): string {
+    if (!Eligibility::showing_sales_open($showing_id)) {
+      return '<div class="roxy-st-sales-ended">Online ticket sales have ended for this showing.</div>';
+    }
     if ($profile === 'free_event') {
       return '<div class="roxy-st-free-admission" style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-radius:12px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3)">'
         . '<span style="font-size:20px">🎟️</span>'
@@ -518,15 +551,12 @@ class Frontend {
       return '';
     }
 
-    $ts = strtotime($start);
-    if (!$ts) {
+    $tz = function_exists('wp_timezone') ? wp_timezone() : new \DateTimeZone((string) get_option('timezone_string') ?: 'UTC');
+    try {
+      return (new \DateTimeImmutable($start, $tz))->setTimezone($tz)->format('c');
+    } catch (\Exception $e) {
       return '';
     }
-
-    $tz = function_exists('wp_timezone') ? wp_timezone() : new \DateTimeZone((string) get_option('timezone_string') ?: 'UTC');
-    $dt = new \DateTime('@' . $ts);
-    $dt->setTimezone($tz);
-    return $dt->format('c');
   }
 
   private static function schema_offers(int $showing_id, string $url, ?int $remaining): array {
@@ -643,8 +673,11 @@ class Frontend {
     }
 
     $showing_id = isset($_POST['showing_id']) ? (int) $_POST['showing_id'] : 0;
-    if (!$showing_id || get_post_type($showing_id) !== CPT::POST_TYPE) {
-      wp_die('Invalid showing.');
+    if (!Eligibility::showing_is_public($showing_id)) {
+      wp_die('This showing is not available for online ticket sales.');
+    }
+    if (!Eligibility::showing_sales_open($showing_id)) {
+      wp_die('Online ticket sales have ended for this showing.');
     }
 
     if (!WC()->cart) {
@@ -657,7 +690,8 @@ class Frontend {
       'cart_count' => WC()->cart ? WC()->cart->get_cart_contents_count() : 0,
     ]);
 
-    Products::ensure_products_for_showing($showing_id);
+    // Public requests never create, restore or publish products. Admin saves
+    // establish canonical products; cart totals apply current scheduled prices.
 
     $profile = get_post_meta($showing_id, '_roxy_pricing_profile', true) ?: 'movie_evening';
 

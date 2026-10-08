@@ -16,6 +16,17 @@ class Store {
   public const SCHEMA_OPTION = 'roxy_grosses_schema_version';
   public const HISTORY_BACKFILL_OPTION = 'roxy_grosses_history_backfilled';
   public const ENTRY_MIGRATION_OPTION = 'roxy_grosses_entries_migrated';
+  public const ROW_LOCK_SCHEMA_OPTION = 'roxy_grosses_row_lock_schema';
+  public const REFUND_REVIEW_TABLE = 'roxy_grosses_refund_reviews';
+  private static ?bool $refund_review_schema_exists = null;
+  private static int $refund_review_lock_depth = 0;
+
+  /** PHP 8.0-compatible equivalent of array_is_list(). */
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
 
   public static function table_name(): string {
     global $wpdb;
@@ -288,6 +299,38 @@ class Store {
       self::install_schema();
     }
     self::ensure_live_presale_column();
+    self::ensure_row_lock_columns();
+  }
+
+  public static function ensure_row_lock_columns(): bool {
+    global $wpdb;
+    if ((string)get_option(self::ROW_LOCK_SCHEMA_OPTION, '') === '1') return true;
+    foreach ([self::entries_table_name(),self::live_entries_table_name(),self::rental_entries_table_name(),self::legacy_weekly_table_name()] as $table) {
+      $column=$wpdb->get_var("SHOW COLUMNS FROM {$table} LIKE 'is_locked'");
+      if ($wpdb->last_error !== '') return false;
+      if (!$column && $wpdb->query("ALTER TABLE {$table} ADD is_locked TINYINT(1) NOT NULL DEFAULT 0") === false) return false;
+      if (!$wpdb->get_var("SHOW COLUMNS FROM {$table} LIKE 'is_locked'") || $wpdb->last_error !== '') return false;
+    }
+    update_option(self::ROW_LOCK_SCHEMA_OPTION, '1', false);
+    return (string)get_option(self::ROW_LOCK_SCHEMA_OPTION, '') === '1';
+  }
+
+  /** One SQL predicate protects against a correction committed after the lookup. */
+  private static function update_protected_row(string $table, array $payload, int $id, bool $manual = false): bool {
+    global $wpdb;
+    $where=['id'=>$id];
+    if (!$manual) {
+      $where['is_locked']=0;
+      unset($payload['is_locked']);
+    }
+    $result=$wpdb->update($table,$payload,$where);
+    if ($result === false) return false;
+    // A zero count can be a valid unchanged update, a missing row or a raced lock.
+    if ($result === 0) {
+      $row=$wpdb->get_row($wpdb->prepare("SELECT id,is_locked FROM {$table} WHERE id=%d",$id),ARRAY_A);
+      if ($wpdb->last_error !== '' || !$row || (!$manual && !empty($row['is_locked']))) return false;
+    }
+    return true;
   }
 
   private static function ensure_live_presale_column(): void {
@@ -302,14 +345,34 @@ class Store {
   }
 
   public static function maybe_backfill_history(): void {
-    if (get_option(self::HISTORY_BACKFILL_OPTION) !== ROXY_GROSSES_VER) {
-      self::backfill_history_from_saved_reports();
-      update_option(self::HISTORY_BACKFILL_OPTION, ROXY_GROSSES_VER);
-    }
-
-    if (get_option(self::ENTRY_MIGRATION_OPTION) !== ROXY_GROSSES_VER) {
-      self::migrate_history_to_entries();
-      update_option(self::ENTRY_MIGRATION_OPTION, ROXY_GROSSES_VER);
+    global $wpdb;
+    // These are one-time data migrations, not plugin-version synchronization.
+    // Existing legacy version markers already mean completed; do not replay them.
+    $pending = static fn(string $option): bool => (string)get_option($option, '') === '';
+    if (!$pending(self::HISTORY_BACKFILL_OPTION) && !$pending(self::ENTRY_MIGRATION_OPTION)) return;
+    $lock='roxy_grosses_migration_'.substr(hash('sha256', $wpdb->prefix),0,24);
+    if ((string)$wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)',$lock)) !== '1') return;
+    try {
+      if ($pending(self::HISTORY_BACKFILL_OPTION)) {
+        self::backfill_history_from_saved_reports();
+        if ((string)$wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()',$lock)) !== '1') throw new \RuntimeException('Migration ownership was lost.');
+        update_option(self::HISTORY_BACKFILL_OPTION, '1', false);
+        if ($pending(self::HISTORY_BACKFILL_OPTION)) throw new \RuntimeException('History migration completion could not be saved.');
+      }
+      if ($pending(self::ENTRY_MIGRATION_OPTION)) {
+        self::migrate_history_to_entries();
+        if ((string)$wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()',$lock)) !== '1') throw new \RuntimeException('Migration ownership was lost.');
+        update_option(self::ENTRY_MIGRATION_OPTION, '1', false);
+        if ($pending(self::ENTRY_MIGRATION_OPTION)) throw new \RuntimeException('Entry migration completion could not be saved.');
+      }
+    } catch (\Throwable $e) {
+      // Keep the website available and leave incomplete work retryable.
+      error_log('Roxy Grosses data migration failed; retry pending.');
+      add_action('admin_notices', static function (): void {
+        if (current_user_can('manage_options')) echo '<div class="notice notice-error"><p>Grosses historical migration is incomplete and will retry. Existing corrections were not replaced. Check storage/database health before running reporting.</p></div>';
+      });
+    } finally {
+      $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)',$lock));
     }
   }
 
@@ -320,6 +383,7 @@ class Store {
       'SELECT id, mode, payload_json FROM ' . self::table_name() . ' ORDER BY id DESC',
       ARRAY_A
     );
+    if ($wpdb->last_error !== '') throw new \RuntimeException('Saved reports could not be read for migration.');
 
     $seen = [];
     foreach ((array) $saved_reports as $saved_report) {
@@ -347,7 +411,7 @@ class Store {
       }
 
       if ($fresh_rows) {
-        self::upsert_history_rows($fresh_rows, (string) ($saved_report['mode'] ?? ''), (int) ($saved_report['id'] ?? 0));
+        self::upsert_history_rows($fresh_rows, (string) ($saved_report['mode'] ?? ''), (int) ($saved_report['id'] ?? 0), true);
       }
     }
   }
@@ -381,7 +445,8 @@ class Store {
       ];
     }
 
-    self::upsert_entries($entries, 'update');
+    // History does not contain all current fields; never replace a current row.
+    self::upsert_entries($entries, 'skip');
   }
 
   public static function create_report(string $report_end_date, int $lookback_days, string $mode, string $status, array $summary, array $rows): int {
@@ -422,6 +487,7 @@ class Store {
     $payload = json_decode((string) $row['payload_json'], true);
     $row['summary'] = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
     $row['rows'] = is_array($payload['rows'] ?? null) ? $payload['rows'] : [];
+    $row['refund_review'] = self::refund_reviews([$report_id])[$report_id] ?? [];
     return $row;
   }
 
@@ -436,7 +502,11 @@ class Store {
        FROM ' . self::table_name() . ' ORDER BY report_end_date DESC, id DESC LIMIT %d',
       max(1, min(200, $limit))
     ), ARRAY_A);
-    return is_array($rows) ? $rows : [];
+    if (!is_array($rows)) return [];
+    $reviews = self::refund_reviews(array_column($rows, 'id'));
+    foreach ($rows as &$row) $row['refund_review'] = $reviews[(int) $row['id']] ?? [];
+    unset($row);
+    return $rows;
   }
 
   public static function list_saved_reports(int $limit = 50): array {
@@ -458,6 +528,234 @@ class Store {
     return $ok ? (int) $wpdb->insert_id : 0;
   }
 
+  /** Immutable emailed snapshots are flagged separately, never rewritten/resent. */
+  public static function flag_emailed_refund_changes(string $date, array $new_rows): array {
+    return self::with_refund_review_lock(static fn() => self::flag_emailed_report_changes_locked($date, $new_rows, self::refund_review_lock_name(), false));
+  }
+
+  /** Closed-day reconciliation is scoped to the provisional report for that exact sale date. */
+  public static function flag_emailed_closed_day_changes(string $date, array $new_rows): array {
+    return self::with_refund_review_lock(static fn() => self::flag_emailed_report_changes_locked($date, $new_rows, self::refund_review_lock_name(), true));
+  }
+
+  /** Read the post-upsert row state, including protected manual values and rebalanced allocations. */
+  public static function closed_day_report_rows(string $date): array {
+    global $wpdb;
+    $rows = $wpdb->get_results($wpdb->prepare(
+      'SELECT report_date, movie_title AS film_title, show_time, showing_id, theater_name, general_qty, discount_qty, group_qty, live_qty, total_tickets, gross_total, concessions_total
+       FROM ' . self::entries_table_name() . ' WHERE report_date = %s ORDER BY id ASC',
+      $date
+    ), ARRAY_A);
+    if ($wpdb->last_error !== '' || !is_array($rows)) throw new \RuntimeException('Could not read final closed-day Grosses rows for manager review.');
+    return $rows;
+  }
+
+  private static function refund_review_lock_name(): string {
+    return 'roxy_grosses_refund_review_' . substr(hash('sha256', self::table_name()), 0, 24);
+  }
+
+  /** Serialize review evidence and the managed movie email decision/dispatch. */
+  public static function with_refund_review_lock(callable $operation) {
+    global $wpdb;
+    $lock = self::refund_review_lock_name();
+    $outermost = self::$refund_review_lock_depth === 0;
+    if ($outermost && (int) $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $lock)) !== 1) throw new \RuntimeException('Refund review or report email is already running, or its lock is unavailable. Retry after it completes.');
+    self::$refund_review_lock_depth++;
+    try {
+      self::assert_refund_review_lock();
+      return $operation();
+    } finally {
+      self::$refund_review_lock_depth--;
+      if ($outermost) $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock));
+    }
+  }
+
+  public static function assert_refund_review_lock(): void {
+    global $wpdb;
+    if (self::$refund_review_lock_depth < 1 || (int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', self::refund_review_lock_name())) !== 1) throw new \RuntimeException('Reporting lost its refund-review lock. No further email dispatch is permitted.');
+  }
+
+  private static function flag_emailed_report_changes_locked(string $date, array $new_rows, string $lock, bool $closed_day_only): array {
+    global $wpdb;
+    $after = self::studio_report_projection($date, $new_rows);
+    $flagged = [];
+    $cursor = 0;
+    $date_filter = $closed_day_only ? 'report_end_date = %s' : 'report_end_date >= %s';
+    do {
+      $reports = $wpdb->get_results($wpdb->prepare('SELECT id, payload_json FROM ' . self::table_name() . " WHERE status = 'emailed' AND {$date_filter} AND id > %d ORDER BY id ASC LIMIT 50", $date, $cursor), ARRAY_A);
+      if ($wpdb->last_error || !is_array($reports)) throw new \RuntimeException('Could not check emailed reports for changes.');
+      foreach ($reports as $report) {
+        $cursor = (int) $report['id'];
+        $payload = json_decode($report['payload_json'], true);
+        if (!is_array($payload) || !is_array($payload['rows'] ?? null) || !self::is_list($payload['rows'])) throw new \RuntimeException('A saved report snapshot is unreadable; manager review requires attention.');
+        $before = self::studio_report_projection($date, $payload['rows']);
+        if ($before === $after || (!$closed_day_only && !$before)) continue;
+        self::ensure_refund_review_schema();
+        $table = $wpdb->prefix . self::REFUND_REVIEW_TABLE;
+        $existing = $wpdb->get_var($wpdb->prepare("SELECT changes_json FROM $table WHERE report_id = %d", $cursor));
+        if ($wpdb->last_error) throw new \RuntimeException('Could not read refund review evidence.');
+        $changes = $existing === null ? [] : json_decode($existing, true);
+        if (!is_array($changes)) throw new \RuntimeException('Existing refund review evidence is unreadable.');
+        $changes[$date] = ['reason' => $closed_day_only ? 'closed_day_refresh' : 'refund_correction', 'before' => $before, 'after' => $after];
+        ksort($changes);
+        $json = wp_json_encode($changes);
+        if (!is_string($json)) throw new \RuntimeException('Could not encode refund review evidence.');
+        if ($json !== $existing) {
+          if ((int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', $lock)) !== 1) throw new \RuntimeException('Refund review lost its database lock. Retry before sending.');
+          $now = current_time('mysql');
+          $result = $wpdb->query($wpdb->prepare("INSERT INTO $table (report_id, created_at, updated_at, changes_json) VALUES (%d, %s, %s, %s) ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at), changes_json = VALUES(changes_json)", $cursor, $now, $now, $json));
+          if ($result === false) throw new \RuntimeException('Could not save refund review flag. No automatic corrected report was sent.');
+        }
+        $flagged[] = $cursor;
+      }
+    } while (count($reports) === 50);
+    return $flagged;
+  }
+
+  public static function refund_reviews(array $report_ids): array {
+    global $wpdb;
+    $ids = array_values(array_unique(array_filter(array_map('intval', $report_ids), static fn($id) => $id > 0)));
+    if (!$ids || !self::refund_review_schema_present()) return [];
+    $rows = $wpdb->get_results('SELECT report_id, changes_json FROM ' . $wpdb->prefix . self::REFUND_REVIEW_TABLE . ' WHERE report_id IN (' . implode(',', $ids) . ')', ARRAY_A);
+    if ($wpdb->last_error || !is_array($rows)) throw new \RuntimeException('Could not read refund review flags.');
+    $reviews = [];
+    foreach ($rows as $row) {
+      $changes = json_decode($row['changes_json'], true);
+      if (!is_array($changes)) throw new \RuntimeException('Unreadable refund review flag.');
+      $reviews[(int) $row['report_id']] = $changes;
+    }
+    return $reviews;
+  }
+
+  private static function studio_report_projection(string $date, array $rows): array {
+    $projection = [];
+    foreach ($rows as $row) {
+      if (!is_array($row)) throw new \RuntimeException('A saved studio report row is unreadable.');
+      if (($row['report_date'] ?? '') !== $date) continue;
+      $tickets = (int) ($row['general_qty'] ?? 0) + (int) ($row['discount_qty'] ?? 0) + (int) ($row['group_qty'] ?? 0) + (int) ($row['live_qty'] ?? 0);
+      if ($tickets <= 0) continue;
+      $projection[] = [(int) ($row['showing_id'] ?? 0), (string) ($row['show_time'] ?? ''), (string) ($row['film_title'] ?? $row['movie_title'] ?? ''), (int) ($row['general_qty'] ?? 0), (int) ($row['discount_qty'] ?? 0), (int) ($row['group_qty'] ?? 0), (int) ($row['live_qty'] ?? 0), (int) ($row['total_tickets'] ?? 0), number_format((float) ($row['gross_total'] ?? 0), 2, '.', ''), number_format((float) ($row['concessions_total'] ?? 0), 2, '.', '')];
+    }
+    sort($projection);
+    return $projection;
+  }
+
+  /** Refund refresh changes ticket columns only: never allocations/metadata/locks. */
+  public static function nominal_ticket_prices_for_showing(string $date, int $showing_id, array $fallback, bool $require_baseline = false, array $required_categories = []): array {
+    global $wpdb;
+    $cursor = PHP_INT_MAX;
+    do {
+      $reports = $wpdb->get_results($wpdb->prepare('SELECT id, payload_json FROM ' . self::table_name() . " WHERE status = 'emailed' AND report_end_date >= %s AND id < %d ORDER BY id DESC LIMIT 50", $date, $cursor), ARRAY_A);
+      if ($wpdb->last_error || !is_array($reports)) throw new \RuntimeException('Could not read original studio prices for a refund.');
+      foreach ($reports as $saved) {
+        $cursor = (int) $saved['id'];
+        $payload = json_decode($saved['payload_json'], true);
+        if (!is_array($payload['rows'] ?? null) || !self::is_list($payload['rows'])) throw new \RuntimeException('Original studio price evidence is unreadable.');
+        $matching = [];
+        foreach ($payload['rows'] as $row) {
+          if (!is_array($row)) throw new \RuntimeException('Original studio price row is unreadable.');
+          if (($row['report_date'] ?? '') !== $date || (int) ($row['showing_id'] ?? 0) !== $showing_id) continue;
+          $matching[] = $row;
+        }
+        if (count($matching) > 1) throw new \RuntimeException('Original studio price evidence has duplicate showing rows. Review it manually.');
+        if ($matching) {
+          $row = $matching[0];
+          $quantity = 0;
+          foreach (['general','discount','group','live'] as $category) {
+            $qty = $row[$category . '_qty'] ?? 0;
+            if (!is_numeric($qty) || !is_finite((float) $qty) || (float) $qty < 0 || (float) $qty !== (float) (int) $qty) throw new \RuntimeException('Invalid original studio ticket quantities.');
+            $quantity += (int) $qty;
+          }
+          if ($quantity > 0) {
+            $prices = self::prices_from_nominal_baseline($row, $fallback);
+            if ($require_baseline && !self::has_required_nominal_categories($row, $required_categories)) continue;
+            return $prices;
+          }
+        }
+      }
+    } while (count($reports) === 50);
+    if (!$require_baseline) return $fallback;
+    $rows = $wpdb->get_results($wpdb->prepare('SELECT general_qty, discount_qty, group_qty, live_qty, gross_total FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND showing_id = %d LIMIT 2', $date, $showing_id), ARRAY_A);
+    if ($wpdb->last_error || !is_array($rows) || count($rows) !== 1) throw new \RuntimeException('No unique original nominal-price evidence exists for this past refund. Review the sale day manually.');
+    $prices = self::prices_from_nominal_baseline($rows[0], $fallback);
+    if (!self::has_required_nominal_categories($rows[0], $required_categories)) throw new \RuntimeException('Original nominal price evidence is missing for a remaining ticket category. Review the sale day manually.');
+    return $prices;
+  }
+
+  private static function has_required_nominal_categories(array $row, array $required_categories): bool {
+    $allowed = ['general', 'discount', 'group', 'live'];
+    $seen = [];
+    foreach ($required_categories as $category) {
+      if (!is_string($category) || !in_array($category, $allowed, true)) throw new \RuntimeException('A remaining ticket category is invalid; original nominal prices need review.');
+      if (isset($seen[$category])) continue;
+      $seen[$category] = true;
+      $quantity = $row[$category . '_qty'] ?? 0;
+      if (!is_numeric($quantity) || !is_finite((float) $quantity) || (float) $quantity < 0 || (float) $quantity !== (float) (int) $quantity) throw new \RuntimeException('Invalid original studio ticket quantities.');
+      if ((int) $quantity <= 0) return false;
+    }
+    return true;
+  }
+
+  private static function prices_from_nominal_baseline(array $row, array $fallback): array {
+    $nonzero = [];
+    foreach (['general','discount','group','live'] as $category) {
+      $qty = $row[$category . '_qty'] ?? 0;
+      if (!is_numeric($qty) || (float) $qty < 0 || (float) $qty !== (float) (int) $qty) throw new \RuntimeException('Invalid original studio ticket quantities.');
+      if ((int) $qty > 0) $nonzero[$category] = (int) $qty;
+    }
+    if (!$nonzero) throw new \RuntimeException('Original nominal ticket prices cannot be inferred from an empty historical row. Review it manually.');
+    $prices = $fallback;
+    foreach ($nonzero as $category => $qty) {
+      $gross = $row[$category . '_gross'] ?? (count($nonzero) === 1 ? ($row['gross_total'] ?? null) : null);
+      if (!is_numeric($gross) || !is_finite((float) $gross) || (float) $gross < 0) throw new \RuntimeException('Original nominal category prices are unavailable; no historical repricing was applied.');
+      $scaled = (float) $gross * 100;
+      if (!is_finite($scaled) || $scaled >= PHP_INT_MAX || abs($scaled - round($scaled)) > 0.000001) throw new \RuntimeException('Original nominal price evidence has invalid fractional cents. Review it manually.');
+      $cents = (int) round($scaled);
+      if ($cents % $qty !== 0) throw new \RuntimeException('Original nominal price evidence is ambiguous; review the refund manually.');
+      $prices[$category] = (float) (($cents / $qty) / 100);
+    }
+    return $prices;
+  }
+
+  public static function update_refunded_movie_quantities(array $reports): array {
+    global $wpdb;
+    $updated = 0; $protected = 0;
+    foreach ($reports as $report) {
+      if (empty($report['refund_adjusted'])) continue;
+      $candidates = $wpdb->get_results($wpdb->prepare('SELECT id, is_locked FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND ((showing_id = %d AND showing_id > 0) OR (normalized_title = %s AND show_time = %s)) LIMIT 2', (string) $report['report_date'], (int) ($report['showing_id'] ?? 0), self::normalize_title((string) $report['film_title']), (string) ($report['show_time'] ?? '')), ARRAY_A);
+      if ($wpdb->last_error || !is_array($candidates)) throw new \RuntimeException('Could not find the original refunded movie row.');
+      if (count($candidates) !== 1) throw new \RuntimeException('A refunded original showing has no unique stored movie row. Review it before refreshing historical figures.');
+      $existing = $candidates[0];
+      if (!empty($existing['is_locked'])) { $protected++; continue; }
+      $payload = ['updated_at' => current_time('mysql')];
+      foreach (['general_qty', 'discount_qty', 'group_qty', 'live_qty', 'total_tickets'] as $field) $payload[$field] = max(0, (int) ($report[$field] ?? 0));
+      $payload['gross_total'] = round((float) ($report['gross_total'] ?? 0), 2);
+      if (!self::update_protected_row(self::entries_table_name(), $payload, (int) $existing['id'])) {
+        if ($wpdb->last_error) throw new \RuntimeException('Could not refresh refunded movie ticket totals. Retry after storage recovery.');
+        $protected++;
+      } else $updated++;
+    }
+    return ['updated' => $updated, 'protected' => $protected];
+  }
+
+  private static function refund_review_schema_present(): bool {
+    global $wpdb;
+    if (self::$refund_review_schema_exists !== null) return self::$refund_review_schema_exists;
+    $table = $wpdb->prefix . self::REFUND_REVIEW_TABLE;
+    $found = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table)));
+    if ($wpdb->last_error) throw new \RuntimeException('Could not verify refund review storage.');
+    return self::$refund_review_schema_exists = ($found === $table);
+  }
+
+  private static function ensure_refund_review_schema(): void {
+    global $wpdb;
+    if (self::refund_review_schema_present()) return;
+    $table = $wpdb->prefix . self::REFUND_REVIEW_TABLE;
+    if ($wpdb->query("CREATE TABLE IF NOT EXISTS $table (report_id BIGINT UNSIGNED NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, changes_json LONGTEXT NOT NULL, PRIMARY KEY (report_id)) ENGINE=InnoDB " . $wpdb->get_charset_collate()) === false) throw new \RuntimeException('Could not create refund review storage.');
+    self::$refund_review_schema_exists = null;
+    if (!self::refund_review_schema_present()) throw new \RuntimeException('Refund review storage is unavailable.');
+  }
+
   public static function count_logs(array $filters = []): int {
     global $wpdb;
     [$where, $params] = self::log_where_sql($filters);
@@ -476,7 +774,7 @@ class Store {
     return is_array($rows) ? $rows : [];
   }
 
-  public static function upsert_history_rows(array $rows, string $source_mode = '', ?int $report_id = null): int {
+  public static function upsert_history_rows(array $rows, string $source_mode = '', ?int $report_id = null, bool $insert_only = false): int {
     global $wpdb;
     $count = 0;
     $now = current_time('mysql');
@@ -493,7 +791,13 @@ class Store {
         $showing_id = abs(crc32($report_date . '|' . strtolower($film_title) . '|' . strtolower($show_time)));
       }
 
-      $ok = $wpdb->replace(self::history_table_name(), [
+      if ($insert_only) {
+        $existing=$wpdb->get_var($wpdb->prepare('SELECT id FROM '.self::history_table_name().' WHERE report_date=%s AND showing_id=%d LIMIT 1',$report_date,$showing_id));
+        if ($wpdb->last_error !== '') throw new \RuntimeException('History lookup failed; migration stopped without replacing data.');
+        if ($existing) continue;
+      }
+      $write=$insert_only?'insert':'replace';
+      $ok = $wpdb->$write(self::history_table_name(), [
         'created_at' => $now,
         'updated_at' => $now,
         'report_date' => $report_date,
@@ -512,6 +816,8 @@ class Store {
 
       if ($ok !== false) {
         $count++;
+      } else {
+        throw new \RuntimeException('Grosses history write failed. Some earlier rows may have saved; retry after storage recovery.');
       }
     }
 
@@ -563,6 +869,7 @@ class Store {
        FROM ' . self::history_table_name() . ' ORDER BY report_date ASC, film_title ASC',
       ARRAY_A
     );
+    if ($wpdb->last_error !== '') throw new \RuntimeException('Grosses history read failed; migration remains incomplete.');
     return is_array($rows) ? $rows : [];
   }
 
@@ -594,6 +901,7 @@ class Store {
       $showing_id = !empty($row['showing_id']) ? max(0, (int) $row['showing_id']) : 0;
       $normalized_title = self::normalize_title($movie_title);
       $existing = self::find_existing_entry($report_date, $normalized_title, $show_time, $showing_id);
+      if ($existing && ($mode === 'skip' || !empty($existing['is_locked']))) { $skipped++; continue; }
       $enriched_row = Metadata::enrich_movie_row([
         'report_date' => $report_date,
         'movie_title' => $movie_title,
@@ -625,7 +933,7 @@ class Store {
         'source_file' => sanitize_text_field((string) ($row['source_file'] ?? '')),
         'source_batch_id' => !empty($row['source_batch_id']) ? (int) $row['source_batch_id'] : null,
         'source_report_id' => !empty($row['source_report_id']) ? (int) $row['source_report_id'] : null,
-        'notes' => isset($row['notes']) ? sanitize_text_field((string) $row['notes']) : '',
+        'notes' => isset($row['notes']) ? sanitize_text_field((string) $row['notes']) : (string)($existing['notes'] ?? ''),
         'is_locked' => !empty($row['is_locked']) ? 1 : 0,
       ];
 
@@ -634,9 +942,12 @@ class Store {
           $skipped++;
           continue;
         }
-        $ok = $wpdb->update($table, $payload, ['id' => (int) $existing['id']]);
-        if ($ok !== false) {
+        $ok = self::update_protected_row($table, $payload, (int)$existing['id']);
+        if ($ok) {
           $updated++;
+        } else {
+          if ($wpdb->last_error !== '') throw new \RuntimeException('Grosses update failed. Some earlier rows may have saved; retry after storage recovery.');
+          $skipped++;
         }
         continue;
       }
@@ -645,6 +956,8 @@ class Store {
       $ok = $wpdb->insert($table, $payload);
       if ($ok !== false) {
         $created++;
+      } else {
+        throw new \RuntimeException('Grosses insert failed. Some earlier rows may have saved; retry after storage recovery.');
       }
     }
 
@@ -656,10 +969,13 @@ class Store {
 
     if ($showing_id > 0) {
       $row = $wpdb->get_row($wpdb->prepare(
-        'SELECT id, studio, genre FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND showing_id = %d LIMIT 1',
+        'SELECT id, studio, genre, is_locked, notes FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND showing_id = %d LIMIT 1',
         $report_date,
         $showing_id
       ), ARRAY_A);
+      if ($wpdb->last_error !== '') {
+        throw new \RuntimeException('Grosses lookup failed. No replacement row was inserted; retry the pull after storage recovery.');
+      }
       if ($row) {
         return $row;
       }
@@ -667,24 +983,102 @@ class Store {
 
     if ($show_time !== '') {
       $row = $wpdb->get_row($wpdb->prepare(
-        'SELECT id, studio, genre FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND normalized_title = %s AND show_time = %s LIMIT 1',
+        'SELECT id, studio, genre, is_locked, notes FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND normalized_title = %s AND show_time = %s LIMIT 1',
         $report_date,
         $normalized_title,
         $show_time
       ), ARRAY_A);
+      if ($wpdb->last_error !== '') {
+        throw new \RuntimeException('Grosses lookup failed. No replacement row was inserted; retry the pull after storage recovery.');
+      }
       if ($row) {
         return $row;
       }
     }
 
     $row = $wpdb->get_row($wpdb->prepare(
-      'SELECT id, studio, genre FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND normalized_title = %s AND show_time = %s LIMIT 1',
+      'SELECT id, studio, genre, is_locked, notes FROM ' . self::entries_table_name() . ' WHERE report_date = %s AND normalized_title = %s AND show_time = %s LIMIT 1',
       $report_date,
       $normalized_title,
       ''
     ), ARRAY_A);
+      if ($wpdb->last_error !== '') {
+        throw new \RuntimeException('Grosses lookup failed. No replacement row was inserted; retry the pull after storage recovery.');
+      }
 
     return $row ?: null;
+  }
+
+  /** Complete, bounded reads for exports/analytics; normal screen pagination stays capped. */
+  public static function iterate_dataset(string $dataset, array $filters = []): \Generator {
+    global $wpdb;
+    switch ($dataset) {
+      case 'movies':
+        $table = self::entries_table_name();
+        [$where, $params] = self::entry_where_sql($filters);
+        $sort = ['report_date' => 'DESC', 'show_time' => 'DESC', 'movie_title' => 'ASC', 'id' => 'ASC'];
+        break;
+      case 'live':
+        $table = self::live_entries_table_name();
+        [$where, $params] = self::live_entry_where_sql($filters);
+        $sort = ['report_date' => 'DESC', 'show_time' => 'DESC', 'show_title' => 'ASC', 'id' => 'ASC'];
+        break;
+      case 'rentals':
+        $table = self::rental_entries_table_name();
+        [$where, $params] = self::rental_entry_where_sql($filters);
+        $sort = ['report_date' => 'DESC', 'show_time' => 'DESC', 'rental_title' => 'ASC', 'id' => 'ASC'];
+        break;
+      case 'legacy':
+        $table = self::legacy_weekly_table_name();
+        [$where, $params] = self::legacy_weekly_where_sql($filters);
+        $sort = ['week_start_date' => 'DESC', 'movie_title' => 'ASC', 'id' => 'ASC'];
+        break;
+      default:
+        throw new \InvalidArgumentException('Unknown grosses dataset.');
+    }
+    $ceiling = $wpdb->get_var(self::prepare_query('SELECT MAX(id) FROM ' . $table . ' ' . $where, $params));
+    if ($wpdb->last_error !== '') {
+      throw new \RuntimeException('Could not read grosses data.');
+    }
+    if ($ceiling === null) {
+      return;
+    }
+    $order = [];
+    foreach ($sort as $column => $direction) {
+      // COALESCE gives legacy NULL strings a stable cursor, with SQL collation preserved.
+      $order[] = ($column === 'id' ? 'id' : "COALESCE($column, '')") . ' ' . $direction;
+    }
+    $cursor = null;
+    do {
+      $page_params = array_merge($params, [(int) $ceiling]);
+      $seek = '';
+      if ($cursor !== null) {
+        $branches = [];
+        $equals = [];
+        $equal_values = [];
+        foreach ($sort as $column => $direction) {
+          $expr = $column === 'id' ? 'id' : "COALESCE($column, '')";
+          $placeholder = $column === 'id' ? '%d' : '%s';
+          $value = $cursor[$column] ?? '';
+          $branches[] = '(' . implode(' AND ', array_merge($equals, [$expr . ($direction === 'DESC' ? ' < ' : ' > ') . $placeholder])) . ')';
+          $page_params = array_merge($page_params, $equal_values, [$value]);
+          $equals[] = $expr . ' = ' . $placeholder;
+          $equal_values[] = $value;
+        }
+        $seek = ' AND (' . implode(' OR ', $branches) . ')';
+      }
+      $sql = 'SELECT * FROM ' . $table . ' ' . $where . ' AND id <= %d' . $seek . ' ORDER BY ' . implode(', ', $order) . ' LIMIT 500';
+      $rows = $wpdb->get_results(self::prepare_query($sql, $page_params), ARRAY_A);
+      if ($wpdb->last_error !== '' || !is_array($rows)) {
+        throw new \RuntimeException('Could not read complete grosses data.');
+      }
+      foreach ($rows as $row) {
+        yield $row;
+      }
+      if ($rows) {
+        $cursor = $rows[count($rows) - 1];
+      }
+    } while (count($rows) === 500);
   }
 
   public static function list_entries(array $filters = [], int $limit = 100, int $offset = 0): array {
@@ -728,7 +1122,7 @@ class Store {
     return is_array($row) ? $row : null;
   }
 
-  public static function update_entry(int $entry_id, array $data): bool {
+  public static function update_entry(int $entry_id, array $data, bool $manual = false): bool {
     global $wpdb;
     $existing = self::get_entry($entry_id);
     if (!$existing) {
@@ -760,8 +1154,8 @@ class Store {
       'notes' => isset($data['notes']) ? sanitize_text_field((string) $data['notes']) : (string) ($existing['notes'] ?? ''),
     ];
 
-    $updated = $wpdb->update(self::entries_table_name(), $payload, ['id' => $entry_id]);
-    return $updated !== false;
+    if ($manual) $payload['is_locked']=isset($data['is_locked']) ? (!empty($data['is_locked'])?1:0) : 1;
+    return self::update_protected_row(self::entries_table_name(), $payload, $entry_id, $manual);
   }
 
   public static function entries_summary(array $filters = []): array {
@@ -1028,7 +1422,7 @@ class Store {
     return is_array($row) ? $row : null;
   }
 
-  public static function update_live_entry(int $entry_id, array $data): bool {
+  public static function update_live_entry(int $entry_id, array $data, bool $manual = false): bool {
     global $wpdb;
     $existing = self::get_live_entry($entry_id);
     if (!$existing) {
@@ -1052,8 +1446,8 @@ class Store {
       'notes' => isset($data['notes']) ? sanitize_text_field((string) $data['notes']) : (string) ($existing['notes'] ?? ''),
     ];
 
-    $updated = $wpdb->update(self::live_entries_table_name(), $payload, ['id' => $entry_id]);
-    return $updated !== false;
+    if ($manual) $payload['is_locked']=isset($data['is_locked']) ? (!empty($data['is_locked'])?1:0) : 1;
+    return self::update_protected_row(self::live_entries_table_name(), $payload, $entry_id, $manual);
   }
 
   public static function upsert_live_entries(array $rows, string $mode = 'update'): array {
@@ -1077,6 +1471,7 @@ class Store {
       $showing_id = !empty($row['showing_id']) ? (int) $row['showing_id'] : 0;
       $normalized_title = self::normalize_title($show_title);
       $existing = self::find_existing_live_entry($report_date, $normalized_title, $show_time, $showing_id);
+      if ($existing && ($mode === 'skip' || !empty($existing['is_locked']))) { $skipped++; continue; }
 
       $payload = [
         'updated_at' => $now,
@@ -1095,7 +1490,7 @@ class Store {
         'concessions_total' => round((float) ($row['concessions_total'] ?? 0), 2),
         'source_type' => sanitize_text_field((string) ($row['source_type'] ?? '')),
         'source_ref' => sanitize_text_field((string) ($row['source_ref'] ?? '')),
-        'notes' => isset($row['notes']) ? sanitize_text_field((string) $row['notes']) : '',
+        'notes' => isset($row['notes']) ? sanitize_text_field((string) $row['notes']) : (string)($existing['notes'] ?? ''),
       ];
 
       if ($existing) {
@@ -1103,9 +1498,12 @@ class Store {
           $skipped++;
           continue;
         }
-        $ok = $wpdb->update($table, $payload, ['id' => (int) $existing['id']]);
-        if ($ok !== false) {
+        $ok = self::update_protected_row($table, $payload, (int)$existing['id']);
+        if ($ok) {
           $updated++;
+        } else {
+          if ($wpdb->last_error !== '') throw new \RuntimeException('Grosses update failed. Some earlier rows may have saved; retry after storage recovery.');
+          $skipped++;
         }
         continue;
       }
@@ -1114,6 +1512,8 @@ class Store {
       $ok = $wpdb->insert($table, $payload);
       if ($ok !== false) {
         $created++;
+      } else {
+        throw new \RuntimeException('Grosses insert failed. Some earlier rows may have saved; retry after storage recovery.');
       }
     }
 
@@ -1124,21 +1524,27 @@ class Store {
     global $wpdb;
     if ($showing_id > 0) {
       $row = $wpdb->get_row($wpdb->prepare(
-        'SELECT id FROM ' . self::live_entries_table_name() . ' WHERE report_date = %s AND showing_id = %d LIMIT 1',
+        'SELECT id,is_locked,notes FROM ' . self::live_entries_table_name() . ' WHERE report_date = %s AND showing_id = %d LIMIT 1',
         $report_date,
         $showing_id
       ), ARRAY_A);
+      if ($wpdb->last_error !== '') {
+        throw new \RuntimeException('Grosses lookup failed. No replacement row was inserted; retry the pull after storage recovery.');
+      }
       if ($row) {
         return $row;
       }
     }
 
     $row = $wpdb->get_row($wpdb->prepare(
-      'SELECT id FROM ' . self::live_entries_table_name() . ' WHERE report_date = %s AND normalized_title = %s AND show_time = %s LIMIT 1',
+      'SELECT id,is_locked,notes FROM ' . self::live_entries_table_name() . ' WHERE report_date = %s AND normalized_title = %s AND show_time = %s LIMIT 1',
       $report_date,
       $normalized_title,
       $show_time
     ), ARRAY_A);
+      if ($wpdb->last_error !== '') {
+        throw new \RuntimeException('Grosses lookup failed. No replacement row was inserted; retry the pull after storage recovery.');
+      }
     return $row ?: null;
   }
 
@@ -1215,7 +1621,7 @@ class Store {
     return is_array($row) ? $row : null;
   }
 
-  public static function update_rental_entry(int $entry_id, array $data): bool {
+  public static function update_rental_entry(int $entry_id, array $data, bool $manual = false): bool {
     global $wpdb;
     $existing = self::get_rental_entry($entry_id);
     if (!$existing) {
@@ -1237,8 +1643,8 @@ class Store {
       'notes' => isset($data['notes']) ? sanitize_text_field((string) $data['notes']) : (string) ($existing['notes'] ?? ''),
     ];
 
-    $updated = $wpdb->update(self::rental_entries_table_name(), $payload, ['id' => $entry_id]);
-    return $updated !== false;
+    if ($manual) $payload['is_locked']=isset($data['is_locked']) ? (!empty($data['is_locked'])?1:0) : 1;
+    return self::update_protected_row(self::rental_entries_table_name(), $payload, $entry_id, $manual);
   }
 
   public static function upsert_rental_entries(array $rows, string $mode = 'update'): array {
@@ -1261,6 +1667,7 @@ class Store {
       $show_time = sanitize_text_field((string) ($row['show_time'] ?? ''));
       $normalized_title = self::normalize_title($rental_title);
       $existing = self::find_existing_rental_entry($report_date, $normalized_title, $show_time);
+      if ($existing && ($mode === 'skip' || !empty($existing['is_locked']))) { $skipped++; continue; }
 
       $payload = [
         'updated_at' => $now,
@@ -1275,7 +1682,7 @@ class Store {
         'concessions_total' => round((float) ($row['concessions_total'] ?? 0), 2),
         'source_type' => sanitize_text_field((string) ($row['source_type'] ?? 'invoice_import')),
         'source_ref' => sanitize_text_field((string) ($row['source_ref'] ?? '')),
-        'notes' => isset($row['notes']) ? sanitize_text_field((string) $row['notes']) : '',
+        'notes' => isset($row['notes']) ? sanitize_text_field((string) $row['notes']) : (string)($existing['notes'] ?? ''),
       ];
 
       if ($existing) {
@@ -1283,9 +1690,12 @@ class Store {
           $skipped++;
           continue;
         }
-        $ok = $wpdb->update($table, $payload, ['id' => (int) $existing['id']]);
-        if ($ok !== false) {
+        $ok = self::update_protected_row($table, $payload, (int)$existing['id']);
+        if ($ok) {
           $updated++;
+        } else {
+          if ($wpdb->last_error !== '') throw new \RuntimeException('Grosses update failed. Some earlier rows may have saved; retry after storage recovery.');
+          $skipped++;
         }
         continue;
       }
@@ -1294,6 +1704,8 @@ class Store {
       $ok = $wpdb->insert($table, $payload);
       if ($ok !== false) {
         $created++;
+      } else {
+        throw new \RuntimeException('Grosses insert failed. Some earlier rows may have saved; retry after storage recovery.');
       }
     }
 
@@ -1303,11 +1715,14 @@ class Store {
   private static function find_existing_rental_entry(string $report_date, string $normalized_title, string $show_time): ?array {
     global $wpdb;
     $row = $wpdb->get_row($wpdb->prepare(
-      'SELECT id FROM ' . self::rental_entries_table_name() . ' WHERE report_date = %s AND normalized_title = %s AND show_time = %s LIMIT 1',
+      'SELECT id,is_locked,notes FROM ' . self::rental_entries_table_name() . ' WHERE report_date = %s AND normalized_title = %s AND show_time = %s LIMIT 1',
       $report_date,
       $normalized_title,
       $show_time
     ), ARRAY_A);
+      if ($wpdb->last_error !== '') {
+        throw new \RuntimeException('Grosses lookup failed. No replacement row was inserted; retry the pull after storage recovery.');
+      }
     return $row ?: null;
   }
 
@@ -1330,6 +1745,7 @@ class Store {
 
       $normalized_title = self::normalize_title($movie_title);
       $existing = self::find_existing_legacy_weekly($week_start_date, $normalized_title);
+      if ($existing && ($mode === 'skip' || !empty($existing['is_locked']))) { $skipped++; continue; }
       $payload = [
         'updated_at' => $now,
         'week_start_date' => $week_start_date,
@@ -1347,7 +1763,7 @@ class Store {
         'concessions_total' => round((float) ($row['concessions_total'] ?? 0), 2),
         'source_type' => sanitize_text_field((string) ($row['source_type'] ?? 'legacy_weekly_import')),
         'source_file' => sanitize_text_field((string) ($row['source_file'] ?? '')),
-        'notes' => isset($row['notes']) ? sanitize_text_field((string) $row['notes']) : '',
+        'notes' => isset($row['notes']) ? sanitize_text_field((string) $row['notes']) : (string)($existing['notes'] ?? ''),
       ];
 
       if ($existing) {
@@ -1355,9 +1771,12 @@ class Store {
           $skipped++;
           continue;
         }
-        $ok = $wpdb->update($table, $payload, ['id' => (int) $existing['id']]);
-        if ($ok !== false) {
+        $ok = self::update_protected_row($table, $payload, (int)$existing['id']);
+        if ($ok) {
           $updated++;
+        } else {
+          if ($wpdb->last_error !== '') throw new \RuntimeException('Grosses update failed. Some earlier rows may have saved; retry after storage recovery.');
+          $skipped++;
         }
         continue;
       }
@@ -1366,6 +1785,8 @@ class Store {
       $ok = $wpdb->insert($table, $payload);
       if ($ok !== false) {
         $created++;
+      } else {
+        throw new \RuntimeException('Grosses insert failed. Some earlier rows may have saved; retry after storage recovery.');
       }
     }
 
@@ -1375,10 +1796,13 @@ class Store {
   private static function find_existing_legacy_weekly(string $week_start_date, string $normalized_title): ?array {
     global $wpdb;
     $row = $wpdb->get_row($wpdb->prepare(
-      'SELECT id FROM ' . self::legacy_weekly_table_name() . ' WHERE week_start_date = %s AND normalized_title = %s LIMIT 1',
+      'SELECT id,is_locked,notes FROM ' . self::legacy_weekly_table_name() . ' WHERE week_start_date = %s AND normalized_title = %s LIMIT 1',
       $week_start_date,
       $normalized_title
     ), ARRAY_A);
+      if ($wpdb->last_error !== '') {
+        throw new \RuntimeException('Grosses lookup failed. No replacement row was inserted; retry the pull after storage recovery.');
+      }
     return $row ?: null;
   }
 
@@ -1507,7 +1931,7 @@ class Store {
     return is_array($row) ? $row : null;
   }
 
-  public static function update_legacy_weekly(int $entry_id, array $data): bool {
+  public static function update_legacy_weekly(int $entry_id, array $data, bool $manual = false): bool {
     global $wpdb;
     $existing = self::get_legacy_weekly($entry_id);
     if (!$existing) {
@@ -1532,8 +1956,8 @@ class Store {
       'notes' => isset($data['notes']) ? sanitize_text_field((string) $data['notes']) : (string) ($existing['notes'] ?? ''),
     ];
 
-    $updated = $wpdb->update(self::legacy_weekly_table_name(), $payload, ['id' => $entry_id]);
-    return $updated !== false;
+    if ($manual) $payload['is_locked']=isset($data['is_locked']) ? (!empty($data['is_locked'])?1:0) : 1;
+    return self::update_protected_row(self::legacy_weekly_table_name(), $payload, $entry_id, $manual);
   }
 
   private static function rental_entry_where_sql(array $filters): array {
@@ -1702,6 +2126,7 @@ class Store {
     global $wpdb;
     $limit = max(1, min(5000, $limit));
     $where = $force ? '1=1' : "(studio = '' OR genre = '' OR studio IS NULL OR genre IS NULL)";
+    $where = 'is_locked = 0 AND (' . $where . ')';
     $rows = $wpdb->get_results($wpdb->prepare(
       'SELECT id, report_date, movie_title, studio, genre FROM ' . self::entries_table_name() . ' WHERE ' . $where . ' ORDER BY report_date DESC, id DESC LIMIT %d',
       $limit
@@ -1720,16 +2145,16 @@ class Store {
         continue;
       }
 
-      $result = $wpdb->update(
+      $result = self::update_protected_row(
         self::entries_table_name(),
         [
           'updated_at' => current_time('mysql'),
           'studio' => $studio,
           'genre' => $genre,
         ],
-        ['id' => (int) $row['id']]
+        (int) $row['id']
       );
-      if ($result !== false) {
+      if ($result) {
         $updated++;
       } else {
         $skipped++;
@@ -1799,10 +2224,7 @@ class Store {
   }
 
   private static function top_movie_genre_average(array $filters, string $metric): ?array {
-    $rows = self::list_entries($filters, 5000, 0);
-    if (!$rows) {
-      return null;
-    }
+    $rows = self::iterate_dataset('movies', $filters);
 
     $metric_key = $metric === 'concessions' ? 'concessions_total' : 'gross_total';
     $genres = [];
@@ -1853,10 +2275,7 @@ class Store {
   }
 
   private static function top_movie_genre_groups(array $filters, int $limit = 5, string $metric = 'gross'): array {
-    $rows = self::list_entries($filters, 5000, 0);
-    if (!$rows) {
-      return [];
-    }
+    $rows = self::iterate_dataset('movies', $filters);
 
     $primary_key = $metric === 'concessions' ? 'concessions_total' : 'gross_total';
     $secondary_key = $metric === 'concessions' ? 'gross_total' : 'concessions_total';
@@ -2080,7 +2499,8 @@ class Store {
   }
 
   public static function backup_table_names(): array {
-    return [
+    global $wpdb;
+    $tables = [
       self::entries_table_name(),
       self::live_entries_table_name(),
       self::rental_entries_table_name(),
@@ -2091,6 +2511,8 @@ class Store {
       self::import_batch_table_name(),
       self::import_file_table_name(),
     ];
+    if (self::refund_review_schema_present()) $tables[] = $wpdb->prefix . self::REFUND_REVIEW_TABLE;
+    return $tables;
   }
 
   public static function unresolved_movie_metadata_count(): int {
