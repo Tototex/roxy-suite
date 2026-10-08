@@ -140,7 +140,7 @@ namespace {
     check(\RoxySocial\Store::$row['status']==='posted'&&\RoxySocial\Store::$row['instagram_media_id']==='345678'
         &&\RoxySocial\Store::$row['instagram_container_id']===null&&count($GLOBALS['calls'])===2
         &&!str_contains($GLOBALS['calls'][1][0],'/media?'),
-        'finished video publishes the existing container without blocking polls or creating a duplicate container');
+        'finished video publishes the existing container without blocking polls or creating a duplicate container: ' . json_encode(['status'=>\RoxySocial\Store::$row['status'],'error'=>\RoxySocial\Store::$row['last_error'],'media_id'=>\RoxySocial\Store::$row['instagram_media_id'],'container'=>\RoxySocial\Store::$row['instagram_container_id'],'calls'=>$GLOBALS['calls']]));
 
     reset_fixture('instagram','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['instagram_container_id']='expired-container';
     \RoxySocial\Store::$row['last_error']='Instagram video is still processing';$GLOBALS['responses']=[response(['status_code'=>'EXPIRED'])];
