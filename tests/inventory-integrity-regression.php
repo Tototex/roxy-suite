@@ -74,7 +74,7 @@ $receipt=['id'=>'receipt-1','quantity'=>5,'from_state'=>'NONE','to_state'=>'IN_S
 check(\RoxyInventory\Store::mark_stock_increases(['v1'=>20],['v1'=>array_merge($receipt,['created_at'=>'2026-10-01T08:00:00Z','occurred_at'=>'2026-10-01T08:00:00Z'])])===0 && $wpdb->orders[1]['status']==='ordered','receipt predating vendor order cannot release it');
 check(\RoxyInventory\Store::mark_stock_increases(['v1'=>20],['v1'=>$receipt])===1 && $wpdb->orders[1]['status']==='stock_increased','explicit partial Square receipt unlocks an order despite arrival below original snapshot');
 $line=json_decode($wpdb->orders[1]['payload'],true)[0];
-check($line['stock_increase_from']===20 && $line['stock_increase_to']===25 && $line['square_receipt_quantity']===5.0 && $line['square_receipt_event_id']==='receipt-1' && !empty($line['stock_increase_detected_at']),'triggering item, received quantity, source event and time retained');
+check($line['stock_increase_from']===20 && $line['stock_increase_to']===25 && (float)$line['square_receipt_quantity']===5.0 && $line['square_receipt_event_id']==='receipt-1' && !empty($line['stock_increase_detected_at']),'triggering item, received quantity, source event and time retained');
 $wpdb->orders[1]['status']='ordered';$wpdb->cancel_during_reset=true;
 check(\RoxyInventory\Store::mark_stock_increases(['v1'=>20],['v1'=>$receipt])===0 && $wpdb->orders[1]['status']==='cancelled','receipt reset cannot overwrite concurrent cancellation');
 $wpdb->cancel_during_reset=false;$before=$wpdb->products[1];
