@@ -685,7 +685,7 @@ class CPT {
         echo '&mdash;';
       } else {
         $timestamp = (new \DateTimeImmutable($start, wp_timezone()))->getTimestamp();
-        echo esc_html(date_i18n('M j, Y g:ia', $timestamp));
+        echo esc_html(wp_date('M j, Y g:ia', $timestamp, wp_timezone()));
       }
       return;
     }

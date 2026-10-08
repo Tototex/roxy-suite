@@ -47,6 +47,7 @@ namespace {
   function sanitize_key($value) { return preg_replace('/[^a-z0-9_-]/', '', strtolower((string)$value)); }
   function wp_unslash($value) { return $value; }
   function wp_timezone() { return new DateTimeZone('America/Los_Angeles'); }
+  function wp_date($format, $timestamp = null, $timezone = null) { return (new DateTimeImmutable('@' . (int) $timestamp))->setTimezone($timezone ?? wp_timezone())->format($format); }
   function get_current_user_id() { return 42; }
   function set_transient($key, $value, $expiration) { $GLOBALS['schedule_transients'][$key] = $value; return true; }
   function esc_url_raw($value) { return (string)$value; }
@@ -175,7 +176,7 @@ namespace {
     check_schedule($invalid==='&mdash;','invalid legacy date renders as unavailable instead of a normalized date');
     $GLOBALS['schedule_meta'][992]=['_roxy_start'=>'2028-02-29T19:30'];
     ob_start(); \RoxyST\CPT::render_admin_column('roxy_start',992); $valid=ob_get_clean();
-    check_schedule(str_contains($valid,'Feb 29, 2028'),'valid local leap-day date remains visible in admin');
+    check_schedule(str_contains($valid,'Feb 29, 2028 7:30pm'),'valid admin date column preserves the configured local wall time');
   });
 
   schedule_test('one invalid schedule row rejects the entire schedule batch', function() {
