@@ -4,6 +4,7 @@ define('ABSPATH', __DIR__); define('ARRAY_A','ARRAY_A');
 function wp_json_encode($value) { return json_encode($value); }
 function wp_salt($context) { return 'test'; }
 function current_time($format) { return '2026-10-03 01:00:00'; }
+function wp_timezone() { return new DateTimeZone('America/Los_Angeles'); }
 function sanitize_text_field($value) { return (string)$value; }
 function add_filter(...$args) {}
 function remove_filter(...$args) {}
