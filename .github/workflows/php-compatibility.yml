@@ -58,8 +58,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          php "$RUNNER_TEMP/wp-cli.phar" --path="$WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/social-cleanup-mysql.php" "$GITHUB_WORKSPACE/includes/modules/social-publisher/includes/class-roxy-social-store.php"
-          php "$RUNNER_TEMP/wp-cli.phar" --path="$WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/social-draft-snapshot-mysql.php" "$GITHUB_WORKSPACE"
+          run_fixture() {
+            fixture="$1"
+            shift
+            output="$RUNNER_TEMP/social-fixture-output.txt"
+            if php "$RUNNER_TEMP/wp-cli.phar" --path="$WP_PATH" eval-file "$fixture" "$@" >"$output" 2>&1; then
+              cat "$output"
+            else
+              status=$?
+              details="$(tail -n 35 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+              echo "::error title=Private-MySQL fixture failed::$details"
+              exit "$status"
+            fi
+          }
+          run_fixture "$GITHUB_WORKSPACE/tests/social-cleanup-mysql.php" "$GITHUB_WORKSPACE/includes/modules/social-publisher/includes/class-roxy-social-store.php"
+          run_fixture "$GITHUB_WORKSPACE/tests/social-draft-snapshot-mysql.php" "$GITHUB_WORKSPACE"
 
   lint:
     name: PHP ${{ matrix.php }} syntax
