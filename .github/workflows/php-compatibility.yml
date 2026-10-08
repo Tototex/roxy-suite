@@ -72,7 +72,8 @@ jobs:
             fi
           }
           run_fixture "$GITHUB_WORKSPACE/tests/social-cleanup-mysql.php" "$GITHUB_WORKSPACE/includes/modules/social-publisher/includes/class-roxy-social-store.php"
-          run_fixture "$GITHUB_WORKSPACE/tests/social-draft-snapshot-mysql.php" "$GITHUB_WORKSPACE"
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$WP_PATH" --require="$GITHUB_WORKSPACE/includes/modules/social-publisher/includes/class-roxy-social-store.php" eval-file "$GITHUB_WORKSPACE/tests/social-draft-snapshot-mysql.php" "$GITHUB_WORKSPACE" >"$RUNNER_TEMP/social-fixture-output.txt" 2>&1 || { details="$(tail -n 35 "$RUNNER_TEMP/social-fixture-output.txt" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"; echo "::error title=Draft snapshot MySQL fixture failed::$details"; exit 1; }
+          cat "$RUNNER_TEMP/social-fixture-output.txt"
 
   lint:
     name: PHP ${{ matrix.php }} syntax
