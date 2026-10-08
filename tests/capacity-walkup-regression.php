@@ -11,7 +11,7 @@ function is_wp_error($value){return $value instanceof TestWpError;}
 class TestWpError{}
 class TestOrderWithBadItems{function get_items($type){return false;}}
 function WC(){return $GLOBALS['woo'];}
-function wcs_get_users_subscriptions($id){return [new class{function has_status($s){return $s==='active';}function get_items(){return [new class{function get_quantity(){return 3;}}];}}];}
+function wcs_get_users_subscriptions($id){if(!empty($GLOBALS['subscriptions_throw']))throw new RuntimeException('Fixture subscription query exception');return $GLOBALS['subscriptions_result']??[new class{function has_status($s){return $s==='active';}function get_items(){return [new class{function get_quantity(){return 3;}}];}}];}
 class TestCart {
   public $rows=[];
   function get_cart(){return $this->rows;}
@@ -35,6 +35,17 @@ check(count($GLOBALS['notices'])===1,'checkout refuses too many seats after a wa
 check($cart->rows['row']['quantity']===1,'quantity-change hook trims to actual remaining seats');
 $GLOBALS['meta'][10]['_roxy_ticket_type']='subscriber';$cart->rows=[];$GLOBALS['meta'][50]['_roxy_capacity']=20;
 check(\RoxyST\Capacity::subscriber_limit_remaining_for_showing(50,7,false)===1,'walk-up usage reduces online member entitlement');
+check(\RoxyST\Capacity::subscription_entitlement_count(7)===3,'valid subscription item quantities grant entitlement');
+$GLOBALS['subscriptions_result']=false;
+check(\RoxyST\Capacity::subscription_entitlement_count(7)===0,'failed subscription query grants no entitlement');
+$GLOBALS['subscriptions_result']=[];$GLOBALS['subscriptions_throw']=true;
+check(\RoxyST\Capacity::subscription_entitlement_count(7)===0,'thrown subscription query grants no entitlement');
+$GLOBALS['subscriptions_throw']=false;
+$GLOBALS['subscriptions_result']=[new class{function has_status($s){return $s==='active';}function get_items(){return [new class{function get_quantity(){return 1.5;}}];}}];
+check(\RoxyST\Capacity::subscription_entitlement_count(7)===0,'fractional subscription quantity grants no entitlement');
+$GLOBALS['subscriptions_result']=[new class{function has_status($s){return $s==='active';}function get_items(){return false;}}];
+check(\RoxyST\Capacity::subscription_entitlement_count(7)===0,'malformed subscription items grant no entitlement');
+$GLOBALS['subscriptions_result']=null;
 check(\RoxyST\Capacity::subscriber_limit_remaining_for_showing(0,7,false)===0,'invalid showing cannot grant subscriber entitlement');
 $GLOBALS['orders_result']=[];$GLOBALS['wpdb']->last_error='Simulated query error';
 check(\RoxyST\Capacity::subscriber_limit_remaining_for_showing(65,7,false)===0,'database error cannot masquerade as an empty purchase history');

@@ -9,26 +9,30 @@ class Capacity {
   public static function subscription_entitlement_count(int $user_id): int {
     if ($user_id <= 0) return 0;
     if (!function_exists('wcs_get_users_subscriptions')) return 0;
-    $subs = wcs_get_users_subscriptions($user_id);
     $count = 0;
-    foreach ($subs as $sub) {
-      if (!is_object($sub) || !method_exists($sub, 'has_status')) continue;
-      if ($sub->has_status('active') || $sub->has_status('pending-cancel')) {
-        if (method_exists($sub, 'get_items')) {
+    try {
+      $subs = wcs_get_users_subscriptions($user_id);
+      if (!is_array($subs) || (function_exists('is_wp_error') && is_wp_error($subs))) return 0;
+      foreach ($subs as $sub) {
+        if (!is_object($sub) || !method_exists($sub, 'has_status')) return 0;
+        if ($sub->has_status('active') || $sub->has_status('pending-cancel')) {
+          if (!method_exists($sub, 'get_items')) return 0;
           $items = $sub->get_items();
+          if (!is_array($items) || (function_exists('is_wp_error') && is_wp_error($items))) return 0;
           $qty_sum = 0;
-          if (is_array($items)) {
-            foreach ($items as $item) {
-              if (is_object($item) && method_exists($item, 'get_quantity')) {
-                $qty_sum += (int) $item->get_quantity();
-              }
-            }
+          foreach ($items as $item) {
+            if (!is_object($item) || !method_exists($item, 'get_quantity')) return 0;
+            $quantity = $item->get_quantity();
+            if (!is_numeric($quantity) || !is_finite((float) $quantity) || (float) $quantity < 0
+              || floor((float) $quantity) !== (float) $quantity || (float) $quantity > PHP_INT_MAX - $qty_sum) return 0;
+            $qty_sum += (int) $quantity;
           }
           $count += max(1, $qty_sum);
-        } else {
-          $count += 1;
+          if ($count > PHP_INT_MAX) return 0;
         }
       }
+    } catch (\Throwable $error) {
+      return 0;
     }
     return max(0, (int) $count);
   }
