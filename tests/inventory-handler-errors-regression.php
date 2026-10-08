@@ -181,7 +181,7 @@ foreach(['send_log_failure','cancel_log_failure','decision_log_failure'] as $cas
 }
 foreach(['unknown_cost','malformed_cost','overflowing_cost'] as $case) {
   $invalid_cost=$run($case);$q=$url_args($invalid_cost);
-  $check(($q['ok']??'')==='0'&&str_contains(rawurldecode($q['message']??''),'positive finite configured unit cost')&&$invalid_cost['mail_calls']===0&&!in_array(['create_order','pending_manager'],$invalid_cost['store_calls'],true),'positive quantity with '.$case.' is rejected before order creation or mail');
+  $check(($q['ok']??'')==='0'&&str_contains(rawurldecode($q['message']??''),'explicitly mark the item Free')&&$invalid_cost['mail_calls']===0&&!in_array(['create_order','pending_manager'],$invalid_cost['store_calls'],true),'positive quantity with '.$case.' is rejected before order creation or mail');
 }
 $zero_unknown=$run('zero_qty_unknown_cost');
 $check(($url_args($zero_unknown)['ok']??'')==='1'&&$zero_unknown['mail_calls']===1&&in_array(['create_order','pending_manager'],$zero_unknown['store_calls'],true)&&count($zero_unknown['created_lines'])===1&&$zero_unknown['created_lines'][0]['product']==='Fixture Item','unknown-cost row at zero quantity is omitted while a separately priced order is created and mailed');
