@@ -13,7 +13,7 @@ Prevent a scheduled or manually re-run Arcade monthly worker from sending duplic
 
 ## Verification
 
-The isolated Arcade review-gate regression now checks that two worker runs send only one message for the same candidate and that an uncertain first send is not attempted again. Run the PHP 8.0–8.4 syntax matrix and PHP 8.3 cross-module regression suite after pushing this checkpoint. This branch is not deployed; no production email or prize action was performed.
+The isolated Arcade review-gate regression now checks that two worker runs send only one message for the same candidate and that an uncertain first send is not attempted again. Hosted workflow run [37748690560](https://github.com/Tototex/roxy-suite/actions/runs/37748690560) passed the PHP 8.0–8.4 syntax matrix and PHP 8.3 cross-module regression suite. This branch is not deployed; no production email or prize action was performed.
 
 ## Remaining
 

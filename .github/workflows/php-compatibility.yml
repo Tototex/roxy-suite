@@ -51,6 +51,20 @@ jobs:
       - name: Run workbook snapshot atomicity regression
         run: php tests/grosses-workbook-atomic-regression.php
 
+      - name: Run release guard and manifest regression
+        if: matrix.php == '8.3'
+        run: node tests/release-workflow-regression.js
+
+      - name: Verify deterministic runtime package
+        if: matrix.php == '8.3'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/roxy-suite-source.tar"
+          git archive --format=tar --output="$archive" HEAD
+          source_date_epoch="$(git show -s --format=%ct HEAD)"
+          bash tools/verify-release-package.sh "$archive" "$source_date_epoch"
+
       - name: Run isolated cross-module regression suite
         if: matrix.php == '8.3'
         shell: bash
