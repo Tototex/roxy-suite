@@ -27,6 +27,16 @@ class FixtureWpdb {
   public function get_charset_collate(): string { return ''; }
   public function prepare(string $sql, ...$args): string { return vsprintf(str_replace('%s', "'%s'", $sql), $args); }
   public function esc_like(string $value): string { return addcslashes($value, '_%\\'); }
+  public function query(string $sql) {
+    $this->last_error = '';
+    if (preg_match('/^ALTER TABLE ([a-z0-9_]+) ADD is_locked TINYINT\\(1\\) NOT NULL DEFAULT 0$/i', trim($sql), $match)) {
+      if (!isset($this->tables[$match[1]])) { $this->last_error = 'Missing fixture table'; return false; }
+      $this->tables[$match[1]]['is_locked'] = true;
+      return 1;
+    }
+    $this->last_error = 'Unexpected fixture write';
+    return false;
+  }
   public function get_var(string $sql) {
     $this->last_error = '';
     if (preg_match("/SHOW INDEX FROM `?([a-z0-9_]+)`? WHERE Key_name = '(event_id|fingerprint)' AND Non_unique = 0/i", $sql, $m)) {
