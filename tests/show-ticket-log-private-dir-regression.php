@@ -26,6 +26,9 @@ try {
   $check(file_get_contents($dir . '/.htaccess') === $rules, 'missing/weak rules are repaired');
   file_put_contents($dir . '/.htaccess', 'Require all granted');
   $check($method->invoke(null) === $path && file_get_contents($dir . '/.htaccess') === $rules, 'unsafe allow rule is replaced');
+  unlink($dir . '/.htaccess');
+  mkdir($dir . '/.htaccess');
+  $check($method->invoke(null) === '', 'logger refuses flat-file logging when deny rules cannot be verified');
 } finally {
   $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
   foreach ($iterator as $entry) $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname());
