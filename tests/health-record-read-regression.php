@@ -6,7 +6,7 @@ function roxy_suite_module_enabled($key): bool { return true; }
 function roxy_rs_table_backings(): string { return 'wp_roxy_requested_showing_backings'; }
 function roxy_eb_table_bookings(): string { return 'wp_roxy_event_bookings'; }
 function current_time($format) { return '2026-10-08 12:00:00'; }
-function get_option($key, $default = false) { return $default; }
+function get_option($key, $default = false) { return $GLOBALS['health_options'][$key] ?? $default; }
 function get_posts($args): array {
     if ($GLOBALS['posts_error']) $GLOBALS['wpdb']->last_error = 'fixture query error';
     return $GLOBALS['posts_results'] ?? [];
@@ -45,6 +45,7 @@ final class HealthRecordFixture {
 $GLOBALS['wpdb'] = new HealthRecordFixture();
 $GLOBALS['posts_error'] = false;
 $GLOBALS['posts_results'] = [];
+$GLOBALS['health_options'] = [];
 require $argv[1] ?? dirname(__DIR__) . '/includes/class-roxy-suite-health.php';
 $checks = 0;
 $call = static function ($method, ...$args) { return (new ReflectionMethod(\RoxySuite\Health::class, $method))->invoke(null, ...$args); };
@@ -109,6 +110,17 @@ $check($grosses_log_item()['detail'] === 'Log history unavailable', 'malformed G
 $wpdb->log_row['success'] = 1;
 $check($grosses_log_item()['status'] === 'pass', 'verified successful Grosses log remains green');
 $wpdb->log_row = null;
+$GLOBALS['health_options']['roxy_grosses_settings'] = ['schedule_enabled'=>'1'];
+$GLOBALS['health_options']['roxy_grosses_last_auto_date'] = '2026-02-30';
+$grosses_items = $call('functional_grosses');
+$auto_item = null;
+foreach ($grosses_items as $item) if ($item['label'] === 'Last automatic run') $auto_item = $item;
+$check(is_array($auto_item) && $auto_item['status'] === 'warn' && str_contains($auto_item['note'], 'Could not interpret'), 'impossible automatic Grosses date cannot normalize into a status');
+$GLOBALS['health_options']['roxy_grosses_last_auto_date'] = (new DateTimeImmutable('tomorrow', new DateTimeZone('UTC')))->format('Y-m-d');
+$grosses_items = $call('functional_grosses');
+foreach ($grosses_items as $item) if ($item['label'] === 'Last automatic run') $auto_item = $item;
+$check(is_array($auto_item) && $auto_item['status'] === 'warn' && str_contains($auto_item['note'], 'future'), 'future automatic Grosses date warns');
+$GLOBALS['health_options'] = [];
 $GLOBALS['posts_error'] = true;
 $check($call('functional_requested_showings')[0]['status'] === 'warn', 'failed request query not empty list');
 $show_items = $call('functional_show_tickets');

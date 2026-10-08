@@ -771,10 +771,18 @@ class Health {
                     $timezone = class_exists('\\RoxyGrosses\\Settings')
                         ? new \DateTimeZone(\RoxyGrosses\Settings::get_report_timezone())
                         : wp_timezone();
-                    $last_auto = new \DateTimeImmutable($last_auto_date . ' 00:00:00', $timezone);
+                    $last_auto = \DateTimeImmutable::createFromFormat('!Y-m-d', $last_auto_date, $timezone);
+                    $date_errors = \DateTimeImmutable::getLastErrors();
+                    if (!$last_auto || ($date_errors && ($date_errors['warning_count'] || $date_errors['error_count']))
+                        || $last_auto->format('Y-m-d') !== $last_auto_date) {
+                        throw new \RuntimeException('Automatic Grosses date is invalid.');
+                    }
                     $today = new \DateTimeImmutable('today', $timezone);
                     $days = (int) $last_auto->diff($today)->format('%r%a');
-                    if ($days >= 2) {
+                    if ($days < 0) {
+                        $stale_status = self::WARN;
+                        $stale_note = 'The saved automatic Grosses date is in the future.';
+                    } elseif ($days >= 2) {
                         $stale_status = self::FAIL;
                         $stale_note = 'The automatic grosses run is stale. Cron may have stopped firing.';
                     } elseif ($days >= 1) {
