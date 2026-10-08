@@ -147,6 +147,22 @@ jobs:
           source_date_epoch="$(git show -s --format=%ct HEAD)"
           bash tools/verify-release-package.sh "$archive" "$source_date_epoch"
 
+      - name: Run Social cleanup regression with actionable diagnostics
+        if: matrix.php == '8.3'
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/social-cleanup-regression.txt"
+          if php tests/social-cleanup-regression.php >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            cat "$output"
+            details="$(tail -n 25 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Social cleanup regression failed::$details"
+            exit "$status"
+          fi
+
       - name: Run isolated cross-module regression suite
         if: matrix.php == '8.3'
         shell: bash
@@ -221,7 +237,6 @@ jobs:
             social-ai-retry-regression.php
             social-ai-snapshot-regression.php
             social-bulk-editor-regression.php
-            social-cleanup-regression.php
             social-film-context-regression.php
             social-hangar-auth-cache-regression.php
             social-hangar-featured-image-regression.php

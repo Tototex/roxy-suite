@@ -50,7 +50,8 @@ try {
     $assert(hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)))===$before,'all production Social rows unchanged');
     $row=$reset();$GLOBALS['cleanup53_exists']=true;$GLOBALS['cleanup53_scheduled']=[];
     for($id=2;$id<=101;$id++){$later=$row;$later['id']=$id;$later['post_key']='PRIVATE-cleanup-'.$id;$later['temporary_attachment_id']=2147482000+$id;$later['media_url']='https://fixture.example.invalid/cleanup53-'.$later['temporary_attachment_id'].'.mp4';if($wpdb->insert($table,$later)!==1)throw new RuntimeException('Private pagination row failed.');}
-    $assert($store::cleanup_expired()===1&&($GLOBALS['cleanup53_scheduled'][0][1]??'')==='roxy_social_cleanup_page'&&($GLOBALS['cleanup53_scheduled'][0][2]??[])===[100,101],'actual private-table cleanup schedules exactly the remaining bounded high-water page');
+    $pagination_result=$store::cleanup_expired();$pagination_schedule=$GLOBALS['cleanup53_scheduled'][0]??null;
+    $assert($pagination_result===1&&($pagination_schedule[1]??'')==='roxy_social_cleanup_page'&&($pagination_schedule[2]??[])===[100,101],'actual private-table cleanup schedules exactly the remaining bounded high-water page; '.json_encode(['result'=>$pagination_result,'scheduled'=>$GLOBALS['cleanup53_scheduled']]));
     $assert(hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)))===$before,'pagination leaves production Social rows unchanged');
 } finally {
     if($created&&($wpdb->query('DROP TEMPORARY TABLE '.$queue_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$table)===false))throw new RuntimeException('Private cleanup schema removal failed.');
