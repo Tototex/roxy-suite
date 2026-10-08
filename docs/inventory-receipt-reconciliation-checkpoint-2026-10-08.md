@@ -16,7 +16,9 @@ The live Square read exposed an API-model drift: with the pinned 2026-09-16 Squa
 
 The read-only candidate test reached the authenticated Square account: 203 catalog variations parsed and one receipt-history request ran against the three real orders currently in ordered status. The candidate completed through its in-memory write boundary. SHA-256 snapshots for products, vendors, orders, and runs matched before and after; the fixture blocks inventory-table writes and all email.
 
-The updated focused response regression passes 58 checks against the exact candidate on the host PHP 8.5 CLI. Hosted PHP 8.0–8.4 and full-suite verification for this final patch remain pending. No production plugin code, inventory data, or order status was changed.
+The updated focused response regression passes 58 checks against the exact candidate on the host PHP 8.5 CLI. At that point, hosted PHP 8.0–8.4 and full-suite verification remained pending. No production plugin code, inventory data, or order status was changed.
+
+Hosted workflow [37758734972](https://github.com/Tototex/roxy-suite/actions/runs/37758734972) then passed all five PHP 8.0–8.4 syntax jobs, the PHP 8.3 isolated cross-module suite, release-manifest guard, and deterministic package verification for commit bb9f5ca.
 
 - Hosted workflow [37747535931](https://github.com/Tototex/roxy-suite/actions/runs/37747535931) passed the full PHP 8.3 isolated suite and PHP 8.1–8.4 syntax jobs. PHP 8.0 was queued at the time this note was written; recheck the run before treating the syntax matrix as complete.
 - Focused tests cover post-order partial receipt, sale rejection, pre-order receipt rejection, later-order isolation, malformed/failed Square history responses, no partial inventory commit, and cancellation during reset.
