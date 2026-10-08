@@ -868,15 +868,10 @@ class CPT {
       return 0;
     }
 
-    $start = (string) get_post_meta($source_post_id, '_roxy_start', true);
-    if ($start === '') {
-      return 0;
-    }
-    try {
-      $start_dt = new \DateTimeImmutable($start, wp_timezone());
-    } catch (\Exception $e) {
-      return 0;
-    }
+    $start = self::validated_local_datetime((string) get_post_meta($source_post_id, '_roxy_start', true));
+    if ($start === null) return 0;
+    try { $start_dt = new \DateTimeImmutable($start, wp_timezone()); }
+    catch (\Throwable $e) { return 0; }
     $new_start = $start_dt->modify('+7 days')->format('Y-m-d\TH:i');
     $shifted_change_dates = [];
     foreach (['_roxy_live_change_at_1', '_roxy_live_change_at_2'] as $change_key) {

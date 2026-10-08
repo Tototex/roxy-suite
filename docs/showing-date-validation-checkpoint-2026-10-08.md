@@ -6,7 +6,7 @@ The Show Tickets save handler now validates single showing start values as exact
 
 Valid date strings remain unchanged local wall-clock values, including leap-day values. DST gap times that normalize to a different local value are rejected; ambiguous fall-back local values retain the established wall-clock representation.
 
-Scheduled live-ticket price change dates now use the same strict validation. “Duplicate to next weekend” advances each configured price-change date by seven site-local calendar days, preserving its wall-clock time through spring and fall DST transitions. If an existing saved price-change date is malformed or cannot be represented at the shifted date, the duplicate is not created rather than inheriting an invalid schedule.
+Scheduled live-ticket price change dates now use the same strict validation. “Duplicate to next weekend” validates the saved source showing start and advances each configured price-change date by seven site-local calendar days, preserving its wall-clock time through spring and fall DST transitions. If an existing saved start/price-change date is malformed or cannot be represented at the shifted date, the duplicate is not created rather than inheriting an invalid schedule.
 
 ## Regression coverage
 
@@ -14,4 +14,4 @@ Scheduled live-ticket price change dates now use the same strict validation. “
 
 ## Verification boundary
 
-`git diff --check` passes. Hosted run 37736890032 passes all tracked-PHP syntax checks on PHP 8.0–8.4 and the complete 71-program isolated regression suite on PHP 8.3, including the schedule child status regression. The earlier date-validation attempt exposed a missing fixture stub, which was added and verified in the successful run 37736678490; the expanded date-shift tests passed in run 37736890032. This is branch-only; no production deployment or live data change was made.
+`git diff --check` passes. Hosted run 37736890032 passes all tracked-PHP syntax checks on PHP 8.0–8.4 and the complete 71-program isolated regression suite on PHP 8.3, including the schedule child status and price-date shift tests. A further guard now rejects malformed saved source showing dates before duplication; this follow-up is awaiting hosted verification. The earlier date-validation attempt exposed a missing fixture stub, which was added and verified in successful run 37736678490. This is branch-only; no production deployment or live data change was made.
