@@ -7,10 +7,10 @@ Showing capacity is now saved under the same showing-scoped seat lock used by ch
 ## Verification
 
 - The ticket-publication regression checks shared-lock use, capacity reduction below paid/held plus walk-up occupancy, acceptance at exact occupancy, malformed numeric/array input, lock failure, and no partial form save.
-- Ticket product synchronization rechecks showing readiness after taking the same showing-scoped lease used by seat claims, then verifies ownership before changing products or canonical product mappings. Regressions cover acquire/release, lease failure before writes, a showing becoming nonpublic while waiting, and an overlapping sync attempt releasing its seat lease; all pass.
+- Ticket product synchronization clears the showing cache and rechecks readiness after taking the same showing-scoped lease used by seat claims, then verifies ownership before changing products or canonical product mappings. A failed lease schedules up to five one-minute retries; exceptions, retry-scheduling failure, cache-stale unpublication, overlapping sync cleanup, and recovery after a simulated ownership loss are covered by regression tests.
 - The existing ticket-publication regression group passes, including duration, publication, product identity, stale-cart, and bounded cleanup checks.
 - No live showing, capacity, order, or admission was changed.
 
 ## Remaining boundary
 
-The lock coordinates Roxy-managed writers only. A third-party integration that writes Woo order tables or ticket metadata directly without invoking supported hooks can still bypass it. Provider/Blocks/guest runtime coverage and indexed ledger work remain incomplete. This checkpoint does not claim universal last-seat protection or close T1.
+The lock coordinates Roxy-managed writers only. WordPress product CRUD spans multiple SQL statements; if the database connection is lost mid-update, an earlier product write may persist before ownership loss is detected. A bounded retry attempts to reconcile the product set, but those writes are not one atomic transaction. A third-party integration that writes Woo order tables or ticket metadata directly without invoking supported hooks can also bypass the lock. Provider/Blocks/guest runtime coverage and indexed ledger work remain incomplete. This checkpoint does not claim universal last-seat protection or close T1.

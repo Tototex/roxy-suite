@@ -1,6 +1,6 @@
 <?php
 namespace RoxyST {
-    class Log { public static function warn(...$args) {} }
+    class Log { public static function warn(...$args) { $GLOBALS['logs'][]=$args; } }
     class Settings {
         public static function get_price($key,$default=0){return $default;}
         public static function get_default_capacity(){return 100;}
@@ -15,13 +15,15 @@ namespace RoxyST {
         public static bool $fail=false;
         public static bool $lease_fail=false;
         public static bool $unpublish_on_lease=false;
+        public static bool $throw_after_lease=false;
         public static int $lease_acquired=0;
         public static int $lease_released=0;
         public static int $ownership_checks=0;
+        public static int $throw_on_ownership_check=0;
         public function __construct($ids,string $scope='') { $GLOBALS['capacity_locks'][]=$scope; }
         public function run(callable $operation) { if(self::$fail)throw new RuntimeException('fixture lock failure');return $operation($this); }
-        public function acquire_lease(): void { if(self::$lease_fail)throw new RuntimeException('fixture lease failure'); self::$lease_acquired++; if(self::$unpublish_on_lease)$GLOBALS['statuses'][1]='draft'; }
-        public function assert_owner(): void { self::$ownership_checks++; }
+        public function acquire_lease(): void { if(self::$lease_fail)throw new RuntimeException('fixture lease failure'); self::$lease_acquired++; if(self::$unpublish_on_lease){$GLOBALS['statuses'][1]='draft';$GLOBALS['stale_statuses'][1]='publish';} if(self::$throw_after_lease)$GLOBALS['throw_post_type']=true; }
+        public function assert_owner(): void { self::$ownership_checks++; if(self::$throw_on_ownership_check===self::$ownership_checks)throw new RuntimeException('fixture ownership loss'); }
         public function release_lease(): void { self::$lease_released++; }
         public function member_walkup_quantity(int $showing_id,int $subscription_id=0): int { return self::$walkups; }
         public function post_meta(int $id,string $key,$value,bool $remove=false): void { update_post_meta($id,$key,$value); }
@@ -31,13 +33,14 @@ namespace RoxyST {
 namespace {
 define('ABSPATH', __DIR__); define('MINUTE_IN_SECONDS',60); define('ROXY_ST_META_SHOWING_ID','_roxy_showing_id'); define('ROXY_ST_META_TICKET_TYPE','_roxy_ticket_type');
 $root=$argv[1]??dirname(__DIR__); $fixture=$argv[2]??$root.'/includes/modules/show-tickets/includes/';
-$GLOBALS['meta']=[]; $GLOBALS['types']=[]; $GLOBALS['statuses']=[]; $GLOBALS['notices']=[]; $GLOBALS['writes']=[]; $GLOBALS['hooks']=[]; $GLOBALS['listing_queries']=[]; $GLOBALS['cleanup_queries']=[]; $GLOBALS['cleanup_pages']=[]; $GLOBALS['transients']=[]; $GLOBALS['capacity_locks']=[];
-$GLOBALS['room_lock_calls']=[]; $GLOBALS['room_conflict']=false;
+$GLOBALS['meta']=[]; $GLOBALS['types']=[]; $GLOBALS['statuses']=[]; $GLOBALS['notices']=[]; $GLOBALS['writes']=[]; $GLOBALS['hooks']=[]; $GLOBALS['listing_queries']=[]; $GLOBALS['cleanup_queries']=[]; $GLOBALS['cleanup_pages']=[]; $GLOBALS['transients']=[]; $GLOBALS['capacity_locks']=[]; $GLOBALS['logs']=[];
+$GLOBALS['room_lock_calls']=[]; $GLOBALS['room_conflict']=false; $GLOBALS['scheduled_events']=[]; $GLOBALS['schedule_fail']=false;
 class WooCommerce {} class WP_Error { private $message; function __construct($code,$message){$this->message=$message;} function get_error_message(){return $this->message;} }
 function is_wp_error($v){return $v instanceof WP_Error;}
 function __($s,...$args){return $s;}
-function get_post_type($id){return $GLOBALS['types'][$id]??false;}
-function get_post_status($id){return $GLOBALS['statuses'][$id]??false;}
+function get_post_type($id){if(!empty($GLOBALS['throw_post_type']))throw new RuntimeException('fixture readiness read failure');return $GLOBALS['types'][$id]??false;}
+function get_post_status($id){if(isset($GLOBALS['stale_statuses'][$id]))return $GLOBALS['stale_statuses'][$id];return $GLOBALS['statuses'][$id]??false;}
+function clean_post_cache($id){unset($GLOBALS['stale_statuses'][$id]);}
 function get_the_title($id){return $GLOBALS['titles'][$id]??'Fixture showing';}
 function get_post_meta($id,$key,$single=true){return $GLOBALS['meta'][$id][$key]??'';}
 function update_post_meta($id,$key,$value){$GLOBALS['meta'][$id][$key]=$value;return true;}
@@ -52,6 +55,8 @@ function get_current_user_id(){return 7;}
 function set_transient($key,$value,$expiration){$GLOBALS['transients'][$key]=$value;return true;}
 function get_transient($key){return $GLOBALS['transients'][$key]??false;}
 function delete_transient($key){unset($GLOBALS['transients'][$key]);}
+function wp_next_scheduled($hook,$args=[]){foreach($GLOBALS['scheduled_events'] as $event)if($event['hook']===$hook && $event['args']===$args)return $event['timestamp'];return false;}
+function wp_schedule_single_event($timestamp,$hook,$args=[]){if($GLOBALS['schedule_fail'])return false;$GLOBALS['scheduled_events'][]=['timestamp'=>$timestamp,'hook'=>$hook,'args'=>$args];return true;}
 function roxy_eb_with_showing_time_lock($start,$ignore_showing_id,$write){$GLOBALS['room_lock_calls'][]=[$start,$ignore_showing_id];if($GLOBALS['room_conflict'])return new WP_Error('reservation_conflict','That showing time overlaps another room reservation or showing. The change was not saved.');return $write();}
 function wp_is_post_revision($id){return false;}
 function add_action($hook,$callback,...$args){$GLOBALS['hooks'][$hook][]=$callback;}
@@ -92,7 +97,7 @@ class WP_Query {
 function check($ok,$label){if(!$ok)throw new RuntimeException($label); echo "PASS: $label\n";}
 require $fixture.'class-roxy-st-cpt.php'; require $fixture.'class-roxy-st-products.php'; require $fixture.'class-roxy-st-eligibility.php'; require $fixture.'class-roxy-st-capacity.php'; require $fixture.'class-roxy-st-tickets.php'; require $fixture.'class-roxy-st-frontend.php';
 \RoxyST\Eligibility::init(); \RoxyST\Products::init();
-check(isset($GLOBALS['hooks']['woocommerce_is_purchasable'],$GLOBALS['hooks']['woocommerce_checkout_process'],$GLOBALS['hooks']['woocommerce_check_cart_items'],$GLOBALS['hooks']['transition_post_status'],$GLOBALS['hooks']['before_delete_post']), 'all managed publication and checkout hooks registered');
+check(isset($GLOBALS['hooks']['woocommerce_is_purchasable'],$GLOBALS['hooks']['woocommerce_checkout_process'],$GLOBALS['hooks']['woocommerce_check_cart_items'],$GLOBALS['hooks']['transition_post_status'],$GLOBALS['hooks']['before_delete_post'],$GLOBALS['hooks']['roxy_st_sync_products_retry']), 'all managed publication and checkout hooks registered');
 $GLOBALS['types']=[1=>'roxy_showing',101=>'product',102=>'product',103=>'product',104=>'product',200=>'product'];
 $GLOBALS['statuses']=[1=>'publish',101=>'publish',102=>'publish',103=>'publish',104=>'publish',200=>'publish'];
 $GLOBALS['meta']=[1=>['_roxy_pricing_profile'=>'movie_evening','_roxy_pid_adult'=>101,'_roxy_pid_discount'=>102,'_roxy_pid_subscriber'=>104,'_roxy_start'=>current_datetime()->modify('-30 minutes')->format('Y-m-d\TH:i'),'_roxy_duration_minutes'=>'60'],101=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'adult'],102=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'discount'],103=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'adult'],104=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'subscriber']];
@@ -106,12 +111,29 @@ $GLOBALS['writes']=[]; $GLOBALS['capacity_locks']=[];
 $writes_before_lease_failure=count($GLOBALS['writes']); $meta_before_lease_failure=$GLOBALS['meta'][1];
 \RoxyST\Issuance::$lease_fail=true; \RoxyST\Products::ensure_products_for_showing(1); \RoxyST\Issuance::$lease_fail=false;
 check(count($GLOBALS['writes'])===$writes_before_lease_failure && $GLOBALS['meta'][1]===$meta_before_lease_failure && !isset($GLOBALS['transients']['roxy_st_sync_1']),'ticket-product synchronization fails closed when the seat lease is unavailable');
+check(($GLOBALS['scheduled_events'][0]['hook']??'')==='roxy_st_sync_products_retry' && ($GLOBALS['scheduled_events'][0]['args']??[])===[1,1],'ticket-product synchronization schedules a bounded retry after lease contention');
+$retry_event=array_shift($GLOBALS['scheduled_events']); \RoxyST\Products::retry_product_sync($retry_event['args'][0],$retry_event['args'][1]);
+check(!isset($GLOBALS['transients']['roxy_st_sync_1']),'scheduled ticket-product retry completes and releases its sync lock');
+$GLOBALS['statuses'][103]='publish'; $GLOBALS['writes']=[];
+$GLOBALS['schedule_fail']=true; \RoxyST\Issuance::$lease_fail=true; \RoxyST\Products::ensure_products_for_showing(1); \RoxyST\Issuance::$lease_fail=false; $GLOBALS['schedule_fail']=false;
+check(count($GLOBALS['scheduled_events'])===0 && !empty($GLOBALS['logs']),'failed ticket-product retry scheduling is logged');
 $lease_releases_before_sync_conflict=\RoxyST\Issuance::$lease_released;
 set_transient('roxy_st_sync_1',1,30); \RoxyST\Products::ensure_products_for_showing(1); unset($GLOBALS['transients']['roxy_st_sync_1']);
 check(\RoxyST\Issuance::$lease_released===$lease_releases_before_sync_conflict+1 && count($GLOBALS['writes'])===$writes_before_lease_failure,'overlapping product sync releases its seat lease without changing products');
 $lease_releases_before_status_change=\RoxyST\Issuance::$lease_released;
 \RoxyST\Issuance::$unpublish_on_lease=true; \RoxyST\Products::ensure_products_for_showing(1); \RoxyST\Issuance::$unpublish_on_lease=false; $GLOBALS['statuses'][1]='publish';
 check(\RoxyST\Issuance::$lease_released===$lease_releases_before_status_change+1 && count($GLOBALS['writes'])===$writes_before_lease_failure && !isset($GLOBALS['transients']['roxy_st_sync_1']),'product sync rechecks showing readiness after acquiring the seat lease');
+$lease_releases_before_read_failure=\RoxyST\Issuance::$lease_released;
+\RoxyST\Issuance::$throw_after_lease=true;
+try { \RoxyST\Products::ensure_products_for_showing(1); } catch(RuntimeException $error) {}
+\RoxyST\Issuance::$throw_after_lease=false; unset($GLOBALS['throw_post_type']);
+check(\RoxyST\Issuance::$lease_released===$lease_releases_before_read_failure+1 && !isset($GLOBALS['transients']['roxy_st_sync_1']),'product sync releases the seat lease if readiness recheck throws');
+$GLOBALS['writes']=[]; $ownership_check_before=\RoxyST\Issuance::$ownership_checks;
+\RoxyST\Issuance::$throw_on_ownership_check=$ownership_check_before+3; \RoxyST\Products::ensure_products_for_showing(1); \RoxyST\Issuance::$throw_on_ownership_check=0;
+check(count($GLOBALS['writes'])>0 && ($GLOBALS['scheduled_events'][0]['hook']??'')==='roxy_st_sync_products_retry' && !isset($GLOBALS['transients']['roxy_st_sync_1']),'ownership loss after a product write is logged and schedules reconciliation');
+$recovery_event=array_shift($GLOBALS['scheduled_events']); \RoxyST\Products::retry_product_sync($recovery_event['args'][0],$recovery_event['args'][1]);
+check(!isset($GLOBALS['transients']['roxy_st_sync_1']),'ownership-loss reconciliation retry completes and releases its sync lock');
+$GLOBALS['statuses'][103]='publish'; $GLOBALS['writes']=[];
 $show_end=\RoxyST\Eligibility::showing_end_timestamp(1);
 check($show_end!==null && \RoxyST\Eligibility::showing_sales_open(1,$show_end-1) && !\RoxyST\Eligibility::showing_sales_open(1,$show_end),'sales cutoff is exclusive at the actual showing end');
 $cleanup=new ReflectionMethod(\RoxyST\Products::class,'trash_products_for_expired_showing'); $cleanup->setAccessible(true);

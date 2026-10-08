@@ -8,6 +8,7 @@ class Products {
     add_action('save_post_' . CPT::POST_TYPE, [__CLASS__, 'on_showing_saved'], 20, 2);
     add_action('transition_post_status', [__CLASS__, 'on_status_changed'], 20, 3);
     add_action('before_delete_post', [__CLASS__, 'on_showing_deleted'], 20, 2);
+    add_action('roxy_st_sync_products_retry', [__CLASS__, 'retry_product_sync'], 10, 2);
     add_action('pre_get_posts', [__CLASS__, 'hide_ticket_products_from_admin_list']);
     add_action('views_edit-product', [__CLASS__, 'add_ticket_product_views']);
   }
@@ -127,7 +128,7 @@ class Products {
     ));
   }
 
-  public static function ensure_products_for_showing(int $showing_id): void {
+  public static function ensure_products_for_showing(int $showing_id, int $retry_attempt = 0): void {
     if (!self::showing_is_ready_for_products($showing_id)) {
       return;
     }
@@ -137,22 +138,23 @@ class Products {
     try {
       $seat_lease->acquire_lease();
     } catch (\Throwable $error) {
+      self::schedule_product_sync_retry($showing_id, $retry_attempt);
       return;
     }
 
-    // The showing could have changed between the initial readiness check and
-    // obtaining the shared seat lease. Recheck while coordinated with saves.
-    if (!self::showing_is_ready_for_products($showing_id)) {
-      $seat_lease->release_lease();
-      return;
-    }
-
-    if (!self::acquire_sync_lock($showing_id)) {
-      $seat_lease->release_lease();
-      return;
-    }
-
+    $sync_lock_acquired = false;
     try {
+      // The showing could have changed between the initial readiness check and
+      // obtaining the shared seat lease. Recheck while coordinated with saves.
+      clean_post_cache($showing_id);
+      if (!self::showing_is_ready_for_products($showing_id)) return;
+
+      if (!self::acquire_sync_lock($showing_id)) {
+        self::schedule_product_sync_retry($showing_id, $retry_attempt);
+        return;
+      }
+      $sync_lock_acquired = true;
+
       $seat_lease->assert_owner();
       $profile = get_post_meta($showing_id, '_roxy_pricing_profile', true) ?: 'movie_evening';
 
@@ -219,9 +221,31 @@ class Products {
         $seat_lease->assert_owner();
       }
     }
+    } catch (\Throwable $error) {
+      Log::warn('ticket product synchronization failed', ['showing_id'=>$showing_id, 'attempt'=>$retry_attempt + 1, 'exception_type'=>get_class($error)]);
+      self::schedule_product_sync_retry($showing_id, $retry_attempt);
     } finally {
-      self::release_sync_lock($showing_id);
+      if ($sync_lock_acquired) self::release_sync_lock($showing_id);
       $seat_lease->release_lease();
+    }
+  }
+
+  public static function retry_product_sync($showing_id, $attempt): void {
+    self::ensure_products_for_showing((int) $showing_id, (int) $attempt);
+  }
+
+  private static function schedule_product_sync_retry(int $showing_id, int $attempt): void {
+    $next_attempt = $attempt + 1;
+    if ($showing_id <= 0) return;
+    if ($next_attempt > 5) {
+      Log::warn('ticket product synchronization exhausted retries', ['showing_id'=>$showing_id]);
+      return;
+    }
+    $args = [$showing_id, $next_attempt];
+    if (wp_next_scheduled('roxy_st_sync_products_retry', $args)) return;
+    $scheduled = wp_schedule_single_event(time() + 60, 'roxy_st_sync_products_retry', $args);
+    if ($scheduled === false || is_wp_error($scheduled)) {
+      Log::warn('ticket product synchronization retry could not be scheduled', ['showing_id'=>$showing_id, 'attempt'=>$next_attempt]);
     }
   }
 
