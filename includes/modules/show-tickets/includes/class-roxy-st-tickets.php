@@ -26,6 +26,7 @@ class Tickets {
     add_action('init', [__CLASS__, 'register_post_type']);
     add_action('woocommerce_checkout_order_processed', [__CLASS__, 'on_order_changed'], 30, 1);
     add_action('woocommerce_order_status_changed', [__CLASS__, 'on_order_changed'], 30, 1);
+    add_action('woocommerce_after_order_item_object_save', [__CLASS__, 'on_order_item_saved'], 30, 2);
     add_action('woocommerce_refund_created', [__CLASS__, 'on_refund_created'], 30, 2);
     add_action('woocommerce_refund_deleted', [__CLASS__, 'on_refund_deleted'], 30, 2);
     add_action('roxy_st_retry_order_tickets', [__CLASS__, 'on_order_changed'], 10, 2);
@@ -106,6 +107,15 @@ class Tickets {
 
   public static function on_order_changed(int $order_id, int $attempt = 0): void {
     self::sync_order_tickets($order_id, $attempt);
+  }
+
+  /** Reconcile ticket lines changed through WooCommerce's completed CRUD save lifecycle. */
+  public static function on_order_item_saved($item, $data_store = null): void {
+    if (self::$issuance !== null || !($item instanceof \WC_Order_Item_Product)) return;
+    $order_id = (int) $item->get_order_id();
+    $product_id = (int) $item->get_product_id();
+    if ($order_id <= 0 || $product_id <= 0 || (int) get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true) <= 0) return;
+    self::sync_order_tickets($order_id);
   }
 
   public static function on_refund_created(int $refund_id, array $args = []): void {
