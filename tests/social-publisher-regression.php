@@ -130,9 +130,10 @@ namespace {
     check(\RoxySocial\Store::$row['status']==='publishing','stale read rechecks latest row before recovery');
 
     reset_fixture('instagram');\RoxySocial\Store::$row['media_type']='video';$GLOBALS['responses']=[response(['id'=>'container-video'])];
-    check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='failed'&&\RoxySocial\Store::$row['instagram_container_id']==='container-video'
-        &&count($GLOBALS['calls'])===1&&$GLOBALS['scheduled_events'][0][1]==='roxy_social_video_status_retry'&&$GLOBALS['scheduled_events'][0][2]===[1,1],
-        'video container creation returns immediately and queues the first bounded status retry');
+    $video_created = !\RoxySocial\Publisher::publish_now(1);
+    check($video_created&&\RoxySocial\Store::$row['status']==='failed'&&\RoxySocial\Store::$row['instagram_container_id']==='container-video'
+        &&count($GLOBALS['calls'])===1&&($GLOBALS['scheduled_events'][0][1]??'')==='roxy_social_video_status_retry'&&($GLOBALS['scheduled_events'][0][2]??[])===[1,1],
+        'video container creation returns immediately and queues the first bounded status retry: ' . json_encode(['result'=>$video_created,'status'=>\RoxySocial\Store::$row['status'],'container'=>\RoxySocial\Store::$row['instagram_container_id'],'calls'=>count($GLOBALS['calls']),'events'=>$GLOBALS['scheduled_events']]));
     $GLOBALS['responses']=[response(['status_code'=>'FINISHED']),response(['id'=>'instagram-media'])];
     check(\RoxySocial\Publisher::queue_video_status_retry(1,1),'video retry claims only the failed row with its saved container');
     \RoxySocial\Publisher::process_queued(1,1);
