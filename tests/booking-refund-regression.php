@@ -238,7 +238,7 @@ function wp_timezone() { return new DateTimeZone('America/Los_Angeles'); }
 function roxy_eb_get_settings() { return ['cancel_free_days'=>7]; }
 function roxy_eb_mysql_to_dt($value) { return new DateTimeImmutable($value, wp_timezone()); }
 function roxy_eb_booking_adjustment_order_ids($booking) { return $booking['woo_adjustment_order_ids'] ?? []; }
-function roxy_eb_booking_revision(array $booking) { return (string)($booking['fixture_revision']??'fixture-revision'); }
+function roxy_eb_repo_get_booking_by_order($order_id) { foreach ($GLOBALS['bookings']??[] as $booking) if ((int)($booking['woo_order_id']??0)===(int)$order_id) return $booking; return null; }
 function roxy_eb_repo_update_booking($id, $data) {
     $expected=$data['_roxy_expected_revision']??null; unset($data['_roxy_expected_revision']);
     if ($expected!==null && !hash_equals(roxy_eb_booking_revision($GLOBALS['bookings'][$id]),(string)$expected)) return new WP_Error('booking_stale','fixture revision changed');
@@ -249,6 +249,7 @@ function roxy_eb_email_internal_booking_failed($order, $message) { $GLOBALS['fai
 function roxy_eb_clear_pizza_reminders($id) { $GLOBALS['cleared_reminders'][]=$id; }
 function roxy_eb_sling_enqueue_cancel($id) { $GLOBALS['queued_cancellations'][]=$id; }
 require dirname($helper) . '/my-account.php';
+require_once dirname($helper) . '/woo.php';
 function make_booking($id, $order_id, array $adjustments = []) {
     $GLOBALS['bookings'][$id]=['id'=>$id,'status'=>'confirmed','payment_method'=>'card','invoice_status'=>'not_needed','woo_order_id'=>$order_id,'woo_adjustment_order_ids'=>$adjustments,'fixture_revision'=>'r1','doors_open_at'=>(new DateTimeImmutable('+30 days',wp_timezone()))->format('Y-m-d H:i:s')];
     $GLOBALS['booking_save_error']=false; $GLOBALS['cleared_reminders']=[]; $GLOBALS['queued_cancellations']=[];
@@ -286,5 +287,11 @@ run_test('cancellation does not overwrite a booking edit made during provider re
     check(is_wp_error($result) && $GLOBALS['bookings'][84]['status']==='confirmed' && $GLOBALS['bookings'][84]['guest_count']===9,
       'stale cancellation is rejected without overwriting the concurrent booking edit');
     check(count($GLOBALS['wc_refund_calls'])===1 && !$GLOBALS['queued_cancellations'],'stale cancellation performs no duplicate provider call or follow-on work');
+});
+run_test('Woo refund hook retains reminders when booking cancellation fails', function() {
+    reset_gateway(); make_booking(85,99998);
+    roxy_eb_maybe_cancel_booking_for_order(99998);
+    check($GLOBALS['bookings'][85]['status']==='confirmed' && !$GLOBALS['cleared_reminders'] && !$GLOBALS['queued_cancellations'],
+      'failed full-refund cancellation keeps the booking reserved and does not clear its reminders');
 });
 echo "All booking refund regressions passed.\n";

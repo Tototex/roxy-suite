@@ -410,10 +410,12 @@ function roxy_eb_maybe_cancel_booking_for_order($order_id) {
     if (($booking['status'] ?? '') === 'cancelled') return;
 
     if (function_exists('roxy_eb_cancel_booking')) {
-        roxy_eb_cancel_booking(intval($booking['id']), 'admin');
-    } else {
-        roxy_eb_repo_update_booking(intval($booking['id']), ['status' => 'cancelled']);
+        $result = roxy_eb_cancel_booking(intval($booking['id']), 'admin');
+        if (is_wp_error($result)) return;
+        return; // Successful cancellation handles its own reminder cleanup.
     }
+    $result = roxy_eb_repo_update_booking(intval($booking['id']), ['status' => 'cancelled']);
+    if (is_wp_error($result)) return;
     roxy_eb_clear_pizza_reminders(intval($booking['id']));
 }
 
