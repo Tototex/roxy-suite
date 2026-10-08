@@ -214,14 +214,17 @@ namespace {
   $collection_events = \RoxyGrosses\SquareCollectionEvents::from_orders([
     ['id' => 'order-1', 'location_id' => 'loc-1', 'state' => 'COMPLETED', 'total_money' => ['amount' => 12345, 'currency' => 'USD'], 'closed_at' => '2026-10-03T06:30:00Z', 'tenders' => [['payment_id' => 'payment-1']]],
     ['id' => 'order-2', 'location_id' => 'loc-1', 'state' => 'COMPLETED', 'total_money' => ['amount' => 0, 'currency' => 'USD'], 'closed_at' => '2026-10-03T07:30:00Z', 'tenders' => [['id' => 'payment-2']]],
-    ['id' => 'order-3', 'state' => 'CANCELED'],
+    ['id' => 'order-3', 'location_id' => 'loc-1', 'state' => 'COMPLETED', 'total_money' => ['amount' => 0, 'currency' => 'USD'], 'closed_at' => '2026-10-03T07:35:00Z', 'tenders' => [[]]],
+    ['id' => 'order-4', 'state' => 'CANCELED'],
   ]);
-  $assert(count($collection_events) === 2, 'collection projection includes completed orders only');
+  $assert(count($collection_events) === 3, 'collection projection includes completed orders only');
   $assert($collection_events[0]['amount_cents'] === 12345 && $collection_events[0]['payment_ids'] === ['payment-1'] && $collection_events[0]['tender_ids_complete'] === true, 'completed Square collection preserves exact cents and payment deduplication identity');
   $assert($collection_events[0]['collection_date'] === '2026-10-02' && $collection_events[0]['collected_at'] === '2026-10-03 06:30:00', 'collection date uses Pacific timezone while retaining UTC close time');
-  $assert($collection_events[1]['payment_ids'] === [] && $collection_events[1]['tender_ids_complete'] === false, 'tender without payment_id is explicitly marked incomplete, not silently deduplicated');
+  $assert($collection_events[1]['payment_ids'] === ['payment-2'] && $collection_events[1]['tender_ids_complete'] === true, 'Square tender id is used as the payment identity when payment_id is absent');
+  $assert($collection_events[2]['payment_ids'] === [] && $collection_events[2]['tender_ids_complete'] === false, 'tender without either stable identity is explicitly marked incomplete');
   $expect_throw(static fn() => \RoxyGrosses\SquareCollectionEvents::from_orders([['id' => 'x', 'location_id' => 'l', 'state' => 'COMPLETED', 'total_money' => ['amount' => 1, 'currency' => 'USD'], 'closed_at' => '2026-10-03T07:30:00Z'], ['id' => 'x', 'location_id' => 'l', 'state' => 'COMPLETED', 'total_money' => ['amount' => 1, 'currency' => 'USD'], 'closed_at' => '2026-10-03T07:30:00Z']]), 'duplicate completed Square order identity fails closed');
   $expect_throw(static fn() => \RoxyGrosses\SquareCollectionEvents::from_orders([['id' => 'x', 'location_id' => 'l', 'state' => 'COMPLETED', 'total_money' => ['amount' => 1, 'currency' => 'USD'], 'closed_at' => '2026-10-03T07:30:00Z', 'tenders' => [['payment_id' => 'p', 'id' => 'p'], ['payment_id' => 'p', 'id' => 'p']]]]), 'duplicate tender payment identity fails closed');
+  $expect_throw(static fn() => \RoxyGrosses\SquareCollectionEvents::from_orders([['id' => 'x', 'location_id' => 'l', 'state' => 'COMPLETED', 'total_money' => ['amount' => 1, 'currency' => 'USD'], 'closed_at' => '2026-10-03T07:30:00Z', 'tenders' => [['payment_id' => 'payment-a', 'id' => 'tender-b']]]]), 'tender and payment IDs that disagree fail closed');
   $expect_throw(static fn() => \RoxyGrosses\SquareCollectionEvents::from_orders([
     ['id' => 'x', 'location_id' => 'l', 'state' => 'COMPLETED', 'total_money' => ['amount' => 1, 'currency' => 'USD'], 'closed_at' => '2026-10-03T07:30:00Z', 'tenders' => [['payment_id' => 'p']]],
     ['id' => 'y', 'location_id' => 'l', 'state' => 'COMPLETED', 'total_money' => ['amount' => 1, 'currency' => 'USD'], 'closed_at' => '2026-10-03T07:31:00Z', 'tenders' => [['payment_id' => 'p']]],

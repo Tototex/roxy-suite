@@ -13,13 +13,13 @@ Scope: read-only event normalization and live payment-gateway discovery only.
 
 ## Projection added
 
-`SquareCollectionEvents::from_orders()` accepts completed USD Square Orders with a valid close timestamp, exact integer cents, and stable order/location IDs. It preserves tender payment IDs as identity evidence, marks missing tender references incomplete, and rejects duplicate order/payment identities or malformed money/timestamps.
+`SquareCollectionEvents::from_orders()` accepts completed USD Square Orders with a valid close timestamp, exact integer cents, and stable order/location IDs. It preserves tender payment IDs as identity evidence, falls back to Square's tender `id` when the v2 `payment_id` field is absent, marks missing tender references incomplete, and rejects disagreeing or duplicate order/payment identities and malformed money/timestamps.
 
 `WooCollectionEvents::from_orders()` accepts an explicit online-gateway allow-list. It includes only positive USD orders marked paid, requires a paid timestamp and unique gateway-scoped transaction ID, and preserves the original amount and payment date. Manual/offline and unlisted gateways are ignored. Neither projection writes to the database, mutates a report, nor sends email.
 
 ## Verification
 
-- Hosted workflow [37742815484](https://github.com/Tototex/roxy-suite/actions/runs/37742815484) passes all PHP 8.0–8.4 syntax jobs and the PHP 8.3 full isolated regression suite.
+- Hosted workflow [37742815484](https://github.com/Tototex/roxy-suite/actions/runs/37742815484) passes all PHP 8.0–8.4 syntax jobs and the PHP 8.3 full isolated regression suite. Tender-ID fallback/disagreement regressions are added in the follow-up and await CI.
 - The Grosses refund-snapshot regression now covers paid/unpaid filtering, explicit gateway allow-listing, zero-dollar orders, cents/currency, paid-date conversion, missing evidence, and duplicate transactions, alongside Square collection safeguards.
 - Local `git diff --check` passes. This workstation has no PHP executable, so local PHP execution was not available.
 - No live site deployment or financial records were changed.

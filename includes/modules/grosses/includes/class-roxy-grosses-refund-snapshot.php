@@ -430,11 +430,19 @@ final class SquareCollectionEvents {
       }
       foreach ($order['tenders'] ?? [] as $tender) {
         if (!is_array($tender)) throw new \RuntimeException('Completed Square order has a malformed tender.');
+        $tender_id = $tender['id'] ?? null;
         $payment_id = $tender['payment_id'] ?? null;
-        if ($payment_id === null) { $tender_ids_complete = false; continue; }
-        if (!is_string($payment_id) || $payment_id === '' || strlen($payment_id) > 192) {
+        if ($tender_id !== null && (!is_string($tender_id) || $tender_id === '' || strlen($tender_id) > 192)) {
+          throw new \RuntimeException('Completed Square order has an invalid tender identity.');
+        }
+        if ($payment_id !== null && (!is_string($payment_id) || $payment_id === '' || strlen($payment_id) > 192)) {
           throw new \RuntimeException('Completed Square order has an invalid tender payment identity.');
         }
+        if ($tender_id !== null && $payment_id !== null && $tender_id !== $payment_id) {
+          throw new \RuntimeException('Completed Square tender and payment identities do not match.');
+        }
+        $payment_id = $payment_id ?? $tender_id;
+        if ($payment_id === null) { $tender_ids_complete = false; continue; }
         if (isset($payment_ids[$payment_id]) || isset($seen_payment_ids[$payment_id])) throw new \RuntimeException('Square collection feed repeats a tender payment identity.');
         $payment_ids[$payment_id] = true;
         $seen_payment_ids[$payment_id] = true;
