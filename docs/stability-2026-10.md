@@ -126,6 +126,10 @@ Production recheck on 2026-10-08 found the live Square, Store, and Admin source 
 
 The earlier C1 table note saying the Grosses anomaly-label correction was not deployed is stale. The live `class-roxy-grosses-settings.php` SHA-256 exactly matches the current branch (`78e28956fbfb0a91beee49fda466bcdd25e931d5692f63eddf5148db87222068`). A read-only WP-CLI check invoked the production label helper and filter queries: an anomaly is labeled `Review`; 95 anomaly rows are counted in Review, and the Success filter excludes them (509 Success rows). This confirms the deployed code and existing log state without changing records. The isolated five label/four filter regression checks remain passing. Broader C1 diagnostic live review and cross-module coordination/delivery checks remain open.
 
+## I6 cost-provenance live verification — 2026-10-08
+
+The earlier I6 table note saying provenance was not deployed is stale. Production reports Inventory schema `0.1.16` and migration marker `roxy_inventory_cost_provenance_v1=1`; the products table contains all four additive provenance columns. A read-only aggregate found 210 products: 166 positive costs are classified Estimate and 44 zero costs remain Unknown. Invoking the actual production Products renderer returned 143 tracked product rows, the Confidence/Source/Checked/Supplier SKU columns, the explanatory incomplete-cost policy, and the Save All control. No option, product, vendor, or order was changed. This verifies migration and rendered UI, not the correctness or freshness of each supplier price; those still require manager confirmation. The isolated migration and order-integrity checks remain passing.
+
 Hosted workflow [37758734972](https://github.com/Tototex/roxy-suite/actions/runs/37758734972) passed the complete PHP 8.0–8.4 syntax matrix, PHP 8.3 cross-module regression suite, release-manifest guard, and deterministic runtime archive verification for commit bb9f5ca. Only release/deployment and next real-delivery confirmation remain.
 
 ## G10 follow-up — member export atomic delivery
