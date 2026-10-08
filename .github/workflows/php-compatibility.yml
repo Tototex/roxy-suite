@@ -269,6 +269,7 @@ jobs:
             grosses-allocation-transaction-regression.php
             grosses-closed-day-retry-regression.php
             grosses-closed-day-store-regression.php
+            grosses-cashflow-form-regression.php
             grosses-cashflow-report-regression.php
             grosses-export-regression.php
             grosses-fresh-email-allocation-regression.php

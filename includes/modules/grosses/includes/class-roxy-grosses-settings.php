@@ -285,7 +285,9 @@ class Settings {
     echo '<h2>Daily financial cashflow</h2><p>Read-only provider snapshot. This is separate from Hollywood&#8217;s nominal ticket gross and does not alter saved reports, history, or send email.</p>';
     echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'">';
     echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="cashflow"><input type="hidden" name="cashflow_load" value="1">';
-    wp_nonce_field('roxy_grosses_cashflow_' . $date);
+    // The user may select any report date before submitting this read-only
+    // form, so its nonce must not be bound to the date rendered initially.
+    wp_nonce_field('roxy_grosses_cashflow');
     echo '<label for="roxy-cashflow-date">Report date (' . esc_html(self::get_report_timezone()) . ')</label> <input id="roxy-cashflow-date" type="date" name="cashflow_date" value="'.esc_attr($date).'"> ';
     submit_button('Load provider totals', 'primary', 'submit', false);
     echo '</form>';
@@ -294,7 +296,7 @@ class Settings {
       return;
     }
     $nonce = isset($_GET['_wpnonce']) ? sanitize_text_field(wp_unslash((string) $_GET['_wpnonce'])) : '';
-    if (!wp_verify_nonce($nonce, 'roxy_grosses_cashflow_' . $date)) {
+    if (!wp_verify_nonce($nonce, 'roxy_grosses_cashflow')) {
       echo '<div class="notice notice-error"><p>The report request expired. Reload the page and try again.</p></div>';
       return;
     }
