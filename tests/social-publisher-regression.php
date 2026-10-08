@@ -138,8 +138,9 @@ namespace {
     check(\RoxySocial\Publisher::queue_video_status_retry(1,1),'video retry claims only the failed row with its saved container');
     \RoxySocial\Publisher::process_queued(1,1);
     check(\RoxySocial\Store::$row['status']==='posted'&&\RoxySocial\Store::$row['instagram_media_id']==='345678'
-        &&\RoxySocial\Store::$row['instagram_container_id']===null&&count($GLOBALS['calls'])===2
-        &&!str_contains($GLOBALS['calls'][1][0],'/media?'),
+        &&\RoxySocial\Store::$row['instagram_container_id']===null&&count($GLOBALS['calls'])===3
+        &&str_ends_with($GLOBALS['calls'][2][0],'/media_publish')
+        &&!str_ends_with($GLOBALS['calls'][0][0],'/media'),
         'finished video publishes the existing container without blocking polls or creating a duplicate container: ' . json_encode(['status'=>\RoxySocial\Store::$row['status'],'error'=>\RoxySocial\Store::$row['last_error'],'media_id'=>\RoxySocial\Store::$row['instagram_media_id'],'container'=>\RoxySocial\Store::$row['instagram_container_id'],'calls'=>$GLOBALS['calls']]));
 
     reset_fixture('instagram','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['instagram_container_id']='expired-container';
