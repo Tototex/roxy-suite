@@ -701,7 +701,12 @@ class Health {
         $t_reports = $wpdb->prefix . 'roxy_grosses_reports';
         $t_logs = $wpdb->prefix . 'roxy_grosses_logs';
 
-        if (!self::table_exists($t_reports)) {
+        $wpdb->last_error = '';
+        $reports_exist = self::table_exists($t_reports);
+        if ($wpdb->last_error !== '') {
+            return [self::item('Report table', 'Unavailable', self::WARN, 'The saved-report table could not be checked because the database read failed.')];
+        }
+        if (!$reports_exist) {
             return [self::item('Report table', 'Missing — run activation', self::FAIL)];
         }
 

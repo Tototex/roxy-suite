@@ -97,6 +97,10 @@ $grosses_log_item = static function () use ($call) {
     foreach ($items as $item) if ($item['label'] === 'Latest log event') return $item;
     throw new RuntimeException('Latest Grosses log health item missing.');
 };
+$wpdb->lookup_error = true;
+$grosses_unavailable = $call('functional_grosses');
+$check($grosses_unavailable[0]['status'] === 'warn' && $grosses_unavailable[0]['detail'] === 'Unavailable', 'Grosses table lookup failure is not reported as missing');
+$wpdb->lookup_error = false;
 $wpdb->log_row = null;
 $check($grosses_log_item()['detail'] === 'No logs found', 'verified empty Grosses logs remain a truthful empty result');
 $wpdb->log_error = true;
