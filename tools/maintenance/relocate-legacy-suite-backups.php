@@ -39,4 +39,3 @@ foreach($paths as $path) {
         throw new RuntimeException('Recovery postcondition failed: '.$path);
     echo 'Recoverably relocated: '.$path."\n";
 }
-

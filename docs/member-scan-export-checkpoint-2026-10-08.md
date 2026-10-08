@@ -1,6 +1,6 @@
 # Member scan-log CSV export checkpoint
 
-Date: 2026-10-08  
+Date: 2026-10-08
 Scope: read-only audit and local code/test changes; no export of live member data.
 
 The member scan-log exporter already used a fixed maximum-ID boundary, bounded 500-row queries, and literalized spreadsheet formulas. This follow-up builds the complete CSV in a uniquely named 0700 directory / 0600 file under the system temp directory, rejecting temp storage under the known WordPress roots or `DOCUMENT_ROOT`, then sends only after all pages and writes succeed. This is containment against configured roots, not protection against unconfigured web-server aliases.

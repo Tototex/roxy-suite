@@ -1,7 +1,7 @@
 # G2 collection-event projection checkpoint
 
-Date: 2026-10-08  
-Branch: `stability/audit-2026-10`  
+Date: 2026-10-08
+Branch: `stability/audit-2026-10`
 Scope: read-only event normalization and live payment-gateway discovery only.
 
 ## Evidence
