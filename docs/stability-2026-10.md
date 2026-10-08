@@ -157,6 +157,10 @@ The final upload/settings boundary now reads back the persisted template record.
 - Live server account quota on initial inspection: 9,872 MB / 10,240 MB; do not create a full staging clone there without first allocating space. Filesystem free space is not account quota.
 - Live plugin contains production edits relative to its old server Git checkout. Compare file content to local baseline before any overwrite. Health Check has known drift to reconcile deliberately.
 
+## CI runner reliability follow-up — 2026-10-08
+
+Both hosted workflows now use `ubuntu-24.04` instead of the moving `ubuntu-latest` alias and `actions/checkout@v5` (Node 24) instead of v4. This avoids an unplanned runner-image transition and the checkout Node 20 deprecation warning. The PHP 8.0–8.4 syntax matrix, full PHP 8.3 regression suite, and Social lifecycle private-MySQL fixtures all pass on the updated workflow in [run 37823215130](https://github.com/Tototex/roxy-suite/actions/runs/37823215130). The runner migration notice is tracked in [actions/runner-images #14748](https://github.com/actions/runner-images/issues/14748); checkout v5's Node 24 runtime is documented in the [checkout changelog](https://github.com/actions/checkout/blob/main/CHANGELOG.md). This improves CI reliability only; it does not certify or deploy the plugin to production.
+
 ## Live test evidence — first remediation checkpoint
 
 - Two authorized `tototest` checkouts charged $0. Order 30621 issued one ticket; manual check-in and undo succeeded. Order 30623 issued three tickets; actual zero-dollar Woo refunds and status transitions passed. Both orders canceled afterward, retaining explicit test notes and refund history. All four tickets are canceled/refunded, with no check-in flag. Only test cart items removed; cart now empty. No real vendor orders or public Social posts submitted.
