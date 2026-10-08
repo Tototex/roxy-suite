@@ -8,6 +8,59 @@ permissions:
   contents: read
 
 jobs:
+  social-database-fixtures:
+    name: Social lifecycle private-MySQL fixtures
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: roxy_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mysqli, zip
+          coverage: none
+      - name: Install WP-CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o "$RUNNER_TEMP/wp-cli.phar"
+          php "$RUNNER_TEMP/wp-cli.phar" --info
+      - name: Create disposable WordPress database
+        shell: bash
+        run: |
+          set -euo pipefail
+          wp_path="$RUNNER_TEMP/wordpress"
+          mkdir -p "$wp_path"
+          php "$RUNNER_TEMP/wp-cli.phar" core download --path="$wp_path" --skip-content
+          php "$RUNNER_TEMP/wp-cli.phar" config create --path="$wp_path" --dbname=roxy_test --dbuser=root --dbpass=root --dbhost=127.0.0.1 --skip-check
+          php "$RUNNER_TEMP/wp-cli.phar" core install --path="$wp_path" --url=http://roxy-test.invalid --title='Roxy fixture' --admin_user=fixture --admin_password=fixture-password --admin_email=fixture@example.invalid
+          echo "WP_PATH=$wp_path" >> "$GITHUB_ENV"
+      - name: Create isolated production-schema baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$WP_PATH" eval 'require_once getenv("GITHUB_WORKSPACE") . "/includes/modules/social-publisher/includes/class-roxy-social-store.php"; if (!\RoxySocial\Store::install_schema()) { throw new RuntimeException("Could not create empty Social schema baseline."); }'
+      - name: Run actual private-MySQL Social lifecycle fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/social-cleanup-mysql.php" "$GITHUB_WORKSPACE/includes/modules/social-publisher/includes/class-roxy-social-store.php"
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/social-draft-snapshot-mysql.php" "$GITHUB_WORKSPACE"
+
   lint:
     name: PHP ${{ matrix.php }} syntax
     runs-on: ubuntu-latest
