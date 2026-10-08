@@ -1,10 +1,13 @@
 <?php
 // Isolated member lookup/admission/navigation regression; no actual memberships.
 define('ABSPATH',__DIR__);define('ARRAY_A','ARRAY_A');
+define('MINUTE_IN_SECONDS',60);
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS: $label\n";}
 function get_option($key,$default=false){return ['roxy_member_scans_schema_version'=>'1','date_format'=>'Y-m-d','time_format'=>'H:i'][$key]??$default;}
 function update_option(...$args){} function add_action(...$args){}function add_filter(...$args){}function register_activation_hook(...$args){}
 function wp_timezone(){return new DateTimeZone('America/Los_Angeles');}
+function get_current_user_id(){return 42;}function set_transient($key,$value,$expiration){$GLOBALS['test_transients'][$key]=$value;return true;}function get_transient($key){return $GLOBALS['test_transients'][$key]??false;}function delete_transient($key){unset($GLOBALS['test_transients'][$key]);}
+function get_current_screen(){return $GLOBALS['test_screen']??null;}
 function wp_date($format,$timestamp=null,$timezone=null){return (new DateTimeImmutable('@'.($timestamp??1791010800)))->setTimezone($timezone??wp_timezone())->format($format);}
 function current_time($format){return '2026-10-03 10:00:00';}function date_i18n($fmt,$timestamp){return date($fmt,$timestamp);}
 function absint($value){return abs((int)$value);}function get_post_meta(...$args){return '';}
@@ -44,6 +47,7 @@ class TestDatabase {
 }
 $GLOBALS['wpdb']=new TestDatabase;
 $GLOBALS['test_sub_meta']=[];
+$GLOBALS['test_transients']=[];$GLOBALS['test_screen']=(object)['post_type'=>'shop_subscription'];
 $root=$argv[1]??dirname(__DIR__);
 require $root.'/includes/modules/sub-check/roxy-sub-check.php';
 require $root.'/includes/class-roxy-suite-members-dashboard.php';
@@ -58,6 +62,23 @@ $dashboard_action=new ReflectionMethod(\RoxySuite\Members_Dashboard::class,'hand
 $_POST=['roxy_members_action_nonce'=>'fixture','roxy_members_action'=>'save_photo','subscription_id'=>42,'attachment_id'=>77];ob_start();$dashboard_action->invoke(null);$photo_notice=ob_get_clean();
 check(($GLOBALS['test_sub_meta'][42]['_roxy_member_photo_id']??0)===77&&str_contains($photo_notice,'Member photo updated.'),'member dashboard persists photo metadata through subscription CRUD');
 check((Roxy_Sub_Check::get_member_payload(42,false)['photo_url']??'')==='https://example.test/photo/77','member-check photo read sees CRUD-saved subscription metadata');
+$photo_post=(object)['ID'=>51,'post_type'=>'shop_subscription'];
+$_POST=['roxy_member_photo_nonce'=>'fixture','roxy_member_photo_id'=>'88'];
+Roxy_Sub_Check::save_subscription_photo_metabox(51,$photo_post);
+ob_start();Roxy_Sub_Check::subscription_photo_save_notice();$legacy_photo_notice=ob_get_clean();
+check(($GLOBALS['test_sub_meta'][51]['_roxy_member_photo_id']??0)===88&&str_contains($legacy_photo_notice,'Member photo updated.'),'legacy subscription photo editor verifies CRUD save and reports success');
+$_POST=['roxy_member_photo_nonce'=>'fixture','roxy_member_photo_id'=>'0'];
+Roxy_Sub_Check::save_subscription_photo_metabox(51,$photo_post);
+ob_start();Roxy_Sub_Check::subscription_photo_save_notice();$remove_photo_notice=ob_get_clean();
+check(!isset($GLOBALS['test_sub_meta'][51]['_roxy_member_photo_id'])&&str_contains($remove_photo_notice,'Member photo updated.'),'legacy subscription photo removal is verified and reported');
+$_POST=['roxy_member_photo_nonce'=>'fixture','roxy_member_photo_id'=>['88']];
+Roxy_Sub_Check::save_subscription_photo_metabox(51,$photo_post);
+ob_start();Roxy_Sub_Check::subscription_photo_save_notice();$bad_photo_notice=ob_get_clean();
+check(!isset($GLOBALS['test_sub_meta'][51]['_roxy_member_photo_id'])&&str_contains($bad_photo_notice,'could not be verified'),'malformed legacy photo input fails safely with a scoped error notice');
+$GLOBALS['test_sub_save_fail']=true;$_POST=['roxy_member_photo_nonce'=>'fixture','roxy_member_photo_id'=>'99'];
+Roxy_Sub_Check::save_subscription_photo_metabox(51,$photo_post);$GLOBALS['test_sub_save_fail']=false;
+ob_start();Roxy_Sub_Check::subscription_photo_save_notice();$failed_photo_notice=ob_get_clean();
+check(!isset($GLOBALS['test_sub_meta'][51]['_roxy_member_photo_id'])&&str_contains($failed_photo_notice,'could not be verified'),'failed legacy photo CRUD save is not reported as successful');
 $_POST=['roxy_members_action_nonce'=>'fixture','roxy_members_action'=>'toggle_trade','subscription_id'=>42,'trade_value'=>'1'];ob_start();$dashboard_action->invoke(null);$trade_notice=ob_get_clean();
 check(($GLOBALS['test_sub_meta'][42]['_roxy_member_trade_subscription']??0)===1&&str_contains($trade_notice,'Trade / comp flag updated.'),'member dashboard persists trade metadata through subscription CRUD');
 $GLOBALS['test_sub_save_fail']=true;$_POST=['roxy_members_action_nonce'=>'fixture','roxy_members_action'=>'toggle_trade','subscription_id'=>42,'trade_value'=>'0'];ob_start();$dashboard_action->invoke(null);$failed_save_notice=ob_get_clean();unset($GLOBALS['test_sub_save_fail']);

@@ -25,6 +25,7 @@ class Roxy_Sub_Check {
 
     add_action('add_meta_boxes', [__CLASS__, 'add_subscription_photo_metabox']);
     add_action('save_post', [__CLASS__, 'save_subscription_photo_metabox'], 10, 2);
+    add_action('admin_notices', [__CLASS__, 'subscription_photo_save_notice']);
     add_action('admin_enqueue_scripts', [__CLASS__, 'admin_enqueue_media']);
 
     if (!defined('ROXY_SUITE_VERSION')) {
@@ -968,7 +969,7 @@ class Roxy_Sub_Check {
   }
 
   public static function save_subscription_photo_metabox($post_id, $post) {
-    if ($post->post_type !== 'shop_subscription') return;
+    if (!is_object($post) || ($post->post_type ?? '') !== 'shop_subscription') return;
     if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
     if (!current_user_can('edit_post', $post_id)) return;
 
@@ -976,13 +977,52 @@ class Roxy_Sub_Check {
       return;
     }
 
-    $photo_id = isset($_POST['roxy_member_photo_id']) ? absint($_POST['roxy_member_photo_id']) : 0;
+    $raw_photo_id = $_POST['roxy_member_photo_id'] ?? 0;
+    if (!is_scalar($raw_photo_id)) {
+      set_transient('roxy_member_photo_save_' . get_current_user_id(), 0, MINUTE_IN_SECONDS);
+      return;
+    }
+    $photo_id = absint(wp_unslash($raw_photo_id));
 
     $subscription = function_exists('wcs_get_subscription') ? wcs_get_subscription((int)$post_id) : false;
-    if (!is_object($subscription) || !method_exists($subscription, 'save')) return;
-    if ($photo_id > 0) $subscription->update_meta_data(self::META_PHOTO_ID, $photo_id);
-    else $subscription->delete_meta_data(self::META_PHOTO_ID);
-    $subscription->save();
+    if (!is_object($subscription) || !method_exists($subscription, 'get_meta') || !method_exists($subscription, 'save')
+      || ($photo_id > 0 && !method_exists($subscription, 'update_meta_data'))
+      || ($photo_id <= 0 && !method_exists($subscription, 'delete_meta_data'))) {
+      set_transient('roxy_member_photo_save_' . get_current_user_id(), 0, MINUTE_IN_SECONDS);
+      return;
+    }
+    try {
+      if ($photo_id > 0) $subscription->update_meta_data(self::META_PHOTO_ID, $photo_id);
+      else $subscription->delete_meta_data(self::META_PHOTO_ID);
+      $saved_id = $subscription->save();
+      $saved = (int) $saved_id === (int) $post_id;
+      if ($saved && function_exists('wcs_get_subscription')) {
+        $verified = wcs_get_subscription((int) $post_id);
+        $saved = is_object($verified) && method_exists($verified, 'get_meta')
+          && absint($verified->get_meta(self::META_PHOTO_ID, true)) === $photo_id;
+      } else {
+        $saved = false;
+      }
+      set_transient('roxy_member_photo_save_' . get_current_user_id(), $saved ? 1 : 0, MINUTE_IN_SECONDS);
+    } catch (\Throwable $error) {
+      set_transient('roxy_member_photo_save_' . get_current_user_id(), 0, MINUTE_IN_SECONDS);
+    }
+  }
+
+  public static function subscription_photo_save_notice(): void {
+    $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+    if (!$screen || ($screen->post_type ?? '') !== 'shop_subscription' || !function_exists('get_current_user_id')) return;
+    $user_id = (int) get_current_user_id();
+    if ($user_id <= 0) return;
+    $key = 'roxy_member_photo_save_' . $user_id;
+    $result = get_transient($key);
+    if ($result === false) return;
+    delete_transient($key);
+    if ((string) $result === '1') {
+      echo '<div class="notice notice-success is-dismissible"><p>Member photo updated.</p></div>';
+    } else {
+      echo '<div class="notice notice-error"><p>Member photo could not be verified as saved. Reopen the subscription and check the photo before relying on the card display.</p></div>';
+    }
   }
 }
 
