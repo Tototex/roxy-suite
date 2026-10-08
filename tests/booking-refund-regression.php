@@ -254,6 +254,13 @@ function make_booking($id, $order_id, array $adjustments = []) {
     $GLOBALS['bookings'][$id]=['id'=>$id,'status'=>'confirmed','payment_method'=>'card','invoice_status'=>'not_needed','woo_order_id'=>$order_id,'woo_adjustment_order_ids'=>$adjustments,'fixture_revision'=>'r1','doors_open_at'=>(new DateTimeImmutable('+30 days',wp_timezone()))->format('Y-m-d H:i:s')];
     $GLOBALS['booking_save_error']=false; $GLOBALS['cleared_reminders']=[]; $GLOBALS['queued_cancellations']=[];
 }
+run_test('booking revision safely fingerprints array-valued adjustment IDs', function() {
+    make_booking(79,179,[181,182]);
+    $revision=roxy_eb_booking_revision($GLOBALS['bookings'][79]);
+    check(is_string($revision) && hash_equals($revision,roxy_eb_booking_revision($GLOBALS['bookings'][79])),'repeated snapshots with collection values are stable');
+    $GLOBALS['bookings'][79]['woo_adjustment_order_ids']=[182,183];
+    check(!hash_equals($revision,roxy_eb_booking_revision($GLOBALS['bookings'][79])),'changing collection values changes the revision');
+});
 run_test('actual cancellation caller preserves unrelated items and refunds linked adjustment only', function() {
     reset_gateway(); make_booking(80,180,[181]);
     register_order(new WC_Order(180,70,[1=>make_item(80,null,50),2=>make_item(null,null,20)]));
