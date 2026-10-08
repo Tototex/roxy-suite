@@ -205,7 +205,7 @@ final class Issuance {
     unset($audit['id']);
     $audit['scanned_at']=current_time('mysql');
     $audit['is_active']=0;
-    $audit['status']='undo_of:' . $visit_id;
+    $audit['status']='undo:' . $visit_id . ';r:' . $replacement_id;
     $audit['source']=$walkup_sources[(string)$row['source']];
     $audit['quantity']=1;
     if(!$this->member_visit($audit))throw new \RuntimeException('Member walk-up Undo audit was not saved');

@@ -40,7 +40,7 @@ try {
   $remaining=$wpdb->get_row($wpdb->prepare("SELECT * FROM `$scan` WHERE id=%d",$audit['replacement_visit_id']),ARRAY_A);
   $event=$wpdb->get_row($wpdb->prepare("SELECT * FROM `$scan` WHERE id=%d",$audit['undo_audit_id']),ARRAY_A);
   $original=$wpdb->get_row($wpdb->prepare("SELECT * FROM `$scan` WHERE id=%d",$visit),ARRAY_A);
-  $check($audit['quantity_after']===2 && (int)$original['is_active']===0 && (int)$original['quantity']===3 && (int)$remaining['is_active']===1 && (int)$remaining['quantity']===2 && $event['source']==='manual_undo_walkup' && (int)$event['is_active']===0 && $event['status']==='undo_of:'.$visit,'partial Undo preserves the original row, remaining people, and linked inactive audit event');
+  $check($audit['quantity_after']===2 && (int)$original['is_active']===0 && (int)$original['quantity']===3 && (int)$remaining['is_active']===1 && (int)$remaining['quantity']===2 && $event['source']==='manual_undo_walkup' && (int)$event['is_active']===0 && $event['status']==='undo:'.$visit.';r:'.$audit['replacement_visit_id'],'partial Undo preserves the original row, remaining people, and linked inactive audit event');
   $state=wp_json_encode($wpdb->get_results("SELECT * FROM `$scan` ORDER BY id",ARRAY_A));
   $stale=false;try{$undo($visit,712345,812345);}catch(Throwable $error){$stale=true;}
   $check($stale && $state===wp_json_encode($wpdb->get_results("SELECT * FROM `$scan` ORDER BY id",ARRAY_A)),'stale duplicate Undo makes no second state change');
@@ -49,7 +49,8 @@ try {
   $single=$insert(712346,812345,1,'nfc_admit_walkup');
   $full=$undo($single,712346,812345);
   $single_row=$wpdb->get_row($wpdb->prepare("SELECT * FROM `$scan` WHERE id=%d",$single),ARRAY_A);
-  $check($full['quantity_after']===0 && $full['replacement_visit_id']===0 && (int)$single_row['is_active']===0,'full NFC walk-up Undo deactivates the exact visit without replacement');
+  $full_event=$wpdb->get_row($wpdb->prepare("SELECT * FROM `$scan` WHERE id=%d",$full['undo_audit_id']),ARRAY_A);
+  $check($full['quantity_after']===0 && $full['replacement_visit_id']===0 && (int)$single_row['is_active']===0 && $full_event['status']==='undo:'.$single.';r:0','full NFC walk-up Undo deactivates the exact visit and audits the absence of a replacement');
   $wrong_source=$insert(712345,812345,1,'manual_admit_reserved');
   $reserved=false;try{$undo($wrong_source,712345,812345);}catch(Throwable $error){$reserved=true;}
   $reserved_row=$wpdb->get_row($wpdb->prepare("SELECT * FROM `$scan` WHERE id=%d",$wrong_source),ARRAY_A);

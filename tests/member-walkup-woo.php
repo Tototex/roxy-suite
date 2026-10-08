@@ -47,7 +47,7 @@ try {
   $clear();update_post_meta($show,'_roxy_capacity',3);$result=$admit(1);$result=$admit(3);
   $check($result['ok']&&$total()===3&&$result['payload']['admit_quantity']===2&&$result['payload']['walkup_visit_id']>0,'raising arrived target logs only newly arrived people with an exact visit identity');
   $partial=\RoxyST\WalkupFixtureTickets::undo_member_walkup((int)$result['payload']['walkup_visit_id'],$subs[0]->get_id(),$show);
-  $check($total()===2&&$partial['quantity_after']===1&&$partial['replacement_visit_id']>0&&(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `$table` WHERE id=%d AND is_active=0 AND source='manual_undo_walkup' AND status=%s",$partial['undo_audit_id'],'undo_of:'.$result['payload']['walkup_visit_id']))===1,'partial walk-up Undo preserves remaining arrivals and a linked inactive audit row');
+  $check($total()===2&&$partial['quantity_after']===1&&$partial['replacement_visit_id']>0&&(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `$table` WHERE id=%d AND is_active=0 AND source='manual_undo_walkup' AND status=%s",$partial['undo_audit_id'],'undo:'.$result['payload']['walkup_visit_id'].';r:'.$partial['replacement_visit_id']))===1,'partial walk-up Undo preserves remaining arrivals and links both exact visit identities in an inactive audit row');
   $clear();update_post_meta($show,'_roxy_capacity',1);
   for($n=0;$n<2;$n++) {
     $pipes=[];$process=proc_open([PHP_BINARY,'/usr/local/bin/wp','--path='.ABSPATH,'eval-file',__DIR__.'/member-walkup-worker.php',$root,(string)$subs[$n]->get_id(),(string)$show],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);
