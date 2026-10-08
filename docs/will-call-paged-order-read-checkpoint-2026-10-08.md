@@ -6,7 +6,7 @@ Will Call now reads eligible order IDs in stable, ascending-ID pages of 200 and 
 
 ## Verification
 
-The Will Call regression reconciles 401 fixture orders across multiple pages while preserving refunded quantities, collected revenue, customer aggregation, and status/date exclusions. Later-page query failure and an order disappearing during hydration both reject the complete list without caching partial results. Hosted run [37751996037](https://github.com/Tototex/roxy-suite/actions/runs/37751996037) passes the PHP 8.0–8.4 syntax matrix and full PHP 8.3 isolated suite, including the streaming refinement. No live order, ticket, or attendance record was changed.
+The Will Call regression reconciles 401 fixture orders across multiple pages while preserving refunded quantities, collected revenue, customer aggregation, and status/date exclusions. Later-page query failure, a missing order, a thrown order read, and malformed item data all reject the complete list without caching partial results. Hosted run [37752278221](https://github.com/Tototex/roxy-suite/actions/runs/37752278221) passes the PHP 8.0–8.4 syntax matrix and full PHP 8.3 isolated suite, including the streaming and hydration-failure checks. No live order, ticket, or attendance record was changed.
 
 ## Remaining
 
