@@ -10,6 +10,7 @@ Automatic polling stops after five checks, on a terminal `ERROR`/`EXPIRED` resul
 
 - Isolated publisher regressions cover initial container creation, retry reuse and finish/publish, expired-container clearing, already-published ambiguity, maximum poll exhaustion, legacy-row recovery, and ownership behavior.
 - Hosted workflow [37762362751](https://github.com/Tototex/roxy-suite/actions/runs/37762362751) passes PHP syntax on 8.0–8.4, the full configured isolated regression suite on PHP 8.3, release-manifest checks, and deterministic runtime archive verification.
+- Follow-up: the private MySQL fixture now exercises the actual locked, revision-checked `Store::update_status()` manager approval path. It verifies stale approval preserves a newer ambiguity marker, valid approval clears the marker while preserving provider IDs, and duplicate approval cannot transition the row a second time. The fixture uses a connection-local InnoDB temporary table. Hosted run [37844074162](https://github.com/Tototex/roxy-suite/actions/runs/37844074162) completed successfully, including the Social lifecycle private-MySQL job, PHP 8.0–8.4 syntax matrix, and Requested Showings private WordPress/Woo lifecycle job.
 - No Meta provider call was made against a live account; the isolated test uses a fake HTTP transport. No live Social post or row was changed.
 
 ## Deployment boundary and remaining work
