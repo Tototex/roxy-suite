@@ -48,6 +48,13 @@ $wpdb->products = [
     'already_free'=>['unit_cost'=>0.0,'unit_cost_status'=>'free','pack_size'=>36,'target_stock'=>72],
 ];
 $migrate = $store->getMethod('migrate_cost_provenance'); $migrate->setAccessible(true);
+$save_version = $store->getMethod('save_schema_version'); $save_version->setAccessible(true);
+$save_version->invoke(null);
+check(($GLOBALS['cost_schema_options']['roxy_inventory_db_version']??'')==='0.1.0', 'Schema version marker is saved after a successful upgrade');
+$GLOBALS['cost_schema_options']['roxy_inventory_db_version']='old-version';
+$GLOBALS['cost_schema_fail_marker']=true;
+check((function()use($save_version){try{$save_version->invoke(null);return false;}catch(\Throwable $e){return true;}})() && $GLOBALS['cost_schema_options']['roxy_inventory_db_version']==='old-version','Failed schema-version save is surfaced and leaves upgrade retryable');
+unset($GLOBALS['cost_schema_fail_marker']);
 $migrate->invoke(null);
 check($wpdb->products['priced']['unit_cost_status']==='estimate' && $wpdb->products['priced']['unit_cost']===1.53, 'Existing positive configured price becomes an estimate without changing its amount');
 check($wpdb->products['zero']['unit_cost_status']==='unknown' && $wpdb->products['zero']['unit_cost']===0.0, 'Existing zero cost remains unknown');
@@ -64,4 +71,4 @@ $wpdb->fail_query = false;
 $GLOBALS['cost_schema_fail_marker'] = true;
 check((function () use ($migrate) { try { $migrate->invoke(null); return false; } catch (\Throwable $e) { return true; } })(), 'Failed migration marker save surfaces an error');
 check(!isset($GLOBALS['cost_schema_options']['roxy_inventory_cost_provenance_v1']), 'Unstored migration marker is never reported as complete');
-echo "Passed 11 Inventory cost schema checks.\n";
+echo "Passed 13 Inventory cost schema checks.\n";

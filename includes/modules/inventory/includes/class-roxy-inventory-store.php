@@ -169,7 +169,7 @@ class Store {
         self::seed_vendors();
         if (!get_option('roxy_inventory_db_version')) self::apply_vendor_assignments();
         self::upgrade_submission_identity();
-        update_option('roxy_inventory_db_version', defined('ROXY_INVENTORY_VER') ? ROXY_INVENTORY_VER : '0.1.0');
+        self::save_schema_version();
     }
 
     public static function maybe_upgrade_schema(): void {
@@ -188,6 +188,13 @@ class Store {
         self::checked_write($wpdb->query("UPDATE " . self::products_table() . " SET unit_cost_status='estimate' WHERE unit_cost_status='unknown' AND unit_cost>0"));
         if (!update_option('roxy_inventory_cost_provenance_v1', 1, false) && (int)get_option('roxy_inventory_cost_provenance_v1') !== 1) {
             throw new \RuntimeException('Inventory cost provenance migration marker could not be saved.');
+        }
+    }
+
+    private static function save_schema_version(): void {
+        $version = defined('ROXY_INVENTORY_VER') ? ROXY_INVENTORY_VER : '0.1.0';
+        if (!update_option('roxy_inventory_db_version', $version) && (string)get_option('roxy_inventory_db_version', '') !== (string)$version) {
+            throw new \RuntimeException('Inventory schema version could not be saved. The upgrade will retry; do not submit orders until the upgrade notice clears.');
         }
     }
 
