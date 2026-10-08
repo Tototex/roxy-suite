@@ -145,7 +145,7 @@ final class Hangar {
         $upload_prefix = $upload_root !== false ? rtrim($upload_root, '/\\') . DIRECTORY_SEPARATOR : '';
         if ($upload_root !== false && $poster_realpath !== false && is_file($poster_realpath)
             && strpos($poster_realpath, $upload_prefix) === 0
-            && preg_match('/-poster\.[A-Za-z0-9]+$/', basename($poster_realpath))) {
+            && preg_match('/-poster(?:-[0-9]+)?\.[A-Za-z0-9]+$/', basename($poster_realpath))) {
             @unlink($poster_realpath);
         }
         delete_post_meta($attachment_id, '_roxy_social_video_poster_url');

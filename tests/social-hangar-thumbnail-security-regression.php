@@ -124,6 +124,18 @@ namespace RoxySocial {
     $save_poster->invoke(null, 504, 31, 'failed-meta.mp4');
     unset($GLOBALS['hangar_fixture']['fail_meta_key']);
     $check(empty($GLOBALS['hangar_fixture']['meta'][504]) && !is_file($upload_dir . DIRECTORY_SEPARATOR . 'failed-meta-poster.png'), 'failed poster metadata write rolls back metadata and removes only its new file');
+    $old_poster_path = $upload_dir . DIRECTORY_SEPARATOR . 'previous-poster.png';
+    file_put_contents($old_poster_path, 'preserve-prior-poster');
+    $GLOBALS['hangar_fixture']['meta'][507] = [
+        '_roxy_social_video_poster_url' => 'https://fixture.invalid/uploads/previous-poster.png',
+        '_roxy_social_video_poster_file' => $old_poster_path,
+    ];
+    $old_poster_meta = $GLOBALS['hangar_fixture']['meta'][507];
+    $GLOBALS['hangar_fixture']['fail_meta_key'] = '_roxy_social_video_poster_file';
+    $save_poster->invoke(null, 507, 31, 'replacement.mp4');
+    unset($GLOBALS['hangar_fixture']['fail_meta_key']);
+    $check($GLOBALS['hangar_fixture']['meta'][507] === $old_poster_meta && file_get_contents($old_poster_path) === 'preserve-prior-poster'
+        && !is_file($upload_dir . DIRECTORY_SEPARATOR . 'replacement-poster.png'), 'failed replacement preserves prior poster metadata and bytes');
     $before_files = count(glob($upload_dir . DIRECTORY_SEPARATOR . '*') ?: []);
     $before_meta = $GLOBALS['hangar_fixture']['meta'][501];
     $GLOBALS['hangar_fixture']['cache']['roxy_social_hangar_thumb_32'] = '/posters/bad.png';
@@ -143,6 +155,11 @@ namespace RoxySocial {
     $GLOBALS['hangar_fixture']['meta'][506]['_roxy_social_video_poster_file'] = $owned_path;
     Hangar::delete_video_thumbnail(506);
     $check(!file_exists($owned_path), 'attachment cleanup removes a plugin-named poster within uploads');
+    $numbered_path = $upload_dir . DIRECTORY_SEPARATOR . 'collision-poster-1.png';
+    file_put_contents($numbered_path, $png);
+    $GLOBALS['hangar_fixture']['meta'][508]['_roxy_social_video_poster_file'] = $numbered_path;
+    Hangar::delete_video_thumbnail(508);
+    $check(!file_exists($numbered_path), 'attachment cleanup removes WordPress collision-renamed poster files');
 
     $GLOBALS['hangar_fixture']['response'] = ['response' => ['code' => 200], 'headers' => ['content-type' => 'image/png'], 'body' => $png];
     $GLOBALS['hangar_fixture']['search_body'] = json_encode([
