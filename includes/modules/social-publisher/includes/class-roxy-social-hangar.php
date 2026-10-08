@@ -257,9 +257,34 @@ final class Hangar {
             @unlink($tmp);
             return 0;
         }
-        set_post_thumbnail($post_id, (int) $attachment_id);
-        update_post_meta((int) $attachment_id, '_roxy_hangar_asset_id', $asset_id);
+        $attachment_id = (int) $attachment_id;
+        if ($attachment_id <= 0 || !self::assign_featured_image($post_id, $attachment_id, $asset_id)) {
+            // The new file was not successfully attached to this post. Keep
+            // the existing featured image and remove only this request's file.
+            if ($attachment_id > 0 && (int) get_post_thumbnail_id($post_id) !== $attachment_id) wp_delete_attachment($attachment_id, true);
+            return 0;
+        }
         return (int) $attachment_id;
+    }
+
+    /** Persist and read back the asset identity and featured-image assignment. */
+    private static function assign_featured_image(int $post_id, int $attachment_id, int $asset_id): bool {
+        if ($post_id <= 0 || $attachment_id <= 0 || $asset_id <= 0) return false;
+        $previous_id = (int) get_post_thumbnail_id($post_id);
+        $saved = update_post_meta($attachment_id, '_roxy_hangar_asset_id', $asset_id);
+        if ($saved === false && (int) get_post_meta($attachment_id, '_roxy_hangar_asset_id', true) !== $asset_id) return false;
+
+        try { set_post_thumbnail($post_id, $attachment_id); } catch (\Throwable $error) { return false; }
+        $current_id = (int) get_post_thumbnail_id($post_id);
+        if ($current_id === $attachment_id) return true;
+
+        // A failed setter should leave the old image alone. If a hook changed
+        // it anyway, make a best-effort restoration before reporting failure.
+        if ($current_id !== $previous_id) {
+            if ($previous_id > 0) set_post_thumbnail($post_id, $previous_id);
+            elseif (function_exists('delete_post_thumbnail')) delete_post_thumbnail($post_id);
+        }
+        return false;
     }
 
     private static function write_download_temp_file(string $path, string $body): bool {
