@@ -155,7 +155,8 @@ final class Store {
             }
         }
         if (count($rows) === 100 && $next_cursor < $upper_id) {
-            wp_schedule_single_event(time() + 60, 'roxy_social_cleanup_media_page', [$next_cursor, $upper_id]);
+            $scheduled = wp_schedule_single_event(time() + 60, 'roxy_social_cleanup_media_page', [$next_cursor, $upper_id]);
+            if (!$scheduled) error_log('Roxy Social detached-media cleanup could not schedule its next bounded page. The next regular cleanup run will retry.');
         }
         return $deleted;
     }
