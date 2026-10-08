@@ -113,6 +113,18 @@ function roxy_will_call_showing_is_archived(int $showing_id): bool {
   return $start_dt->getTimestamp() < $cutoff->getTimestamp();
 }
 
+function roxy_will_call_archive_page_from_request(array $query, bool $show_archived): int {
+  $max_page = 1000;
+  $raw_page = $query['archive_page'] ?? 0;
+  $page = is_scalar($raw_page) && preg_match('/\A\d+\z/', (string) $raw_page)
+    ? (int) $raw_page
+    : 0;
+  $page = max(0, min($max_page, $page));
+  if ($show_archived && isset($query['archive_page_next']) && $page < $max_page) $page++;
+  if ($show_archived && isset($query['archive_page_prev'])) $page = max(0, $page - 1);
+  return $page;
+}
+
 function roxy_will_call_customer_key(string $name, string $email): string {
   $name = trim($name) !== '' ? trim($name) : 'Unknown Name';
   $email = strtolower(trim($email)) !== '' ? strtolower(trim($email)) : 'unknown-email';
@@ -166,9 +178,7 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
   $selected_product_id = isset($_GET['product_id']) ? absint($_GET['product_id']) : 0;
   $selected_showing_id = isset($_GET['showing_id']) ? absint($_GET['showing_id']) : 0;
   $show_archived = !empty($_GET['show_archived']);
-  $archive_page = isset($_GET['archive_page']) ? max(0, min(100000, (int) $_GET['archive_page'])) : 0;
-  if ($show_archived && isset($_GET['archive_page_next'])) $archive_page++;
-  if ($show_archived && isset($_GET['archive_page_prev'])) $archive_page = max(0, $archive_page - 1);
+  $archive_page = roxy_will_call_archive_page_from_request($_GET, $show_archived);
   $page_slug = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : 'roxy-will-call';
   $tab_slug = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : '';
   if ($wrap) {
@@ -738,7 +748,7 @@ function roxy_will_call_product_dropdown($selected) {
 }
 
 function roxy_will_call_showing_dropdown($selected, bool $show_archived = false, int $archive_page = 0) {
-  $archive_page = max(0, min(100000, $archive_page));
+  $archive_page = max(0, min(1000, $archive_page));
   $page_size = 200;
   $posts = get_posts([
     'post_type' => 'roxy_showing',
