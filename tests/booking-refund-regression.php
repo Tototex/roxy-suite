@@ -4,6 +4,11 @@
  * Run with: php tests/booking-refund-regression.php
  */
 
+set_error_handler(static function (int $severity, string $message, string $file, int $line): bool {
+    if (!(error_reporting() & $severity)) return false;
+    throw new ErrorException($message, 0, $severity, $file, $line);
+});
+
 define('ABSPATH', __DIR__ . '/');
 class WP_Error {
     private $code;
