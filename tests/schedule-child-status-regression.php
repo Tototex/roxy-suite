@@ -201,6 +201,14 @@ namespace {
     $_POST=[];
     $GLOBALS['schedule_meta'][$source->ID]=[
       '_roxy_start'=>'2026-03-01T19:30',
+      '_roxy_pid_adult'=>'910001',
+      '_roxy_pid_discount'=>'910002',
+      '_roxy_pid_matinee'=>'910003',
+      '_roxy_pid_live1'=>'910004',
+      '_roxy_pid_live2'=>'910005',
+      '_roxy_pid_subscriber'=>'910006',
+      '_roxy_legacy_product_ids'=>"910001\n910099",
+      '_roxy_sales_stats'=>['legacy_buyer_email@example.test'=>['adult'=>2]],
       '_roxy_live_change_at_1'=>'2026-03-01T18:00',
       '_roxy_live_future_price_1'=>'25',
       '_roxy_live_change_at_2'=>'2026-03-01T18:30',
@@ -210,6 +218,9 @@ namespace {
     $id=$duplicate->invoke(null,$source->ID);
     check_schedule($id>0,'valid source showing creates one duplicate');
     check_schedule(($GLOBALS['schedule_meta'][$id]['_roxy_start']??'')==='2026-03-08T19:30','duplicate showing date advances seven local days');
+    foreach (['_roxy_pid_adult','_roxy_pid_discount','_roxy_pid_matinee','_roxy_pid_live1','_roxy_pid_live2','_roxy_pid_subscriber','_roxy_legacy_product_ids','_roxy_sales_stats'] as $event_data_key) {
+      check_schedule(($GLOBALS['schedule_meta'][$id][$event_data_key]??'')==='','duplicate omits event-specific product mappings and cached sales stats: '.$event_data_key);
+    }
     check_schedule(($GLOBALS['schedule_meta'][$id]['_roxy_live_change_at_1']??'')==='2026-03-08T18:00','first scheduled price change shifts with duplicate');
     check_schedule(($GLOBALS['schedule_meta'][$id]['_roxy_live_change_at_2']??'')==='2026-03-08T18:30','second scheduled price change shifts with duplicate');
   });

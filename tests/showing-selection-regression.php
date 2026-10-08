@@ -67,7 +67,14 @@ check(strpos($html,'value="398"')!==false && $GLOBALS['last_query']['offset']===
 check(strpos($html,'Older showings')===false && strpos($html,'Newer showings')!==false, 'T12: final archive page does not offer an empty next page');
 date_default_timezone_set('UTC');
 $schema = new \ReflectionMethod(\RoxyST\Frontend::class,'schema_start_date'); $schema->setAccessible(true);
-check($schema->invoke(null,'2026-10-03T19:30') === '2026-10-03T19:30:00-07:00', 'T16: local evening not converted as UTC');
+$structured_start = '2026-10-03T19:30';
+$structured_schema = $schema->invoke(null, $structured_start);
+check($structured_schema === '2026-10-03T19:30:00-07:00', 'T16: local evening not converted as UTC');
+foreach (['UTC', 'Pacific/Honolulu', 'Asia/Tokyo'] as $process_timezone) {
+    date_default_timezone_set($process_timezone);
+    check($schema->invoke(null, $structured_start) === $structured_schema, 'T16: structured local datetime is independent of process timezone ' . $process_timezone);
+}
+date_default_timezone_set('UTC');
 check($schema->invoke(null,'2026-11-07T19:30') === '2026-11-07T19:30:00-08:00', 'T16: local timezone reflects DST');
 check($schema->invoke(null,'not a date') === '', 'T16: malformed schema date safely omitted');
 $weekend = new \ReflectionMethod(\RoxyST\CPT::class,'weekend_anchor_from_start'); $weekend->setAccessible(true);

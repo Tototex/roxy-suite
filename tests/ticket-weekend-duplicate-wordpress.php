@@ -67,6 +67,7 @@ try {
             '_roxy_pid_matinee' => '910003', '_roxy_pid_live1' => '910004',
             '_roxy_pid_live2' => '910005', '_roxy_pid_subscriber' => '910006',
             '_roxy_legacy_product_ids' => "910001\n910002\n910099",
+            '_roxy_sales_stats' => ['legacy_buyer_email@example.test' => ['adult' => 2]],
             '_roxy_live_label_1' => 'General Admission',
             '_roxy_live_price_1' => '18.00', '_roxy_live_future_price_1' => '22.00',
             '_roxy_live_change_at_1' => $index === 0 ? '2026-11-01T00:30' : '2026-03-08T00:30',
@@ -92,6 +93,7 @@ try {
 
         foreach ($pid_meta as $key) $check(get_post_meta($child_id, $key, true) === '', 'child omits stale canonical ticket ID ' . $key);
         $check(get_post_meta($child_id, '_roxy_legacy_product_ids', true) === '', 'child omits source legacy product ID list');
+        $check(get_post_meta($child_id, '_roxy_sales_stats', true) === '', 'child does not copy source showing sales-stat cache');
         foreach (['_roxy_live_label_1','_roxy_live_price_1','_roxy_live_future_price_1','_roxy_live_change_at_1','_roxy_live_label_2','_roxy_live_price_2','_roxy_live_future_price_2','_roxy_live_change_at_2'] as $key) {
             $expected = $source_meta[$key];
             if ($key === '_roxy_live_change_at_1') $expected = $index === 0 ? '2026-11-08T00:30' : '2026-03-15T00:30';
