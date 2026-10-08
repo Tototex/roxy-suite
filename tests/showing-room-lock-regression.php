@@ -88,7 +88,8 @@ $check = static function (bool $ok, string $label) use (&$checks): void {
 
 $invoked = false;
 $conflict = roxy_eb_with_showing_time_lock('2040-01-02T14:30', 0, static function () use (&$invoked) { $invoked = true; return true; });
-$check(is_wp_error($conflict) && $conflict->get_error_code() === 'reservation_conflict' && !$invoked, 'showing that overlaps a booking and manual block is refused before writes');
+$conflict_code = is_wp_error($conflict) ? $conflict->get_error_code() : gettype($conflict);
+$check(is_wp_error($conflict) && $conflict_code === 'reservation_conflict' && !$invoked, 'showing conflict guard rejected booking/block overlap (actual: ' . $conflict_code . ', callback: ' . ($invoked ? 'ran' : 'not run') . ')');
 
 $self_write = false;
 $self = roxy_eb_with_showing_time_lock('2040-01-02T19:00', 501, static function () use (&$self_write, $wpdb) {
