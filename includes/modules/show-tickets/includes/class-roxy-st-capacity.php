@@ -210,7 +210,7 @@ class Capacity {
 
 
   public static function purchased_subscriber_qty_for_showing_user(int $showing_id, int $user_id): int {
-    if ($showing_id <= 0 || $user_id <= 0 || !function_exists('wc_get_orders')) return 0;
+    if ($showing_id <= 0 || $user_id <= 0 || !function_exists('wc_get_orders')) return PHP_INT_MAX;
 
     $cache_key = $showing_id . ':' . $user_id;
     if (isset(self::$subscriber_usage_cache[$cache_key])) {
@@ -274,6 +274,7 @@ class Capacity {
   }
 
   public static function subscriber_limit_remaining_for_showing(int $showing_id, int $user_id = 0, bool $include_cart = true): int {
+    if ($showing_id <= 0) return 0;
     $user_id = $user_id > 0 ? $user_id : get_current_user_id();
     $entitlement = self::subscription_entitlement_count((int) $user_id);
     if ($entitlement <= 0) return 0;

@@ -75,6 +75,7 @@ jobs:
             arcade-review-gate-regression.php
             arcade-score-regression.php
             booking-refund-regression.php
+            capacity-missing-order-api-regression.php
             c6-governance-regression.php
             capacity-walkup-regression.php
             checkout-cart-regression.php

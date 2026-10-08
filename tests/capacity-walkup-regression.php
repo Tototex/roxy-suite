@@ -34,6 +34,7 @@ check(count($GLOBALS['notices'])===1,'checkout refuses too many seats after a wa
 check($cart->rows['row']['quantity']===1,'quantity-change hook trims to actual remaining seats');
 $GLOBALS['meta'][10]['_roxy_ticket_type']='subscriber';$cart->rows=[];$GLOBALS['meta'][50]['_roxy_capacity']=20;
 check(\RoxyST\Capacity::subscriber_limit_remaining_for_showing(50,7,false)===1,'walk-up usage reduces online member entitlement');
+check(\RoxyST\Capacity::subscriber_limit_remaining_for_showing(0,7,false)===0,'invalid showing cannot grant subscriber entitlement');
 $GLOBALS['orders_result']=false;
 check(\RoxyST\Capacity::subscriber_limit_remaining_for_showing(60,7,false)===0,'failed paid-order query blocks subscriber entitlement');
 $GLOBALS['orders_result']=[];$GLOBALS['orders_throw']=true;
