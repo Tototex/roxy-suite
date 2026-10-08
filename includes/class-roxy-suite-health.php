@@ -530,19 +530,29 @@ class Health {
     private static function functional_show_tickets(): array {
         if (!self::module_enabled('show_tickets')) return [];
 
+        global $wpdb;
         $items = [];
 
-        $now  = wp_date('Y-m-d\TH:i', null, wp_timezone());
-        $upcoming = get_posts([
-            'post_type'      => 'roxy_showing',
-            'post_status'    => 'publish',
-            'posts_per_page' => 10,
-            'meta_key'       => '_roxy_start',
-            'meta_value'     => $now,
-            'meta_compare'   => '>=',
-            'orderby'        => 'meta_value',
-            'order'          => 'ASC',
-        ]);
+        try {
+            $wpdb->last_error = '';
+            $now  = wp_date('Y-m-d\TH:i', null, wp_timezone());
+            $upcoming = get_posts([
+                'post_type'      => 'roxy_showing',
+                'post_status'    => 'publish',
+                'posts_per_page' => 10,
+                'meta_key'       => '_roxy_start',
+                'meta_value'     => $now,
+                'meta_compare'   => '>=',
+                'orderby'        => 'meta_value',
+                'order'          => 'ASC',
+            ]);
+            if ($wpdb->last_error !== '' || !is_array($upcoming)) {
+                throw new \RuntimeException('Upcoming show query could not be verified.');
+            }
+        } catch (\Throwable $error) {
+            return [self::item('Upcoming shows', 'Unavailable', self::WARN,
+                'The published-show query could not be verified; this is not an empty schedule.')];
+        }
 
         $count   = count($upcoming);
         $items[] = self::item(

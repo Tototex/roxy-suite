@@ -9,8 +9,12 @@ function current_time($format) { return '2026-10-08 12:00:00'; }
 function get_option($key, $default = false) { return $default; }
 function get_posts($args): array {
     if ($GLOBALS['posts_error']) $GLOBALS['wpdb']->last_error = 'fixture query error';
-    return [];
+    return $GLOBALS['posts_results'] ?? [];
 }
+function wp_date($format, $timestamp = null, $timezone = null): string { return '2026-10-08T12:00'; }
+function wp_timezone() { return new DateTimeZone('UTC'); }
+function get_the_title($id): string { return 'Fixture show'; }
+function get_post_meta($id, $key, $single = false) { return true; }
 final class HealthRecordFixture {
     public string $prefix = 'wp_';
     public string $last_error = '';
@@ -40,6 +44,7 @@ final class HealthRecordFixture {
 }
 $GLOBALS['wpdb'] = new HealthRecordFixture();
 $GLOBALS['posts_error'] = false;
+$GLOBALS['posts_results'] = [];
 require $argv[1] ?? dirname(__DIR__) . '/includes/class-roxy-suite-health.php';
 $checks = 0;
 $call = static function ($method, ...$args) { return (new ReflectionMethod(\RoxySuite\Health::class, $method))->invoke(null, ...$args); };
@@ -106,6 +111,11 @@ $check($grosses_log_item()['status'] === 'pass', 'verified successful Grosses lo
 $wpdb->log_row = null;
 $GLOBALS['posts_error'] = true;
 $check($call('functional_requested_showings')[0]['status'] === 'warn', 'failed request query not empty list');
+$show_items = $call('functional_show_tickets');
+$check($show_items[0]['detail'] === 'Unavailable' && str_contains($show_items[0]['note'], 'not an empty schedule'), 'failed show query is unavailable, not an empty schedule');
 $GLOBALS['posts_error'] = false;
 $check($call('functional_requested_showings')[0]['status'] === 'pass', 'verified empty request list remains valid');
+$check($call('functional_show_tickets')[0]['detail'] === 'None found', 'verified empty show query remains distinguishable from failure');
+$GLOBALS['posts_results'] = [(object) ['ID'=>123]];
+$check($call('functional_show_tickets')[0]['status'] === 'pass', 'verified upcoming show still reports healthy');
 echo "$checks record-read checks passed\n";
