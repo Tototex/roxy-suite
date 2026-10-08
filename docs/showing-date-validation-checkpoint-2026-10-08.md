@@ -10,8 +10,8 @@ Scheduled live-ticket price change dates now use the same strict validation. “
 
 ## Regression coverage
 
-`tests/schedule-child-status-regression.php` covers impossible single and price-change dates preserving prior metadata, valid leap-day persistence, invalid batch rejection without partial child creation, and seven-day price-date shifts across both Los Angeles DST transitions. Fixture transients are reset between cases. Additional scalar guards prevent malformed arrays from generating string-cast warnings.
+`tests/schedule-child-status-regression.php` covers impossible single and price-change dates preserving prior metadata, valid leap-day persistence, invalid batch rejection without partial child creation, seven-day price-date shifts across both Los Angeles DST transitions, and the actual duplicate action writing the shifted dates to the generated showing. Fixture transients are reset between cases. Additional scalar guards prevent malformed arrays from generating string-cast warnings.
 
 ## Verification boundary
 
-`git diff --check` passes. Hosted run 37737143194 passes all tracked-PHP syntax checks on PHP 8.0–8.4 and the complete 71-program isolated regression suite on PHP 8.3, including the schedule child status and price-date shift tests plus malformed source-date rejection. The earlier date-validation attempt exposed a missing fixture stub, which was added and verified in successful run 37736678490. This is branch-only; no production deployment or live data change was made.
+`git diff --check` passes. Hosted run 37737400565 passes all tracked-PHP syntax checks on PHP 8.0–8.4 and the complete 71-program isolated regression suite on PHP 8.3, including the actual duplicate action writing the shifted price dates plus malformed source-date rejection. The earlier date-validation attempt exposed a missing fixture stub, which was added and verified in successful run 37736678490. This is branch-only; no production deployment or live data change was made.
