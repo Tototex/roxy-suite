@@ -621,8 +621,13 @@ class CPT {
     }
 
     if ($column === 'roxy_start') {
-      $start = (string) get_post_meta($post_id, '_roxy_start', true);
-      echo $start ? esc_html(date_i18n('M j, Y g:ia', strtotime($start))) : '&mdash;';
+      $start = self::validated_local_datetime((string) get_post_meta($post_id, '_roxy_start', true));
+      if ($start === null) {
+        echo '&mdash;';
+      } else {
+        $timestamp = (new \DateTimeImmutable($start, wp_timezone()))->getTimestamp();
+        echo esc_html(date_i18n('M j, Y g:ia', $timestamp));
+      }
       return;
     }
 

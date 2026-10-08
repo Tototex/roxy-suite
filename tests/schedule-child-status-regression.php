@@ -38,6 +38,8 @@ namespace {
   function get_current_user_id() { return 42; }
   function set_transient($key, $value, $expiration) { $GLOBALS['schedule_transients'][$key] = $value; return true; }
   function esc_url_raw($value) { return (string)$value; }
+  function esc_html($value) { return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8'); }
+  function date_i18n($format, $timestamp) { return (new DateTimeImmutable('@'.$timestamp))->setTimezone(wp_timezone())->format($format); }
   function get_post_meta($post_id, $key = null, $single = true) {
     if ($key === null) {
       $all=[];
@@ -153,6 +155,15 @@ namespace {
     check_schedule($anchor->invoke(null,'2026-02-30T19:30')===null,'impossible saved date has no weekend anchor');
     check_schedule($anchor->invoke(null,'2026-03-08T02:30')===null,'nonexistent spring DST time has no weekend anchor');
     check_schedule($anchor->invoke(null,'2026-03-06T19:30') instanceof \DateTimeImmutable,'valid Friday retains local weekend anchor');
+  });
+
+  schedule_test('admin date column refuses to normalize an invalid saved start', function() {
+    $GLOBALS['schedule_meta'][991]=['_roxy_start'=>'2026-02-30T19:30'];
+    ob_start(); \RoxyST\CPT::render_admin_column('roxy_start',991); $invalid=ob_get_clean();
+    check_schedule($invalid==='&mdash;','invalid legacy date renders as unavailable instead of a normalized date');
+    $GLOBALS['schedule_meta'][992]=['_roxy_start'=>'2028-02-29T19:30'];
+    ob_start(); \RoxyST\CPT::render_admin_column('roxy_start',992); $valid=ob_get_clean();
+    check_schedule(str_contains($valid,'Feb 29, 2028'),'valid local leap-day date remains visible in admin');
   });
 
   schedule_test('one invalid schedule row rejects the entire schedule batch', function() {
