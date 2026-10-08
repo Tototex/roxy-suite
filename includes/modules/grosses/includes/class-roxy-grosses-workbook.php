@@ -1272,19 +1272,65 @@ class Workbook {
     }
 
     self::ensure_private_directory($target_dir);
-    $filename = wp_unique_filename($target_dir, $preferred_name !== '' ? $preferred_name : basename($source_path));
-    $target_path = trailingslashit($target_dir) . $filename;
-
-    $moved = @rename($source_path, $target_path);
-    if (!$moved) {
-      $moved = @copy($source_path, $target_path);
-      if ($moved) {
-        @unlink($source_path);
+    $preferred_name = $preferred_name !== '' ? $preferred_name : basename($source_path);
+    $target_path = '';
+    $target = false;
+    for ($attempt = 0; $attempt < 8; $attempt++) {
+      $filename = wp_unique_filename($target_dir, $preferred_name);
+      $candidate = trailingslashit($target_dir) . $filename;
+      $target = @fopen($candidate, 'x+b');
+      if (is_resource($target)) {
+        $target_path = $candidate;
+        break;
       }
+      if (!file_exists($candidate)) break;
+    }
+    if (!is_resource($target) || $target_path === '') {
+      throw new \RuntimeException('A unique private workbook destination could not be created.');
     }
 
-    if (!$moved || !is_readable($target_path)) {
-      throw new \RuntimeException('The workbook file could not be moved into private storage.');
+    $source = @fopen($source_path, 'rb');
+    if (!is_resource($source)) {
+      @fclose($target);
+      @unlink($target_path);
+      throw new \RuntimeException('The uploaded workbook template could not be opened.');
+    }
+
+    $copied = 0;
+    $source_stat = @fstat($source);
+    $expected_size = is_array($source_stat) && isset($source_stat['size']) ? (int) $source_stat['size'] : -1;
+    $copy_ok = $expected_size >= 0;
+    try {
+      while ($copy_ok && !feof($source)) {
+        $chunk = @fread($source, 65536);
+        if (!is_string($chunk) || ($chunk === '' && !feof($source))) {
+          $copy_ok = false;
+          break;
+        }
+        $offset = 0;
+        $length = strlen($chunk);
+        while ($offset < $length) {
+          $written = @fwrite($target, substr($chunk, $offset));
+          if (!is_int($written) || $written <= 0) {
+            $copy_ok = false;
+            break 2;
+          }
+          $offset += $written;
+          $copied += $written;
+        }
+      }
+      $copy_ok = $copy_ok && $copied === $expected_size && @fflush($target);
+      $target_size = @filesize($target_path);
+      $copy_ok = $copy_ok && is_int($target_size) && $target_size === $expected_size;
+    } catch (\Throwable $error) {
+      $copy_ok = false;
+    }
+    $source_closed = @fclose($source);
+    $target_closed = @fclose($target);
+    $copy_ok = $copy_ok && $source_closed && $target_closed && is_readable($target_path);
+    if (!$copy_ok || (is_file($source_path) && !@unlink($source_path))) {
+      @unlink($target_path);
+      throw new \RuntimeException('The workbook file could not be moved completely into private storage.');
     }
 
     return $target_path;

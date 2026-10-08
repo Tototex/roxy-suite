@@ -7,6 +7,17 @@ define('WP_CONTENT_DIR', $fixture_root . DIRECTORY_SEPARATOR . 'content');
 
 function trailingslashit($value) { return rtrim((string) $value, '/\\') . DIRECTORY_SEPARATOR; }
 function wp_mkdir_p($path) { return is_dir($path) || mkdir($path, 0777, true); }
+function wp_unique_filename($dir, $filename) {
+    if (!empty($GLOBALS['workbook_unique_candidates'])) return array_shift($GLOBALS['workbook_unique_candidates']);
+    $name = pathinfo($filename, PATHINFO_FILENAME);
+    $extension = pathinfo($filename, PATHINFO_EXTENSION);
+    $candidate = $filename;
+    $suffix = 1;
+    while (file_exists(rtrim($dir, '/\\') . DIRECTORY_SEPARATOR . $candidate)) {
+        $candidate = $name . '-' . $suffix++ . ($extension !== '' ? '.' . $extension : '');
+    }
+    return $candidate;
+}
 
 $source_path = dirname(__DIR__) . '/includes/modules/grosses/includes/class-roxy-grosses-workbook.php';
 $source = file_get_contents($source_path);
@@ -19,6 +30,10 @@ eval('?>' . $source);
 
 $root_method = new ReflectionMethod($namespace . '\\Workbook', 'private_root_dir');
 $root_method->setAccessible(true);
+$workbooks_method = new ReflectionMethod($namespace . '\\Workbook', 'private_workbooks_dir');
+$workbooks_method->setAccessible(true);
+$move_method = new ReflectionMethod($namespace . '\\Workbook', 'move_file_to_private_storage');
+$move_method->setAccessible(true);
 $checks = 0;
 $check = static function (bool $condition, string $label) use (&$checks): void {
     if (!$condition) throw new RuntimeException('FAIL: ' . $label);
@@ -49,6 +64,16 @@ try {
     $root_method->invoke(null);
     $rechecked = file_get_contents($rules_path);
     $check($rechecked === $canonical_rules, 'repeated verification leaves the canonical policy unchanged');
+
+    $workbooks_dir = $workbooks_method->invoke(null);
+    $occupied = $workbooks_dir . DIRECTORY_SEPARATOR . 'collision.xlsx';
+    $source = $fixture_root . DIRECTORY_SEPARATOR . 'source.xlsx';
+    file_put_contents($occupied, 'preserve-existing-file');
+    file_put_contents($source, 'new-template-bytes');
+    $GLOBALS['workbook_unique_candidates'] = ['collision.xlsx', 'collision-1.xlsx'];
+    $moved = $move_method->invoke(null, $source, $workbooks_dir, 'collision.xlsx');
+    $check(file_get_contents($occupied) === 'preserve-existing-file', 'exclusive move preserves a destination created during the filename race');
+    $check($moved !== $occupied && file_get_contents($moved) === 'new-template-bytes' && !file_exists($source), 'private move retries collision and verifies complete contents before removing source');
 } finally {
     $iterator = new RecursiveIteratorIterator(
         new RecursiveDirectoryIterator($fixture_root, FilesystemIterator::SKIP_DOTS),
