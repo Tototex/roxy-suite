@@ -5,6 +5,7 @@ require dirname(__DIR__) . '/includes/modules/grosses/includes/class-roxy-grosse
 
 $cases = [
     [['event_type' => 'anomaly', 'success' => 1], 'Review'],
+    [['event_type' => 'anomaly', 'success' => 0], 'Review'],
     [['event_type' => 'sync_tables', 'success' => 1], 'Success'],
     [['event_type' => 'send_report', 'success' => 0], 'Failed'],
     [['success' => 1], 'Success'],
@@ -29,4 +30,8 @@ foreach ([
         throw new RuntimeException('Grosses result filter ' . $filter['result'] . ' did not match its displayed status semantics.');
     }
 }
-echo "3 Grosses log result-filter checks passed.\n";
+[$combined_sql, $combined_params] = $where->invoke(null, ['event_type' => 'sync_tables', 'result' => 'review']);
+if (strpos($combined_sql, 'event_type = %s') === false || strpos($combined_sql, "event_type = 'anomaly'") === false || $combined_params !== ['sync_tables']) {
+    throw new RuntimeException('Combined event and result filters did not remain conjunctive and parameterized.');
+}
+echo "4 Grosses log result-filter checks passed.\n";
