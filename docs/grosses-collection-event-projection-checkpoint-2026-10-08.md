@@ -37,3 +37,5 @@ Hosted workflow [37744106699](https://github.com/Tototex/roxy-suite/actions/runs
 The follow-up typed-identity regression (numeric text versus integer IDs) passed in hosted workflow [37744537626](https://github.com/Tototex/roxy-suite/actions/runs/37744537626), again with all five syntax jobs and the PHP 8.3 isolated suite successful.
 
 The next audit pass makes timestamp provenance explicit on each projected refund: Square uses `square_updated_at_proxy`; WooCommerce uses `woocommerce_refund_creation_proxy`. Neither field is an authoritative processor-completion timestamp. The cashflow projection remains unused by reports/dashboards until actual refund-date evidence and durable event provenance are resolved.
+
+Hosted workflow [37760074611](https://github.com/Tototex/roxy-suite/actions/runs/37760074611) passes the full PHP 8.0–8.4 syntax matrix and PHP 8.3 isolated cross-module suite for these provenance labels and regressions.
