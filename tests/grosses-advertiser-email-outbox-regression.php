@@ -144,7 +144,8 @@ namespace {
     $check(count(array_unique($attachment_paths)) === count($attachment_paths), 'each advertiser send receives a distinct workbook attachment path');
     $check($GLOBALS['advertiser_uuid_queue'] === [], 'forced filename collision was retried with a fresh UUID');
     $check(count(array_unique($GLOBALS['advertiser_fixture_files'])) === count($GLOBALS['advertiser_fixture_files']), 'forced UUID collision is resolved without reusing a workbook path');
-    $check(count(array_filter($GLOBALS['advertiser_fixture_files'], 'is_file')) === 0, 'all private advertiser attachments are removed after send, suppression and pre-mail failures');
+    $remaining_files = array_values(array_filter($GLOBALS['advertiser_fixture_files'], 'is_file'));
+    $check(count($remaining_files) === 0, 'all private advertiser attachments are removed after send, suppression and pre-mail failures' . ($remaining_files ? ': ' . implode(', ', array_map('basename', $remaining_files)) : ''));
     echo "Passed {$checks} advertiser email outbox checks; all mail was intercepted.\n";
   } finally {
     if (isset($collision_sentinel) && is_file($collision_sentinel)) unlink($collision_sentinel);
