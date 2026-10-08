@@ -4,6 +4,7 @@ namespace {
   define('ABSPATH', __DIR__ . '/');
   define('MINUTE_IN_SECONDS', 60);
   $GLOBALS['schedule_meta'] = [];
+  $GLOBALS['schedule_posts'] = [];
   $GLOBALS['schedule_insert_args'] = [];
   $GLOBALS['schedule_fail_at'] = 0;
   $GLOBALS['schedule_fail_false'] = false;
@@ -37,9 +38,23 @@ namespace {
   function get_current_user_id() { return 42; }
   function set_transient($key, $value, $expiration) { $GLOBALS['schedule_transients'][$key] = $value; return true; }
   function esc_url_raw($value) { return (string)$value; }
-  function get_post_meta($post_id, $key, $single = true) { return $GLOBALS['schedule_meta'][$post_id][$key] ?? ''; }
+  function get_post_meta($post_id, $key = null, $single = true) {
+    if ($key === null) {
+      $all=[];
+      foreach ($GLOBALS['schedule_meta'][$post_id] ?? [] as $meta_key=>$value) $all[$meta_key]=is_array($value)?$value:[$value];
+      return $all;
+    }
+    $value=$GLOBALS['schedule_meta'][$post_id][$key] ?? ($single?'':[]);
+    if ($single && is_array($value)) return $value[0] ?? '';
+    return $single?$value:(is_array($value)?$value:[$value]);
+  }
   function update_post_meta($post_id, $key, $value) { $GLOBALS['schedule_meta'][$post_id][$key]=$value; return true; }
   function delete_post_meta($post_id, $key) { unset($GLOBALS['schedule_meta'][$post_id][$key]); return true; }
+  function add_post_meta($post_id,$key,$value) { $GLOBALS['schedule_meta'][$post_id][$key]=$value; return true; }
+  function maybe_unserialize($value) { return $value; }
+  function get_post($post_id) { return $GLOBALS['schedule_posts'][$post_id] ?? null; }
+  function get_post_type($post_id) { return $GLOBALS['schedule_posts'][$post_id]->post_type ?? ''; }
+  function get_post_status($post_id) { return $GLOBALS['schedule_posts'][$post_id]->post_status ?? ''; }
   function wp_set_object_terms(...$args) { return true; }
   function set_post_thumbnail(...$args) { return true; }
   function wp_delete_post($post_id, $force = false) { $GLOBALS['schedule_deleted'][]=(int)$post_id; unset($GLOBALS['schedule_meta'][$post_id]); return (object)['ID'=>(int)$post_id]; }
@@ -48,6 +63,7 @@ namespace {
     $call=count($GLOBALS['schedule_insert_args']);
     if ($GLOBALS['schedule_fail_at']===$call) return $GLOBALS['schedule_fail_false'] ? 0 : new WP_Error('insert_failed','simulated insert failure');
     $id=++$GLOBALS['schedule_next_id'];
+    $GLOBALS['schedule_posts'][$id]=(object)array_merge($postarr,['ID'=>$id]);
     $GLOBALS['schedule_nested_save_calls']++;
     \RoxyST\CPT::save($id,(object)$postarr); // Mirrors save_post firing synchronously during wp_insert_post.
     return $id;
@@ -57,7 +73,7 @@ namespace {
   require_once $GLOBALS['schedule_cpt_source'];
 
   function reset_schedule_fixture($status, $can_publish, $fail_at = 0, $return_false = false) {
-    $GLOBALS['schedule_meta']=[]; $GLOBALS['schedule_insert_args']=[]; $GLOBALS['schedule_fail_at']=$fail_at;
+    $GLOBALS['schedule_meta']=[]; $GLOBALS['schedule_posts']=[]; $GLOBALS['schedule_insert_args']=[]; $GLOBALS['schedule_fail_at']=$fail_at;
     $GLOBALS['schedule_fail_false']=$return_false; $GLOBALS['schedule_publish_allowed']=$can_publish;
     $GLOBALS['schedule_deleted']=[]; $GLOBALS['schedule_nested_save_calls']=0; $GLOBALS['schedule_transients']=[]; $_POST=[
       'roxy_showing_nonce'=>'valid', 'roxy_use_schedule_builder'=>'1',
@@ -66,7 +82,9 @@ namespace {
       'roxy_schedule_time'=>['18:00','18:00','14:00'],
       'roxy_schedule_profile'=>['movie_evening','movie_evening','movie_matinee'],
     ];
-    return (object)['ID'=>7001,'post_status'=>$status,'post_title'=>'Test show','post_content'=>'','post_excerpt'=>'','post_author'=>9];
+    $post=(object)['ID'=>7001,'post_type'=>'roxy_showing','post_status'=>$status,'post_title'=>'Test show','post_content'=>'','post_excerpt'=>'','post_author'=>9];
+    $GLOBALS['schedule_posts'][7001]=$post;
+    return $post;
   }
 
   schedule_test('published source publishes children only with its CPT publish capability and recursion is guarded', function() {
@@ -146,6 +164,24 @@ namespace {
     check_schedule($shift->invoke(null,'2026-03-01T19:30',7)==='2026-03-08T19:30','spring DST transition preserves local price-change time');
     check_schedule($shift->invoke(null,'2026-10-25T19:30',7)==='2026-11-01T19:30','fall DST transition preserves local price-change time');
     check_schedule($shift->invoke(null,'2026-02-30T19:30',7)===null,'invalid saved price-change date refuses to create a shifted value');
+  });
+
+  schedule_test('next-weekend duplicate writes shifted price dates instead of copying originals', function() {
+    $source=reset_schedule_fixture('draft',false);
+    $_POST=[];
+    $GLOBALS['schedule_meta'][$source->ID]=[
+      '_roxy_start'=>'2026-03-01T19:30',
+      '_roxy_live_change_at_1'=>'2026-03-01T18:00',
+      '_roxy_live_future_price_1'=>'25',
+      '_roxy_live_change_at_2'=>'2026-03-01T18:30',
+      '_roxy_live_future_price_2'=>'30',
+    ];
+    $duplicate=new \ReflectionMethod(\RoxyST\CPT::class,'duplicate_showing_to_next_weekend'); $duplicate->setAccessible(true);
+    $id=$duplicate->invoke(null,$source->ID);
+    check_schedule($id>0,'valid source showing creates one duplicate');
+    check_schedule(($GLOBALS['schedule_meta'][$id]['_roxy_start']??'')==='2026-03-08T19:30','duplicate showing date advances seven local days');
+    check_schedule(($GLOBALS['schedule_meta'][$id]['_roxy_live_change_at_1']??'')==='2026-03-08T18:00','first scheduled price change shifts with duplicate');
+    check_schedule(($GLOBALS['schedule_meta'][$id]['_roxy_live_change_at_2']??'')==='2026-03-08T18:30','second scheduled price change shifts with duplicate');
   });
 
   schedule_test('invalid scheduled price-change date preserves prior values and shared settings', function() {
