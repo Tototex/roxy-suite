@@ -6,6 +6,19 @@ final class Settings {
   public static string $timezone = 'America/Los_Angeles';
   public static function get_report_timezone(): string { return self::$timezone; }
 }
+final class Store {
+  public static ?array $event = null;
+  public static array $lookups = [];
+  public static function refund_completion_event(array $refund, string $updated_at): ?array {
+    self::$lookups[] = [$refund['id'] ?? null, $refund['payment_id'] ?? null, $updated_at];
+    if (self::$event === null || self::$event['refund_id'] !== ($refund['id'] ?? null)
+      || self::$event['payment_id'] !== ($refund['payment_id'] ?? null)
+      || self::$event['location_id'] !== ($refund['location_id'] ?? null)
+      || self::$event['amount_cents'] !== ($refund['amount_money']['amount'] ?? null)
+      || self::$event['refund_updated_at'] !== $updated_at) return null;
+    return ['event_id' => self::$event['event_id'], 'event_created_at' => self::$event['event_created_at']];
+  }
+}
 final class FakeWooRefund {
   private $amount;
   public function __construct(
@@ -106,7 +119,7 @@ namespace {
     ];
   };
   $snapshot_class = '\\RoxyGrosses\\RefundSnapshot';
-  $reset = static function (): void { \RoxyGrosses\Square::reset(); \RoxyGrosses\Settings::$timezone = 'America/Los_Angeles'; };
+  $reset = static function (): void { \RoxyGrosses\Square::reset(); \RoxyGrosses\Settings::$timezone = 'America/Los_Angeles'; \RoxyGrosses\Store::$event = null; \RoxyGrosses\Store::$lookups = []; };
   $setup_source = static function (string $id, string $closed_at = '2026-08-12T19:00:00Z'): void {
     \RoxyGrosses\Square::$sources[$id] = ['id' => $id, 'state' => 'COMPLETED', 'closed_at' => $closed_at];
   };
@@ -173,6 +186,10 @@ namespace {
   $financial = $snapshot->completed_return_financial_refunds();
   $assert(count($financial) === 1 && $financial[0]['amount_cents'] === 1234 && $financial[0]['refund_date'] === '2026-08-13' && $financial[0]['refund_updated_at'] === '2026-08-14 06:30:00' && $financial[0]['refund_date_basis'] === 'square_updated_at_proxy', 'completed refund exposes Square update date as an explicit, non-authoritative Pacific refund-date proxy');
   $assert($financial[0]['order_id'] === 'return-financial' && $financial[0]['payment_id'] === 'payment-financial', 'financial refund event retains immutable Square identities');
+  \RoxyGrosses\Store::$event = ['event_id' => 'evt-completed', 'refund_id' => 'payment-financial_refund-financial', 'payment_id' => 'payment-financial', 'location_id' => 'loc-1', 'amount_cents' => 1234, 'refund_updated_at' => '2026-08-14 06:30:00', 'event_created_at' => '2026-08-15 06:30:00'];
+  $with_completion = $snapshot->completed_financial_refunds();
+  $assert($with_completion[0]['refund_date'] === '2026-08-14' && $with_completion[0]['refund_date_basis'] === 'square_refund_completed_event' && $with_completion[0]['refund_event_id'] === 'evt-completed', 'matching completed status-change evidence improves the refund-day date and keeps event provenance');
+  $assert(\RoxyGrosses\Store::$lookups[0] === ['payment-financial_refund-financial', 'payment-financial', '2026-08-14 06:30:00'], 'completion evidence lookup is constrained to the current refund identity and exact updated_at snapshot');
   $unlinked_refund = [
     'id' => 'refund-unlinked', 'payment_id' => 'payment-unlinked', 'location_id' => 'loc-2',
     'status' => 'COMPLETED', 'amount_money' => ['amount' => 250, 'currency' => 'USD'],

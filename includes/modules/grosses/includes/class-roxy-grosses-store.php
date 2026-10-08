@@ -354,6 +354,31 @@ class Store {
     return true;
   }
 
+  /** Return matching provider completion-event evidence for a current Square refund snapshot. */
+  public static function refund_completion_event(array $refund, string $refund_updated_at): ?array {
+    global $wpdb;
+    foreach (['id', 'payment_id', 'location_id'] as $field) {
+      if (!is_string($refund[$field] ?? null) || $refund[$field] === '') throw new \RuntimeException('Square refund event lookup lacks a stable identity.');
+    }
+    $money = $refund['amount_money'] ?? null;
+    if (!is_array($money) || !is_int($money['amount'] ?? null) || $money['amount'] < 0 || ($money['currency'] ?? null) !== 'USD') {
+      throw new \RuntimeException('Square refund event lookup lacks a verified USD amount.');
+    }
+    $table = self::refund_webhook_table_name();
+    $row = $wpdb->get_row($wpdb->prepare(
+      "SELECT event_id,event_created_at FROM {$table} WHERE refund_id = %s AND payment_id = %s AND location_id = %s AND status = 'COMPLETED' AND amount_cents = %d AND currency = 'USD' AND refund_updated_at = %s ORDER BY event_created_at DESC,id DESC LIMIT 1",
+      $refund['id'], $refund['payment_id'], $refund['location_id'], $money['amount'], $refund_updated_at
+    ), ARRAY_A);
+    if ($wpdb->last_error !== '') throw new \RuntimeException('Square refund completion evidence could not be read.');
+    if (!is_array($row)) return null;
+    if (!is_string($row['event_id'] ?? null) || $row['event_id'] === ''
+      || !is_string($row['event_created_at'] ?? null)
+      || !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $row['event_created_at'])) {
+      throw new \RuntimeException('Stored Square refund completion evidence is malformed.');
+    }
+    return $row;
+  }
+
   private static function report_schema_upgrade_failure(string $message): void {
     error_log('Roxy Grosses schema upgrade incomplete; retry pending.');
     add_action('admin_notices', static function () use ($message): void {

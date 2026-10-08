@@ -168,6 +168,21 @@ final class RefundSnapshot {
       catch (\Throwable $error) { throw new \RuntimeException('A completed Square refund has an invalid update timestamp.'); }
       $errors = \DateTimeImmutable::getLastErrors();
       if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('A completed Square refund has an invalid update calendar date.');
+      $refund_date_basis = 'square_updated_at_proxy';
+      $completion_event = null;
+      if (class_exists(Store::class) && method_exists(Store::class, 'refund_completion_event')) {
+        $completion_event = Store::refund_completion_event($refund, $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'));
+      }
+      $refund_timestamp = $timestamp;
+      if ($completion_event !== null) {
+        $event_timestamp = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $completion_event['event_created_at'], new \DateTimeZone('UTC'));
+        $errors = \DateTimeImmutable::getLastErrors();
+        if (!$event_timestamp || $event_timestamp->format('Y-m-d H:i:s') !== $completion_event['event_created_at'] || ($errors && ($errors['warning_count'] || $errors['error_count']))) {
+          throw new \RuntimeException('A matched Square refund completion event has an invalid timestamp.');
+        }
+        $refund_timestamp = $event_timestamp;
+        $refund_date_basis = 'square_refund_completed_event';
+      }
       $events[] = [
         'refund_id' => $refund_id,
         'payment_id' => $refund['payment_id'],
@@ -176,8 +191,10 @@ final class RefundSnapshot {
         'amount_cents' => $money['amount'],
         'currency' => 'USD',
         'refund_updated_at' => $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
-        'refund_date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
-        'refund_date_basis' => 'square_updated_at_proxy',
+        'refund_event_id' => $completion_event['event_id'] ?? null,
+        'refund_event_at' => $completion_event['event_created_at'] ?? null,
+        'refund_date' => $refund_timestamp->setTimezone($timezone)->format('Y-m-d'),
+        'refund_date_basis' => $refund_date_basis,
       ];
     }
     usort($events, static fn(array $a, array $b): int => [$a['refund_updated_at'], $a['refund_id']] <=> [$b['refund_updated_at'], $b['refund_id']]);
