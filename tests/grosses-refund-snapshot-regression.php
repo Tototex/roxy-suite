@@ -139,10 +139,10 @@ namespace {
   $assert(count($financial) === 1 && $financial[0]['amount_cents'] === 1234 && $financial[0]['refund_date'] === '2026-08-13', 'completed refund uses verified cents and completion timestamp in Pacific date');
   $assert($financial[0]['order_id'] === 'return-financial' && $financial[0]['payment_id'] === 'payment-financial', 'financial refund event retains immutable Square identities');
   \RoxyGrosses\Square::$refunds['payment-financial_refund-financial']['updated_at'] = '2026-02-30T06:30:00Z';
-  $expect_throw(static fn() => $snapshot->completed_return_financial_refunds(), 'invalid completed refund date must fail closed');
+  $expect_throw(static fn() => $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z'))->completed_return_financial_refunds(), 'invalid completed refund date must fail closed');
   \RoxyGrosses\Square::$refunds['payment-financial_refund-financial']['updated_at'] = '2026-08-14T06:30:00Z';
   \RoxyGrosses\Square::$refunds['payment-financial_refund-financial']['amount_money']['currency'] = 'CAD';
-  $expect_throw(static fn() => $snapshot->completed_return_financial_refunds(), 'unsupported financial refund currency must fail closed');
+  $expect_throw(static fn() => $snapshot_class::load('2026-08-01', new \DateTimeImmutable('2026-08-20T12:00:00Z'))->completed_return_financial_refunds(), 'unsupported financial refund currency must fail closed');
 
   // Dated filtering must keep returns for this day, not poison it with another day's return.
   $reset(); $setup_source('sale-A', '2026-08-12T19:00:00Z'); $setup_source('sale-B', '2026-08-13T19:00:00Z');
