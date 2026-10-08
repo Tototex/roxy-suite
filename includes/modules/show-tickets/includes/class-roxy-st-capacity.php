@@ -229,17 +229,36 @@ class Capacity {
       ]],
     ]);
 
+    // This query controls paid entitlement consumption. Treat an unreadable or
+    // malformed result as unknown usage, never as an empty purchase history.
+    if (!is_array($orders) || (function_exists('is_wp_error') && is_wp_error($orders))) {
+      return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+    }
+
     $used = 0;
     foreach ($orders as $order) {
       $order = wc_get_order($order);
-      if (!is_object($order) || !method_exists($order, 'get_items')) continue;
-      foreach ($order->get_items('line_item') as $item) {
-        if (!is_object($item) || !method_exists($item, 'get_product_id')) continue;
+      if (!is_object($order) || !method_exists($order, 'get_items')) {
+        return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+      }
+      $items = $order->get_items('line_item');
+      if (!is_array($items) || (function_exists('is_wp_error') && is_wp_error($items))) {
+        return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+      }
+      foreach ($items as $item) {
+        if (!is_object($item) || !method_exists($item, 'get_product_id') || !method_exists($item, 'get_quantity')) {
+          return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+        }
         $product_id = (int) $item->get_product_id();
-        if ($product_id <= 0) continue;
+        if ($product_id <= 0) return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
         if ((int) get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true) !== $showing_id) continue;
         if ((string) get_post_meta($product_id, ROXY_ST_META_TICKET_TYPE, true) !== 'subscriber') continue;
-        $used += (int) $item->get_quantity();
+        $quantity = $item->get_quantity();
+        if (!is_numeric($quantity) || !is_finite((float) $quantity) || (float) $quantity < 0
+          || floor((float) $quantity) !== (float) $quantity || (float) $quantity > PHP_INT_MAX - $used) {
+          return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
+        }
+        $used += (int) $quantity;
       }
     }
 
@@ -252,8 +271,15 @@ class Capacity {
     if ($entitlement <= 0) return 0;
 
     $used = self::purchased_subscriber_qty_for_showing_user($showing_id, (int) $user_id);
-    try { if(class_exists('\Roxy_Sub_Check')) $used+=\Roxy_Sub_Check::walkup_quantity_for_showing($showing_id,(int)$user_id); }
-    catch(\Throwable $e){return 0;} // Unknown arrivals cannot grant more entitlement.
+    if ($used === PHP_INT_MAX) return 0;
+    try {
+      if (class_exists('\Roxy_Sub_Check')) {
+        $walkups = \Roxy_Sub_Check::walkup_quantity_for_showing($showing_id, (int) $user_id);
+        if (!is_numeric($walkups) || !is_finite((float) $walkups) || (float) $walkups < 0
+          || floor((float) $walkups) !== (float) $walkups || (float) $walkups > PHP_INT_MAX - $used) return 0;
+        $used += (int) $walkups;
+      }
+    } catch (\Throwable $e) { return 0; } // Unknown arrivals cannot grant more entitlement.
     $remaining = max(0, $entitlement - $used);
 
     if ($include_cart) {

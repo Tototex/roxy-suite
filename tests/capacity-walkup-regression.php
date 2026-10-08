@@ -5,7 +5,11 @@ function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS
 function get_post_meta($id,$key,$single=true){return $GLOBALS['meta'][$id][$key]??'';}
 function get_current_user_id(){return 7;}function sanitize_key($v){return $v;}function esc_html($v){return $v;}function get_the_title($id){return 'Private fixture';}
 function wc_add_notice($message,$type){$GLOBALS['notices'][]=$message;}
-function wc_get_orders($args){return [];}
+function wc_get_orders($args){return $GLOBALS['orders_result']??[];}
+function wc_get_order($id){return $GLOBALS['orders_by_id'][$id]??false;}
+function is_wp_error($value){return $value instanceof TestWpError;}
+class TestWpError{}
+class TestOrderWithBadItems{function get_items($type){return false;}}
 function WC(){return $GLOBALS['woo'];}
 function wcs_get_users_subscriptions($id){return [new class{function has_status($s){return $s==='active';}function get_items(){return [new class{function get_quantity(){return 3;}}];}}];}
 class TestCart {
@@ -30,6 +34,13 @@ check(count($GLOBALS['notices'])===1,'checkout refuses too many seats after a wa
 check($cart->rows['row']['quantity']===1,'quantity-change hook trims to actual remaining seats');
 $GLOBALS['meta'][10]['_roxy_ticket_type']='subscriber';$cart->rows=[];$GLOBALS['meta'][50]['_roxy_capacity']=20;
 check(\RoxyST\Capacity::subscriber_limit_remaining_for_showing(50,7,false)===1,'walk-up usage reduces online member entitlement');
+$GLOBALS['orders_result']=false;
+check(\RoxyST\Capacity::subscriber_limit_remaining_for_showing(60,7,false)===0,'failed paid-order query blocks subscriber entitlement');
+$GLOBALS['orders_result']=[6001];
+check(\RoxyST\Capacity::subscriber_limit_remaining_for_showing(61,7,false)===0,'missing paid order blocks subscriber entitlement');
+$GLOBALS['orders_result']=[6002];$GLOBALS['orders_by_id'][6002]=new TestOrderWithBadItems();
+check(\RoxyST\Capacity::subscriber_limit_remaining_for_showing(62,7,false)===0,'malformed paid-order items block subscriber entitlement');
+$GLOBALS['orders_result']=[];$GLOBALS['orders_by_id']=[];
 check(!\RoxyST\Capacity::validate_add_to_cart(true,10,2),'subscriber add-to-cart cannot reuse walk-up entitlement');
 $cart->rows=['row'=>['product_id'=>10,'quantity'=>1]];
 check(!\RoxyST\Capacity::validate_cart_update(true,'row',$cart->rows['row'],2),'subscriber update does not add the current line back to entitlement');
