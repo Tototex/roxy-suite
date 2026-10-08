@@ -28,7 +28,12 @@ function get_posts($args) {
     $ids = range(1,503);
     foreach ($args['meta_query'] ?? [] as $clause) {
         if (($clause['compare'] ?? '') === '>=') $ids = array_values(array_filter($ids,fn($id)=>get_post_meta($id,'_roxy_start',true)>=$clause['value']));
-        if (($clause['compare'] ?? '') === 'EXISTS') $ids = array_values(array_filter($ids,fn($id)=>get_post_meta($id,$clause['key']??'',true)!==''));
+        if (($clause['compare'] ?? '') === 'EXISTS') {
+            // WordPress turns a supplied empty value into a value comparison,
+            // which excludes every row; EXISTS must omit value entirely.
+            if (array_key_exists('value',$clause) && $clause['value']==='') $ids=[];
+            else $ids = array_values(array_filter($ids,fn($id)=>get_post_meta($id,$clause['key']??'',true)!==''));
+        }
     }
     $sort = is_array($args['orderby'] ?? null) ? $args['orderby'] : ['meta_value' => ($args['order'] ?? 'ASC')];
     usort($ids, function($left,$right) use ($args,$sort) {
@@ -57,7 +62,7 @@ check(\roxy_will_call_archive_page_from_request(['archive_page'=>'2','archive_pa
 check(\roxy_will_call_archive_page_from_request(['archive_page'=>['999']],true)===0, 'T12: malformed page arrays reset safely');
 check(\roxy_will_call_archive_page_from_request(['archive_page'=>'1000','archive_page_next'=>'1'],true)===1000, 'T12: navigation is bounded at the configured page maximum');
 $html = roxy_will_call_showing_dropdown(0,true);
-check(strpos($html,'value="503"')!==false && strpos($html,'value="1"')!==false && $GLOBALS['last_query']['order']==='DESC' && $GLOBALS['last_query']['orderby']['ID']==='DESC' && $GLOBALS['last_query']['numberposts']===201 && $GLOBALS['last_query']['offset']===0, 'T12: first archive page follows date/ID order and checks one extra row');
+check(strpos($html,'value="503"')!==false && strpos($html,'value="1"')!==false && !array_key_exists('value',$GLOBALS['last_query']['meta_query'][0]) && $GLOBALS['last_query']['order']==='DESC' && $GLOBALS['last_query']['orderby']['ID']==='DESC' && $GLOBALS['last_query']['numberposts']===201 && $GLOBALS['last_query']['offset']===0, 'T12: first archive page omits EXISTS value and follows date/ID order with one-row lookahead');
 check(strpos($html,'Older showings')!==false && strpos($html,'Newer showings')===false, 'T12: first archive page offers only an older-page control');
 $html = roxy_will_call_showing_dropdown(0,true,1);
 check(strpos($html,'value="198"')!==false && $GLOBALS['last_query']['offset']===200, 'T12: second archive page follows date order rather than fixture ID order');
