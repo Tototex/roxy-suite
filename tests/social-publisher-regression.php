@@ -129,15 +129,15 @@ namespace {
     reset_fixture('both','publishing');\RoxySocial\Store::$row['updated_at']='2099-01-01 00:00:00';\RoxySocial\Publisher::publish_due();
     check(\RoxySocial\Store::$row['status']==='publishing','stale read rechecks latest row before recovery');
 
-    reset_fixture('instagram');\RoxySocial\Store::$row['media_type']='video';$GLOBALS['responses']=[response(['id'=>'container-video'])];
+    reset_fixture('instagram');\RoxySocial\Store::$row['media_type']='video';$GLOBALS['responses']=[response(['id'=>'234567'])];
     $video_created = !\RoxySocial\Publisher::publish_now(1);
-    check($video_created&&\RoxySocial\Store::$row['status']==='failed'&&\RoxySocial\Store::$row['instagram_container_id']==='container-video'
+    check($video_created&&\RoxySocial\Store::$row['status']==='failed'&&\RoxySocial\Store::$row['instagram_container_id']==='234567'
         &&count($GLOBALS['calls'])===1&&($GLOBALS['scheduled_events'][0][1]??'')==='roxy_social_video_status_retry'&&($GLOBALS['scheduled_events'][0][2]??[])===[1,1],
         'video container creation returns immediately and queues the first bounded status retry: ' . json_encode(['result'=>$video_created,'status'=>\RoxySocial\Store::$row['status'],'error'=>\RoxySocial\Store::$row['last_error'],'container'=>\RoxySocial\Store::$row['instagram_container_id'],'calls'=>count($GLOBALS['calls']),'events'=>$GLOBALS['scheduled_events']]));
-    $GLOBALS['responses']=[response(['status_code'=>'FINISHED']),response(['id'=>'instagram-media'])];
+    $GLOBALS['responses']=[response(['status_code'=>'FINISHED']),response(['id'=>'345678'])];
     check(\RoxySocial\Publisher::queue_video_status_retry(1,1),'video retry claims only the failed row with its saved container');
     \RoxySocial\Publisher::process_queued(1,1);
-    check(\RoxySocial\Store::$row['status']==='posted'&&\RoxySocial\Store::$row['instagram_media_id']==='instagram-media'
+    check(\RoxySocial\Store::$row['status']==='posted'&&\RoxySocial\Store::$row['instagram_media_id']==='345678'
         &&\RoxySocial\Store::$row['instagram_container_id']===null&&count($GLOBALS['calls'])===2
         &&!str_contains($GLOBALS['calls'][1][0],'/media?'),
         'finished video publishes the existing container without blocking polls or creating a duplicate container');
