@@ -165,10 +165,7 @@ class Store {
         self::ensure_product_column('unit_cost_source', 'VARCHAR(190) NULL AFTER unit_cost_status');
         self::ensure_product_column('unit_cost_checked_at', 'DATE NULL AFTER unit_cost_source');
         self::ensure_product_column('supplier_sku', 'VARCHAR(190) NULL AFTER unit_cost_checked_at');
-        if (!get_option('roxy_inventory_cost_provenance_v1')) {
-            self::checked_write($wpdb->query("UPDATE " . self::products_table() . " SET unit_cost_status='estimate' WHERE unit_cost_status='unknown' AND unit_cost>0"));
-            if (!update_option('roxy_inventory_cost_provenance_v1', 1, false) && (int)get_option('roxy_inventory_cost_provenance_v1') !== 1) throw new \RuntimeException('Inventory cost provenance migration marker could not be saved.');
-        }
+        self::migrate_cost_provenance();
         self::seed_vendors();
         if (!get_option('roxy_inventory_db_version')) self::apply_vendor_assignments();
         self::upgrade_submission_identity();
@@ -182,6 +179,15 @@ class Store {
             // A failed optional-module upgrade must not take down ticket checkout.
             error_log('Roxy Inventory schema upgrade failed: ' . $e->getMessage());
             add_action('admin_notices', static function () { echo '<div class="notice notice-error"><p>Inventory schema upgrade did not finish. Existing data is preserved; contact the administrator before submitting orders.</p></div>'; });
+        }
+    }
+
+    private static function migrate_cost_provenance(): void {
+        global $wpdb;
+        if (get_option('roxy_inventory_cost_provenance_v1')) return;
+        self::checked_write($wpdb->query("UPDATE " . self::products_table() . " SET unit_cost_status='estimate' WHERE unit_cost_status='unknown' AND unit_cost>0"));
+        if (!update_option('roxy_inventory_cost_provenance_v1', 1, false) && (int)get_option('roxy_inventory_cost_provenance_v1') !== 1) {
+            throw new \RuntimeException('Inventory cost provenance migration marker could not be saved.');
         }
     }
 

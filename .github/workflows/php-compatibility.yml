@@ -90,6 +90,7 @@ jobs:
             health-record-read-regression.php
             health-scheduler-outcome-regression.php
             inventory-decision-regression.php
+            inventory-cost-schema-regression.php
             inventory-handler-errors-regression.php
             inventory-integrity-regression.php
             inventory-regression.php
