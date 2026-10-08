@@ -13,14 +13,14 @@ Scope: read-only event normalization and live payment-gateway discovery only.
 
 ## Projection added
 
-`SquareCollectionEvents::from_orders()` accepts completed USD Square Orders with a valid close timestamp, exact integer cents, and stable order/location IDs. It preserves tender payment IDs as identity evidence, falls back to Square's tender `id` when the v2 `payment_id` field is absent, marks missing tender references incomplete, and rejects disagreeing or duplicate order/payment identities and malformed money/timestamps.
+`SquareCollectionEvents::from_orders()` now projects one event per completed Square tender using `tender.amount_money`, the tender's stable ID (which Square documents as the associated payment ID), and `tender.created_at`. Split tenders therefore remain distinct, and the projection does not mistake an order's `total_money` (the amount to collect) for collected funds. A tender lacking valid identity, amount, currency, or timestamp fails closed; disagreement between tender and payment IDs and duplicate payment identities also fail closed. A zero-dollar completed order without tenders produces no collection. Positive completed orders with no tender evidence fail closed. Positive-tender return/exchange orders require manual cashflow reconciliation rather than risking double-counting. Refunds continue through the separate refund projection.
 
 `WooCollectionEvents::from_orders()` accepts an explicit online-gateway allow-list. It includes only positive USD orders marked paid, requires a paid timestamp and unique gateway-scoped transaction ID, and preserves the original amount and payment date. Manual/offline and unlisted gateways are ignored. Neither projection writes to the database, mutates a report, nor sends email.
 
 ## Verification
 
 - Hosted workflow [37742815484](https://github.com/Tototex/roxy-suite/actions/runs/37742815484) passes all PHP 8.0–8.4 syntax jobs and the PHP 8.3 full isolated regression suite. Follow-up workflow [37743081233](https://github.com/Tototex/roxy-suite/actions/runs/37743081233) passes the same matrix and suite with tender-ID fallback/disagreement regressions.
-- The Grosses refund-snapshot regression now covers paid/unpaid filtering, explicit gateway allow-listing, zero-dollar orders, cents/currency, paid-date conversion, missing evidence, and duplicate transactions, alongside Square collection safeguards.
+- The Grosses refund-snapshot regression covers paid/unpaid filtering, explicit gateway allow-listing, zero-dollar orders, cents/currency, paid-date conversion, missing evidence, duplicate transactions, multi-tender Square orders, tender-date/timezone provenance, tender identity and amount validation, and return/exchange fail-closed behavior.
 - Local `git diff --check` passes. This workstation has no PHP executable, so local PHP execution was not available.
 - No live site deployment or financial records were changed.
 
@@ -35,6 +35,8 @@ Commit `64086df` adds `CashflowProjection::daily_totals()` as a pure, non-persis
 Hosted workflow [37744106699](https://github.com/Tototex/roxy-suite/actions/runs/37744106699) passed PHP 8.0–8.4 syntax jobs and the PHP 8.3 isolated cross-module regression suite, including the expanded refund snapshot regression. Local PHP is unavailable; `git diff --check` passed before commit. This remains an unintegrated projection: no database writes, dashboard changes, historical backfill, or live deployment.
 
 The follow-up typed-identity regression (numeric text versus integer IDs) passed in hosted workflow [37744537626](https://github.com/Tototex/roxy-suite/actions/runs/37744537626), again with all five syntax jobs and the PHP 8.3 isolated suite successful.
+
+2026-10-08 audit correction: Square collection projection now uses actual tender amounts and tender-created timestamps rather than order `total_money`/`closed_at`. Square's official Tender reference identifies `id` as the associated payment ID, `amount_money` as the total tender amount, and `created_at` as tender creation time. This is still a non-persisting projection only; it does not change live reports or historical records. New local regressions were added, but hosted workflow verification is pending.
 
 The next audit pass makes timestamp provenance explicit on each projected refund: Square uses `square_updated_at_proxy`; WooCommerce uses `woocommerce_refund_creation_proxy`. Neither field is an authoritative processor-completion timestamp. The cashflow projection remains unused by reports/dashboards until actual refund-date evidence and durable event provenance are resolved.
 

@@ -402,7 +402,7 @@ final class WooCollectionEvents {
   }
 }
 
-/** Read-only normalization for fully paid Square Orders and tender deduplication references. */
+/** Read-only normalization of actual Square tender collections and their payment identities. */
 final class SquareCollectionEvents {
   private static function is_list(array $value): bool {
     $expected = 0;
@@ -412,12 +412,12 @@ final class SquareCollectionEvents {
 
   private static function timestamp(string $value): \DateTimeImmutable {
     if (!preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/', $value)) {
-      throw new \RuntimeException('Square order has an invalid close timestamp.');
+      throw new \RuntimeException('Square collection event has an invalid RFC 3339 timestamp.');
     }
     try { $timestamp = new \DateTimeImmutable($value); }
-    catch (\Throwable $error) { throw new \RuntimeException('Square order has an invalid close timestamp.'); }
+    catch (\Throwable $error) { throw new \RuntimeException('Square collection event has an invalid timestamp.'); }
     $errors = \DateTimeImmutable::getLastErrors();
-    if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('Square order has an invalid close calendar date.');
+    if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('Square collection event has an invalid calendar date.');
     return $timestamp;
   }
 
@@ -438,20 +438,23 @@ final class SquareCollectionEvents {
         throw new \RuntimeException('Square returned a duplicate or invalid collection order identity.');
       }
       $seen[$id] = true;
-      $money = $order['total_money'] ?? null;
-      if (!is_array($money) || !is_int($money['amount'] ?? null) || $money['amount'] < 0 || ($money['currency'] ?? null) !== 'USD') {
-        throw new \RuntimeException('Completed Square order has an invalid amount or unsupported currency.');
+      $returns = $order['returns'] ?? [];
+      if (!is_array($returns) || !self::is_list($returns)) throw new \RuntimeException('Completed Square order has a malformed return list.');
+      $tenders = $order['tenders'] ?? [];
+      if (!is_array($tenders) || !self::is_list($tenders)) throw new \RuntimeException('Completed Square order has a malformed tender list.');
+      if (!$tenders) {
+        $order_money = $order['total_money'] ?? null;
+        if (!$returns && is_array($order_money) && ($order_money['amount'] ?? null) === 0 && ($order_money['currency'] ?? null) === 'USD') continue;
+        if ($returns) continue;
+        throw new \RuntimeException('Completed Square order has no tender evidence for its collection amount.');
       }
-      $closed_at = $order['closed_at'] ?? null;
-      if (!is_string($closed_at)) throw new \RuntimeException('Completed Square order has no close timestamp.');
-      $timestamp = self::timestamp($closed_at);
-      $payment_ids = [];
-      $tender_ids_complete = array_key_exists('tenders', $order) && is_array($order['tenders']) && self::is_list($order['tenders']);
-      if (array_key_exists('tenders', $order) && (!is_array($order['tenders']) || !self::is_list($order['tenders']))) {
-        throw new \RuntimeException('Completed Square order has a malformed tender list.');
-      }
-      foreach ($order['tenders'] ?? [] as $tender) {
+      $order_events = [];
+      foreach ($tenders as $tender) {
         if (!is_array($tender)) throw new \RuntimeException('Completed Square order has a malformed tender.');
+        $money = $tender['amount_money'] ?? null;
+        if (!is_array($money) || !is_int($money['amount'] ?? null) || $money['amount'] < 0 || ($money['currency'] ?? null) !== 'USD') {
+          throw new \RuntimeException('Completed Square tender has an invalid amount or unsupported currency.');
+        }
         $tender_id = $tender['id'] ?? null;
         $payment_id = $tender['payment_id'] ?? null;
         if ($tender_id !== null && (!is_string($tender_id) || $tender_id === '' || strlen($tender_id) > 192)) {
@@ -464,24 +467,32 @@ final class SquareCollectionEvents {
           throw new \RuntimeException('Completed Square tender and payment identities do not match.');
         }
         $payment_id = $payment_id ?? $tender_id;
-        if ($payment_id === null) { $tender_ids_complete = false; continue; }
-        if (isset($payment_ids[$payment_id]) || isset($seen_payment_ids[$payment_id])) throw new \RuntimeException('Square collection feed repeats a tender payment identity.');
-        $payment_ids[$payment_id] = true;
+        if (!is_string($tender_id) || $tender_id === '' || $payment_id === null) throw new \RuntimeException('Completed Square tender is missing a stable collection identity.');
+        if (isset($seen_payment_ids[$payment_id])) throw new \RuntimeException('Square collection feed repeats a tender payment identity.');
         $seen_payment_ids[$payment_id] = true;
+        $created_at = $tender['created_at'] ?? null;
+        if (!is_string($created_at)) throw new \RuntimeException('Completed Square tender has no collection timestamp.');
+        $timestamp = self::timestamp($created_at);
+        $order_events[] = [
+          'source' => 'square',
+          'order_id' => $id,
+          'tender_id' => $tender_id,
+          'payment_id' => $payment_id,
+          'location_id' => $location_id,
+          'amount_cents' => $money['amount'],
+          'currency' => 'USD',
+          'collected_at' => $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
+          'collection_date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
+          'collection_date_basis' => 'square_tender_created_at',
+        ];
       }
-      $events[] = [
-        'source' => 'square',
-        'order_id' => $id,
-        'location_id' => $location_id,
-        'amount_cents' => $money['amount'],
-        'currency' => 'USD',
-        'collected_at' => $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
-        'collection_date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
-        'payment_ids' => array_keys($payment_ids),
-        'tender_ids_complete' => $tender_ids_complete,
-      ];
+      if ($returns) {
+        foreach ($order_events as $event) if ($event['amount_cents'] > 0) throw new \RuntimeException('Completed Square return or exchange order includes a positive tender and requires manual cashflow reconciliation.');
+        continue;
+      }
+      array_push($events, ...$order_events);
     }
-    usort($events, static fn(array $a, array $b): int => [$a['collected_at'], $a['order_id']] <=> [$b['collected_at'], $b['order_id']]);
+    usort($events, static fn(array $a, array $b): int => [$a['collected_at'], $a['tender_id']] <=> [$b['collected_at'], $b['tender_id']]);
     return $events;
   }
 }
@@ -530,7 +541,7 @@ final class CashflowProjection {
     }
     $days = [];
     $feed_specs = [
-      [$square_collections, 'square', 'order_id', 'collection_date', 'amount_cents', 'currency', 'square_collected_cents'],
+      [$square_collections, 'square', 'tender_id', 'collection_date', 'amount_cents', 'currency', 'square_collected_cents'],
       [$woo_collections, 'woocommerce', 'order_id', 'collection_date', 'amount_cents', 'currency', 'woocommerce_collected_cents'],
       [$square_refunds, 'square', 'refund_id', 'refund_date', 'amount_cents', 'currency', 'square_refunded_cents'],
       [$woo_refunds, 'woocommerce', 'refund_id', 'refund_date', 'amount_cents', 'currency', 'woocommerce_refunded_cents'],
