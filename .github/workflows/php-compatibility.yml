@@ -33,3 +33,6 @@ jobs:
           while IFS= read -r file; do
             php -l "$file" >/dev/null
           done < <(git ls-files '*.php' ':!:tests/**' ':!:tools/**')
+
+      - name: Run showing selector regression
+        run: php tests/showing-selection-regression.php "$GITHUB_WORKSPACE"

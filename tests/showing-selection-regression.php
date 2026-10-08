@@ -25,7 +25,7 @@ function get_posts($args) {
         if (($clause['compare'] ?? '') === '>=') $ids = array_values(array_filter($ids,fn($id)=>get_post_meta($id,'_roxy_start',true)>=$clause['value']));
     }
     if (($args['order']??'') === 'DESC') $ids = array_reverse($ids);
-    return array_map(fn($id)=>(object)['ID'=>$id],array_slice($ids,0,$args['numberposts']));
+    return array_map(fn($id)=>(object)['ID'=>$id],array_slice($ids,$args['offset']??0,$args['numberposts']));
 }
 $root = $argv[1] ?? dirname(__DIR__);
 require $root . '/includes/modules/show-tickets/includes/class-roxy-st-cpt.php';
@@ -38,7 +38,14 @@ check(\RoxyST\Tickets::get_default_door_mode_showing_id() === 501, 'T12: default
 $html = roxy_will_call_showing_dropdown(0,false);
 check(strpos($html,'value="501"')!==false && strpos($html,'value="1"')===false, 'T12: will-call current shows not hidden by archive limit');
 $html = roxy_will_call_showing_dropdown(0,true);
-check(strpos($html,'value="503"')!==false && $GLOBALS['last_query']['order']==='DESC', 'T12: archive selector starts with recent history');
+check(strpos($html,'value="503"')!==false && $GLOBALS['last_query']['order']==='DESC' && $GLOBALS['last_query']['orderby']['ID']==='DESC' && $GLOBALS['last_query']['numberposts']===201 && $GLOBALS['last_query']['offset']===0, 'T12: first archive page starts with recent history, stable tie-break, and one extra row');
+check(strpos($html,'Older showings')!==false && strpos($html,'Newer showings')===false, 'T12: first archive page offers only an older-page control');
+$html = roxy_will_call_showing_dropdown(0,true,1);
+check(strpos($html,'value="303"')!==false && $GLOBALS['last_query']['offset']===200, 'T12: second archive page reaches the next 200 showings');
+check(strpos($html,'Older showings')!==false && strpos($html,'Newer showings')!==false, 'T12: middle archive page offers both navigation directions');
+$html = roxy_will_call_showing_dropdown(0,true,2);
+check(strpos($html,'value="103"')!==false && $GLOBALS['last_query']['offset']===400, 'T12: final archive page returns remaining older showings');
+check(strpos($html,'Older showings')===false && strpos($html,'Newer showings')!==false, 'T12: final archive page does not offer an empty next page');
 date_default_timezone_set('UTC');
 $schema = new \ReflectionMethod(\RoxyST\Frontend::class,'schema_start_date'); $schema->setAccessible(true);
 check($schema->invoke(null,'2026-10-03T19:30') === '2026-10-03T19:30:00-07:00', 'T16: local evening not converted as UTC');

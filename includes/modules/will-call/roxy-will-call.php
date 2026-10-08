@@ -166,6 +166,9 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
   $selected_product_id = isset($_GET['product_id']) ? absint($_GET['product_id']) : 0;
   $selected_showing_id = isset($_GET['showing_id']) ? absint($_GET['showing_id']) : 0;
   $show_archived = !empty($_GET['show_archived']);
+  $archive_page = isset($_GET['archive_page']) ? max(0, min(100000, (int) $_GET['archive_page'])) : 0;
+  if ($show_archived && isset($_GET['archive_page_next'])) $archive_page++;
+  if ($show_archived && isset($_GET['archive_page_prev'])) $archive_page = max(0, $archive_page - 1);
   $page_slug = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : 'roxy-will-call';
   $tab_slug = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : '';
   if ($wrap) {
@@ -181,6 +184,9 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
       <?php if ($tab_slug !== ''): ?>
         <input type="hidden" name="tab" value="<?php echo esc_attr($tab_slug); ?>" />
       <?php endif; ?>
+      <?php if ($show_archived): ?>
+        <input type="hidden" name="archive_page" value="<?php echo esc_attr($archive_page); ?>" />
+      <?php endif; ?>
       <div>
         <label for="mode"><strong>Mode</strong></label><br />
         <select name="mode" id="mode">
@@ -190,7 +196,7 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
       </div>
       <div class="roxy-wc-mode roxy-wc-mode-showing" <?php if ($mode !== 'showing') echo 'style="display:none"'; ?>>
         <label for="showing_id"><strong>Select showing:</strong></label><br />
-        <?php echo roxy_will_call_showing_dropdown($selected_showing_id, $show_archived); ?>
+        <?php echo roxy_will_call_showing_dropdown($selected_showing_id, $show_archived, $archive_page); ?>
       </div>
       <div class="roxy-wc-mode roxy-wc-mode-product" <?php if ($mode !== 'product') echo 'style="display:none"'; ?>>
         <label for="product_id"><strong>Select ticket product:</strong></label><br />
@@ -731,12 +737,15 @@ function roxy_will_call_product_dropdown($selected) {
   return $html;
 }
 
-function roxy_will_call_showing_dropdown($selected, bool $show_archived = false) {
+function roxy_will_call_showing_dropdown($selected, bool $show_archived = false, int $archive_page = 0) {
+  $archive_page = max(0, min(100000, $archive_page));
+  $page_size = 200;
   $posts = get_posts([
     'post_type' => 'roxy_showing',
     'post_status' => ['publish', 'private', 'draft', 'future'],
-    'numberposts' => 200,
-    'orderby' => 'meta_value',
+    'numberposts' => $show_archived ? $page_size + 1 : $page_size,
+    'offset' => $show_archived ? $archive_page * $page_size : 0,
+    'orderby' => ['meta_value' => $show_archived ? 'DESC' : 'ASC', 'ID' => $show_archived ? 'DESC' : 'ASC'],
     'meta_key' => '_roxy_start',
     'order' => $show_archived ? 'DESC' : 'ASC',
     'meta_query' => [[
@@ -745,6 +754,8 @@ function roxy_will_call_showing_dropdown($selected, bool $show_archived = false)
       'value' => $show_archived ? '' : wp_date('Y-m-d'),
     ]],
   ]);
+  $has_next_page = $show_archived && count($posts) > $page_size;
+  if ($has_next_page) $posts = array_slice($posts, 0, $page_size);
 
   $html = '<select name="showing_id" id="showing_id" style="min-width:420px;">';
   $html .= '<option value="0">— Select Showing —</option>';
@@ -761,6 +772,17 @@ function roxy_will_call_showing_dropdown($selected, bool $show_archived = false)
     $html .= '<option value="' . esc_attr($id) . '" ' . $sel . '>' . esc_html($label) . '</option>';
   }
   $html .= '</select>';
+  if ($show_archived) {
+    $html .= '<span class="roxy-wc-archive-pages" style="display:inline-flex;gap:6px;align-items:center;margin-left:8px;">';
+    $html .= '<span>Archive page ' . esc_html((string) ($archive_page + 1)) . '</span>';
+    if ($archive_page > 0) {
+      $html .= '<button class="button" type="submit" name="archive_page_prev" value="1">Newer showings</button>';
+    }
+    if ($has_next_page) {
+      $html .= '<button class="button" type="submit" name="archive_page_next" value="1">Older showings</button>';
+    }
+    $html .= '</span>';
+  }
   return $html;
 }
 
