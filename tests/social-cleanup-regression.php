@@ -8,14 +8,20 @@ final class CleanupWpdb {
     public string $prefix = 'wp_';
     public string $posts = 'wp_posts';
     public string $postmeta = 'wp_postmeta';
+    public string $usermeta = 'wp_usermeta';
+    public string $termmeta = 'wp_termmeta';
+    public string $commentmeta = 'wp_commentmeta';
+    public string $options = 'wp_options';
     public string $last_error = '';
     public array $rows = [];
     public array $attachments = [];
     public array $meta = [];
     public array $post_content = [];
     public array $postmeta_values = [];
+    public array $metadata_values = ['wp_usermeta'=>[], 'wp_termmeta'=>[], 'wp_commentmeta'=>[], 'wp_options'=>[]];
     public bool $initial_query_error = false;
     public bool $reference_query_error = false;
+    public string $fail_reference_table = '';
     public bool $lock_busy = false;
     public array $busy_lock_names = [];
     public bool $delete_fails = false;
@@ -92,14 +98,35 @@ final class CleanupWpdb {
         if (strpos($query, 'FROM wp_posts') !== false) {
             preg_match('/ID <> (\d+)/', $query, $m); $self = (int) ($m[1] ?? 0);
             preg_match('/wp-image-(\d+)/', $query, $i); $image = 'wp-image-' . (int) ($i[1] ?? 0);
-            preg_match('/post_content LIKE \'(.*?)\'/s', $query, $u); $urlPattern = str_replace('%', '', stripslashes($u[1] ?? ''));
-            foreach ($this->post_content as $id => $content) if ((int) $id !== $self && (strpos($content, $urlPattern) !== false || strpos($content, $image) !== false)) return $id;
+            preg_match_all('/post_content LIKE \'(.*?)\'/s', $query, $matches);
+            $patterns = array_map(static fn($pattern) => stripslashes($pattern), $matches[1] ?? []);
+            foreach ($this->post_content as $id => $content) {
+                if ((int) $id === $self) continue;
+                if (strpos($content, $image) !== false) return $id;
+                foreach ($patterns as $pattern) {
+                    $like_regex = '/^' . str_replace('%', '.*', preg_quote($pattern, '/')) . '$/s';
+                    if ($pattern !== '' && preg_match($like_regex, (string) $content)) return $id;
+                }
+            }
             return null;
         }
-        if (strpos($query, 'FROM wp_postmeta') !== false) {
-            preg_match('/meta_value = \'(.*?)\'/s', $query, $id); $attachment = stripslashes($id[1] ?? '');
-            preg_match('/meta_value LIKE \'(.*?)\'/s', $query, $url); $urlPattern = str_replace('%', '', stripslashes($url[1] ?? ''));
-            foreach ($this->postmeta_values as $value) if ((string) $value === $attachment || strpos((string) $value, $urlPattern) !== false) return 1;
+        foreach (['wp_postmeta'=>$this->postmeta_values] + $this->metadata_values as $table => $values) {
+            if (strpos($query, 'FROM ' . $table) === false) continue;
+            if ($this->fail_reference_table === $table) { $this->last_error = 'fixture ' . $table . ' read error'; return null; }
+            preg_match('/(?:meta_value|option_value) = \'(.*?)\'/s', $query, $id); $attachment = stripslashes($id[1] ?? '');
+            preg_match_all('/(?:meta_value|option_value) LIKE \'(.*?)\'/s', $query, $matches);
+            $patterns = array_map(static fn($pattern) => stripslashes($pattern), $matches[1] ?? []);
+            preg_match('/(?:meta_value|option_value) REGEXP \'(.*?)\'/s', $query, $regex_match);
+            $id_regex = stripslashes($regex_match[1] ?? '');
+            foreach ($values as $value) {
+                if ((string) $value === $attachment) return 1;
+                foreach ($patterns as $pattern) {
+                    $like_regex = '/^' . str_replace('%', '.*', preg_quote($pattern, '/')) . '$/s';
+                    if ($pattern !== '' && preg_match($like_regex, (string) $value)) return 1;
+                }
+                if ($id_regex !== '' && preg_match('/' . $id_regex . '/', (string) $value)) return 1;
+            }
+            return null;
         }
         return null;
     }
@@ -117,7 +144,7 @@ function current_time(string $type): string { return '2026-10-06 12:00:00'; }
 function wp_schedule_single_event(int $timestamp, string $hook, array $args = []): bool { $GLOBALS['cleanup_scheduled'][] = [$timestamp, $hook, $args]; return true; }
 function get_post(int $id) { global $wpdb; if($wpdb->post_read_error){$wpdb->last_error='fixture read failed';return null;}return $wpdb->attachments[$id] ?? null; }
 function get_post_meta(int $id, string $key, bool $single = false) { global $wpdb; return $wpdb->meta[$id][$key] ?? ''; }
-function wp_get_attachment_url(int $id) { return "https://fixture.invalid/uploads/{$id}.mp4"; }
+function wp_get_attachment_url(int $id) { return 'https://fixture.invalid/uploads/clip.mp4'; }
 function wp_delete_attachment(int $id, bool $force = false) { global $wpdb; if($wpdb->delete_throws)throw new RuntimeException('fixture delete threw');if ($wpdb->delete_fails) return false; unset($wpdb->attachments[$id]); return (object) ['ID' => $id]; }
 
 require_once ($argv[1] ?? dirname(__DIR__)) . '/includes/modules/social-publisher/includes/class-roxy-social-store.php';
@@ -147,19 +174,34 @@ check_cleanup(strpos($initial_candidate_query, "'2026-10-06 12:00:00'") !== fals
 
 foreach ([
     ['shared social row', static function () { $GLOBALS['wpdb']->rows[2] = ['id'=>2,'temporary_attachment_id'=>42,'media_url'=>'']; }],
-    ['shared social media URL', static function () { $GLOBALS['wpdb']->rows[2] = ['id'=>2,'temporary_attachment_id'=>null,'media_url'=>'https://fixture.invalid/uploads/42.mp4']; }],
+    ['shared social media URL', static function () { $GLOBALS['wpdb']->rows[2] = ['id'=>2,'temporary_attachment_id'=>null,'media_url'=>'https://fixture.invalid/uploads/clip.mp4']; }],
     ['shared post content', static function () { $GLOBALS['wpdb']->post_content[5] = 'wp-image-42'; }],
-    ['shared post URL', static function () { $GLOBALS['wpdb']->post_content[5] = 'https://fixture.invalid/uploads/42.mp4'; }],
+    ['shared post URL without attachment ID', static function () { $GLOBALS['wpdb']->post_content[5] = 'https://fixture.invalid/uploads/clip.mp4'; }],
+    ['JSON-escaped post URL without attachment ID', static function () { $GLOBALS['wpdb']->post_content[5] = json_encode(['url'=>'https://fixture.invalid/uploads/clip.mp4']); }],
     ['shared postmeta', static function () { $GLOBALS['wpdb']->postmeta_values[] = '42'; }],
-    ['shared postmeta URL', static function () { $GLOBALS['wpdb']->postmeta_values[] = 'https://fixture.invalid/uploads/42.mp4'; }],
+    ['serialized postmeta attachment ID', static function () { $GLOBALS['wpdb']->postmeta_values[] = 'a:1:{s:12:"attachment";i:42;}'; }],
+    ['shared postmeta URL without attachment ID', static function () { $GLOBALS['wpdb']->postmeta_values[] = 'https://fixture.invalid/uploads/clip.mp4'; }],
+    ['shared option URL without attachment ID', static function () { $GLOBALS['wpdb']->metadata_values['wp_options'][] = 'https://fixture.invalid/uploads/clip.mp4'; }],
+    ['JSON-escaped option URL without attachment ID', static function () { $GLOBALS['wpdb']->metadata_values['wp_options'][] = json_encode(['url'=>'https://fixture.invalid/uploads/clip.mp4']); }],
+    ['serialized user metadata attachment ID', static function () { $GLOBALS['wpdb']->metadata_values['wp_usermeta'][] = 'a:1:{s:12:"attachment";i:42;}'; }],
+    ['JSON term metadata attachment ID', static function () { $GLOBALS['wpdb']->metadata_values['wp_termmeta'][] = '{"attachment":"42"}'; }],
+    ['JSON numeric comment metadata attachment ID', static function () { $GLOBALS['wpdb']->metadata_values['wp_commentmeta'][] = '{"attachment":42}'; }],
+    ['JSON array option attachment ID', static function () { $GLOBALS['wpdb']->metadata_values['wp_options'][] = '[17,42,99]'; }],
+    ['shared comment metadata URL without attachment ID', static function () { $GLOBALS['wpdb']->metadata_values['wp_commentmeta'][] = 'https://fixture.invalid/uploads/clip.mp4'; }],
     ['unowned attachment', static function () { $GLOBALS['wpdb']->meta[42]['_roxy_social_temporary'] = '0'; }],
     ['missing Hangar asset marker', static function () { $GLOBALS['wpdb']->meta[42]['_roxy_hangar_asset_id'] = '0'; }],
     ['wrong attachment type', static function () { $GLOBALS['wpdb']->attachments[42]->post_type = 'post'; }],
     ['reference read failure', static function () { $GLOBALS['wpdb']->reference_query_error = true; }],
+    ...array_map(static fn($table) => ['metadata store read failure: ' . $table, static function () use ($table) { $GLOBALS['wpdb']->fail_reference_table = $table; }], ['wp_usermeta', 'wp_termmeta', 'wp_commentmeta', 'wp_options']),
 ] as [$label, $setup]) {
     fixture(); $setup();
     check_cleanup(\RoxySocial\Store::cleanup_expired() === 0 && isset($wpdb->attachments[42]) && $wpdb->rows[1]['temporary_attachment_id'] === 42, $label . ' fails closed');
 }
+
+fixture(); $wpdb->metadata_values['wp_options'][] = '{"count":142}';
+check_cleanup(\RoxySocial\Store::cleanup_expired() === 1, 'numeric reference matching respects whole-ID boundaries');
+fixture(); $wpdb->metadata_values['wp_options'][] = '{"price":42.50,"label":"asset-42-extra"}';
+check_cleanup(\RoxySocial\Store::cleanup_expired() === 1, 'numeric JSON matching ignores decimals and embedded text IDs');
 
 fixture(); $wpdb->delete_fails = true;
 check_cleanup(\RoxySocial\Store::cleanup_expired() === 0 && $wpdb->rows[1]['temporary_attachment_id'] === 42, 'delete failure preserves retry pointer');

@@ -108,13 +108,10 @@ final class Store {
 
                     $posts = $wpdb->posts;
                     $wpdb->last_error = '';
-                    $post_ref = $wpdb->get_var($wpdb->prepare('SELECT ID FROM ' . $posts . ' WHERE ID <> %d AND (post_content LIKE %s OR post_content LIKE %s) LIMIT 1', $attachment_id, '%' . $wpdb->esc_like($url) . '%', '%' . $wpdb->esc_like('wp-image-' . $attachment_id) . '%'));
+                    $post_ref = $wpdb->get_var($wpdb->prepare('SELECT ID FROM ' . $posts . ' WHERE ID <> %d AND (post_content LIKE %s OR post_content LIKE %s OR post_content LIKE %s) LIMIT 1', $attachment_id, '%' . $wpdb->esc_like($url) . '%', '%' . str_replace('/', '%', $wpdb->esc_like($url)) . '%', '%' . $wpdb->esc_like('wp-image-' . $attachment_id) . '%'));
                     if ($wpdb->last_error !== '' || $post_ref !== null) continue;
 
-                    $postmeta = $wpdb->postmeta;
-                    $wpdb->last_error = '';
-                    $meta_ref = $wpdb->get_var($wpdb->prepare('SELECT meta_id FROM ' . $postmeta . ' WHERE meta_value = %s OR meta_value LIKE %s LIMIT 1', (string) $attachment_id, '%' . $wpdb->esc_like($url) . '%'));
-                    if ($wpdb->last_error !== '' || $meta_ref !== null || !self::owns_publish_lock($claim)) continue;
+                    if (self::has_core_attachment_reference($attachment_id, $url) || !self::owns_publish_lock($claim)) continue;
 
                     if (!wp_delete_attachment($attachment_id, true)) continue;
                     $deleted++;
@@ -132,6 +129,45 @@ final class Store {
             if (!$scheduled) error_log('Roxy Social cleanup could not schedule its next bounded page. The next regular cleanup run will retry.');
         }
         return $deleted;
+    }
+
+    /**
+     * Conservatively retain generated media referenced from any standard
+     * WordPress content/metadata store. Unknown/custom tables are outside this
+     * core-table check; query errors fail closed.
+     */
+    private static function has_core_attachment_reference(int $attachment_id, string $url): bool {
+        global $wpdb;
+        if ($attachment_id <= 0 || $url === '') return true;
+        $patterns = [
+            '%' . $wpdb->esc_like($url) . '%',
+            '%' . str_replace('/', '%', $wpdb->esc_like($url)) . '%',
+            '%i:' . $attachment_id . ';%',
+            '%"' . $attachment_id . '"%',
+        ];
+        $numeric_id_pattern = '(^|[:,][[:space:]]*|[[][[:space:]]*)' . $attachment_id . '([[:space:]]*[,}]|[]][[:space:]]*|$)';
+        $stores = [
+            [$wpdb->postmeta, 'meta_value', 'meta_id'],
+            [$wpdb->usermeta, 'meta_value', 'umeta_id'],
+            [$wpdb->termmeta, 'meta_value', 'meta_id'],
+            [$wpdb->commentmeta, 'meta_value', 'meta_id'],
+            [$wpdb->options, 'option_value', 'option_id'],
+        ];
+        foreach ($stores as [$table, $column, $identity]) {
+            if (!is_string($table) || !preg_match('/^[A-Za-z0-9_]+$/D', $table)) return true;
+            $wpdb->last_error = '';
+            $reference = $wpdb->get_var($wpdb->prepare(
+                'SELECT ' . $identity . ' FROM ' . $table . ' WHERE ' . $column . ' = %s OR ' . $column . ' LIKE %s OR ' . $column . ' LIKE %s OR ' . $column . ' LIKE %s OR ' . $column . ' LIKE %s OR ' . $column . ' REGEXP %s LIMIT 1',
+                (string) $attachment_id,
+                $patterns[0],
+                $patterns[1],
+                $patterns[2],
+                $patterns[3],
+                $numeric_id_pattern
+            ));
+            if ($wpdb->last_error !== '' || $reference !== null) return true;
+        }
+        return false;
     }
 
     public static function find_by_post_key(string $post_key): ?array {
