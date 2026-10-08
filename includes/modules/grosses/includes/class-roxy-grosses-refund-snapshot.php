@@ -307,6 +307,7 @@ final class WooRefundEvents {
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $events = [];
     $seen = [];
+    $parent_gateway_cache = [];
     foreach ($refunds as $refund) {
       if (!is_object($refund)
         || !method_exists($refund, 'get_id') || !method_exists($refund, 'get_parent_id')
@@ -322,9 +323,12 @@ final class WooRefundEvents {
       $seen[$id] = true;
       if ($refund->get_refunded_payment() !== true) continue;
       if ($allowed !== null) {
-        $parent = wc_get_order($order_id);
-        if (!is_object($parent) || !method_exists($parent, 'get_payment_method')) throw new \RuntimeException('WooCommerce could not verify the payment gateway for a refunded order.');
-        $gateway = $parent->get_payment_method();
+        if (!array_key_exists($order_id, $parent_gateway_cache)) {
+          $parent = wc_get_order($order_id);
+          if (!is_object($parent) || !method_exists($parent, 'get_payment_method')) throw new \RuntimeException('WooCommerce could not verify the payment gateway for a refunded order.');
+          $parent_gateway_cache[$order_id] = $parent->get_payment_method();
+        }
+        $gateway = $parent_gateway_cache[$order_id];
         if (!is_string($gateway) || $gateway === '') throw new \RuntimeException('WooCommerce refunded order has an invalid payment gateway.');
         if (!isset($allowed[$gateway])) continue;
       }
