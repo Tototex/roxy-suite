@@ -9,6 +9,8 @@ function wp_mkdir_p($dir) { return is_dir($dir) || @mkdir($dir, 0700, true); }
 require __DIR__ . '/../includes/modules/show-tickets/includes/class-roxy-st-log.php';
 $method = new ReflectionMethod('RoxyST\\Log', 'uploads_log_path');
 $method->setAccessible(true);
+$write = new ReflectionMethod('RoxyST\\Log', 'write_file');
+$write->setAccessible(true);
 $checks = 0;
 $check = static function ($ok, string $message) use (&$checks): void {
   $checks++;
@@ -21,6 +23,8 @@ try {
   $check($path === $uploads . '/roxy-st-logs/roxy-st.log', 'logger returns expected path after privacy checks');
   $check(is_file($dir . '/index.html'), 'directory index is created');
   $check(file_get_contents($dir . '/.htaccess') === $rules, 'complete Apache deny rules are installed');
+  $write->invoke(null, 'Info', 'fixture message');
+  $check(is_file($path) && str_ends_with(file_get_contents($path), " Info fixture message\n"), 'fallback logger appends the complete log line');
   file_put_contents($dir . '/.htaccess', '');
   $check($method->invoke(null) === $path, 'logger path remains stable after repairing rules');
   $check(file_get_contents($dir . '/.htaccess') === $rules, 'missing/weak rules are repaired');
@@ -29,6 +33,11 @@ try {
   unlink($dir . '/.htaccess');
   mkdir($dir . '/.htaccess');
   $check($method->invoke(null) === '', 'logger refuses flat-file logging when deny rules cannot be verified');
+  rmdir($dir . '/.htaccess');
+  unlink($path);
+  mkdir($path);
+  $write->invoke(null, 'Error', 'fixture failure');
+  $check(is_dir($path), 'failed log append is nonfatal and leaves the obstructing path untouched');
 } finally {
   $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
   foreach ($iterator as $entry) $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname());

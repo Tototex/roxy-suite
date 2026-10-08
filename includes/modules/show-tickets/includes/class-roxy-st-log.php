@@ -41,8 +41,12 @@ class Log {
     $path = self::uploads_log_path();
     if ($path === '') return;
     $line = gmdate('Y-m-d\TH:i:sP') . ' ' . $level . ' ' . $message . "\n";
-    // Best-effort; never fatal.
-    @file_put_contents($path, $line, FILE_APPEND);
+    // Best-effort; never fatal, but do not silently report a persisted fallback
+    // log line when the append failed or was short.
+    $written = @file_put_contents($path, $line, FILE_APPEND | LOCK_EX);
+    if ($written !== strlen($line)) {
+      error_log('Roxy Show Tickets could not append to its protected fallback log.');
+    }
   }
 
   public static function info(string $message, array $context = []): void {
