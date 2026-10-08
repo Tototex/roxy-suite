@@ -146,6 +146,7 @@ $check(empty($recovered['read_error']) && $recovered['sold_qty']===0
   'successful retry completes the legacy scan and clears the temporary unavailable state');
 $GLOBALS['sales_fixture_orders'] = [42 => new $order('processing',true,[new $item(901,701,1,10.0)])];
 unset($GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete']);
+unset($GLOBALS['sales_fixture_meta'][42]['_roxy_contains_showing_' . $showing_id]);
 $GLOBALS['sales_fixture_tag_write_failure'] = true;
 $legacy_scan = new ReflectionMethod($sales, 'find_and_tag_legacy_orders_for_showing');
 $legacy_scan->setAccessible(true);
