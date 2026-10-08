@@ -22,6 +22,7 @@ namespace {
     $GLOBALS['wpdb'] = (object) ['last_error' => ''];
     require dirname(__DIR__) . '/includes/class-roxy-suite-health.php';
     $method = new \ReflectionMethod(\RoxySuite\Health::class, 'functional_show_tickets');
+    $method->setAccessible(true);
     $checks = 0;
     $check = static function (bool $condition, string $message) use (&$checks): void {
         if (!$condition) throw new \RuntimeException($message);
