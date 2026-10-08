@@ -956,7 +956,16 @@ class Tickets {
     } elseif ($search !== '') {
       $results = self::search_tickets($search);
     }
-    $member_results = (class_exists('\Roxy_Sub_Check') && method_exists('\Roxy_Sub_Check', 'search_members') && $member_search !== '') ? \Roxy_Sub_Check::search_members($member_search) : [];
+    $member_results = [];
+    $member_search_failed = false;
+    if (class_exists('\Roxy_Sub_Check') && method_exists('\Roxy_Sub_Check', 'search_members') && $member_search !== '') {
+      try {
+        $member_results = \Roxy_Sub_Check::search_members($member_search);
+      } catch (\Throwable $error) {
+        $member_search_failed = true;
+        error_log('[Roxy Member Search] Subscription lookup failed (' . get_class($error) . ').');
+      }
+    }
     $door_showings = self::get_door_mode_showings();
 
     if ($wrap) echo '<div class="wrap"><h1>Roxy Check-In</h1>';
@@ -1012,7 +1021,9 @@ class Tickets {
     echo '</form>';
 
     if ($member_search !== '') {
-      if (!$member_results) {
+      if ($member_search_failed) {
+        echo '<div class="notice notice-error"><p>Member search is temporarily unavailable. Check the subscription directly before admitting anyone.</p></div>';
+      } elseif (!$member_results) {
         echo '<p style="margin-bottom:0">No active subscribers found.</p>';
       } else {
         echo '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:14px">';

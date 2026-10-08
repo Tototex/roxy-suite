@@ -428,48 +428,72 @@ class Roxy_Sub_Check {
   }
 
   private static function search_member_subscription_ids(string $term, int $limit): array {
-    if (!function_exists('wcs_get_subscriptions')) return [];
-    $page_size = 100;
-    $page = 1;
+    global $wpdb;
+    if (!isset($wpdb->posts, $wpdb->postmeta, $wpdb->users, $wpdb->usermeta)
+      || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'get_col') || !method_exists($wpdb, 'esc_like')) {
+      throw new \RuntimeException('Member search storage is unavailable.');
+    }
+    $limit = max(1, min(50, $limit));
+    $like = '%' . $wpdb->esc_like($term) . '%';
+    // Do the selective lookup in SQL and hydrate only the bounded matches via
+    // wcs_get_subscription() in search_members(). Walking every active
+    // subscription through wcs_get_subscriptions() makes a no-match search
+    // unbounded. This query intentionally uses post storage: the Suite
+    // declares HPOS unsupported until its order paths are fully certified.
+    $sql = "SELECT p.ID
+      FROM {$wpdb->posts} p
+      WHERE p.post_type = 'shop_subscription'
+        AND p.post_status IN ('wc-active', 'wc-pending-cancel')
+        AND (
+          CAST(p.ID AS CHAR) LIKE %s
+          OR EXISTS (
+            SELECT 1
+            FROM {$wpdb->postmeta} customer_meta
+            INNER JOIN {$wpdb->users} u
+              ON u.ID = CAST(customer_meta.meta_value AS UNSIGNED)
+            WHERE customer_meta.post_id = p.ID
+              AND customer_meta.meta_key = '_customer_user'
+              AND (
+                u.user_email LIKE %s
+                OR u.display_name LIKE %s
+                OR EXISTS (
+                  SELECT 1 FROM {$wpdb->usermeta} first_name
+                  WHERE first_name.user_id = u.ID AND first_name.meta_key = 'first_name'
+                    AND first_name.meta_value LIKE %s
+                )
+                OR EXISTS (
+                  SELECT 1 FROM {$wpdb->usermeta} last_name
+                  WHERE last_name.user_id = u.ID AND last_name.meta_key = 'last_name'
+                    AND last_name.meta_value LIKE %s
+                )
+                OR EXISTS (
+                  SELECT 1
+                  FROM {$wpdb->usermeta} first_full
+                  LEFT JOIN {$wpdb->usermeta} last_full
+                    ON last_full.user_id = first_full.user_id AND last_full.meta_key = 'last_name'
+                  WHERE first_full.user_id = u.ID AND first_full.meta_key = 'first_name'
+                    AND CONCAT_WS(' ', first_full.meta_value, last_full.meta_value) LIKE %s
+                )
+              )
+          )
+        )
+      ORDER BY p.ID DESC
+      LIMIT %d";
+    $prepared = $wpdb->prepare($sql, $like, $like, $like, $like, $like, $like, $limit);
+    $ids = $wpdb->get_col($prepared);
+    if ((isset($wpdb->last_error) && (string) $wpdb->last_error !== '') || !is_array($ids)
+      || (function_exists('is_wp_error') && is_wp_error($ids))) {
+      throw new \RuntimeException('Member search could not read subscription records.');
+    }
     $matches = [];
-    $seen = [];
-    try {
-      do {
-        $subscriptions = wcs_get_subscriptions([
-          'subscription_status' => ['active', 'pending-cancel'],
-          'subscriptions_per_page' => $page_size,
-          'paged' => $page,
-          'orderby' => 'ID',
-          'order' => 'DESC',
-        ]);
-        if (!is_array($subscriptions) || (function_exists('is_wp_error') && is_wp_error($subscriptions))) return [];
-        if (!$subscriptions) break;
-        foreach ($subscriptions as $subscription) {
-          if (!is_object($subscription) || !method_exists($subscription, 'get_id') || !method_exists($subscription, 'get_status')) return [];
-          $id = (int) $subscription->get_id();
-          if ($id <= 0 || isset($seen[$id])) return [];
-          $seen[$id] = true;
-          if (!in_array((string) $subscription->get_status(), ['active', 'pending-cancel'], true)) continue;
-          $user = method_exists($subscription, 'get_user') ? $subscription->get_user() : null;
-          $first = is_object($user) && !empty($user->ID) ? (string) get_user_meta((int) $user->ID, 'first_name', true) : '';
-          $last = is_object($user) && !empty($user->ID) ? (string) get_user_meta((int) $user->ID, 'last_name', true) : '';
-          $parts = [$id, $first, $last];
-          foreach (['get_billing_email', 'get_billing_first_name', 'get_billing_last_name'] as $method) {
-            if (method_exists($subscription, $method)) $parts[] = (string) $subscription->{$method}();
-          }
-          if (is_object($user)) {
-            $parts[] = (string) ($user->user_email ?? '');
-            $parts[] = (string) ($user->display_name ?? '');
-          }
-          if (strpos(strtolower(implode(' ', $parts)), $term) === false) continue;
-          $matches[] = $id;
-          if (count($matches) >= $limit) return $matches;
-        }
-        if (count($subscriptions) < $page_size) break;
-        $page++;
-      } while (true);
-    } catch (\Throwable $error) {
-      return [];
+    foreach ($ids as $id) {
+      if (!is_numeric($id) || (float) $id <= 0 || (float) $id !== (float) (int) $id) {
+        throw new \RuntimeException('Member search returned an invalid subscription identity.');
+      }
+      $matches[] = (int) $id;
+    }
+    if (count($matches) !== count(array_unique($matches))) {
+      throw new \RuntimeException('Member search returned duplicate subscription identities.');
     }
     return $matches;
   }

@@ -15,7 +15,7 @@ function get_user_meta($id,$key,$single=true){return $key==='first_name'?'Fixtur
 function wp_verify_nonce($nonce,$action){return $nonce==='fixture';}function current_user_can(...$args){return true;}
 function wp_get_attachment_image_src($id,$size){return ['https://example.test/photo/'.$id];}
 function wcs_get_subscription($id){return new TestSubscription($id);}
-function wcs_get_subscriptions($args){$GLOBALS['member_search_queries'][]=$args;if(!empty($GLOBALS['member_search_fail']))throw new RuntimeException('fixture query failure');$ids=range(101,1);$offset=((int)($args['paged']??1)-1)*(int)($args['subscriptions_per_page']??100);return array_map(static fn($id)=>new TestSubscription($id),array_slice($ids,$offset,(int)($args['subscriptions_per_page']??100)));}
+function wcs_get_subscriptions($args){$GLOBALS['member_search_queries'][]=$args;return [];}
 function home_url($path=''){return 'https://example.test'.$path;}
 function admin_url($path=''){return 'https://example.test/wp-admin/'.$path;}
 function wp_nonce_url($url,$action){return $url.'&_wpnonce=test';}
@@ -38,14 +38,16 @@ class TestSubscription {
     function get_date($key){return '';}
 }
 class TestDatabase {
-    public $prefix='test_';public $last_error='';public $queries=[];public $inserts=[];public $fail=false;
+    public $prefix='test_';public $posts='wp_posts';public $postmeta='wp_postmeta';public $users='wp_users';public $usermeta='wp_usermeta';public $last_error='';public $queries=[];public $inserts=[];public $fail=false;public $prepared_args=[];public $last_col_query='';public $last_col_args=[];
     function esc_like($value){return str_replace('_','\\_',$value);}
-    function prepare($sql,...$args){return $sql;}
+    function prepare($sql,...$args){$this->prepared_args=$args;return $sql;}
+    function get_col($sql){$this->queries[]=$sql;$this->last_col_query=$sql;$this->last_col_args=$this->prepared_args;if($this->fail){$this->last_error='fixture query failure';return null;}$this->last_error='';return [1];}
     function get_var($sql){$this->queries[]=$sql;if(str_contains($sql,'SHOW TABLES'))return 'test_roxy_member_scans';if(str_contains($sql,'COUNT'))return 1;return '2026-09-28 19:30:00';}
     function get_results($sql,$format){$this->queries[]=$sql;if(str_contains($sql,'GROUP BY subscription_id, user_id'))return [['subscription_id'=>(int)($GLOBALS['history_subscription_id']??2),'user_id'=>8,'scanned_at'=>'2026-09-28 19:30:00','quantity'=>3]];if(str_contains($sql,'GROUP BY subscription_id'))return [['subscription_id'=>1,'visits_month'=>3,'visits_lifetime'=>6,'last_visit'=>'2026-09-28 19:30:00']];return [['id'=>1,'scanned_at'=>'2026-09-28 19:30:00','subscription_id'=>1,'is_active'=>1,'status'=>'active','user_id'=>8,'ip'=>'','user_agent'=>'']];}
     function insert($table,$data,$formats){if($this->fail)return false;$this->inserts[]=$data;return 1;}
 }
 $GLOBALS['wpdb']=new TestDatabase;
+$GLOBALS['member_search_queries']=[];
 $GLOBALS['test_sub_meta']=[];
 $GLOBALS['test_transients']=[];$GLOBALS['test_screen']=(object)['post_type'=>'shop_subscription'];
 $root=$argv[1]??dirname(__DIR__);
@@ -53,11 +55,14 @@ require $root.'/includes/modules/sub-check/roxy-sub-check.php';
 require $root.'/includes/class-roxy-suite-members-dashboard.php';
 check(Roxy_Sub_Check::prepare_admission_log(),'admission verifies initialized log without schema repair');
 $found=Roxy_Sub_Check::search_members('fixture1@',5);
-check(count($found)===1&&$found[0]['subscription_id']===1&&count($GLOBALS['member_search_queries'])===2,'member search pages through subscription CRUD results and finds an older email match');
-check($GLOBALS['member_search_queries'][0]['subscription_status']===['active','pending-cancel']&&$GLOBALS['member_search_queries'][0]['subscriptions_per_page']===100&&$GLOBALS['member_search_queries'][0]['paged']===1,'member search uses bounded stable Woo Subscriptions query pages');
-$GLOBALS['member_search_fail']=true;
-check(Roxy_Sub_Check::search_members('fixture1@',5)===[],'subscription query failure returns no potentially misleading partial search results');
-unset($GLOBALS['member_search_fail']);
+check(count($found)===1&&$found[0]['subscription_id']===1&&count($GLOBALS['member_search_queries'])===0,'member search finds an active subscriber without loading paged subscription collections');
+$search_sql=$GLOBALS['wpdb']->last_col_query;
+check(str_contains($search_sql,"p.post_status IN ('wc-active', 'wc-pending-cancel')")&&str_contains($search_sql,'ORDER BY p.ID DESC')&&str_contains($search_sql,'LIMIT %d')&&str_contains($search_sql,'EXISTS ('),'member search applies identity, active-status and result-limit filters in SQL');
+check(count($GLOBALS['wpdb']->last_col_args)===7&&$GLOBALS['wpdb']->last_col_args[0]==='%fixture1@%','member search safely binds the search term and bounded result count');
+$GLOBALS['wpdb']->fail=true;
+$search_failed=false;try{Roxy_Sub_Check::search_members('fixture1@',5);}catch(RuntimeException $error){$search_failed=true;}
+check($search_failed,'subscription query failure is surfaced instead of misreported as no subscribers');
+$GLOBALS['wpdb']->fail=false;
 $dashboard_action=new ReflectionMethod(\RoxySuite\Members_Dashboard::class,'handle_member_actions');$dashboard_action->setAccessible(true);
 $_POST=['roxy_members_action_nonce'=>'fixture','roxy_members_action'=>'save_photo','subscription_id'=>42,'attachment_id'=>77];ob_start();$dashboard_action->invoke(null);$photo_notice=ob_get_clean();
 check(($GLOBALS['test_sub_meta'][42]['_roxy_member_photo_id']??0)===77&&str_contains($photo_notice,'Member photo updated.'),'member dashboard persists photo metadata through subscription CRUD');
