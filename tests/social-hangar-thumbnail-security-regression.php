@@ -106,6 +106,13 @@ namespace RoxySocial {
     });
     $save_poster = new \ReflectionMethod(Hangar::class, 'save_video_thumbnail');
     $save_poster->setAccessible(true);
+    $write_download = new \ReflectionMethod(Hangar::class, 'write_download_temp_file');
+    $write_download->setAccessible(true);
+    $download_temp = $upload_dir . DIRECTORY_SEPARATOR . 'featured-image.tmp';
+    file_put_contents($download_temp, 'seed');
+    $check($write_download->invoke(null, $download_temp, $png) === true && file_get_contents($download_temp) === $png, 'featured-image temp download verifies complete byte count');
+    $check($write_download->invoke(null, $download_temp, '') === false && !file_exists($download_temp), 'invalid temp download body fails and removes the request-owned temp file');
+    $check($write_download->invoke(null, $upload_dir, $png) === false && is_dir($upload_dir), 'failed temp write does not remove a non-file path');
     $GLOBALS['hangar_fixture']['cache']['roxy_social_hangar_thumb_31'] = '/posters/source.png';
     $GLOBALS['hangar_fixture']['response'] = ['response' => ['code' => 200], 'headers' => ['content-type' => 'image/png'], 'body' => $png];
     $save_poster->invoke(null, 501, 31, 'movie.mp4');

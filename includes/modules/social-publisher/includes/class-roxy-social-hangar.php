@@ -248,7 +248,7 @@ final class Hangar {
         $body = wp_remote_retrieve_body($response);
         if ($body === '' || strlen($body) > 25 * 1024 * 1024) return 0;
         $tmp = wp_tempnam($filename);
-        if (!$tmp || false === file_put_contents($tmp, $body)) return 0;
+        if (!$tmp || !self::write_download_temp_file($tmp, $body)) return 0;
         require_once ABSPATH . 'wp-admin/includes/file.php';
         require_once ABSPATH . 'wp-admin/includes/media.php';
         require_once ABSPATH . 'wp-admin/includes/image.php';
@@ -260,6 +260,19 @@ final class Hangar {
         set_post_thumbnail($post_id, (int) $attachment_id);
         update_post_meta((int) $attachment_id, '_roxy_hangar_asset_id', $asset_id);
         return (int) $attachment_id;
+    }
+
+    private static function write_download_temp_file(string $path, string $body): bool {
+        if ($path === '' || !is_file($path) || $body === '') {
+            if ($path !== '' && is_file($path)) @unlink($path);
+            return false;
+        }
+        $written = @file_put_contents($path, $body);
+        if ($written !== strlen($body)) {
+            @unlink($path);
+            return false;
+        }
+        return true;
     }
 
     public static function download_url(int $asset_id): string {
