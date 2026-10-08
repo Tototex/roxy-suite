@@ -138,6 +138,10 @@ $GLOBALS['health_options']['roxy_grosses_last_auto_date'] = (new DateTimeImmutab
 $grosses_items = $call('functional_grosses');
 foreach ($grosses_items as $item) if ($item['label'] === 'Last automatic run') $auto_item = $item;
 $check(is_array($auto_item) && $auto_item['status'] === 'warn' && str_contains($auto_item['note'], 'future'), 'future automatic Grosses date warns');
+$GLOBALS['health_options']['roxy_grosses_last_auto_date'] = ['not-a-date'];
+$grosses_items = $call('functional_grosses');
+foreach ($grosses_items as $item) if ($item['label'] === 'Last automatic run') $auto_item = $item;
+$check(is_array($auto_item) && $auto_item['status'] === 'warn' && $auto_item['detail'] === 'Invalid marker', 'non-string automatic Grosses date warns without coercion');
 $GLOBALS['health_options'] = [];
 $GLOBALS['posts_error'] = true;
 $check($call('functional_requested_showings')[0]['status'] === 'warn', 'failed request query not empty list');

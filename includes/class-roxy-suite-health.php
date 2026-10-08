@@ -705,9 +705,11 @@ class Health {
         $advertiser_hook = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::advertiser_hook() : 'roxy_grosses_monthly_advertiser_send';
         $next_local  = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::scheduled_time_local($report_hook) : '';
         $next_advertiser_local = class_exists('\\RoxyGrosses\\Scheduler') ? \RoxyGrosses\Scheduler::scheduled_time_local($advertiser_hook) : '';
-        $last_auto_date = (string) get_option('roxy_grosses_last_auto_date', '');
+        $last_auto_value = get_option('roxy_grosses_last_auto_date', '');
+        $last_auto_invalid = !is_string($last_auto_value);
+        $last_auto_date = $last_auto_invalid ? '' : trim($last_auto_value);
         $stale_status = self::PASS;
-        $stale_detail = $last_auto_date ?: 'Never';
+        $stale_detail = $last_auto_invalid ? 'Invalid marker' : ($last_auto_date ?: 'Never');
         $stale_note = '';
         $latest_log_detail = 'No logs found';
         $latest_log_status = self::WARN;
@@ -751,7 +753,10 @@ class Health {
         }
 
         if ($sched_enabled) {
-            if ($last_auto_date === '') {
+            if ($last_auto_invalid) {
+                $stale_status = self::WARN;
+                $stale_note = 'The saved automatic Grosses date is not a valid text date.';
+            } elseif ($last_auto_date === '') {
                 $stale_status = self::WARN;
                 $stale_note = 'Automatic grosses are enabled, but no successful automatic run has been recorded yet.';
             } else {
