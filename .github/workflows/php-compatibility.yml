@@ -158,6 +158,7 @@ jobs:
             social-review-confirmation-regression.php
             social-secrets-regression.php
             social-showtime-regression.php
+            show-ticket-log-private-dir-regression.php
             stability-regression.php
             showing-room-lock-regression.php
             ticket-cart-pricing-regression.php
