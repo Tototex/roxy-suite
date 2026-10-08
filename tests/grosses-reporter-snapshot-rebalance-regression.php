@@ -151,6 +151,9 @@ namespace {
   \RoxyGrosses\Square::$calls = [];
   \RoxyGrosses\Reporter::reconciliation_rows('2038-05-01', '2038-05-02');
   $check(\RoxyGrosses\Square::$depth === 0 && \RoxyGrosses\Square::$cache === [] && \RoxyGrosses\Square::$calls === ['2038-05-01','2038-05-02'], 'reconciliation range shares one scope across dates and clears afterward');
+  $prior_calls = \RoxyGrosses\Square::$calls;
+  $invalid_date_rows = \RoxyGrosses\Reporter::reconciliation_rows('2038-02-30', '2038-03-01');
+  $check($invalid_date_rows === [] && \RoxyGrosses\Square::$calls === $prior_calls, 'impossible reconciliation dates are rejected before Square reads');
 
   \RoxyGrosses\Fixture::$zero_refund = true;
   $zero = \RoxyGrosses\Reporter::pull_into_database('2038-05-02');

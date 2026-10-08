@@ -2506,6 +2506,14 @@ class Reporter {
       return [];
     }
 
+    foreach ([$date_from, $date_to] as $date) {
+      $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+      $errors = \DateTimeImmutable::getLastErrors();
+      if (!$parsed || ($errors && ($errors['warning_count'] || $errors['error_count'])) || $parsed->format('Y-m-d') !== $date) {
+        return [];
+      }
+    }
+
     $start = new \DateTimeImmutable($date_from . ' 00:00:00', new \DateTimeZone(Settings::get_report_timezone()));
     $end = new \DateTimeImmutable($date_to . ' 00:00:00', new \DateTimeZone(Settings::get_report_timezone()));
     if ($end < $start) {
