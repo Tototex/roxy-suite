@@ -13,7 +13,8 @@ function wc_get_order($id){return $GLOBALS['order'];}
 function absint($value){return abs((int)$value);}
 function wp_parse_url($url,$component){return parse_url($url,$component);}
 function sanitize_text_field($value){return $value;}function wp_unslash($value){return $value;}
-function roxy_suite_user_can_access_admin(){return true;}function check_ajax_referer(...$args){}
+function roxy_suite_user_can_access_admin(){return true;}function check_ajax_referer(...$args){$GLOBALS['nonce_args'][]=$args;}
+function admin_url($path=''){return '/wp-admin/'.$path;}function esc_url($value){return $value;}function esc_attr($value){return (string)$value;}function wp_nonce_field($action){echo '<input name="_wpnonce" value="'.esc_attr($action).'">';}
 class JsonResult extends RuntimeException{public $payload;function __construct($payload){$this->payload=$payload;}}
 function wp_send_json_success($payload){throw new JsonResult($payload);}
 function wp_send_json_error($payload,$code=400){throw new RuntimeException($payload['message']);}
@@ -59,6 +60,11 @@ $reset();Roxy_Sub_Check::$fail=true;$result=$admit->invoke(null,1,50,3,'manual_a
 check(!$result['ok']&&!get_post_meta(101,'_roxy_checked_in')&&!get_post_meta(102,'_roxy_checked_in')&&!get_post_meta(103,'_roxy_checked_in'),'failed reserved log rolls back every ticket admission');
 $reset();$GLOBALS['reserved']=[];$GLOBALS['walkup']=2;$result=$admit->invoke(null,1,50,3,'manual_admit');
 check($result['ok']&&$result['payload']['admit_quantity']===1,'walk-up request capped at remaining membership quantity');
+$GLOBALS['nonce_args']=[];$_POST=['nonce'=>'fixture','visit_id'=>'223','subscription_id'=>'7','showing_id'=>'50'];
+try{\RoxyST\Tickets::ajax_member_walkup_undo();}catch(JsonResult $json){$undo_payload=$json->payload;}
+check(($GLOBALS['issuance_scope']??'')==='walkup:50' && ($GLOBALS['walkup_undo_args']??[])===[223,7,50] && ($GLOBALS['nonce_args'][0]??[])===['roxy_st_door_checkin','nonce'] && ($undo_payload['audit']['undo_audit_id']??0)===999,'walk-up Undo AJAX endpoint uses the showing lock, exact visit identity, and Door Mode nonce');
+$render=new ReflectionMethod(\RoxyST\Tickets::class,'render_walkup_undo_form');$render->setAccessible(true);ob_start();$render->invoke(null,223,7,50);$undo_form=ob_get_clean();
+check(str_contains($undo_form,'roxy_st_undo_member_walkup') && str_contains($undo_form,'name="visit_id" value="223"') && str_contains($undo_form,'name="subscription_id" value="7"') && str_contains($undo_form,'name="showing_id" value="50"') && str_contains($undo_form,'Undo one walk-up arrival'),'manual member-admit screen renders a nonce-protected exact-visit Undo form');
 $GLOBALS['walkup']=0;Roxy_Sub_Check::$fail=true;$result=$admit->invoke(null,1,50,3,'manual_admit');
 check(!$result['ok']&&$result['payload']['admit_quantity']===0,'failed member log reports zero admission');
 Roxy_Sub_Check::$fail=false;$GLOBALS['walkup']=1;$before=count(Roxy_Sub_Check::$logs);$result=$admit->invoke(null,1,50,1,'manual_admit');

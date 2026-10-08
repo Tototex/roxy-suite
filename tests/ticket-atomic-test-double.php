@@ -2,7 +2,7 @@
 // Unit-test plumbing only. Real transaction/locking assertions live in MySQL/Woo fixtures.
 namespace RoxyST {
   class Issuance {
-    public function __construct(int|array $ids,string|array $scope='') {}
+    public function __construct(int|array $ids,string|array $scope='') {$GLOBALS['issuance_scope']=is_array($scope)?($scope[0]??''):$scope;}
     public function run(callable $callback) {
       $before=$GLOBALS['meta']??[];
       $baseline=$GLOBALS['baseline']??0;
@@ -16,6 +16,7 @@ namespace RoxyST {
     public function will_call_quantity(int $id,string $key):int{return (int)($GLOBALS['baseline']??0);}
     public function member_visit(array $row):bool{return true;}
     public function member_visit_id():int{return 1;}
+    public function undo_member_walkup(int $visit,int $sub,int $show):array {$GLOBALS['walkup_undo_args']=[$visit,$sub,$show];return ['quantity_after'=>0,'replacement_visit_id'=>0,'undo_audit_id'=>999,'undone_at'=>'2026-10-08 12:00:00','undone_by'=>1];}
     public function member_walkup_quantity(int $show,int $sub=0):int{return (int)($GLOBALS['walkup']??0);}
     public function reserved_seats(int $show):int{return (int)($GLOBALS['reserved_seats']??0);}
     public function will_call_summary(int $id,string $key,int $qty):void {
