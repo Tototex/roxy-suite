@@ -7,8 +7,14 @@
 if (!defined('WP_CLI') || !WP_CLI) exit;
 global $wpdb;
 
-if (!class_exists('RoxyST\\CPT') || !class_exists('RoxyST\\Products')) throw new RuntimeException('Show Tickets CPT and Products classes must already be loaded.');
-if (!defined('ROXY_ST_META_SHOWING_ID') || !defined('ROXY_ST_META_TICKET_TYPE')) throw new RuntimeException('Show Tickets metadata constants are unavailable.');
+$source_root = rtrim((string) getenv('ROXY_SUITE_FIXTURE_ROOT'), '/\\');
+if ($source_root === '' || !is_dir($source_root)) throw new RuntimeException('Set ROXY_SUITE_FIXTURE_ROOT to the candidate source checkout before running this fixture.');
+if (!defined('ROXY_ST_META_SHOWING_ID')) define('ROXY_ST_META_SHOWING_ID', '_roxy_showing_id');
+if (!defined('ROXY_ST_META_TICKET_TYPE')) define('ROXY_ST_META_TICKET_TYPE', '_roxy_ticket_type');
+if (!class_exists('RoxyST\\CPT')) require_once $source_root . '/includes/modules/show-tickets/includes/class-roxy-st-cpt.php';
+if (!class_exists('RoxyST\\Products')) require_once $source_root . '/includes/modules/show-tickets/includes/class-roxy-st-products.php';
+if (!class_exists('RoxyST\\CPT') || !class_exists('RoxyST\\Products')) throw new RuntimeException('Show Tickets CPT and Products classes could not be loaded from the candidate source.');
+\RoxyST\CPT::register();
 
 $owner = 'ticket-weekend-duplicate-' . wp_generate_uuid4();
 $marker = 'PRIVATE ' . $owner;

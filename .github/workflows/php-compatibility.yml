@@ -74,8 +74,7 @@ jobs:
           run_fixture "$GITHUB_WORKSPACE/tests/social-cleanup-mysql.php" "$GITHUB_WORKSPACE/includes/modules/social-publisher/includes/class-roxy-social-store.php"
           run_fixture "$GITHUB_WORKSPACE/tests/social-publish-store-mysql.php" "$GITHUB_WORKSPACE"
           run_fixture "$GITHUB_WORKSPACE/tests/member-walkup-undo-mysql.php" "$GITHUB_WORKSPACE"
-          php "$RUNNER_TEMP/wp-cli.phar" --path="$WP_PATH" eval 'define("ROXY_ST_META_SHOWING_ID", "_roxy_showing_id"); define("ROXY_ST_META_TICKET_TYPE", "_roxy_ticket_type"); require getenv("GITHUB_WORKSPACE") . "/includes/modules/show-tickets/includes/class-roxy-st-cpt.php"; require getenv("GITHUB_WORKSPACE") . "/includes/modules/show-tickets/includes/class-roxy-st-products.php"; \RoxyST\CPT::register();'
-          run_fixture "$GITHUB_WORKSPACE/tests/ticket-weekend-duplicate-wordpress.php" "$GITHUB_WORKSPACE"
+          ROXY_SUITE_FIXTURE_ROOT="$GITHUB_WORKSPACE" run_fixture "$GITHUB_WORKSPACE/tests/ticket-weekend-duplicate-wordpress.php"
           php "$RUNNER_TEMP/wp-cli.phar" --path="$WP_PATH" --require="$GITHUB_WORKSPACE/includes/modules/social-publisher/includes/class-roxy-social-store.php" eval-file "$GITHUB_WORKSPACE/tests/social-draft-snapshot-mysql.php" "$GITHUB_WORKSPACE" >"$RUNNER_TEMP/social-fixture-output.txt" 2>&1 || { details="$(tail -n 35 "$RUNNER_TEMP/social-fixture-output.txt" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"; echo "::error title=Draft snapshot MySQL fixture failed::$details"; exit 1; }
           cat "$RUNNER_TEMP/social-fixture-output.txt"
 
