@@ -134,6 +134,8 @@ jobs:
               php "tests/$test" "$GITHUB_WORKSPACE/includes/modules/inventory/includes"
             elif [[ "$test" == 'members-dashboard-regression.php' ]]; then
               php "tests/$test" --baseline-ref 6e730f0 "$GITHUB_WORKSPACE/includes/class-roxy-suite-members-dashboard.php"
+            elif [[ "$test" == 'social-film-context-regression.php' || "$test" == 'social-ai-references-regression.php' ]]; then
+              php "tests/$test" "$GITHUB_WORKSPACE/includes/modules/social-publisher/includes"
             else
               php "tests/$test"
             fi
