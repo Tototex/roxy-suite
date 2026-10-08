@@ -6,13 +6,13 @@ The subscriber allowance calculator treated WooCommerce's paid-order query as an
 
 ## Change
 
-- Invalid query results, unavailable API, invalid showing identity, thrown query/order reads, malformed line-item collections, and incomplete line-item identity/quantity now cache a fail-closed sentinel.
+- Invalid query results, database errors, unavailable API, invalid showing identity, thrown query/order reads, malformed line-item collections, and incomplete line-item identity/quantity now cache a fail-closed sentinel.
 - Subscriber allowance returns zero when paid usage is unknown; no cart or walk-up calculation can turn that unknown result into new entitlement.
 - Quantities and walk-up counts must be finite, nonnegative whole numbers and cannot overflow the accumulated count.
 
 ## Verification
 
-`tests/capacity-walkup-regression.php` adds fault cases for invalid showing identity, a failed and throwing paid-order query, a missing and throwing order read, and a malformed line-item result. `tests/capacity-missing-order-api-regression.php` verifies missing `wc_get_orders` support with an active fixture subscription. Hosted run [37750257124](https://github.com/Tototex/roxy-suite/actions/runs/37750257124) passed the PHP 8.0–8.4 syntax matrix and full PHP 8.3 isolated suite, including both capacity regressions. No live ticket cart/order was changed.
+`tests/capacity-walkup-regression.php` adds fault cases for invalid showing identity, a simulated database error, a failed and throwing paid-order query, a missing and throwing order read, and a malformed line-item result. `tests/capacity-missing-order-api-regression.php` verifies missing `wc_get_orders` support with an active fixture subscription. Hosted run [37750257124](https://github.com/Tototex/roxy-suite/actions/runs/37750257124) passed before the new database-error fixture; the expanded test and PHP 8.0–8.4/full PHP 8.3 suite will run on the next hosted push. No live ticket cart/order was changed.
 
 ## Remaining
 

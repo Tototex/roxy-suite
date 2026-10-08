@@ -21,6 +21,7 @@ class TestCart {
 class Roxy_Sub_Check{static function walkup_quantity_for_showing($show,$user=0){if(!empty($GLOBALS['log_fail']))throw new RuntimeException('Fixture read failure');return (int)($GLOBALS[$user>0?'user_walkups':'walkups']??0);}}
 eval('namespace RoxyST;class Reservations{static function quantity_for_showing($id){if(!empty($GLOBALS["reservation_fail"]))throw new \\RuntimeException("Fixture failure");return (int)($GLOBALS["sold"]??0);}}');
 $root=$argv[1]??dirname(__DIR__);require $root.'/includes/modules/show-tickets/includes/class-roxy-st-capacity.php';
+$GLOBALS['wpdb']=(object)['last_error'=>''];
 $cart=new TestCart();$GLOBALS['woo']=(object)['cart'=>$cart];$GLOBALS['meta']=[50=>['_roxy_capacity'=>5],10=>['_roxy_showing_id'=>50,'_roxy_ticket_type'=>'adult']];$GLOBALS['sold']=2;$GLOBALS['walkups']=2;$GLOBALS['user_walkups']=2;$GLOBALS['notices']=[];
 check(\RoxyST\Capacity::remaining_seats_for_showing(50)===1,'remaining seats subtract ticket reservations and walk-ups once');
 check(!\RoxyST\Capacity::validate_add_to_cart(false,10,1),'capacity filter preserves an earlier add-to-cart rejection');
@@ -35,6 +36,9 @@ check($cart->rows['row']['quantity']===1,'quantity-change hook trims to actual r
 $GLOBALS['meta'][10]['_roxy_ticket_type']='subscriber';$cart->rows=[];$GLOBALS['meta'][50]['_roxy_capacity']=20;
 check(\RoxyST\Capacity::subscriber_limit_remaining_for_showing(50,7,false)===1,'walk-up usage reduces online member entitlement');
 check(\RoxyST\Capacity::subscriber_limit_remaining_for_showing(0,7,false)===0,'invalid showing cannot grant subscriber entitlement');
+$GLOBALS['orders_result']=[];$GLOBALS['wpdb']->last_error='Simulated query error';
+check(\RoxyST\Capacity::subscriber_limit_remaining_for_showing(65,7,false)===0,'database error cannot masquerade as an empty purchase history');
+$GLOBALS['wpdb']->last_error='';
 $GLOBALS['orders_result']=false;
 check(\RoxyST\Capacity::subscriber_limit_remaining_for_showing(60,7,false)===0,'failed paid-order query blocks subscriber entitlement');
 $GLOBALS['orders_result']=[];$GLOBALS['orders_throw']=true;

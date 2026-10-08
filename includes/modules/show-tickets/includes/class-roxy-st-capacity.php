@@ -233,9 +233,14 @@ class Capacity {
       return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
     }
 
+    $database_read_failed = static function (): bool {
+      global $wpdb;
+      return isset($wpdb->last_error) && (string) $wpdb->last_error !== '';
+    };
+
     // This query controls paid entitlement consumption. Treat an unreadable or
     // malformed result as unknown usage, never as an empty purchase history.
-    if (!is_array($orders) || (function_exists('is_wp_error') && is_wp_error($orders))) {
+    if ($database_read_failed() || !is_array($orders) || (function_exists('is_wp_error') && is_wp_error($orders))) {
       return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
     }
 
@@ -243,11 +248,12 @@ class Capacity {
     try {
       foreach ($orders as $order) {
         $order = wc_get_order($order);
+        if ($database_read_failed()) return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
         if (!is_object($order) || !method_exists($order, 'get_items')) {
           return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
         }
         $items = $order->get_items('line_item');
-        if (!is_array($items) || (function_exists('is_wp_error') && is_wp_error($items))) {
+        if ($database_read_failed() || !is_array($items) || (function_exists('is_wp_error') && is_wp_error($items))) {
           return self::$subscriber_usage_cache[$cache_key] = PHP_INT_MAX;
         }
         foreach ($items as $item) {
