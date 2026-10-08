@@ -504,6 +504,64 @@ class Store {
     return $row;
   }
 
+  /** Find bounded signed completion events by their event-created day, not the refund object's update day. */
+  public static function completed_refund_events_created_between(string $start_utc, string $end_utc): array {
+    global $wpdb;
+    $utc = new \DateTimeZone('UTC');
+    $start = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $start_utc, $utc);
+    $start_errors = \DateTimeImmutable::getLastErrors();
+    $end = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $end_utc, $utc);
+    $end_errors = \DateTimeImmutable::getLastErrors();
+    if (!$start || $start->format('Y-m-d H:i:s') !== $start_utc
+      || ($start_errors && ($start_errors['warning_count'] || $start_errors['error_count']))
+      || !$end || $end->format('Y-m-d H:i:s') !== $end_utc
+      || ($end_errors && ($end_errors['warning_count'] || $end_errors['error_count']))
+      || $start >= $end) {
+      throw new \RuntimeException('Invalid Square refund-event discovery window.');
+    }
+
+    $table = self::refund_webhook_table_name();
+    $rows = $wpdb->get_results($wpdb->prepare(
+      "SELECT event_id,refund_id,payment_id,location_id,amount_cents,currency,event_created_at,refund_updated_at FROM {$table} WHERE status = 'COMPLETED' AND currency = 'USD' AND event_created_at >= %s AND event_created_at < %s ORDER BY event_created_at DESC,id DESC LIMIT 101",
+      $start_utc, $end_utc
+    ), ARRAY_A);
+    if ($wpdb->last_error !== '' || !is_array($rows) || !self::is_list($rows)) {
+      throw new \RuntimeException('Square refund completion events could not be read.');
+    }
+    if (count($rows) > 100) throw new \RuntimeException('Square refund completion-event discovery exceeded its 100-event safety limit.');
+
+    $events = [];
+    foreach ($rows as $row) {
+      if (!is_array($row)) throw new \RuntimeException('Square refund completion-event data is malformed.');
+      foreach (['event_id', 'refund_id', 'payment_id', 'location_id'] as $field) {
+        if (!is_string($row[$field] ?? null) || $row[$field] === '' || strlen($row[$field]) > 191) {
+          throw new \RuntimeException('Square refund completion-event identity is malformed.');
+        }
+      }
+      $amount = $row['amount_cents'] ?? null;
+      if (!is_string($row['currency'] ?? null) || $row['currency'] !== 'USD'
+        || (!is_string($amount) && !is_int($amount)) || !preg_match('/^(?:0|[1-9]\d*)$/D', (string) $amount)
+        || filter_var((string) $amount, FILTER_VALIDATE_INT) === false) {
+        throw new \RuntimeException('Square refund completion-event amount is malformed.');
+      }
+      foreach (['event_created_at', 'refund_updated_at'] as $field) {
+        $value = $row[$field] ?? null;
+        if (!is_string($value) || !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $value)) {
+          throw new \RuntimeException('Square refund completion-event timestamp is malformed.');
+        }
+        $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $value, $utc);
+        $errors = \DateTimeImmutable::getLastErrors();
+        if (!$parsed || $parsed->format('Y-m-d H:i:s') !== $value || ($errors && ($errors['warning_count'] || $errors['error_count']))) {
+          throw new \RuntimeException('Square refund completion-event timestamp is invalid.');
+        }
+      }
+      // Rows are newest-first; a refund contributes at most once even if Square emitted
+      // more than one completed-state event for the same current refund snapshot.
+      if (!isset($events[$row['refund_id']])) $events[$row['refund_id']] = $row;
+    }
+    return array_values($events);
+  }
+
   private static function report_schema_upgrade_failure(string $message): void {
     error_log('Roxy Grosses schema upgrade incomplete; retry pending.');
     add_action('admin_notices', static function () use ($message): void {

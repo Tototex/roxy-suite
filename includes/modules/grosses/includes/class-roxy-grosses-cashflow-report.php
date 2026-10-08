@@ -81,10 +81,57 @@ final class CashflowReport {
     $utc_start = $local_start->setTimezone(new \DateTimeZone('UTC'));
     $utc_end = $local_end->setTimezone(new \DateTimeZone('UTC'));
 
-    $square_payment_rows = Square::list_payments_created_between($utc_start->format('Y-m-d\TH:i:s\Z'), $utc_end->format('Y-m-d\TH:i:s\Z'));
+    $deadline = microtime(true) + 120;
+    $square_payment_rows = Square::list_payments_created_between($utc_start->format('Y-m-d\TH:i:s\Z'), $utc_end->format('Y-m-d\TH:i:s\Z'), $deadline);
     if (!is_array($square_payment_rows) || !self::is_list($square_payment_rows)) throw new \RuntimeException('Square returned an incomplete payment list.');
     $square_collections = SquarePaymentEvents::from_payments($square_payment_rows);
-    $square_refund_rows = Square::list_payment_refunds_updated_between($utc_start->format('Y-m-d\TH:i:s\Z'), $utc_end->format('Y-m-d\TH:i:s\Z'));
+    $square_refund_rows = Square::list_payment_refunds_updated_between($utc_start->format('Y-m-d\TH:i:s\Z'), $utc_end->format('Y-m-d\TH:i:s\Z'), $deadline);
+    if (!is_array($square_refund_rows) || !self::is_list($square_refund_rows)) throw new \RuntimeException('Square returned an incomplete refund list.');
+    $refunds_by_id = [];
+    foreach ($square_refund_rows as $refund) {
+      if (!is_array($refund) || !is_string($refund['id'] ?? null) || $refund['id'] === '' || isset($refunds_by_id[$refund['id']])) {
+        throw new \RuntimeException('Square returned a malformed or duplicate refund identity.');
+      }
+      $refunds_by_id[$refund['id']] = $refund;
+    }
+
+    if (!method_exists(Store::class, 'completed_refund_events_created_between') || !method_exists(Store::class, 'refund_completion_event')) {
+      throw new \RuntimeException('Square refund completion-event history is unavailable.');
+    }
+    $completion_events = Store::completed_refund_events_created_between(
+      $utc_start->format('Y-m-d H:i:s'),
+      $utc_end->format('Y-m-d H:i:s')
+    );
+    if (!is_array($completion_events) || !self::is_list($completion_events) || count($completion_events) > 100) {
+      throw new \RuntimeException('Square refund completion-event history is incomplete.');
+    }
+    foreach ($completion_events as $candidate) {
+      if (!is_array($candidate) || !is_string($candidate['refund_id'] ?? null) || $candidate['refund_id'] === ''
+        || !is_string($candidate['event_id'] ?? null) || $candidate['event_id'] === ''
+        || !is_string($candidate['event_created_at'] ?? null)) {
+        throw new \RuntimeException('Square refund completion-event identity is malformed.');
+      }
+      $refund = $refunds_by_id[$candidate['refund_id']] ?? Square::retrieve_payment_refund($candidate['refund_id'], $deadline);
+      $updated_at_value = $refund['updated_at'] ?? null;
+      if (($refund['status'] ?? '') !== 'COMPLETED' || !is_string($updated_at_value)
+        || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/D', $updated_at_value)) {
+        throw new \RuntimeException('A dated Square refund event no longer matches a completed refund. Review this cashflow day.');
+      }
+      try {
+        $updated_at = new \DateTimeImmutable($updated_at_value);
+        $timestamp_errors = \DateTimeImmutable::getLastErrors();
+        if ($timestamp_errors && ($timestamp_errors['warning_count'] || $timestamp_errors['error_count'])) throw new \RuntimeException();
+        $refund_updated_at = $updated_at->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+      } catch (\Throwable $error) { throw new \RuntimeException('A dated Square refund has an invalid update timestamp.'); }
+      $matched = Store::refund_completion_event($refund, $refund_updated_at);
+      if (!$matched || ($matched['event_id'] ?? null) !== $candidate['event_id']
+        || ($matched['event_created_at'] ?? null) !== $candidate['event_created_at']
+        || ($candidate['refund_updated_at'] ?? null) !== $refund_updated_at) {
+        throw new \RuntimeException('A dated Square refund completion event does not exactly match the current provider refund. Review this cashflow day.');
+      }
+      $refunds_by_id[$candidate['refund_id']] = $refund;
+    }
+    $square_refund_rows = array_values($refunds_by_id);
     $square_snapshot = RefundSnapshot::from_financial_refund_feed($square_refund_rows);
     $square_refunds = $square_snapshot->completed_financial_refunds();
 

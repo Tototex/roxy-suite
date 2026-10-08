@@ -10,7 +10,13 @@ namespace RoxyGrosses {
   }
   final class Store {
     public static ?array $completion_event = null;
+    public static array $completion_candidates = [];
+    public static array $completion_candidate_calls = [];
     public static bool $fail_completion_event_read = false;
+    public static function completed_refund_events_created_between(string $start, string $end): array {
+      self::$completion_candidate_calls[] = [$start, $end];
+      return array_values(array_filter(self::$completion_candidates, static fn(array $event): bool => $event['event_created_at'] >= $start && $event['event_created_at'] < $end));
+    }
     public static function refund_completion_event(array $refund, string $updated): ?array {
       if (self::$fail_completion_event_read) throw new \RuntimeException('Injected completion-evidence read failure.');
       return self::$completion_event;
@@ -20,10 +26,17 @@ namespace RoxyGrosses {
     public static array $orders = [];
     public static array $payments = [];
     public static array $refunds = [];
+    public static array $refunds_by_id = [];
+    public static array $refund_retrieve_calls = [];
     public static array $calls = [];
     public static function fetch_orders_for_date(string $date): array { self::$calls[] = ['orders', $date]; return self::$orders; }
-    public static function list_payments_created_between(string $start, string $end): array { self::$calls[] = ['payments', $start, $end]; return self::$payments; }
-    public static function list_payment_refunds_updated_between(string $start, string $end): array { self::$calls[] = ['refunds', $start, $end]; return self::$refunds; }
+    public static function list_payments_created_between(string $start, string $end, ?float $deadline = null): array { self::$calls[] = ['payments', $start, $end]; return self::$payments; }
+    public static function list_payment_refunds_updated_between(string $start, string $end, ?float $deadline = null): array { self::$calls[] = ['refunds', $start, $end]; return self::$refunds; }
+    public static function retrieve_payment_refund(string $id, ?float $deadline = null): array {
+      self::$refund_retrieve_calls[] = $id;
+      if (!isset(self::$refunds_by_id[$id])) throw new \RuntimeException('Fixture refund missing.');
+      return self::$refunds_by_id[$id];
+    }
   }
   final class FakeOrder {
     public function __construct(private int $id, private string $gateway, private string $amount, private string $transaction, private \DateTimeImmutable $paid) {}
@@ -111,6 +124,39 @@ namespace {
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'combined cashflow fails closed when matched Square completion evidence cannot be read');
   \RoxyGrosses\Store::$fail_completion_event_read = false;
   \RoxyGrosses\Store::$completion_event = null;
+
+  // Refund updated_at and its signed completion event may fall on different
+  // Pacific dates. Discover by event day rather than inventing a lookback.
+  $cross_midnight_refund = [
+    'id'=>'sq-cross-midnight','payment_id'=>'sq-cross-payment','location_id'=>'loc','status'=>'COMPLETED',
+    'amount_money'=>['amount'=>275,'currency'=>'USD'],'updated_at'=>'2026-10-03T06:45:00Z',
+  ];
+  \RoxyGrosses\Store::$completion_event = ['event_id'=>'refund-event-cross','event_created_at'=>'2026-10-03 07:15:00'];
+  \RoxyGrosses\Store::$completion_candidates = [[
+    'event_id'=>'refund-event-cross','refund_id'=>'sq-cross-midnight','event_created_at'=>'2026-10-03 07:15:00',
+    'refund_updated_at'=>'2026-10-03 06:45:00',
+  ]];
+  \RoxyGrosses\Square::$refunds = [];
+  \RoxyGrosses\Square::$refunds_by_id = ['sq-cross-midnight'=>$cross_midnight_refund];
+  \RoxyGrosses\Square::$refund_retrieve_calls = [];
+  $cross_midnight = \RoxyGrosses\CashflowReport::for_day('2026-10-03');
+  $assert($cross_midnight['totals']['square_refunded_cents'] === 275
+    && $cross_midnight['refund_date_bases']['square'] === ['square_refund_completed_event'], 'event-day discovery includes a completed refund whose Square updated_at falls on the prior Pacific day');
+  $assert(\RoxyGrosses\Square::$refund_retrieve_calls === ['sq-cross-midnight'], 'cross-day completion evidence retrieves the current Square refund once for exact validation');
+  $assert(end(\RoxyGrosses\Store::$completion_candidate_calls) === ['2026-10-03 07:00:00','2026-10-04 07:00:00'], 'completion-event discovery uses exact UTC bounds for the selected Pacific day');
+  \RoxyGrosses\Store::$completion_event = ['event_id'=>'different-event','event_created_at'=>'2026-10-03 07:15:00'];
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-03'), 'event-day candidate that does not exactly match the current refund fails closed');
+  \RoxyGrosses\Store::$completion_event = ['event_id'=>'refund-event-cross','event_created_at'=>'2026-10-03 07:15:00'];
+  \RoxyGrosses\Store::$completion_candidates = [];
+  \RoxyGrosses\Square::$refunds = [$cross_midnight_refund];
+  $prior_day = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $assert($prior_day['totals']['square_refunded_cents'] === 0, 'completion-event dating prevents the same refund being counted again on its updated_at day');
+  \RoxyGrosses\Store::$completion_event = null;
+  \RoxyGrosses\Square::$refunds_by_id = [];
+  \RoxyGrosses\Square::$refunds = [[
+    'id' => 'sq-refund', 'payment_id' => 'sq-payment', 'location_id' => 'loc', 'status' => 'COMPLETED',
+    'amount_money' => ['amount' => 200, 'currency' => 'USD'], 'updated_at' => '2026-10-03T03:00:00Z',
+  ]];
 
   $provider_call_count_before_invalid_configuration = count(\RoxyGrosses\Square::$calls);
   \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = '';
