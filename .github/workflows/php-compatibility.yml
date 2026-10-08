@@ -8,6 +8,75 @@ permissions:
   contents: read
 
 jobs:
+  requested-showings-private-lifecycle:
+    name: Requested Showings private WordPress/Woo lifecycle
+    runs-on: ubuntu-24.04
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: roxy_requested_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mysqli, zip
+          coverage: none
+      - name: Install WP-CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o "$RUNNER_TEMP/wp-cli.phar"
+          php "$RUNNER_TEMP/wp-cli.phar" --info
+      - name: Create disposable WordPress and WooCommerce site
+        shell: bash
+        run: |
+          set -euo pipefail
+          wp_path="$RUNNER_TEMP/roxy-requested-wp"
+          mkdir -p "$wp_path"
+          php "$RUNNER_TEMP/wp-cli.phar" core download --path="$wp_path" --skip-content
+          php "$RUNNER_TEMP/wp-cli.phar" config create --path="$wp_path" --dbname=roxy_requested_test --dbuser=root --dbpass=root --dbhost=127.0.0.1 --skip-check
+          php "$RUNNER_TEMP/wp-cli.phar" core install --path="$wp_path" --url=http://roxy-requested-test.invalid --title='Private Requested Showings fixture' --admin_user=fixture --admin_password=fixture-password --admin_email=fixture@example.invalid
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin install woocommerce --activate
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" option update woocommerce_custom_orders_table_enabled no
+          mkdir -p "$wp_path/wp-content/plugins"
+          ln -s "$GITHUB_WORKSPACE" "$wp_path/wp-content/plugins/roxy-suite"
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" eval '$flags = array_fill_keys(["arcade","sub_check","will_call","show_tickets","requested_showings","event_booking","grosses","inventory","social_publisher"], false); $flags["show_tickets"] = true; $flags["requested_showings"] = true; update_option("roxy_suite_modules", $flags);'
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin activate roxy-suite/roxy-suite.php
+          echo "R2_WP_PATH=$wp_path" >> "$GITHUB_ENV"
+      - name: Run private authenticated entitlement-to-conversion fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/requested-lifecycle-output.txt"
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/requested-entitlement-lifecycle-wordpress.php" "$GITHUB_WORKSPACE" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 50 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Requested Showings lifecycle fixture failed::$details"
+            exit "$status"
+          fi
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/requested-entitlement-mysql.php" "$GITHUB_WORKSPACE/includes/modules/requested-showings/includes/repository.php" "$GITHUB_WORKSPACE/includes/modules/requested-showings/includes/class-roxy-rs-conversion-claims.php" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 50 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Requested Showings private SQL fixture failed::$details"
+            exit "$status"
+          fi
+
   social-database-fixtures:
     name: Social lifecycle private-MySQL fixtures
     runs-on: ubuntu-24.04
