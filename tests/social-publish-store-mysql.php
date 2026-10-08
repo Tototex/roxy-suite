@@ -12,14 +12,29 @@ $table=$fixture_prefix.\RoxySocial\PublishFixtureStore::TABLE;
 $suppressed=$wpdb->suppress_errors(true);
 function roxy_publish_fixture_check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS: $label\n";}
 try {
-    if(false===$wpdb->query("CREATE TEMPORARY TABLE `$table` (id BIGINT PRIMARY KEY, status VARCHAR(24), last_error TEXT NULL, updated_at DATETIME, facebook_post_id VARCHAR(190) NULL, instagram_media_id VARCHAR(190) NULL, instagram_container_id VARCHAR(190) NULL)"))throw new RuntimeException('Temporary fixture table creation failed');
+    if(false===$wpdb->query("CREATE TEMPORARY TABLE `$table` (id BIGINT PRIMARY KEY, status VARCHAR(24), last_error TEXT NULL, updated_at DATETIME, facebook_post_id VARCHAR(190) NULL, instagram_media_id VARCHAR(190) NULL, instagram_container_id VARCHAR(190) NULL) ENGINE=InnoDB"))throw new RuntimeException('Temporary fixture table creation failed');
     $wpdb->prefix=$fixture_prefix;
     $wpdb->insert($table,['id'=>1,'status'=>'approved','updated_at'=>current_time('mysql')]);
     roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::compare_publish_status(1,'approved','publishing'),'atomic status claim wins once');
     roxy_publish_fixture_check(!\RoxySocial\PublishFixtureStore::compare_publish_status(1,'approved','publishing'),'stale status claim cannot win twice');
-    $wpdb->insert($table,['id'=>2,'status'=>'needs_review','last_error'=>'previous ambiguous result','updated_at'=>current_time('mysql')]);
-    roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::compare_publish_status(2,'needs_review','approved')
-        &&\RoxySocial\PublishFixtureStore::find(2)['last_error']===null,'explicit reviewed approval atomically clears the stale ambiguity marker');
+    $wpdb->insert($table,['id'=>2,'status'=>'needs_review','last_error'=>'previous ambiguous result','updated_at'=>current_time('mysql'),'facebook_post_id'=>'facebook-legacy-2','instagram_container_id'=>'container-legacy-2']);
+    $stale_review=\RoxySocial\PublishFixtureStore::find(2);
+    $stale_revision=\RoxySocial\PublishFixtureStore::draft_revision($stale_review);
+    $wpdb->update($table,['last_error'=>'newer ambiguous result'],['id'=>2,'status'=>'needs_review']);
+    roxy_publish_fixture_check(!\RoxySocial\PublishFixtureStore::update_status(2,'approved',$stale_revision)
+        &&\RoxySocial\PublishFixtureStore::find(2)['status']==='needs_review'
+        &&\RoxySocial\PublishFixtureStore::find(2)['last_error']==='newer ambiguous result',
+        'stale manager approval fails closed without clearing a newer ambiguity marker');
+    $reviewed_row=\RoxySocial\PublishFixtureStore::find(2);
+    roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::update_status(2,'approved',\RoxySocial\PublishFixtureStore::draft_revision($reviewed_row)),
+        'explicit manager approve-retry action succeeds through the locked, revision-checked status path');
+    $approved_row=\RoxySocial\PublishFixtureStore::find(2);
+    roxy_publish_fixture_check($approved_row['status']==='approved'&&$approved_row['last_error']===null
+        &&$approved_row['facebook_post_id']==='facebook-legacy-2'&&$approved_row['instagram_container_id']==='container-legacy-2',
+        'approve-retry atomically clears the legacy ambiguity marker while preserving provider identities');
+    roxy_publish_fixture_check(!\RoxySocial\PublishFixtureStore::update_status(2,'approved',\RoxySocial\PublishFixtureStore::draft_revision($approved_row))
+        &&\RoxySocial\PublishFixtureStore::find(2)['last_error']===null,
+        'duplicate manager approval cannot perform a second status transition');
     $claim=\RoxySocial\PublishFixtureStore::acquire_publish_lock(1);
     roxy_publish_fixture_check($claim&&\RoxySocial\PublishFixtureStore::owns_publish_lock($claim),'actual connection owns named worker lock');
     roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::update_publish_result(1,'publishing','','123','',$claim),'owned guarded SQL durably persists ID');
