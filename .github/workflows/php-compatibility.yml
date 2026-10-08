@@ -153,6 +153,7 @@ jobs:
             social-cleanup-regression.php
             social-film-context-regression.php
             social-hangar-thumbnail-security-regression.php
+            social-hangar-auth-cache-regression.php
             social-publisher-regression.php
             social-review-confirmation-regression.php
             social-secrets-regression.php

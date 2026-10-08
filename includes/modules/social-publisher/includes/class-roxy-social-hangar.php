@@ -226,18 +226,26 @@ final class Hangar {
     }
 
     private static function login_cookies(): array {
+        static $request_cache = [];
+        $user = (string) get_option(self::USER_OPTION, '');
         $password=self::decrypt((string)get_option(self::PASS_OPTION,''));
-        if ($password==='') return [];
+        if ($user === '' || $password==='') return [];
+        $cache_key = hash('sha256', $user . "\0" . $password);
+        if (array_key_exists($cache_key, $request_cache)) return $request_cache[$cache_key];
         $login = wp_remote_post(self::BASE_URL . 'login.php', [
             'timeout' => 20,
             'redirection' => 0,
             'body' => [
-                'user' => (string) get_option(self::USER_OPTION, ''),
+                'user' => $user,
                 'pass' => $password,
             ],
         ]);
-        if (is_wp_error($login) || !in_array((int) wp_remote_retrieve_response_code($login), [200, 302], true)) return [];
-        return wp_remote_retrieve_cookies($login);
+        $cookies = !is_wp_error($login) && in_array((int) wp_remote_retrieve_response_code($login), [200, 302], true)
+            ? wp_remote_retrieve_cookies($login)
+            : [];
+        if (!is_array($cookies)) $cookies = [];
+        $request_cache[$cache_key] = $cookies;
+        return $cookies;
     }
 
     private static function encrypt(string $value): string {
