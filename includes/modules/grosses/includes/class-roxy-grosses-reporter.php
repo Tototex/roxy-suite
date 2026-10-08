@@ -1716,7 +1716,7 @@ class Reporter {
         'discount_qty' => max(0, (int) ($row['discount_qty'] ?? 0)),
         'group_qty' => max(0, (int) ($row['group_qty'] ?? 0)),
         '_is_locked' => !empty($row['is_locked']),
-        'concessions_total' => 0.0,
+        'concessions_total' => !empty($row['is_locked']) ? round((float) ($row['concessions_total'] ?? 0), 2) : 0.0,
       ];
     }
 
@@ -1735,7 +1735,7 @@ class Reporter {
         'door_qty' => max(0, (int) ($row['door_qty'] ?? 0)),
         'group_sub_qty' => max(0, (int) ($row['group_sub_qty'] ?? 0)),
         '_is_locked' => !empty($row['is_locked']),
-        'concessions_total' => 0.0,
+        'concessions_total' => !empty($row['is_locked']) ? round((float) ($row['concessions_total'] ?? 0), 2) : 0.0,
       ];
     }
 
@@ -1749,7 +1749,7 @@ class Reporter {
         '_entry_id' => $entry_id,
         '_start_at' => self::start_at_for_entry_row($report_date, (string) ($row['show_time'] ?? '')),
         'show_time' => (string) ($row['show_time'] ?? ''),
-        'concessions_total' => 0.0,
+        'concessions_total' => !empty($row['is_locked']) ? round((float) ($row['concessions_total'] ?? 0), 2) : 0.0,
         '_is_locked' => !empty($row['is_locked']),
       ];
     }
@@ -1770,7 +1770,10 @@ class Reporter {
         continue;
       }
 
-      if (!empty($report['_is_locked'])) continue;
+      if (!empty($report['_is_locked'])) {
+        $concessions_total += $concessions;
+        continue;
+      }
       $saved = $kind === 'movie'
         ? Store::update_entry($entry_id, ['concessions_total' => $concessions])
         : ($kind === 'live'
@@ -1795,6 +1798,17 @@ class Reporter {
 
     $orders = Square::fetch_orders_for_date($report_date);
     $catalog_object_ids = [];
+    $provisional = [];
+    $eligible_cents = 0;
+    $locked_cents = 0;
+    foreach ($reports as $entry_id => $report) {
+      if (!empty($report['_is_locked'])) {
+        $fixed = round((float) ($report['concessions_total'] ?? 0) * 100);
+        if (!is_finite((float) ($report['concessions_total'] ?? 0)) || $fixed < 0 || $fixed > PHP_INT_MAX - $locked_cents) throw new \RuntimeException('A locked concessions amount is invalid; review this report day manually.');
+        $locked_cents += (int) $fixed;
+      } else $reports[$entry_id]['concessions_total'] = 0.0;
+    }
+
     foreach ($orders as $order) {
       foreach ((array) ($order['line_items'] ?? []) as $line_item) {
         $catalog_object_id = trim((string) ($line_item['catalog_object_id'] ?? ''));
@@ -1822,13 +1836,42 @@ class Reporter {
           continue;
         }
 
+        $candidate_ids = array_values(array_filter($candidate_ids, static fn(int $entry_id): bool => empty($reports[$entry_id]['_is_locked'])));
+        if (!$candidate_ids) continue;
+        if ($line_total_cents > PHP_INT_MAX - $eligible_cents) throw new \RuntimeException('Daily concessions exceed the supported allocation range.');
+        $eligible_cents += $line_total_cents;
         foreach (self::distribute_amount_cents_across_rows($line_total_cents, $candidate_ids, $reports) as $entry_id => $allocated_cents) {
-          if ($allocated_cents <= 0 || !isset($reports[$entry_id])) {
-            continue;
-          }
-          $reports[$entry_id]['concessions_total'] = round((float) ($reports[$entry_id]['concessions_total'] ?? 0) + ($allocated_cents / 100), 2);
+          if ($allocated_cents <= 0 || !isset($reports[$entry_id])) continue;
+          if ($allocated_cents > PHP_INT_MAX - ($provisional[$entry_id] ?? 0)) throw new \RuntimeException('A concessions allocation exceeds the supported amount range.');
+          $provisional[$entry_id] = ($provisional[$entry_id] ?? 0) + $allocated_cents;
         }
       }
+    }
+
+    if ($locked_cents > $eligible_cents) throw new \RuntimeException('Locked concessions exceed the matching Square total; review the protected rows before refreshing.');
+    if ($eligible_cents <= 0) return;
+    $remaining_cents = $eligible_cents - $locked_cents;
+    if ($remaining_cents === 0) return;
+    $provisional_total = array_sum($provisional);
+    if ($provisional_total !== $eligible_cents || !$provisional) throw new \RuntimeException('Concessions could not be fully matched to editable report rows; review this date manually.');
+    $assigned = 0;
+    $remainders = [];
+    $allocated = [];
+    foreach ($provisional as $entry_id => $cents) {
+      $exact = ($cents / $provisional_total) * $remaining_cents;
+      $whole = (int) floor($exact);
+      $allocated[$entry_id] = $whole;
+      $assigned += $whole;
+      $remainders[$entry_id] = $exact - $whole;
+    }
+    arsort($remainders, SORT_NUMERIC);
+    foreach (array_keys($remainders) as $entry_id) {
+      if ($assigned >= $remaining_cents) break;
+      $allocated[$entry_id]++;
+      $assigned++;
+    }
+    foreach ($allocated as $entry_id => $cents) {
+      $reports[$entry_id]['concessions_total'] = round((float) ($cents / 100), 2);
     }
   }
 

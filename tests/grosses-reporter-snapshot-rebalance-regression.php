@@ -196,8 +196,17 @@ namespace {
   $check($failed, 'unlocked Store update failure is explicit');
   \RoxyGrosses\Store::$fail_update = false;
   \RoxyGrosses\Store::$movie['2038-05-01'][0]['is_locked'] = 1;
+  $locked_cents = (int) round((float) \RoxyGrosses\Store::$movie['2038-05-01'][0]['concessions_total'] * 100);
   $locked = \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', ['2038-05-01']));
-  $check($locked['updated'] === 2, 'locked movie correction is skipped while unlocked live/rental rows remain writable');
+  $saved_day_cents = 0;
+  foreach ([\RoxyGrosses\Store::$movie,\RoxyGrosses\Store::$live,\RoxyGrosses\Store::$rental] as $dataset) $saved_day_cents += (int) round((float) ($dataset['2038-05-01'][0]['concessions_total'] ?? 0) * 100);
+  $check($locked['updated'] === 2 && (int) round((float) \RoxyGrosses\Store::$movie['2038-05-01'][0]['concessions_total'] * 100) === $locked_cents && $saved_day_cents === 1001, 'locked movie amount stays fixed and remaining allocation is conserved across editable rows');
+  \RoxyGrosses\Store::$movie['2038-05-01'][0]['concessions_total'] = 20.0;
+  $updates_before_mismatch = count(\RoxyGrosses\Store::$updates);
+  $mismatch_failed = false;
+  try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', ['2038-05-01'])); }
+  catch (Throwable $error) { $mismatch_failed = str_contains($error->getMessage(), 'Locked concessions exceed'); }
+  $check($mismatch_failed && count(\RoxyGrosses\Store::$updates) === $updates_before_mismatch, 'locked amount above matching Square total fails before any allocation write');
 
   echo "OK: {$checks} reporter snapshot/rebalance checks\n";
 }
