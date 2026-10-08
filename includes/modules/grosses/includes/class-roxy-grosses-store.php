@@ -2119,19 +2119,20 @@ class Store {
 
   public static function create_import_batch(string $source_kind, string $label): int {
     global $wpdb;
-    $wpdb->insert(self::import_batch_table_name(), [
+    $inserted = $wpdb->insert(self::import_batch_table_name(), [
       'created_at' => current_time('mysql'),
       'created_by' => get_current_user_id() ?: null,
       'source_kind' => sanitize_text_field($source_kind),
       'label' => sanitize_text_field($label),
       'status' => 'running',
     ]);
-    return (int) $wpdb->insert_id;
+    return $inserted === false || (int) $inserted < 1 ? 0 : max(0, (int) $wpdb->insert_id);
   }
 
   public static function add_import_file(int $batch_id, string $original_name, string $stored_path, string $parser_type, string $status): int {
     global $wpdb;
-    $wpdb->insert(self::import_file_table_name(), [
+    if ($batch_id < 1) return 0;
+    $inserted = $wpdb->insert(self::import_file_table_name(), [
       'batch_id' => $batch_id,
       'created_at' => current_time('mysql'),
       'original_name' => sanitize_file_name($original_name),
@@ -2139,28 +2140,44 @@ class Store {
       'parser_type' => sanitize_text_field($parser_type),
       'status' => sanitize_text_field($status),
     ]);
-    return (int) $wpdb->insert_id;
+    return $inserted === false || (int) $inserted < 1 ? 0 : max(0, (int) $wpdb->insert_id);
   }
 
-  public static function update_import_file_path(int $file_id, string $stored_path): void {
+  private static function import_update_succeeded(string $table, int $id, $updated): bool {
     global $wpdb;
-    $wpdb->update(self::import_file_table_name(), ['stored_path' => $stored_path], ['id' => $file_id]);
+    if ($updated === false || $id < 1) return false;
+    if ((int) $updated > 0) return true;
+    $found = $wpdb->get_var($wpdb->prepare("SELECT id FROM {$table} WHERE id = %d", $id));
+    return $wpdb->last_error === '' && (int) $found === $id;
   }
 
-  public static function update_import_file_status(int $file_id, string $status, int $rows_parsed, int $rows_imported, int $warning_count, string $error_message = ''): void {
+  public static function update_import_file_path(int $file_id, string $stored_path): bool {
     global $wpdb;
-    $wpdb->update(self::import_file_table_name(), [
+    if ($file_id < 1) return false;
+    $table = self::import_file_table_name();
+    $updated = $wpdb->update($table, ['stored_path' => $stored_path], ['id' => $file_id]);
+    return self::import_update_succeeded($table, $file_id, $updated);
+  }
+
+  public static function update_import_file_status(int $file_id, string $status, int $rows_parsed, int $rows_imported, int $warning_count, string $error_message = ''): bool {
+    global $wpdb;
+    if ($file_id < 1) return false;
+    $table = self::import_file_table_name();
+    $updated = $wpdb->update($table, [
       'status' => sanitize_text_field($status),
       'rows_parsed' => max(0, $rows_parsed),
       'rows_imported' => max(0, $rows_imported),
       'warning_count' => max(0, $warning_count),
       'error_message' => $error_message,
     ], ['id' => $file_id]);
+    return self::import_update_succeeded($table, $file_id, $updated);
   }
 
-  public static function finish_import_batch(int $batch_id, int $file_count, int $rows_created, int $rows_updated, int $rows_skipped, int $warning_count, string $status): void {
+  public static function finish_import_batch(int $batch_id, int $file_count, int $rows_created, int $rows_updated, int $rows_skipped, int $warning_count, string $status): bool {
     global $wpdb;
-    $wpdb->update(self::import_batch_table_name(), [
+    if ($batch_id < 1) return false;
+    $table = self::import_batch_table_name();
+    $updated = $wpdb->update($table, [
       'file_count' => max(0, $file_count),
       'rows_created' => max(0, $rows_created),
       'rows_updated' => max(0, $rows_updated),
@@ -2174,6 +2191,7 @@ class Store {
         'warning_count' => $warning_count,
       ]),
     ], ['id' => $batch_id]);
+    return self::import_update_succeeded($table, $batch_id, $updated);
   }
 
   public static function latest_import_batch(): ?array {
