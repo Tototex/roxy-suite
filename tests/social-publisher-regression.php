@@ -46,8 +46,8 @@ namespace {
     }
     function esc_url_raw($s){return $s;}
     function sanitize_text_field($s){return $s;}
-    function wp_schedule_single_event(...$args){$GLOBALS['schedule_state']=\RoxySocial\Store::$row['status'];return $GLOBALS['schedule_ok'];}
-    function wp_next_scheduled(...$args){return false;}
+    function wp_schedule_single_event($timestamp,$hook,$args=[]){$GLOBALS['schedule_state']=\RoxySocial\Store::$row['status'];if(!$GLOBALS['schedule_ok'])return false;$GLOBALS['scheduled_events'][]=[$timestamp,$hook,$args];return true;}
+    function wp_next_scheduled($hook,$args=[]){foreach($GLOBALS['scheduled_events'] as $event)if($event[1]===$hook&&$event[2]===$args)return $event[0];return false;}
     function is_wp_error($r){return $r instanceof \RuntimeException;}
     function wp_remote_retrieve_response_code($r){return $r['status'];}
     function wp_remote_retrieve_body($r){return $r['body'];}
@@ -58,13 +58,15 @@ namespace {
         return array_shift($GLOBALS['responses']);
     }
     function wp_remote_post($url,$args){return http_fixture($url,$args);}
+    function wp_remote_get($url,$args){return http_fixture($url,$args);}
     function wp_remote_request($url,$args){return http_fixture($url,$args);}
+    function add_query_arg($query,$url){return $url.'?'.http_build_query($query);}
     function response($data,$status=200){return ['status'=>$status,'body'=>json_encode($data)];}
     function reset_fixture($platform='both',$status='approved'){
         \RoxySocial\Store::$row=['id'=>1,'status'=>$status,'platform'=>$platform,'post_text'=>'Fixture caption','media_type'=>'image','media_url'=>'https://fixture.test/poster.jpg','facebook_post_id'=>null,'instagram_media_id'=>null,'instagram_container_id'=>null,'updated_at'=>'2020-01-01 00:00:00'];
         \RoxySocial\Store::$fail_id=false;\RoxySocial\Store::$locked=false;\RoxySocial\Store::$deny_lock=false;\RoxySocial\Meta::$facebook=true;\RoxySocial\Meta::$instagram=true;
         \RoxySocial\Campaigns::$verified=true;
-        $GLOBALS['calls']=[];$GLOBALS['responses']=[];
+        $GLOBALS['calls']=[];$GLOBALS['responses']=[];$GLOBALS['scheduled_events']=[];
         $GLOBALS['lose_lock']=false;$GLOBALS['schedule_ok']=true;$GLOBALS['schedule_state']=null;
     }
     function check($ok,$label){if(!$ok)throw new \RuntimeException($label);echo "PASS: $label\n";}
@@ -126,4 +128,36 @@ namespace {
     check(\RoxySocial\Store::$row['status']==='needs_review'&&\RoxySocial\Store::$row['facebook_post_id']==='123'&&!$GLOBALS['calls'],'abandoned worker enters review, preserves IDs and never automatically republishes');
     reset_fixture('both','publishing');\RoxySocial\Store::$row['updated_at']='2099-01-01 00:00:00';\RoxySocial\Publisher::publish_due();
     check(\RoxySocial\Store::$row['status']==='publishing','stale read rechecks latest row before recovery');
+
+    reset_fixture('instagram');\RoxySocial\Store::$row['media_type']='video';$GLOBALS['responses']=[response(['id'=>'container-video'])];
+    check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='failed'&&\RoxySocial\Store::$row['instagram_container_id']==='container-video'
+        &&count($GLOBALS['calls'])===1&&$GLOBALS['scheduled_events'][0][1]==='roxy_social_video_status_retry'&&$GLOBALS['scheduled_events'][0][2]===[1,1],
+        'video container creation returns immediately and queues the first bounded status retry');
+    $GLOBALS['responses']=[response(['status_code'=>'FINISHED']),response(['id'=>'instagram-media'])];
+    check(\RoxySocial\Publisher::queue_video_status_retry(1,1),'video retry claims only the failed row with its saved container');
+    \RoxySocial\Publisher::process_queued(1,1);
+    check(\RoxySocial\Store::$row['status']==='posted'&&\RoxySocial\Store::$row['instagram_media_id']==='instagram-media'
+        &&\RoxySocial\Store::$row['instagram_container_id']===null&&count($GLOBALS['calls'])===2
+        &&!str_contains($GLOBALS['calls'][1][0],'/media?'),
+        'finished video publishes the existing container without blocking polls or creating a duplicate container');
+
+    reset_fixture('instagram','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['instagram_container_id']='expired-container';
+    \RoxySocial\Store::$row['last_error']='Instagram video is still processing';$GLOBALS['responses']=[response(['status_code'=>'EXPIRED'])];
+    check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='failed'
+        &&\RoxySocial\Store::$row['instagram_container_id']===null
+        &&!array_filter($GLOBALS['scheduled_events'],static fn($event)=>$event[1]==='roxy_social_video_status_retry'),
+        'expired video container identity clears for a reviewed fresh attempt and stops automatic retries');
+
+    reset_fixture('instagram','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['instagram_container_id']='published-container';
+    \RoxySocial\Store::$row['last_error']='Instagram video is still processing';$GLOBALS['responses']=[response(['status_code'=>'PUBLISHED'])];
+    check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='needs_review'
+        &&count($GLOBALS['calls'])===1,'already-published container without a saved media ID requires review and is not republished');
+
+    reset_fixture('instagram','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['instagram_container_id']='slow-container';
+    \RoxySocial\Store::$row['last_error']='Instagram video is still processing';
+    check(\RoxySocial\Publisher::queue_video_status_retry(1,5),'fifth video status check is queued with an explicit attempt count');
+    $GLOBALS['responses']=[response(['status_code'=>'IN_PROGRESS'])];\RoxySocial\Publisher::process_queued(1,5);
+    check(\RoxySocial\Store::$row['status']==='needs_review'
+        &&!array_filter($GLOBALS['scheduled_events'],static fn($event)=>$event[1]==='roxy_social_video_status_retry'),
+        'video remaining in progress after five scheduled checks stops automatic polling');
 }
