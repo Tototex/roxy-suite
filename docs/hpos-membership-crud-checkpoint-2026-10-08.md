@@ -8,7 +8,7 @@ Partial remediation for audit finding C4. Member lookup no longer joins subscrip
 
 - `git diff --check` passes locally.
 - Isolated regression coverage exercises multi-page member search, supported statuses, query failure, and the large subscription dashboard parity fixture.
-- Full PHP syntax and isolated cross-module suite are delegated to the repository's GitHub Actions workflow; results will be recorded here after completion.
+- GitHub Actions run [37766430478](https://github.com/Tototex/roxy-suite/actions/runs/37766430478) passes PHP 8.0–8.4 syntax and the full PHP 8.3 isolated cross-module suite, including member search and dashboard parity.
 
 ## Deliberate limits
 
