@@ -12,6 +12,7 @@ final class AllocationDatabase {
     public int $connection = 17;
     public ?int $lock_owner = null;
     public bool $transaction = false;
+    public ?string $savepoint = null;
     public string $engine = 'InnoDB';
     public bool $lock_busy = false;
     public int $value = 0;
@@ -33,7 +34,6 @@ final class AllocationDatabase {
             if ($this->lock_owner !== $this->connection) return 0;
             $this->lock_owner = null; return 1;
         }
-        if ($query === 'SELECT @@in_transaction') return $this->transaction ? 1 : 0;
         throw new RuntimeException('Unexpected fixture read: ' . $query);
     }
     public function get_row(string $query, $format = null): array {
@@ -46,15 +46,29 @@ final class AllocationDatabase {
         $this->last_error = '';
         if ($query === 'START TRANSACTION') {
             if ($this->transaction) return false;
-            $this->before = $this->value; $this->transaction = true; return 0;
+            $this->before = $this->value; $this->transaction = true; $this->savepoint = null; return 0;
         }
         if ($query === 'COMMIT') {
             if (!$this->transaction) return false;
-            $this->transaction = false; return 0;
+            $this->transaction = false; $this->savepoint = null; return 0;
         }
         if ($query === 'ROLLBACK') {
             if (!$this->transaction) return false;
-            $this->value = $this->before; $this->transaction = false; return 0;
+            $this->value = $this->before; $this->transaction = false; $this->savepoint = null; return 0;
+        }
+        if (preg_match('/^SAVEPOINT (roxy_alloc_probe_[a-f0-9]+)$/', $query, $match)) {
+            $this->last_error = '';
+            if ($this->transaction) $this->savepoint = $match[1];
+            return 0;
+        }
+        if (preg_match('/^ROLLBACK TO SAVEPOINT (roxy_alloc_probe_[a-f0-9]+)$/', $query, $match)) {
+            if ($this->transaction && $this->savepoint === $match[1]) { $this->last_error = ''; return 0; }
+            $this->last_error = 'SAVEPOINT ' . $match[1] . ' does not exist';
+            return false;
+        }
+        if (preg_match('/^RELEASE SAVEPOINT (roxy_alloc_probe_[a-f0-9]+)$/', $query, $match)) {
+            if (!$this->transaction || $this->savepoint !== $match[1]) return false;
+            $this->savepoint = null; $this->last_error = ''; return 0;
         }
         throw new RuntimeException('Unexpected fixture write: ' . $query);
     }
@@ -67,6 +81,9 @@ $run = static fn(callable $operation) => $store::with_concession_allocation_lock
 
 $result = $run(static fn() => $store::with_concession_allocation_transaction(static function () use ($db) { $db->value = 12; return 'committed'; }));
 check($result === 'committed' && $db->value === 12 && !$db->transaction && $db->lock_owner === null, 'successful allocation commits and releases its date lock');
+
+$empty_result = $run(static fn() => $store::with_concession_allocation_transaction(static fn() => ['rows' => 0, 'updated' => 0]));
+check($empty_result === ['rows' => 0, 'updated' => 0] && !$db->transaction, 'empty no-sales allocation completes without requiring a server-specific transaction variable');
 
 $failed = false;
 try {

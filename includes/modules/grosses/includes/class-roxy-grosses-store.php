@@ -653,8 +653,7 @@ class Store {
         throw new \RuntimeException('Concessions allocation requires verified InnoDB report tables; no rows were changed.');
       }
     }
-    $in_transaction = $wpdb->get_var('SELECT @@in_transaction');
-    if ($wpdb->last_error !== '' || !in_array((string) $in_transaction, ['0', '1'], true) || (string) $in_transaction !== '0') {
+    if (self::concession_allocation_transaction_active()) {
       throw new \RuntimeException('The database transaction state is unavailable or already active; no concessions rows were changed.');
     }
     $owner = self::$concession_allocation_owner;
@@ -662,13 +661,13 @@ class Store {
     $started = true;
     try {
       self::assert_concession_allocation_owner();
-      if ((string) $wpdb->get_var('SELECT @@in_transaction') !== '1' || $wpdb->last_error !== '') throw new \RuntimeException('The concessions transaction could not be verified.');
+      if (!self::concession_allocation_transaction_active()) throw new \RuntimeException('The concessions transaction could not be verified.');
       $result = $operation();
       self::assert_concession_allocation_owner();
       if ($wpdb->query('COMMIT') === false) throw new \RuntimeException('The concessions allocation commit could not be confirmed.');
       $started = false;
       self::assert_concession_allocation_owner();
-      if ((string) $wpdb->get_var('SELECT @@in_transaction') !== '0' || $wpdb->last_error !== '') throw new \RuntimeException('The concessions allocation commit state could not be verified.');
+      if (self::concession_allocation_transaction_active()) throw new \RuntimeException('The concessions allocation commit state could not be verified.');
       return $result;
     } catch (\Throwable $error) {
       if ($started && (int) $wpdb->get_var('SELECT CONNECTION_ID()') === $owner) {
@@ -677,6 +676,34 @@ class Store {
       }
       throw $error;
     }
+  }
+
+  /** Detect transaction ownership using portable SAVEPOINT behavior, not a server-specific variable. */
+  private static function concession_allocation_transaction_active(): bool {
+    global $wpdb;
+    $savepoint = 'roxy_alloc_probe_' . bin2hex(random_bytes(8));
+    if ($wpdb->query("SAVEPOINT {$savepoint}") === false) {
+      $error = (string) $wpdb->last_error;
+      if (preg_match('/\\bSAVEPOINT\\b.*\\bdoes not exist\\b/i', $error)) {
+        $wpdb->last_error = '';
+        return false;
+      }
+      throw new \RuntimeException('Could not determine the database transaction state safely.');
+    }
+
+    if ($wpdb->query("ROLLBACK TO SAVEPOINT {$savepoint}") === false) {
+      $error = (string) $wpdb->last_error;
+      if (preg_match('/\\bSAVEPOINT\\b.*\\bdoes not exist\\b/i', $error)) {
+        $wpdb->last_error = '';
+        return false;
+      }
+      throw new \RuntimeException('Could not verify the database transaction state safely.');
+    }
+
+    if ($wpdb->query("RELEASE SAVEPOINT {$savepoint}") === false || $wpdb->last_error !== '') {
+      throw new \RuntimeException('Could not release the database transaction-state probe.');
+    }
+    return true;
   }
 
   private static function assert_concession_allocation_owner(): void {
