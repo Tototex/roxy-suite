@@ -213,6 +213,20 @@ namespace {
     $check($cents === 1001, "movie/live/rental allocation conserves all 1001 cents on {$date}");
   }
 
+  // A single-show day is unambiguous even when concessions are rung well
+  // before showtime; multi-show dates continue to require the time window.
+  $single_show_date = '2038-05-07';
+  \RoxyGrosses\Store::$movie[$single_show_date] = [['id'=>8001,'show_time'=>'7:30 PM','general_qty'=>0,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0]];
+  \RoxyGrosses\Square::$orders[$single_show_date] = [[
+    'id' => 'single-show-morning-sale',
+    'closed_at' => $single_show_date . 'T10:12:00-07:00',
+    'line_items' => [['uid'=>'single-show-morning-line','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>2514,'currency'=>'USD']]],
+  ]];
+  \RoxyGrosses\Store::$updates = [];
+  \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$single_show_date]));
+  $single_show_concessions = (float) (\RoxyGrosses\Store::$movie[$single_show_date][0]['concessions_total'] ?? 0);
+  $check($single_show_concessions === 25.14 && !isset(\RoxyGrosses\Store::$unmatched_concessions[$single_show_date]), 'single-show date attributes morning concessions to its only report row');
+
   // The production allocator must include rows past the old 1,000-row cap.
   $large_date = '2038-05-03';
   for ($i = 1; $i <= 1001; $i++) \RoxyGrosses\Store::$movie[$large_date][] = [
@@ -231,7 +245,10 @@ namespace {
   // Eligible sales outside every report row's show-time window must be surfaced
   // before writes instead of silently disappearing from daily reconciliation.
   $unmatched_date = '2038-05-04';
-  \RoxyGrosses\Store::$movie[$unmatched_date] = [['id'=>7001,'show_time'=>'7:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0]];
+  \RoxyGrosses\Store::$movie[$unmatched_date] = [
+    ['id'=>7001,'show_time'=>'7:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0],
+    ['id'=>7003,'show_time'=>'9:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0],
+  ];
   \RoxyGrosses\Square::$orders[$unmatched_date] = [[
     'id' => 'unmatched-order-fixture',
     'closed_at' => $unmatched_date . 'T23:30:00-07:00',
@@ -255,7 +272,10 @@ namespace {
   $check($no_rows_detected && count(\RoxyGrosses\Store::$unmatched_concessions[$no_rows_date] ?? []) === 1, 'eligible Square concession is queued even when the date has no report rows');
 
   $queue_failure_date = '2038-05-05';
-  \RoxyGrosses\Store::$movie[$queue_failure_date] = [['id'=>7002,'show_time'=>'7:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0]];
+  \RoxyGrosses\Store::$movie[$queue_failure_date] = [
+    ['id'=>7002,'show_time'=>'7:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0],
+    ['id'=>7004,'show_time'=>'9:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0],
+  ];
   \RoxyGrosses\Square::$orders[$queue_failure_date] = [[
     'id' => 'unmatched-order-queue-failure', 'closed_at' => $queue_failure_date . 'T23:30:00-07:00',
     'line_items' => [['uid'=>'unmatched-line-queue-failure','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1250,'currency'=>'USD']]],

@@ -1835,7 +1835,10 @@ class Reporter {
           continue;
         }
 
-        $candidate_ids = $order_closed_at ? self::matching_entry_ids_for_order_time($order_closed_at, $reports) : [];
+        // Concession orders may be rung well before showtime. When there is
+        // exactly one report row for the day, its attribution is unambiguous;
+        // retain the time window whenever multiple showings could be candidates.
+        $candidate_ids = $order_closed_at ? self::matching_entry_ids_for_order_time($order_closed_at, $reports, true) : [];
         if (!$candidate_ids) {
           if ($line_total_cents > PHP_INT_MAX - $unmatched_cents) throw new \RuntimeException('Unmatched Square concessions exceed the supported amount range.');
           $unmatched_lines++;
@@ -1911,7 +1914,7 @@ class Reporter {
     }
   }
 
-  private static function matching_entry_ids_for_order_time(\DateTimeImmutable $order_closed_at, array $reports): array {
+  private static function matching_entry_ids_for_order_time(\DateTimeImmutable $order_closed_at, array $reports, bool $allow_single_row_fallback = false): array {
     $matches = [];
     $best_distance = null;
 
@@ -1939,6 +1942,18 @@ class Reporter {
 
     if ($matches) {
       return array_values(array_unique($matches));
+    }
+
+    if ($allow_single_row_fallback) {
+      $dated_ids = [];
+      foreach ($reports as $entry_id => $report) {
+        if (($report['_start_at'] ?? null) instanceof \DateTimeImmutable) {
+          $dated_ids[] = (int) $entry_id;
+        }
+      }
+      if (count($dated_ids) === 1) {
+        return $dated_ids;
+      }
     }
 
     return [];
