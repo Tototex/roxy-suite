@@ -671,6 +671,58 @@ class Store {
     }
   }
 
+  /** Serialize a manual row edit against allocations for both its old and new report dates. */
+  public static function with_report_edit_allocation_locks(array $report_dates, callable $operation) {
+    global $wpdb;
+    if (self::$concession_allocation_lock !== null) throw new \RuntimeException('A concessions allocation is already active on this connection.');
+    $dates = [];
+    foreach ($report_dates as $report_date) {
+      $report_date = (string) $report_date;
+      if (!preg_match('/^\d{4}-\d{2}-\d{2}$/D', $report_date)) throw new \InvalidArgumentException('Invalid report date for a protected row edit.');
+      $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $report_date, new \DateTimeZone('UTC'));
+      $errors = \DateTimeImmutable::getLastErrors();
+      if (!$parsed || $parsed->format('Y-m-d') !== $report_date || ($errors !== false && ($errors['warning_count'] || $errors['error_count']))) {
+        throw new \InvalidArgumentException('Invalid calendar date for a protected row edit.');
+      }
+      $dates[$report_date] = true;
+    }
+    $dates = array_keys($dates);
+    sort($dates, SORT_STRING);
+    if (!$dates) throw new \InvalidArgumentException('A protected row edit needs at least one report date.');
+    $owner = (int) $wpdb->get_var('SELECT CONNECTION_ID()');
+    if ($owner <= 0 || $wpdb->last_error !== '') throw new \RuntimeException('Could not establish the report-edit database connection.');
+    $locks = [];
+    foreach ($dates as $date) $locks[] = 'roxy_grosses_alloc_' . substr(hash('sha256', self::entries_table_name() . '|' . $date), 0, 24);
+    $claimed = [];
+    try {
+      foreach ($locks as $lock) {
+        $result = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $lock));
+        if ($wpdb->last_error !== '' || (string) $result !== '1') throw new \RuntimeException('A Grosses allocation for this date is running; the row was not changed. Retry the edit.');
+        $claimed[] = $lock;
+      }
+      foreach ($claimed as $lock) {
+        $used_by = (int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', $lock));
+        if ($wpdb->last_error !== '' || $used_by !== $owner || (int) $wpdb->get_var('SELECT CONNECTION_ID()') !== $owner) {
+          throw new \RuntimeException('The protected row-edit lock could not be verified; the row was not changed.');
+        }
+      }
+      $result = $operation();
+      foreach ($claimed as $lock) {
+        $used_by = (int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', $lock));
+        if ($wpdb->last_error !== '' || $used_by !== $owner || (int) $wpdb->get_var('SELECT CONNECTION_ID()') !== $owner) {
+          throw new \RuntimeException('The protected row-edit lock was lost; verify the row before retrying.');
+        }
+      }
+      return $result;
+    } finally {
+      if ((int) $wpdb->get_var('SELECT CONNECTION_ID()') === $owner) {
+        foreach (array_reverse($claimed) as $lock) {
+          if ((int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', $lock)) === $owner) $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock));
+        }
+      }
+    }
+  }
+
   /** Run all daily allocation writes atomically, only on verified InnoDB tables. */
   public static function with_concession_allocation_transaction(callable $operation) {
     global $wpdb;

@@ -21,25 +21,92 @@ class Log {
   }
 
   private static function ensure_log_directory(string $dir): bool {
+    clearstatcache(true, $dir);
+    if (is_link($dir)) return false;
     if (!is_dir($dir)) {
       wp_mkdir_p($dir);
     }
-    if (!is_dir($dir) || !is_writable($dir)) return false;
+    clearstatcache(true, $dir);
+    if (is_link($dir) || !self::is_real_directory($dir) || !is_writable($dir)) return false;
 
     $index = $dir . '/index.html';
-    if (!is_file($index) && @file_put_contents($index, '') === false) {
-      return false;
+    if (self::path_is_link_or_non_file($index)) return false;
+    if (!file_exists($index)) {
+      $handle = @fopen($index, 'x');
+      if ($handle === false) {
+        if (self::path_is_link_or_non_file($index) || !self::is_regular_file($index)) return false;
+      } else {
+        @fclose($handle);
+      }
     }
-    if (!is_file($index) || !is_readable($index)) return false;
+    if (!self::is_regular_file($index) || !is_readable($index)) return false;
 
     $htaccess = $dir . '/.htaccess';
     $rules = "<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n";
-    $contents = is_file($htaccess) ? @file_get_contents($htaccess) : false;
+    if (self::path_is_link_or_non_file($htaccess)) return false;
+    $contents = file_exists($htaccess) ? self::read_regular_file($htaccess) : false;
     if (!is_string($contents) || $contents !== $rules) {
-      if (@file_put_contents($htaccess, $rules) === false) return false;
-      $contents = @file_get_contents($htaccess);
+      // Rename replaces a raced-in symlink itself instead of writing through
+      // it. Keep the temporary file in the guarded directory and verify it.
+      $temporary = @tempnam($dir, '.roxy-st-deny-');
+      if (!is_string($temporary) || dirname($temporary) !== $dir || !self::is_regular_file($temporary)
+        || @file_put_contents($temporary, $rules, LOCK_EX) !== strlen($rules)) {
+        if (is_string($temporary)) @unlink($temporary);
+        return false;
+      }
+      clearstatcache(true, $dir);
+      if (is_link($dir) || !self::is_real_directory($dir) || self::path_is_link_or_non_file($htaccess)
+        || !@rename($temporary, $htaccess)) {
+        @unlink($temporary);
+        return false;
+      }
+      $contents = self::read_regular_file($htaccess);
     }
-    return is_file($htaccess) && is_readable($htaccess) && is_string($contents) && $contents === $rules;
+    return self::is_regular_file($htaccess) && is_readable($htaccess) && is_string($contents) && $contents === $rules;
+  }
+
+  private static function is_real_directory(string $path): bool {
+    clearstatcache(true, $path);
+    $stat = @lstat($path);
+    return is_array($stat) && (($stat['mode'] & 0170000) === 0040000);
+  }
+
+  private static function is_regular_file(string $path): bool {
+    clearstatcache(true, $path);
+    $stat = @lstat($path);
+    return is_array($stat) && (($stat['mode'] & 0170000) === 0100000);
+  }
+
+  private static function path_is_link_or_non_file(string $path): bool {
+    clearstatcache(true, $path);
+    if (is_link($path)) return true;
+    return file_exists($path) && !self::is_regular_file($path);
+  }
+
+  /** Open a regular file and verify the descriptor still names that exact path. */
+  private static function open_regular_file(string $path, string $mode) {
+    if (self::path_is_link_or_non_file($path)) return false;
+    $handle = @fopen($path, $mode);
+    if ($handle === false) return false;
+    $opened = @fstat($handle);
+    clearstatcache(true, $path);
+    $current = @lstat($path);
+    if (!is_array($opened) || !is_array($current)
+      || (($opened['mode'] & 0170000) !== 0100000)
+      || (($current['mode'] & 0170000) !== 0100000)
+      || $opened['dev'] !== $current['dev'] || $opened['ino'] !== $current['ino']) {
+      @fclose($handle);
+      return false;
+    }
+    return $handle;
+  }
+
+  private static function read_regular_file(string $path) {
+    $handle = self::open_regular_file($path, 'rb');
+    if ($handle === false) return false;
+    $contents = @stream_get_contents($handle);
+    @fclose($handle);
+    return $contents;
   }
 
   private static function write_file(string $level, string $message): void {
@@ -55,7 +122,7 @@ class Log {
     // Lock a stable sibling rather than the log inode: the active log is
     // renamed during rotation, and locking that inode alone lets waiting
     // writers append to a rotated generation concurrently with another rotate.
-    $lock = @fopen($path . '.lock', 'c');
+    $lock = self::open_regular_file($path . '.lock', 'c');
     if ($lock === false || !@flock($lock, LOCK_EX)) {
       if (is_resource($lock)) @fclose($lock);
       error_log('Roxy Show Tickets could not lock its protected fallback log.');
@@ -79,7 +146,11 @@ class Log {
       }
       // Exclusive stable lock serializes rotation and append. Use a single
       // append write so a failed/short write is detectable without truncating.
-      $written = @file_put_contents($path, $line, FILE_APPEND | LOCK_EX) === strlen($line);
+      $log_file = self::open_regular_file($path, 'ab');
+      if ($log_file !== false) {
+        $written = @fwrite($log_file, $line) === strlen($line) && @fflush($log_file);
+        @fclose($log_file);
+      }
     } finally {
       @flock($lock, LOCK_UN);
       @fclose($lock);
@@ -99,14 +170,14 @@ class Log {
     if ($size === false) return false;
     if ($size <= self::MAX_FILE_BYTES) return true;
 
-    $input = @fopen($path, 'rb');
+    $input = self::open_regular_file($path, 'rb');
     $temporary = @tempnam(dirname($path), '.roxy-st-log-cap-');
     if ($input === false || $temporary === false) {
       if (is_resource($input)) @fclose($input);
       if (is_string($temporary)) @unlink($temporary);
       return false;
     }
-    $output = @fopen($temporary, 'wb');
+    $output = self::open_regular_file($temporary, 'wb');
     if ($output === false) {
       @fclose($input);
       @unlink($temporary);

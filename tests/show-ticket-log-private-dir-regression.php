@@ -47,6 +47,27 @@ try {
   $check($path === $uploads . '/roxy-st-logs/roxy-st.log', 'logger returns expected path after privacy checks');
   $check(is_file($dir . '/index.html'), 'directory index is created');
   $check(file_get_contents($dir . '/.htaccess') === $rules, 'complete Apache deny rules are installed');
+
+  // A symlinked log directory must not redirect any protection-file write.
+  $outside = $root . '/outside-sentinel.txt';
+  file_put_contents($outside, 'outside stays private');
+  $parked_dir = $dir . '-real';
+  if (!rename($dir, $parked_dir) || !symlink($outside, $dir)) throw new RuntimeException('Could not create isolated directory symlink fixture.');
+  $check($method->invoke(null) === '' && file_get_contents($outside) === 'outside stays private', 'logger refuses a symlinked log directory');
+  unlink($dir);
+  if (!rename($parked_dir, $dir)) throw new RuntimeException('Could not restore private fixture directory.');
+
+  unlink($dir . '/index.html');
+  if (!symlink($outside, $dir . '/index.html')) throw new RuntimeException('Could not create isolated index symlink fixture.');
+  $check($method->invoke(null) === '' && file_get_contents($outside) === 'outside stays private', 'logger refuses a symlinked directory index');
+  unlink($dir . '/index.html');
+  file_put_contents($dir . '/index.html', '');
+  unlink($dir . '/.htaccess');
+  if (!symlink($outside, $dir . '/.htaccess')) throw new RuntimeException('Could not create isolated privacy-file symlink fixture.');
+  $check($method->invoke(null) === '' && file_get_contents($outside) === 'outside stays private', 'logger refuses a symlinked privacy file');
+  unlink($dir . '/.htaccess');
+  file_put_contents($dir . '/.htaccess', $rules);
+
   $write->invoke(null, 'Info', 'fixture message');
   $check(is_file($path) && str_ends_with(file_get_contents($path), " Info fixture message\n"), 'fallback logger appends the complete log line');
   $check(is_file($path . '.lock'), 'append and rotation use a stable sibling lock');
@@ -55,6 +76,20 @@ try {
   $check(file_get_contents($dir . '/.htaccess') === $rules, 'missing/weak rules are repaired');
   file_put_contents($dir . '/.htaccess', 'Require all granted');
   $check($method->invoke(null) === $path && file_get_contents($dir . '/.htaccess') === $rules, 'unsafe allow rule is replaced');
+
+  // Log and lock symlinks must not write through to a file outside the log dir.
+  unlink($path);
+  if (!symlink($outside, $path)) throw new RuntimeException('Could not create isolated log symlink fixture.');
+  $write->invoke(null, 'Error', 'must not reach outside log');
+  $check(file_get_contents($outside) === 'outside stays private', 'logger refuses a symlinked active log file');
+  unlink($path);
+  file_put_contents($path, '');
+  unlink($path . '.lock');
+  if (!symlink($outside, $path . '.lock')) throw new RuntimeException('Could not create isolated lock symlink fixture.');
+  $write->invoke(null, 'Error', 'must not reach outside lock');
+  $check(file_get_contents($outside) === 'outside stays private' && file_get_contents($path) === '', 'logger refuses a symlinked stable lock file');
+  unlink($path . '.lock');
+
   unlink($dir . '/.htaccess');
   mkdir($dir . '/.htaccess');
   $check($method->invoke(null) === '', 'logger refuses flat-file logging when deny rules cannot be verified');
@@ -128,7 +163,7 @@ try {
   $check(str_contains(file_get_contents($path), '[fallback log line truncated]'), 'oversized line carries a truncation marker');
 } finally {
   $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
-  foreach ($iterator as $entry) $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname());
+  foreach ($iterator as $entry) $entry->isLink() ? unlink($entry->getPathname()) : ($entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname()));
   if (is_dir($root)) rmdir($root);
 }
 echo "Passed {$checks} Show Tickets private log directory checks.\n";

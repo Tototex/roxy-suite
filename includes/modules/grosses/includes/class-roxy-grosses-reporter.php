@@ -286,20 +286,38 @@ class Reporter {
     $message = 'Row updated.';
     $success = false;
 
-    switch ($dataset) {
-      case 'live':
-        $success = Store::update_live_entry($entry_id, $_POST, true);
-        break;
-      case 'rentals':
-        $success = Store::update_rental_entry($entry_id, $_POST, true);
-        break;
-      case 'legacy':
-        $success = Store::update_legacy_weekly($entry_id, $_POST, true);
-        break;
-      default:
-        $dataset = 'movies';
-        $success = Store::update_entry($entry_id, $_POST, true);
-        break;
+    if (!in_array($dataset, ['movies', 'live', 'rentals', 'legacy'], true)) $dataset = 'movies';
+    $post_data = $_POST;
+    if ($dataset === 'legacy') {
+      $success = Store::update_legacy_weekly($entry_id, $post_data, true);
+    } else {
+      $get_row = static function () use ($dataset, $entry_id): ?array {
+        return $dataset === 'live' ? Store::get_live_entry($entry_id)
+          : ($dataset === 'rentals' ? Store::get_rental_entry($entry_id) : Store::get_entry($entry_id));
+      };
+      $existing = $get_row();
+      if (!$existing) {
+        $message = 'The report row no longer exists; nothing was changed.';
+      } else {
+        $old_date = (string) ($existing['report_date'] ?? '');
+        $new_date = isset($post_data['report_date']) ? sanitize_text_field(wp_unslash((string) $post_data['report_date'])) : $old_date;
+        try {
+          $success = Store::with_report_edit_allocation_locks([$old_date, $new_date], static function () use ($get_row, $old_date, $dataset, $entry_id, $post_data, &$message): bool {
+            $latest = $get_row();
+            if (!$latest || (string) ($latest['report_date'] ?? '') !== $old_date) {
+              $message = 'The report row changed while you were editing it; reload and review before saving.';
+              return false;
+            }
+            $saved = $dataset === 'live' ? Store::update_live_entry($entry_id, $post_data, true)
+              : ($dataset === 'rentals' ? Store::update_rental_entry($entry_id, $post_data, true) : Store::update_entry($entry_id, $post_data, true));
+            if (!$saved) $message = 'Could not update the report row.';
+            return $saved;
+          });
+        } catch (\Throwable $error) {
+          $success = false;
+          $message = 'Could not safely update this row while its report date is being reconciled. ' . $error->getMessage();
+        }
+      }
     }
 
     if ($success) {
@@ -1198,7 +1216,7 @@ class Reporter {
     ];
   }
 
-  public static function build_reports(string $report_date, bool $include_empty = false, ?RefundSnapshot $refund_snapshot = null): array {
+  public static function build_reports(string $report_date, bool $include_empty = false, ?RefundSnapshot $refund_snapshot = null, bool $include_concessions = true): array {
     $reports = [];
     $showings_by_date = self::related_showings_by_date($report_date);
     if ($showings_by_date && $refund_snapshot === null) {
@@ -1208,7 +1226,7 @@ class Reporter {
     }
 
     foreach ($showings_by_date as $date => $showings) {
-      foreach (self::build_reports_for_date_showings((string) $date, (array) $showings, $refund_snapshot) as $report) {
+      foreach (self::build_reports_for_date_showings((string) $date, (array) $showings, $refund_snapshot, false, $include_concessions) as $report) {
         $reports[] = $report;
       }
     }
@@ -1228,7 +1246,7 @@ class Reporter {
     }));
   }
 
-  public static function build_live_reports(string $report_date, bool $include_empty = false): array {
+  public static function build_live_reports(string $report_date, bool $include_empty = false, bool $include_concessions = true): array {
     $showings = self::showings_for_date($report_date, 'live');
     if (!$showings) {
       return [];
@@ -1253,6 +1271,7 @@ class Reporter {
       }
 
       $rows[(int) $showing['id']] = [
+        '_entry_kind' => 'live',
         'report_date' => $report_date,
         'show_title' => (string) $showing['title'],
         'show_time' => (string) $showing['time_label'],
@@ -1302,10 +1321,23 @@ class Reporter {
 
     }
 
-    self::apply_concessions_to_reports($rows, $report_date, $showings);
+    if ($include_concessions) {
+      $allocation_rows = $rows;
+      foreach (self::build_reports($report_date, true, null, false) as $movie_row) {
+        if ((string) ($movie_row['report_date'] ?? '') !== $report_date) continue;
+        $showing_id = (int) ($movie_row['showing_id'] ?? 0);
+        if ($showing_id > 0) {
+          $movie_row['_entry_kind'] = 'movie';
+          $movie_row['_start_at'] = self::start_at_for_entry_row($report_date, (string) ($movie_row['show_time'] ?? ''));
+          $allocation_rows[$showing_id] = $movie_row;
+        }
+      }
+      $allocation_rows = self::complete_concession_candidate_set($report_date, $allocation_rows);
+      self::apply_concessions_to_reports($rows, $report_date, $showings, $allocation_rows, true);
+    }
 
     foreach ($rows as &$row) {
-      unset($row['_start_at']);
+      unset($row['_start_at'], $row['_entry_kind']);
       $row['concessions_total'] = round((float) ($row['concessions_total'] ?? 0), 2);
     }
     unset($row);
@@ -1319,7 +1351,7 @@ class Reporter {
     }));
   }
 
-  private static function build_reports_for_date_showings(string $report_date, array $showings, ?RefundSnapshot $refund_snapshot = null, bool $require_nominal_baseline = false): array {
+  private static function build_reports_for_date_showings(string $report_date, array $showings, ?RefundSnapshot $refund_snapshot = null, bool $require_nominal_baseline = false, bool $include_concessions = true): array {
     $orders = Square::fetch_orders_for_date($report_date);
     $reconciliation = $refund_snapshot ? $refund_snapshot->reconcile_sale_day($report_date, $orders) : ['orders' => $orders, 'adjustments' => [], 'issues' => []];
     if ($reconciliation['issues']) throw new \RuntimeException('Square returns for this original sale day need manual review (custom amount, unverified refund, or invalid item reference). No report was calculated or sent.');
@@ -1331,6 +1363,7 @@ class Reporter {
 
     foreach ($showings as $showing) {
       $reports[(int) $showing['id']] = [
+        '_entry_kind' => 'movie',
         'report_date' => $report_date,
         'theater_name' => (string) Settings::get('theater_name', 'Newport Roxy Theater'),
         'showing_id' => (int) $showing['id'],
@@ -1410,7 +1443,20 @@ class Reporter {
       }
     }
 
-    self::apply_concessions_to_reports($reports, $report_date, $showings);
+    if ($include_concessions) {
+      $allocation_reports = $reports;
+      foreach (self::build_live_reports($report_date, true, false) as $live_row) {
+        if ((string) ($live_row['report_date'] ?? '') !== $report_date) continue;
+        $showing_id = (int) ($live_row['showing_id'] ?? 0);
+        if ($showing_id > 0) {
+          $live_row['_entry_kind'] = 'live';
+          $live_row['_start_at'] = self::start_at_for_entry_row($report_date, (string) ($live_row['show_time'] ?? ''));
+          $allocation_reports[$showing_id] = $live_row;
+        }
+      }
+      $allocation_reports = self::complete_concession_candidate_set($report_date, $allocation_reports);
+      self::apply_concessions_to_reports($reports, $report_date, $showings, $allocation_reports, true);
+    }
 
     foreach ($reports as &$report) {
       $report['general_gross'] = round((float) $report['general_gross'], 2);
@@ -1419,7 +1465,7 @@ class Reporter {
       $report['live_gross'] = round((float) $report['live_gross'], 2);
       $report['gross_total'] = round((float) $report['gross_total'], 2);
       $report['concessions_total'] = round((float) ($report['concessions_total'] ?? 0), 2);
-      unset($report['_start_at']);
+      unset($report['_start_at'], $report['_entry_kind']);
     }
     unset($report);
 
@@ -1503,7 +1549,7 @@ class Reporter {
   }
 
   private static function showings_for_date(string $report_date, string $mode = 'movie'): array {
-    if (!post_type_exists('roxy_showing')) {
+    if (!function_exists('post_type_exists') || !post_type_exists('roxy_showing')) {
       return [];
     }
 
@@ -1725,6 +1771,7 @@ class Reporter {
       $reports[$entry_id] = [
         '_entry_kind' => 'movie',
         '_entry_id' => $entry_id,
+        'showing_id' => max(0, (int) ($row['showing_id'] ?? 0)),
         '_start_at' => self::start_at_for_entry_row($report_date, (string) ($row['show_time'] ?? '')),
         'show_time' => (string) ($row['show_time'] ?? ''),
         'general_qty' => max(0, (int) ($row['general_qty'] ?? 0)),
@@ -1743,6 +1790,7 @@ class Reporter {
       $reports[100000000 + $entry_id] = [
         '_entry_kind' => 'live',
         '_entry_id' => $entry_id,
+        'showing_id' => max(0, (int) ($row['showing_id'] ?? 0)),
         '_start_at' => self::start_at_for_entry_row($report_date, (string) ($row['show_time'] ?? '')),
         'show_time' => (string) ($row['show_time'] ?? ''),
         'presale_qty' => max(0, (int) ($row['presale_qty'] ?? 0)),
@@ -1801,20 +1849,23 @@ class Reporter {
     });
   }
 
-  private static function apply_concessions_to_reports(array &$reports, string $report_date, array $showings = []): void {
+  private static function apply_concessions_to_reports(array &$reports, string $report_date, array $showings = [], ?array $allocation_reports = null, bool $defer_missing_cross_type_row = false): void {
     $orders = Square::fetch_orders_for_date($report_date);
+    $matching_showings = self::concession_matching_showings($report_date, $showings, $reports);
+    $target_reports = $allocation_reports !== null ? $reports : null;
+    if ($allocation_reports !== null) $reports = $allocation_reports;
     $catalog_object_ids = [];
-    $provisional = [];
+    $matched_lines = [];
     $eligible_cents = 0;
-    $locked_cents = 0;
+    $locked_rows = [];
     $unmatched_lines = 0;
     $unmatched_cents = 0;
     $unmatched_items = [];
     foreach ($reports as $entry_id => $report) {
       if (!empty($report['_is_locked'])) {
         $fixed = round((float) ($report['concessions_total'] ?? 0) * 100);
-        if (!is_finite((float) ($report['concessions_total'] ?? 0)) || $fixed < 0 || $fixed > PHP_INT_MAX - $locked_cents) throw new \RuntimeException('A locked concessions amount is invalid; review this report day manually.');
-        $locked_cents += (int) $fixed;
+        if (!is_finite((float) ($report['concessions_total'] ?? 0)) || $fixed < 0 || $fixed > PHP_INT_MAX) throw new \RuntimeException('A locked concessions amount is invalid; review this report day manually.');
+        $locked_rows[$entry_id] = (int) $fixed;
       } else $reports[$entry_id]['concessions_total'] = 0.0;
     }
 
@@ -1831,7 +1882,7 @@ class Reporter {
     foreach ($orders as $order) {
       $order_closed_at = self::order_closed_at($order);
       foreach ((array) ($order['line_items'] ?? []) as $line_index => $line_item) {
-        if (!self::is_concession_line_item($line_item, $showings, $category_map)) {
+        if (!self::is_concession_line_item($line_item, $matching_showings, $category_map)) {
           continue;
         }
 
@@ -1840,11 +1891,20 @@ class Reporter {
           continue;
         }
 
-        // Concession orders may be rung well before showtime. When there is
-        // exactly one report row for the day, its attribution is unambiguous;
-        // retain the time window whenever multiple showings could be candidates.
-        $candidate_ids = $order_closed_at ? self::matching_entry_ids_for_order_time($order_closed_at, $reports, true) : [];
+        // Concession orders may be rung well before showtime. The single-row
+        // fallback is valid only when the complete day has one show, not when
+        // this movie/live builder happens to contain only one type-specific row.
+        $dated_report_count = 0;
+        foreach ($reports as $candidate_report) if (($candidate_report['_start_at'] ?? null) instanceof \DateTimeImmutable) $dated_report_count++;
+        $current_showing_ids = [];
+        foreach (['movie', 'live'] as $mode) foreach (self::showings_for_date($report_date, $mode) as $current_showing) $current_showing_ids[(int) $current_showing['id']] = true;
+        $single_show_day = $dated_report_count === 1 && count($current_showing_ids) <= 1;
+        $candidate_ids = $order_closed_at ? self::matching_entry_ids_for_order_time($order_closed_at, $reports, $single_show_day) : [];
         if (!$candidate_ids) {
+          // Movie and live builders run separately before the day-wide rebalance.
+          // A sale valid for another show type is not unmatched merely because
+          // that row is absent from this builder's partial report set.
+          if ($defer_missing_cross_type_row && $order_closed_at && self::matching_showing_time_exists($order_closed_at, $matching_showings)) continue;
           if ($line_total_cents > PHP_INT_MAX - $unmatched_cents) throw new \RuntimeException('Unmatched Square concessions exceed the supported amount range.');
           $unmatched_lines++;
           $unmatched_cents += $line_total_cents;
@@ -1898,13 +1958,7 @@ class Reporter {
         }
         if ($line_total_cents > PHP_INT_MAX - $eligible_cents) throw new \RuntimeException('Daily concessions exceed the supported allocation range.');
         $eligible_cents += $line_total_cents;
-        $candidate_ids = array_values(array_filter($candidate_ids, static fn(int $entry_id): bool => empty($reports[$entry_id]['_is_locked'])));
-        if (!$candidate_ids) continue;
-        foreach (self::distribute_amount_cents_across_rows($line_total_cents, $candidate_ids, $reports) as $entry_id => $allocated_cents) {
-          if ($allocated_cents <= 0 || !isset($reports[$entry_id])) continue;
-          if ($allocated_cents > PHP_INT_MAX - ($provisional[$entry_id] ?? 0)) throw new \RuntimeException('A concessions allocation exceeds the supported amount range.');
-          $provisional[$entry_id] = ($provisional[$entry_id] ?? 0) + $allocated_cents;
-        }
+        $matched_lines[] = ['amount' => $line_total_cents, 'ids' => $candidate_ids];
       }
     }
 
@@ -1931,31 +1985,284 @@ class Reporter {
         $row_context
       ));
     }
-    if ($locked_cents > $eligible_cents) throw new \RuntimeException('Locked concessions exceed the matching Square total; review the protected rows before refreshing.');
-    if ($eligible_cents <= 0) return;
-    $remaining_cents = $eligible_cents - $locked_cents;
-    if ($remaining_cents === 0) return;
-    $provisional_total = array_sum($provisional);
-    if ($provisional_total <= 0 || !$provisional) throw new \RuntimeException('Concessions could not be matched to editable report rows for the remaining amount; review this date manually.');
-    $assigned = 0;
-    $remainders = [];
-    $allocated = [];
-    foreach ($provisional as $entry_id => $cents) {
-      $exact = ($cents / $provisional_total) * $remaining_cents;
-      $whole = (int) floor($exact);
-      $allocated[$entry_id] = $whole;
-      $assigned += $whole;
-      $remainders[$entry_id] = $exact - $whole;
+    $locked_allocation = self::allocate_locked_concessions_to_lines($matched_lines, $locked_rows);
+    $editable_totals = [];
+    foreach ($matched_lines as $line_index => $line) {
+      $used_for_locked = 0;
+      foreach ($locked_allocation[$line_index] ?? [] as $amount) $used_for_locked += $amount;
+      $remaining = (int) $line['amount'] - $used_for_locked;
+      $editable_ids = array_values(array_filter((array) $line['ids'], static fn(int $entry_id): bool => !array_key_exists($entry_id, $locked_rows)));
+      if ($remaining > 0 && !$editable_ids) throw new \RuntimeException('A Square concession line cannot be fully reconciled because its only matching report row is protected. Review that row before refreshing.');
+      if ($remaining <= 0) continue;
+      foreach (self::distribute_amount_cents_across_rows($remaining, $editable_ids, $reports) as $entry_id => $allocated_cents) {
+        if ($allocated_cents <= 0 || !isset($reports[$entry_id])) continue;
+        if ($allocated_cents > PHP_INT_MAX - ($editable_totals[$entry_id] ?? 0)) throw new \RuntimeException('A concessions allocation exceeds the supported amount range.');
+        $editable_totals[$entry_id] = ($editable_totals[$entry_id] ?? 0) + $allocated_cents;
+      }
     }
-    arsort($remainders, SORT_NUMERIC);
-    foreach (array_keys($remainders) as $entry_id) {
-      if ($assigned >= $remaining_cents) break;
-      $allocated[$entry_id]++;
-      $assigned++;
+    foreach ($editable_totals as $entry_id => $cents) $reports[$entry_id]['concessions_total'] = round((float) ($cents / 100), 2);
+    if ($target_reports !== null) {
+      foreach ($target_reports as $entry_id => $report) {
+        if (isset($reports[$entry_id])) $target_reports[$entry_id]['concessions_total'] = round((float) ($reports[$entry_id]['concessions_total'] ?? 0), 2);
+      }
+      $reports = $target_reports;
     }
-    foreach ($allocated as $entry_id => $cents) {
-      $reports[$entry_id]['concessions_total'] = round((float) ($cents / 100), 2);
+  }
+
+  /** Route locked row totals only through their actual matching Square lines. */
+  private static function allocate_locked_concessions_to_lines(array $lines, array $locked_rows): array {
+    $protected_row_ids = array_fill_keys(array_map('intval', array_keys($locked_rows)), true);
+    $locked_rows = array_filter($locked_rows, static fn(int $amount): bool => $amount > 0);
+    if (!$locked_rows) return array_fill(0, count($lines), []);
+    $locked_total = 0;
+    foreach ($locked_rows as $amount) {
+      if ($amount > PHP_INT_MAX - $locked_total) throw new \RuntimeException('Locked concessions exceed the supported amount range.');
+      $locked_total += $amount;
     }
+    if ($locked_total <= 0) return array_fill(0, count($lines), []);
+
+    $source = 0;
+    $line_offset = 1;
+    $row_offset = $line_offset + count($lines);
+    $row_ids = array_keys($locked_rows);
+    $row_nodes = [];
+    foreach ($row_ids as $index => $entry_id) $row_nodes[(int) $entry_id] = $row_offset + $index;
+    $sink = $row_offset + count($row_ids);
+    $super_source = $sink + 1;
+    $super_sink = $sink + 2;
+    $graph = array_fill(0, $super_sink + 1, []);
+    $balance = array_fill(0, $sink + 1, 0);
+    $edge_refs = [];
+    $add_edge = static function (int $from, int $to, int $capacity) use (&$graph): int {
+      $index = count($graph[$from]);
+      $reverse_from = count($graph[$to]);
+      $graph[$from][] = ['to' => $to, 'rev' => $reverse_from, 'cap' => $capacity];
+      $graph[$to][] = ['to' => $from, 'rev' => $index, 'cap' => 0];
+      return $index;
+    };
+    $add_bounded_edge = static function (int $from, int $to, int $lower, int $upper) use (&$balance, $add_edge): int {
+      if ($lower < 0 || $upper < $lower) throw new \RuntimeException('Locked concessions cannot be reconciled to their matching Square lines; review protected rows before refreshing.');
+      $index = $add_edge($from, $to, $upper - $lower);
+      $balance[$from] -= $lower;
+      $balance[$to] += $lower;
+      return $index;
+    };
+    $line_amount_total = 0;
+    foreach ($lines as $line_index => $line) {
+      $line_node = $line_offset + $line_index;
+      $amount = max(0, (int) ($line['amount'] ?? 0));
+      if ($amount > PHP_INT_MAX - $line_amount_total) throw new \RuntimeException('Daily concessions exceed the supported allocation range.');
+      $line_amount_total += $amount;
+      $ids = array_values(array_unique(array_map('intval', (array) ($line['ids'] ?? []))));
+      $has_editable_destination = false;
+      foreach ($ids as $entry_id) if (!isset($protected_row_ids[$entry_id])) { $has_editable_destination = true; break; }
+      // A line with no editable destination must be fully assigned to locked
+      // rows. The lower-bound circulation keeps that obligation while still
+      // letting the solver reroute overlapping lines to a feasible solution.
+      $add_bounded_edge($source, $line_node, $has_editable_destination ? 0 : $amount, $amount);
+      foreach ($ids as $entry_id) {
+        if (!isset($row_nodes[$entry_id])) continue;
+        $edge_index = $add_bounded_edge($line_node, $row_nodes[$entry_id], 0, $amount);
+        $edge_refs[$line_index][$entry_id] = [$line_node, $edge_index, $amount];
+      }
+      if ($has_editable_destination) $add_bounded_edge($line_node, $sink, 0, $amount);
+    }
+    foreach ($row_ids as $entry_id) {
+      $amount = (int) $locked_rows[$entry_id];
+      $add_bounded_edge($row_nodes[(int) $entry_id], $sink, $amount, $amount);
+    }
+    $add_bounded_edge($sink, $source, 0, max(1, $line_amount_total));
+
+    $required = 0;
+    foreach ($balance as $node => $demand) {
+      if ($demand > 0) {
+        if ($demand > PHP_INT_MAX - $required) throw new \RuntimeException('Locked concessions exceed the supported amount range.');
+        $add_edge($super_source, $node, $demand);
+        $required += $demand;
+      }
+      elseif ($demand < 0) $add_edge($node, $super_sink, -$demand);
+    }
+
+    $flow = 0;
+    while (true) {
+      $level = array_fill(0, count($graph), -1);
+      $level[$super_source] = 0;
+      $queue = [$super_source];
+      for ($head = 0; $head < count($queue); $head++) {
+        $node = $queue[$head];
+        foreach ($graph[$node] as $edge) {
+          if ($edge['cap'] > 0 && $level[$edge['to']] < 0) {
+            $level[$edge['to']] = $level[$node] + 1;
+            $queue[] = $edge['to'];
+          }
+        }
+      }
+      if ($level[$super_sink] < 0) break;
+      $next = array_fill(0, count($graph), 0);
+      $send = null;
+      $send = static function (int $node, int $available) use (&$send, &$graph, &$level, &$next, $super_sink): int {
+        if ($node === $super_sink) return $available;
+        $edge_count = count($graph[$node]);
+        while ($next[$node] < $edge_count) {
+          $index = $next[$node];
+          $edge = $graph[$node][$index];
+          if ($edge['cap'] > 0 && $level[$edge['to']] === $level[$node] + 1) {
+            $pushed = $send($edge['to'], min($available, $edge['cap']));
+            if ($pushed > 0) {
+              $graph[$node][$index]['cap'] -= $pushed;
+              $graph[$edge['to']][$edge['rev']]['cap'] += $pushed;
+              return $pushed;
+            }
+          }
+          $next[$node]++;
+        }
+        return 0;
+      };
+      while (($pushed = $send($super_source, PHP_INT_MAX)) > 0) {
+        if ($pushed > PHP_INT_MAX - $flow) throw new \RuntimeException('Locked concessions exceed the supported amount range.');
+        $flow += $pushed;
+      }
+    }
+    if ($flow !== $required) throw new \RuntimeException('Locked concessions cannot be reconciled to their matching Square lines; review protected rows before refreshing.');
+
+    $allocations = array_fill(0, count($lines), []);
+    foreach ($edge_refs as $line_index => $references) {
+      foreach ($references as $entry_id => [$node, $edge_index, $capacity]) {
+        $used = $capacity - $graph[$node][$edge_index]['cap'];
+        if ($used > 0) $allocations[$line_index][$entry_id] = $used;
+      }
+    }
+    return $allocations;
+  }
+
+  /** Combine every dated report/showing type before classifying a sale as unmatched. */
+  private static function concession_matching_showings(string $report_date, array $showings, array $reports): array {
+    $all = [];
+    $seen = [];
+    $actual_showings = [];
+    foreach ($showings as $showing) if (is_array($showing) && (int) ($showing['id'] ?? 0) > 0) $actual_showings[(int) $showing['id']] = $showing;
+    foreach (['movie', 'live'] as $mode) foreach (self::showings_for_date($report_date, $mode) as $showing) $actual_showings[(int) $showing['id']] = $showing;
+    $actual_by_timestamp = [];
+    foreach ($actual_showings as $showing) {
+      $start_at = $showing['start_at'] ?? null;
+      if ($start_at instanceof \DateTimeImmutable) $actual_by_timestamp[$start_at->getTimestamp()] = ($actual_by_timestamp[$start_at->getTimestamp()] ?? 0) + 1;
+    }
+    $append = static function (array $showing) use (&$all, &$seen, $actual_by_timestamp): void {
+      $start_at = $showing['_start_at'] ?? $showing['start_at'] ?? null;
+      if (!$start_at instanceof \DateTimeImmutable) return;
+      $showing_id = (int) ($showing['showing_id'] ?? 0);
+      $actual_showing_id = ($showing['start_at'] ?? null) instanceof \DateTimeImmutable ? (int) ($showing['id'] ?? 0) : 0;
+      $id = $actual_showing_id > 0 ? $actual_showing_id : ($showing_id > 0 ? $showing_id : (int) ($showing['_entry_id'] ?? 0));
+      if ($actual_showing_id > 0 || $showing_id > 0) {
+        $identity = 'showing:' . ($actual_showing_id > 0 ? $actual_showing_id : $showing_id);
+      } elseif (isset($showing['_allocation_kind'], $showing['_allocation_entry_id'])) {
+        $identity = 'entry:' . $showing['_allocation_kind'] . ':' . (int) $showing['_allocation_entry_id'];
+      } else {
+        $identity = 'time:' . $start_at->format('c') . ':' . trim((string) ($showing['show_time'] ?? ''));
+      }
+      if (isset($seen[$identity])) {
+        $index = $seen[$identity];
+        foreach (['live_label_1', 'live_label_2'] as $label_key) {
+          if (trim((string) ($all[$index][$label_key] ?? '')) === '' && trim((string) ($showing[$label_key] ?? '')) !== '') {
+            $all[$index][$label_key] = (string) $showing[$label_key];
+          }
+        }
+        return;
+      }
+      // Old stored rows may have lost their showing_id. When the current CPT
+      // showing has the exact same local start, enrich that report candidate
+      // instead of counting the legacy row and CPT record as two separate shows.
+      if ($actual_showing_id > 0 && ($actual_by_timestamp[$start_at->getTimestamp()] ?? 0) === 1) {
+        foreach ($all as $index => $existing) {
+          if ((int) ($existing['showing_id'] ?? 0) !== 0 || $existing['_start_at']->getTimestamp() !== $start_at->getTimestamp()) continue;
+          foreach (['live_label_1', 'live_label_2'] as $label_key) {
+            if (trim((string) ($all[$index][$label_key] ?? '')) === '' && trim((string) ($showing[$label_key] ?? '')) !== '') {
+              $all[$index][$label_key] = (string) $showing[$label_key];
+            }
+          }
+          $seen[$identity] = $index;
+          return;
+        }
+      }
+      $seen[$identity] = count($all);
+      $all[] = [
+        'id' => $id > 0 ? $id : count($all) + 1,
+        'showing_id' => $actual_showing_id > 0 ? $actual_showing_id : $showing_id,
+        'start_at' => $start_at,
+        '_start_at' => $start_at,
+        'show_time' => (string) ($showing['show_time'] ?? $start_at->format('g:i A')),
+        'live_label_1' => (string) ($showing['live_label_1'] ?? ''),
+        'live_label_2' => (string) ($showing['live_label_2'] ?? ''),
+      ];
+    };
+    foreach ($reports as $key => $report) {
+      $report['_entry_id'] = (int) ($report['_entry_id'] ?? $report['showing_id'] ?? $key);
+      $report['_allocation_kind'] = (string) ($report['_entry_kind'] ?? 'report');
+      $report['_allocation_entry_id'] = (int) ($report['_entry_id'] ?? $key);
+      $append($report);
+    }
+    foreach ($actual_showings as $showing) $append($showing);
+    return $all;
+  }
+
+  /** Complete a partial builder's candidates with persisted rows from all three allocation tables. */
+  private static function complete_concession_candidate_set(string $report_date, array $candidates): array {
+    if (!method_exists(Store::class, 'list_all_entries_for_rebalance')) return $candidates;
+    $specs = [
+      'movie' => ['offset' => 300000000, 'title' => 'movie_title'],
+      'live' => ['offset' => 100000000, 'title' => 'show_title'],
+      'rental' => ['offset' => 200000000, 'title' => 'rental_title'],
+    ];
+    foreach ($specs as $kind => $spec) {
+      foreach (Store::list_all_entries_for_rebalance($kind, $report_date) as $row) {
+        if ((string) ($row['report_date'] ?? '') !== $report_date) continue;
+        $entry_id = (int) ($row['id'] ?? 0);
+        if ($entry_id <= 0) continue;
+        $showing_id = max(0, (int) ($row['showing_id'] ?? 0));
+        $show_time = (string) ($row['show_time'] ?? '');
+        $normalized_title = Store::normalize_title((string) ($row[$spec['title']] ?? ''));
+        $matches = [];
+        foreach ($candidates as $key => $candidate) {
+          if ((string) ($candidate['_entry_kind'] ?? '') !== $kind) continue;
+          if ($showing_id > 0 && (int) ($candidate['showing_id'] ?? 0) === $showing_id) $matches[$key] = $candidate;
+          elseif ($showing_id === 0 && $normalized_title !== ''
+            && Store::normalize_title((string) ($candidate['movie_title'] ?? $candidate['film_title'] ?? $candidate['show_title'] ?? $candidate['rental_title'] ?? '')) === $normalized_title
+            && trim((string) ($candidate['show_time'] ?? '')) === trim($show_time)) $matches[$key] = $candidate;
+        }
+        $key = count($matches) === 1 ? array_key_first($matches) : null;
+        if ($key === null) $key = $spec['offset'] + $entry_id;
+        $candidate = $candidates[$key] ?? [];
+        $has_current_start = ($candidate['_start_at'] ?? null) instanceof \DateTimeImmutable;
+        $candidate['_entry_kind'] = $kind;
+        $candidate['_entry_id'] = $entry_id;
+        $candidate['showing_id'] = $showing_id;
+        if (!$has_current_start) {
+          $candidate['_start_at'] = self::start_at_for_entry_row($report_date, $show_time);
+          $candidate['show_time'] = $show_time;
+        }
+        if (!isset($candidate['general_qty']) && $kind === 'movie') {
+          foreach (['general_qty', 'discount_qty', 'group_qty', 'live_qty', 'total_tickets', 'gross_total'] as $field) $candidate[$field] = max(0, (int) ($row[$field] ?? 0));
+        }
+        if (!isset($candidate['presale_qty']) && $kind === 'live') {
+          foreach (['presale_qty', 'online_qty', 'door_qty', 'group_sub_qty', 'total_tickets', 'gross_total'] as $field) $candidate[$field] = max(0, (int) ($row[$field] ?? 0));
+        }
+        if ($kind === 'rental') $candidate['invoice_amount'] = round((float) ($row['invoice_amount'] ?? 0), 2);
+        $candidate['_is_locked'] = !empty($row['is_locked']);
+        $candidate['concessions_total'] = round((float) ($row['concessions_total'] ?? 0), 2);
+        $candidates[$key] = $candidate;
+      }
+    }
+    return $candidates;
+  }
+
+  private static function matching_showing_time_exists(\DateTimeImmutable $order_closed_at, array $showings): bool {
+    $candidates = [];
+    foreach ($showings as $index => $showing) {
+      $start_at = $showing['start_at'] ?? $showing['_start_at'] ?? null;
+      if (!$start_at instanceof \DateTimeImmutable) continue;
+      $candidates[$index] = ['_start_at' => $start_at, 'show_time' => (string) ($showing['show_time'] ?? '')];
+    }
+    return self::matching_entry_ids_for_order_time($order_closed_at, $candidates, false) !== [];
   }
 
   private static function matching_entry_ids_for_order_time(\DateTimeImmutable $order_closed_at, array $reports, bool $allow_single_row_fallback = false): array {

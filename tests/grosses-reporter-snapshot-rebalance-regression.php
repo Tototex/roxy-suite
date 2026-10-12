@@ -409,7 +409,7 @@ namespace {
   $updates_before_mismatch = count(\RoxyGrosses\Store::$updates);
   $mismatch_failed = false;
   try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', ['2038-05-01'])); }
-  catch (Throwable $error) { $mismatch_failed = str_contains($error->getMessage(), 'Locked concessions exceed'); }
+  catch (Throwable $error) { $mismatch_failed = str_contains($error->getMessage(), 'cannot be reconciled to their matching Square lines'); }
   $check($mismatch_failed && count(\RoxyGrosses\Store::$updates) === $updates_before_mismatch, 'locked amount above matching Square total fails before any allocation write');
   \RoxyGrosses\Store::$movie['2038-05-01'][0]['concessions_total'] = 5.01;
   \RoxyGrosses\Store::$live['2038-05-01'][0]['concessions_total'] = 5.0;

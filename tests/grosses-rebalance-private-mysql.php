@@ -69,11 +69,12 @@ try {
   eval('namespace ' . $namespace . '; function post_type_exists(string $type): bool { return false; } class Settings { public static function get_report_timezone(): string { return "America/Los_Angeles"; } }'
     . ' class Metadata { public static function enrich_movie_row(array $row, bool $force = false, bool $allow_remote = true): array { return $row; } public static function metadata_for_movie(string $title, int $year = 0, bool $force = false): array { return ["studio"=>"", "genre"=>""]; } }'
     . ' class Square {
-      public static int $depth=0; public static array $calls=[];
+      public static int $depth=0; public static array $calls=[]; public static array $order_fixtures=[];
       public static function with_sale_snapshot(callable $fn) { self::$depth++; try{return $fn();}finally{self::$depth--;} }
       public static function fetch_orders_for_date(string $date): array {
         if(self::$depth<1) throw new \\RuntimeException("Snapshot scope missing.");
         self::$calls[]=$date;
+        if(array_key_exists($date,self::$order_fixtures)) return self::$order_fixtures[$date];
         return [["closed_at"=>$date."T19:00:00-07:00","line_items"=>[["item_type"=>"ITEM","catalog_object_id"=>"snack","name"=>"Snack","quantity"=>"1","total_money"=>["amount"=>1001,"currency"=>"USD"]]]]];
       }
       public static function concession_reporting_categories(array $ids): array { return ["snack"=>true]; }
@@ -137,16 +138,23 @@ try {
     return $totals;
   };
   $before_failed_allocation = $fixture_concession_totals();
+  $result::$order_fixtures[$date] = [[
+    'closed_at'=>$date.'T19:00:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1299,'currency'=>'USD']]],
+  ]];
 
   // Fail the second update after the first table has been changed in the open
   // transaction. The actual Reporter must roll the entire day back.
   $updates_seen = 0;
-  $fault = static function (string $sql) use (&$updates_seen, $store): string {
+  $first_write_changed = false;
+  $fault = static function (string $sql) use (&$updates_seen, &$first_write_changed, $store, $fixture_concession_totals, $before_failed_allocation): string {
     if (stripos(ltrim($sql), 'UPDATE ') === 0) {
       foreach ([$store::entries_table_name(), $store::live_entries_table_name(), $store::rental_entries_table_name()] as $table) {
         if (strpos($sql, $table) !== false) {
           $updates_seen++;
-          if ($updates_seen === 2) return 'UPDATE `' . $table . '` SET';
+          if ($updates_seen === 2) {
+            $first_write_changed = $fixture_concession_totals() !== $before_failed_allocation;
+            return 'UPDATE `' . $table . '` SET';
+          }
           break;
         }
       }
@@ -161,14 +169,132 @@ try {
     if ($thrown && $wpdb->last_error !== '') throw new RuntimeException('Expected injected update failure; database detail: ' . $wpdb->last_error . ' Query: ' . $wpdb->last_query, 0, $error);
   }
   finally { remove_filter('query', $fault); }
-  $check($updates_seen === 2 && $thrown && $fixture_concession_totals() === $before_failed_allocation, 'later real Store update failure rolls back an earlier private-table allocation write');
+  $check($updates_seen === 2 && $first_write_changed && $thrown && $fixture_concession_totals() === $before_failed_allocation, 'later real Store update failure rolls back an earlier changed private-table allocation write');
+  unset($result::$order_fixtures[$date]);
   $movie_table = $store::entries_table_name();
   if ($wpdb->query($wpdb->prepare("UPDATE `{$movie_table}` SET is_locked=1, concessions_total=99.33 WHERE report_date=%s", $date)) === false) throw new RuntimeException('Cannot set private protection fixture.');
   $protected_refresh_failed = false;
   try { $result::with_sale_snapshot(static fn() => $method->invoke(null, $date)); }
-  catch (Throwable $error) { $protected_refresh_failed = strpos($error->getMessage(), 'Locked concessions exceed') !== false; }
+  catch (Throwable $error) { $protected_refresh_failed = strpos($error->getMessage(), 'cannot be reconciled to their matching Square lines') !== false; }
   $protected = $wpdb->get_var($wpdb->prepare("SELECT concessions_total FROM `{$movie_table}` WHERE report_date=%s", $date));
   $check($protected_refresh_failed && $wpdb->last_error === '' && (string)$protected === '99.33', 'actual protected amount above the source total is reported and preserved');
+
+  $apply_method = new ReflectionMethod($reporter, 'apply_concessions_to_reports');
+  $apply_method->setAccessible(true);
+  $fixture_square = $result;
+  $la = new DateTimeZone('America/Los_Angeles');
+  $components = [
+    101 => ['_entry_kind'=>'movie','_entry_id'=>101,'showing_id'=>1001,'_start_at'=>new DateTimeImmutable($date . ' 7:00 PM',$la),'show_time'=>'7:00 PM','general_qty'=>1,'concessions_total'=>5.00,'_is_locked'=>true],
+    102 => ['_entry_kind'=>'live','_entry_id'=>102,'showing_id'=>1002,'_start_at'=>new DateTimeImmutable($date . ' 9:00 PM',$la),'show_time'=>'9:00 PM','online_qty'=>1,'concessions_total'=>0.00,'_is_locked'=>false],
+  ];
+  $fixture_square::$order_fixtures[$date] = [
+    ['closed_at'=>$date.'T19:00:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>500,'currency'=>'USD']]]],
+    ['closed_at'=>$date.'T21:00:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1000,'currency'=>'USD']]]],
+  ];
+  $fixture_square::with_sale_snapshot(static function () use ($apply_method,$date,&$components): void { $apply_method->invokeArgs(null,[&$components,$date]); });
+  $check((float)$components[101]['concessions_total']===5.00 && (float)$components[102]['concessions_total']===10.00,
+    'a protected show keeps its fixed cents while only the unrelated editable show receives its own source amount');
+
+  $underfunded = $components;
+  $underfunded[101]['concessions_total']=5.00;
+  $underfunded[102]['concessions_total']=0.00;
+  $fixture_square::$order_fixtures[$date] = [[
+    'closed_at'=>$date.'T19:00:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>300,'currency'=>'USD']]],
+  ]];
+  $underfunded_failed=false;
+  try { $fixture_square::with_sale_snapshot(static function () use ($apply_method,$date,&$underfunded): void { $apply_method->invokeArgs(null,[&$underfunded,$date]); }); }
+  catch (Throwable $error) { $underfunded_failed = strpos($error->getMessage(),'cannot be reconciled to their matching Square lines') !== false; }
+  $check($underfunded_failed && (float)$underfunded[101]['concessions_total']===5.00 && (float)$underfunded[102]['concessions_total']===0.00,
+    'an underfunded protected show fails without shifting its shortfall onto another show');
+
+  $constrained = [
+    201 => ['_entry_kind'=>'movie','_entry_id'=>201,'showing_id'=>2001,'_start_at'=>new DateTimeImmutable($date . ' 2:00 PM',$la),'show_time'=>'2:00 PM','general_qty'=>1,'concessions_total'=>25.00,'_is_locked'=>true],
+    202 => ['_entry_kind'=>'live','_entry_id'=>202,'showing_id'=>2002,'_start_at'=>new DateTimeImmutable($date . ' 4:00 PM',$la),'show_time'=>'4:00 PM','online_qty'=>1,'concessions_total'=>0.00,'_is_locked'=>false],
+  ];
+  $fixture_square::$order_fixtures[$date] = [
+    ['closed_at'=>$date.'T13:59:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1000,'currency'=>'USD']]]],
+    ['closed_at'=>$date.'T15:00:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1000,'currency'=>'USD']]]],
+    ['closed_at'=>$date.'T16:01:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1000,'currency'=>'USD']]]],
+  ];
+  $infeasible_failed=false;
+  try { $fixture_square::with_sale_snapshot(static function () use ($apply_method,$date,&$constrained): void { $apply_method->invokeArgs(null,[&$constrained,$date]); }); }
+  catch (Throwable $error) { $infeasible_failed = strpos($error->getMessage(),'cannot be reconciled to their matching Square lines') !== false; }
+  $check($infeasible_failed && (float)$constrained[201]['concessions_total']===25.00 && (float)$constrained[202]['concessions_total']===0.00,
+    'overlapping connected sales still fail when a locked row demands more than its individually eligible lines');
+
+  foreach ([false, true] as $reverse) {
+    $feasible = [
+      401 => ['_entry_kind'=>'movie','_entry_id'=>401,'showing_id'=>4001,'_start_at'=>new DateTimeImmutable($date . ' 2:00 PM',$la),'show_time'=>'2:00 PM','general_qty'=>1,'concessions_total'=>0.00,'_is_locked'=>false],
+      402 => ['_entry_kind'=>'movie','_entry_id'=>402,'showing_id'=>4002,'_start_at'=>new DateTimeImmutable($date . ' 4:00 PM',$la),'show_time'=>'4:00 PM','general_qty'=>1,'concessions_total'=>10.00,'_is_locked'=>true],
+    ];
+    $fixture_square::$order_fixtures[$date] = [
+      ['closed_at'=>$date.'T15:00:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1000,'currency'=>'USD']]]],
+      ['closed_at'=>$date.'T16:01:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1000,'currency'=>'USD']]]],
+    ];
+    if ($reverse) $fixture_square::$order_fixtures[$date] = array_reverse($fixture_square::$order_fixtures[$date]);
+    if ($reverse) $feasible = array_reverse($feasible, true);
+    $fixture_square::with_sale_snapshot(static function () use ($apply_method,$date,&$feasible): void { $apply_method->invokeArgs(null,[&$feasible,$date]); });
+    $check((float)$feasible[402]['concessions_total']===10.00 && (float)$feasible[401]['concessions_total']===10.00,
+      'a feasible locked/editable split survives ' . ($reverse ? 'reversed' : 'normal') . ' line and row ordering');
+  }
+
+  foreach ([false, true] as $reverse) {
+    $zero_lock_case = [
+      501 => ['_entry_kind'=>'movie','_entry_id'=>501,'showing_id'=>5001,'_start_at'=>new DateTimeImmutable($date . ' 2:00 PM',$la),'show_time'=>'2:00 PM','general_qty'=>1,'concessions_total'=>10.00,'_is_locked'=>true],
+      502 => ['_entry_kind'=>'movie','_entry_id'=>502,'showing_id'=>5002,'_start_at'=>new DateTimeImmutable($date . ' 12:00 PM',$la),'show_time'=>'12:00 PM','general_qty'=>1,'concessions_total'=>0.00,'_is_locked'=>false],
+      503 => ['_entry_kind'=>'movie','_entry_id'=>503,'showing_id'=>5003,'_start_at'=>new DateTimeImmutable($date . ' 4:00 PM',$la),'show_time'=>'4:00 PM','general_qty'=>1,'concessions_total'=>0.00,'_is_locked'=>true],
+    ];
+    $fixture_square::$order_fixtures[$date] = [
+      ['closed_at'=>$date.'T13:00:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1000,'currency'=>'USD']]]],
+      ['closed_at'=>$date.'T15:00:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1000,'currency'=>'USD']]]],
+    ];
+    if ($reverse) $fixture_square::$order_fixtures[$date] = array_reverse($fixture_square::$order_fixtures[$date]);
+    if ($reverse) $zero_lock_case = array_reverse($zero_lock_case, true);
+    $fixture_square::with_sale_snapshot(static function () use ($apply_method,$date,&$zero_lock_case): void { $apply_method->invokeArgs(null,[&$zero_lock_case,$date]); });
+    $check((float)$zero_lock_case[501]['concessions_total']===10.00 && (float)$zero_lock_case[502]['concessions_total']===10.00
+        && (float)$zero_lock_case[503]['concessions_total']===0.00,
+      'zero-valued locked rows remain protected while overlapping sales are routed ' . ($reverse ? 'in reverse order' : 'normally'));
+  }
+
+  foreach ([false, true] as $reverse) {
+    $two_locks = [
+      601 => ['_entry_kind'=>'movie','_entry_id'=>601,'showing_id'=>6001,'_start_at'=>new DateTimeImmutable($date . ' 2:00 PM',$la),'show_time'=>'2:00 PM','general_qty'=>1,'concessions_total'=>10.00,'_is_locked'=>true],
+      602 => ['_entry_kind'=>'movie','_entry_id'=>602,'showing_id'=>6002,'_start_at'=>new DateTimeImmutable($date . ' 4:00 PM',$la),'show_time'=>'4:00 PM','general_qty'=>1,'concessions_total'=>20.00,'_is_locked'=>true],
+      603 => ['_entry_kind'=>'movie','_entry_id'=>603,'showing_id'=>6003,'_start_at'=>new DateTimeImmutable($date . ' 12:00 PM',$la),'show_time'=>'12:00 PM','general_qty'=>1,'concessions_total'=>0.00,'_is_locked'=>false],
+    ];
+    $fixture_square::$order_fixtures[$date] = [
+      ['closed_at'=>$date.'T13:00:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1000,'currency'=>'USD']]]],
+      ['closed_at'=>$date.'T15:00:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1000,'currency'=>'USD']]]],
+      ['closed_at'=>$date.'T17:00:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1000,'currency'=>'USD']]]],
+    ];
+    if ($reverse) $fixture_square::$order_fixtures[$date] = array_reverse($fixture_square::$order_fixtures[$date]);
+    if ($reverse) $two_locks = array_reverse($two_locks, true);
+    $fixture_square::with_sale_snapshot(static function () use ($apply_method,$date,&$two_locks): void { $apply_method->invokeArgs(null,[&$two_locks,$date]); });
+    $check((float)$two_locks[601]['concessions_total']===10.00 && (float)$two_locks[602]['concessions_total']===20.00
+        && (float)$two_locks[603]['concessions_total']===0.00,
+      'multiple locked totals stay attached to eligible shows ' . ($reverse ? 'in reverse order' : 'in normal order'));
+  }
+
+  $orphan_locked = [
+    301 => ['_entry_kind'=>'movie','_entry_id'=>301,'showing_id'=>3001,'_start_at'=>new DateTimeImmutable($date . ' 11:00 AM',$la),'show_time'=>'11:00 AM','general_qty'=>1,'concessions_total'=>5.00,'_is_locked'=>true],
+    302 => ['_entry_kind'=>'live','_entry_id'=>302,'showing_id'=>3002,'_start_at'=>new DateTimeImmutable($date . ' 9:00 PM',$la),'show_time'=>'9:00 PM','online_qty'=>1,'concessions_total'=>0.00,'_is_locked'=>false],
+  ];
+  $fixture_square::$order_fixtures[$date] = [[
+    'closed_at'=>$date.'T21:00:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1000,'currency'=>'USD']]],
+  ]];
+  $orphan_failed=false;
+  try { $fixture_square::with_sale_snapshot(static function () use ($apply_method,$date,&$orphan_locked): void { $apply_method->invokeArgs(null,[&$orphan_locked,$date]); }); }
+  catch (Throwable $error) { $orphan_failed = strpos($error->getMessage(),'cannot be reconciled to their matching Square lines') !== false; }
+  $check($orphan_failed && (float)$orphan_locked[301]['concessions_total']===5.00 && (float)$orphan_locked[302]['concessions_total']===0.00,
+    'a locked row with no matching sale fails instead of surviving beside unrelated day revenue');
+  $fixture_square::$order_fixtures[$date] = [];
+  $zero_sales_locked = [301 => $orphan_locked[301]];
+  $zero_sales_failed=false;
+  try { $fixture_square::with_sale_snapshot(static function () use ($apply_method,$date,&$zero_sales_locked): void { $apply_method->invokeArgs(null,[&$zero_sales_locked,$date]); }); }
+  catch (Throwable $error) { $zero_sales_failed = strpos($error->getMessage(),'cannot be reconciled to their matching Square lines') !== false; }
+  $check($zero_sales_failed && (float)$zero_sales_locked[301]['concessions_total']===5.00,
+    'a positive locked total cannot pass a verified zero-sales day');
+  unset($fixture_square::$order_fixtures[$date]);
   $check($before === $digest(), 'all original movie/live/rental records remain unchanged');
   echo "Passed {$count} actual private MySQL allocation checks; production tables were read only.\n";
 } finally {
