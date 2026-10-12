@@ -47,6 +47,9 @@ $unknown_cost=$p; $unknown_cost['unit_cost']=0; $unknown_cost['unit_cost_status'
 check(rejected(fn()=>\RoxyInventory\Admin::reviewed_lines($vendor,[$unknown_cost],$input)),'unknown zero cost cannot pass order review');
 $free_cost=$p; $free_cost['unit_cost']=0; $free_cost['unit_cost_status']='free'; $free_cost['unit_cost_source']='supplier confirmation'; $free_cost['unit_cost_checked_at']='2026-10-08';
 check(\RoxyInventory\Admin::cost_summary([['product'=>$free_cost,'qty'=>3]])===['known_total'=>0.0,'incomplete'=>false],'explicitly free items are complete zero-cost lines');
+check(\RoxyInventory\Admin::cost_review_known_flag($free_cost)==='1','order-review UI marks documented Free cost known so quantity edits retain a valid $0 estimate');
+$unknown_cost['unit_cost_status']='unknown';
+check(\RoxyInventory\Admin::cost_review_known_flag($unknown_cost)==='0','order-review UI continues to mark unknown zero cost incomplete');
 $free_vendor=$vendor; $free_vendor['minimum_amount']=0;
 $free_input=$input; $free_input['review_token']=\RoxyInventory\Admin::review_token($free_vendor,[$free_cost]);
 [$free_lines,$free_total]=\RoxyInventory\Admin::reviewed_lines($free_vendor,[$free_cost],$free_input);

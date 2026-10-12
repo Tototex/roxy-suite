@@ -214,6 +214,9 @@ jobs:
         if: matrix.php == '8.3'
         run: node tests/member-door-js-regression.cjs "$GITHUB_WORKSPACE"
 
+      - name: Inventory order-review cost UI regression
+        run: node tests/inventory-cost-review-ui-regression.cjs "$GITHUB_WORKSPACE"
+
       - name: Run Grosses log-result regression
         run: php tests/grosses-log-result-regression.php
 

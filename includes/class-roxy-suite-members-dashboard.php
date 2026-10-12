@@ -319,19 +319,18 @@ class Members_Dashboard {
         }
         // Capture lightweight identities when no extension requires the complete collection.
         if(!function_exists('wcs_get_orders_with_meta_query') || !function_exists('wcs_get_subscription'))throw new \RuntimeException('Subscription query API unavailable');
-        $subscription_ids = $filtered_subscriptions !== null ? array_keys($filtered_subscriptions) : wcs_get_orders_with_meta_query([
+        $subscription_query = [
             'type' => 'shop_subscription',
             'status' => ['wc-active', 'wc-pending-cancel'],
-            'limit' => -1,
             'return' => 'ids',
             'orderby' => 'ID',
             'order' => 'DESC',
-        ]);
-        global $wpdb;
-        if(!empty($wpdb->last_error) || !is_array($subscription_ids))throw new \RuntimeException('Subscription identities could not be read');
-        $subscription_ids=array_values(array_unique(array_filter(array_map('intval',$subscription_ids),static fn($id)=>$id>0)));
+        ];
+        $subscription_batches = $filtered_subscriptions !== null
+            ? array_chunk(array_keys($filtered_subscriptions), 100)
+            : self::subscription_id_batches($subscription_query);
         $ranks=[];
-        foreach(array_chunk($subscription_ids,100) as $batch) {
+        foreach($subscription_batches as $batch) {
           $scan_stats_map=self::scan_stats_map($batch);
           foreach($batch as $sub_id) {
             $subscription=$filtered_subscriptions[$sub_id] ?? wcs_get_subscription($sub_id);
@@ -403,6 +402,43 @@ class Members_Dashboard {
             'rows' => $rows,
             'total_rows'=>$total_rows,'page'=>$page,'pages'=>$pages,
         ];
+    }
+
+    /**
+     * Yield bounded Woo Subscriptions identity pages in stable descending ID
+     * order. A malformed page or query failure must not become partial totals.
+     * Extension-filtered queries retain their historical complete-collection
+     * behavior above because consumers may alter either the collection or its
+     * subscription objects.
+     */
+    private static function subscription_id_batches(array $query): \Generator {
+        global $wpdb;
+        $page = 1;
+        $previous_id = PHP_INT_MAX;
+        do {
+            $paged_query = $query;
+            $paged_query['limit'] = 100;
+            $paged_query['page'] = $page++;
+            if (isset($wpdb->last_error)) $wpdb->last_error = '';
+            $ids = wcs_get_orders_with_meta_query($paged_query);
+            if (!empty($wpdb->last_error) || !is_array($ids) || count($ids) > 100) {
+                throw new \RuntimeException('Subscription identities could not be read');
+            }
+
+            $batch = [];
+            foreach ($ids as $raw_id) {
+                if ((!is_int($raw_id) && !is_string($raw_id)) || !preg_match('/^[1-9]\\d*$/D', (string) $raw_id)) {
+                    throw new \RuntimeException('Subscription identity page was invalid');
+                }
+                $id = (int) $raw_id;
+                if ($id <= 0 || $id >= $previous_id) {
+                    throw new \RuntimeException('Subscription identity pages changed while reading');
+                }
+                $batch[] = $id;
+                $previous_id = $id;
+            }
+            if ($batch) yield $batch;
+        } while (count($batch) === 100);
     }
 
     private static function subscription_quantity($sub): int {

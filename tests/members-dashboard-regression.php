@@ -24,13 +24,18 @@ function add_query_arg($key, $value=null, $url=null) {
 }
 function wcs_get_orders_with_meta_query($query) {
     if ($query['return'] !== 'ids' || $query['type'] !== 'shop_subscription' || $query['status'] !== ['wc-active','wc-pending-cancel']) throw new RuntimeException('Wrong subscription scope');
-    // Simulate Woo Subscriptions using WooCommerce's order query API. The
-    // first 257 records are eligible; the larger fixture also includes
-    // varied ineligible order statuses that must not enter the snapshot.
+    if (isset($query['limit'], $query['page'])) {
+        if ($query['limit'] !== 100 || $query['page'] < 1) throw new RuntimeException('Subscription identity query was not bounded and paged');
+        if (($GLOBALS['identity_fail_page'] ?? 0) === $query['page']) { $GLOBALS['wpdb']->last_error='fixture identity query failure'; return false; }
+    } else {
+        // The named baseline revision uses a single legacy unlimited query.
+        $query['limit']=-1;$query['page']=1;
+    }
     return wc_get_orders([
         'type' => 'shop_subscription',
         'status' => array_map(static fn($status) => substr($status, 3), $query['status']),
-        'limit' => -1,
+        'limit' => $query['limit'],
+        'page' => $query['page'],
         'return' => 'ids',
         'orderby' => 'ID',
         'order' => 'DESC',
@@ -38,6 +43,7 @@ function wcs_get_orders_with_meta_query($query) {
 }
 function wc_get_orders($query) {
     $GLOBALS['wc_get_orders_calls'] = ($GLOBALS['wc_get_orders_calls'] ?? 0) + 1;
+    $GLOBALS['wc_get_orders_limits'][] = $query['limit'] ?? -1;
     if (!empty($GLOBALS['orders_throw'])) throw new RuntimeException('Fixture wc_get_orders failure');
     if (($query['type'] ?? '') !== 'shop_subscription' || ($query['return'] ?? '') !== 'ids') throw new RuntimeException('Wrong Woo order query scope');
     $eligible_statuses = ['active', 'pending-cancel'];
@@ -46,7 +52,8 @@ function wc_get_orders($query) {
         $status = $id <= 257 ? ($id % 3 === 0 ? 'pending-cancel' : 'active') : ($id % 2 === 0 ? 'cancelled' : 'on-hold');
         if (in_array($status, $query['status'] ?? [], true) && in_array($status, $eligible_statuses, true)) $ids[] = $id;
     }
-    return $ids;
+    $limit = (int) ($query['limit'] ?? -1);
+    return $limit > 0 ? array_slice($ids, max(0, ((int) ($query['page'] ?? 1) - 1) * $limit), $limit) : $ids;
 }
 function wcs_get_subscription($id) {
     $GLOBALS['subscription_reads'] = ($GLOBALS['subscription_reads'] ?? 0) + 1;
@@ -113,6 +120,15 @@ try {
     $fixture_ids=wc_get_orders(['type'=>'shop_subscription','status'=>['active','pending-cancel'],'return'=>'ids']);
     if(count($fixture_ids)!==257 || min($fixture_ids)!==1 || max($fixture_ids)!==257)throw new RuntimeException('Large Woo order fixture did not isolate its 257 eligible records from varied ineligible statuses');
     echo "PASS: large order fixture separates eligible memberships from cancelled/on-hold records.\n";
+    $GLOBALS['wc_get_orders_limits']=[];
+    $_GET=[];$paged_snapshot=$new->invoke(null,$filters);
+    if($paged_snapshot['total_rows']!==257 || max($GLOBALS['wc_get_orders_limits'])!==100 || in_array(-1,$GLOBALS['wc_get_orders_limits'],true) || count($GLOBALS['wc_get_orders_limits'])<3)throw new RuntimeException('Dashboard did not read all memberships through bounded identity pages');
+    echo "PASS: dashboard retrieves all eligible identities in bounded 100-ID pages, including the short terminal page.\n";
+    $GLOBALS['identity_fail_page']=2;
+    try{$new->invoke(null,$filters);throw new LogicException('Identity page query failure returned partial totals');}
+    catch(RuntimeException $e){if($e instanceof LogicException || !str_contains($e->getMessage(),'Subscription identities could not be read'))throw $e;}
+    unset($GLOBALS['identity_fail_page']);
+    echo "PASS: a failed later identity page is rejected instead of returning partial dashboard totals.\n";
     foreach([0,-9,'bad',[]] as $invalid){$_GET=['member_page'=>$invalid];if($new->invoke(null,$filters)['page']!==1)throw new RuntimeException('Invalid page not normalized');}
     $_GET=['member_page'=>2];$snapshot=$new->invoke(null,$filters);
     $navigation=new ReflectionMethod('RoxySuite\\Members_DashboardCandidate','pagination');
