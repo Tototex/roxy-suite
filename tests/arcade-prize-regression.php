@@ -19,11 +19,11 @@ class PrizeSubscription {
     function save(){}function update_status($v,$note){$GLOBALS['activated']=true;return !($GLOBALS['activation_fail']??false);}function add_order_note($n){}
 }
 class PrizeDatabase {
-    public $options='fixture_options';public $claims=[];public $fail_insert=false,$fail_update=false,$fail_on_update=0,$updates=0;
+    public $options='fixture_options';public $claims=[];public $fail_insert=false,$fail_update=false,$fail_on_update=0,$commit_then_fail_on_update=0,$updates=0;
     function prepare($sql,...$params){return [$sql,$params];}
     function query($query){[$sql,$params]=$query;
         if(str_starts_with($sql,'INSERT')){if($this->fail_insert)return false;[$key,$value]=$params;if(isset($this->claims[$key]))return 0;$this->claims[$key]=$value;return 1;}
-        $this->updates++;if($this->fail_update||$this->updates===$this->fail_on_update)return false;[$value,$key,$expected]=$params;if(($this->claims[$key]??null)!==$expected)return 0;$this->claims[$key]=$value;return 1;
+        $this->updates++;if($this->fail_update||$this->updates===$this->fail_on_update)return false;[$value,$key,$expected]=$params;if(($this->claims[$key]??null)!==$expected)return 0;$this->claims[$key]=$value;return $this->updates===$this->commit_then_fail_on_update?false:1;
     }
 }
 $GLOBALS['wpdb']=new PrizeDatabase;$GLOBALS['created']=0;
@@ -53,3 +53,15 @@ $GLOBALS['wpdb']->updates=0;$GLOBALS['wpdb']->fail_on_update=2;
 prize_check($once->invoke(null,'2700-06',9)===0,'completion write failure does not report successful award');
 $GLOBALS['wpdb']->fail_on_update=0;$created=$GLOBALS['created'];
 prize_check($once->invoke(null,'2700-06',9)===0&&$GLOBALS['created']===$created,'activated but unfinalized claim blocks duplicate retry');
+$GLOBALS['wpdb']->updates=0;$GLOBALS['wpdb']->commit_then_fail_on_update=1;$GLOBALS['activated']=false;$created=$GLOBALS['created'];
+prize_check($once->invoke(null,'2700-07',9)===0&&!$GLOBALS['activated'],'lost acknowledgement after identity commit prevents prize activation');
+$claim=json_decode($GLOBALS['wpdb']->claims['roxy_arcade_award_claim_2700-07'],true);
+prize_check($claim['state']==='started'&&$claim['subscription_id']===55,'committed identity remains attached to the blocked claim after lost acknowledgement');
+$GLOBALS['wpdb']->commit_then_fail_on_update=0;
+prize_check($once->invoke(null,'2700-07',9)===0&&$GLOBALS['created']===$created,'identity commit with lost acknowledgement cannot create a duplicate prize on retry');
+$GLOBALS['wpdb']->updates=0;$GLOBALS['wpdb']->commit_then_fail_on_update=2;$GLOBALS['activated']=false;$created=$GLOBALS['created'];
+prize_check($once->invoke(null,'2700-08',9)===0&&$GLOBALS['activated'],'completed-claim acknowledgement loss reports uncertain result after activation');
+$claim=json_decode($GLOBALS['wpdb']->claims['roxy_arcade_award_claim_2700-08'],true);
+prize_check($claim['state']==='completed'&&$claim['subscription_id']===55,'committed completed claim preserves prize identity after lost acknowledgement');
+$GLOBALS['wpdb']->commit_then_fail_on_update=0;
+prize_check($once->invoke(null,'2700-08',9)===0&&$GLOBALS['created']===$created,'completed claim after lost acknowledgement cannot award twice');
