@@ -854,60 +854,6 @@ function roxy_will_call_legacy_cpt_orders_enabled(): bool {
 }
 
 /**
- * Return candidate legacy order IDs from WooCommerce's canonical line-item
- * metadata, not wc_order_product_lookup (which may be incomplete).
- *
- * The main Will Call scan still loads every candidate order and verifies its
- * line items through WC_Order_Item_Product getters, so this query only narrows
- * which orders need hydration; it does not calculate displayed values.
- */
-function roxy_will_call_legacy_ticket_order_ids(array $product_ids): array {
-  static $request_cache = [];
-  global $wpdb;
-  if (!isset($wpdb) || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'get_col')
-    || !isset($wpdb->prefix) || !is_string($wpdb->prefix) || $wpdb->prefix === '') {
-    throw new RuntimeException('Will Call could not verify ticket order candidates. No partial list was cached.');
-  }
-
-  $product_ids = array_values(array_unique(array_filter(array_map('intval', $product_ids), static function ($id) {
-    return $id > 0;
-  })));
-  if (!$product_ids) return [];
-
-  // WooCommerce invokes its legacy query filter once per page. Reuse the
-  // canonical item-meta candidate set for the same ticket products throughout
-  // this request instead of rescanning the order-item tables on every page.
-  $cache_key = hash('sha256', $wpdb->prefix . '|' . implode(',', $product_ids));
-  if (array_key_exists($cache_key, $request_cache)) return $request_cache[$cache_key];
-
-  $placeholders = implode(',', array_fill(0, count($product_ids), '%d'));
-  $items_table = $wpdb->prefix . 'woocommerce_order_items';
-  $item_meta_table = $wpdb->prefix . 'woocommerce_order_itemmeta';
-  $sql = "SELECT DISTINCT items.order_id
-    FROM {$items_table} AS items
-    INNER JOIN {$item_meta_table} AS item_meta ON item_meta.order_item_id = items.order_item_id
-    WHERE items.order_item_type = 'line_item'
-      AND item_meta.meta_key IN ('_product_id', '_variation_id')
-      AND CAST(item_meta.meta_value AS UNSIGNED) IN ({$placeholders})
-    ORDER BY items.order_id ASC";
-  $prepared = call_user_func_array([$wpdb, 'prepare'], array_merge([$sql], $product_ids));
-  $order_ids = $wpdb->get_col($prepared);
-  if (!is_array($order_ids) || (isset($wpdb->last_error) && (string) $wpdb->last_error !== '')) {
-    throw new RuntimeException('Will Call could not verify ticket order candidates. No partial list was cached.');
-  }
-
-  $normalized = [];
-  foreach ($order_ids as $order_id) {
-    if (!is_numeric($order_id) || (float) $order_id <= 0 || (float) $order_id !== (float) (int) $order_id) {
-      throw new RuntimeException('Will Call received an invalid ticket order candidate. No partial list was cached.');
-    }
-    $normalized[(int) $order_id] = (int) $order_id;
-  }
-  $request_cache[$cache_key] = array_values($normalized);
-  return $request_cache[$cache_key];
-}
-
-/**
  * Narrow legacy order queries only when the standard item getters remain
  * authoritative. Extensions that can alter the existing scan force fallback.
  */
@@ -926,15 +872,60 @@ function roxy_will_call_filter_legacy_ticket_order_query(array $query, array $qu
     if (function_exists('has_filter') && has_filter($filter)) return $query;
   }
 
-  $candidate_ids = roxy_will_call_legacy_ticket_order_ids((array) $query_vars[$var]);
-  // An empty post__in means "no restriction" in WP_Query, so preserve empty
-  // candidate semantics explicitly.
-  $query['post__in'] = $candidate_ids ?: [0];
+  $product_ids = array_values(array_unique(array_filter(array_map('intval', (array) $query_vars[$var]), static function ($id) {
+    return $id > 0;
+  })));
+  // Avoid replacing an otherwise complete scan with an unusually large SQL
+  // predicate if an installation has an exceptionally broad ticket catalog.
+  if (!$product_ids || count($product_ids) > 500) return $query;
+  // The SQL clause below intersects with the CPT query instead of replacing
+  // an extension's existing post__in or materializing an unbounded ID list.
+  $query[$var] = $product_ids;
   return $query;
 }
 
 if (function_exists('add_filter')) {
-  add_filter('woocommerce_order_data_store_cpt_get_orders_query', 'roxy_will_call_filter_legacy_ticket_order_query', 10, 2);
+  add_filter('woocommerce_order_data_store_cpt_get_orders_query', 'roxy_will_call_filter_legacy_ticket_order_query', PHP_INT_MAX, 2);
+  add_filter('posts_where', 'roxy_will_call_legacy_ticket_order_where', PHP_INT_MAX, 2);
+}
+
+/** Add a bounded canonical line-item predicate to WooCommerce's normal paged CPT order query. */
+function roxy_will_call_legacy_ticket_order_where(string $where, $wp_query): string {
+  $var = 'roxy_will_call_ticket_product_ids';
+  if (!is_object($wp_query) || !method_exists($wp_query, 'get') || $wp_query->get($var) === null) return $where;
+
+  $product_ids = array_values(array_unique(array_filter(array_map('intval', (array) $wp_query->get($var)), static function ($id) {
+    return $id > 0;
+  })));
+  if (!$product_ids) return $where . ' AND 1=0';
+
+  global $wpdb;
+  if (!isset($wpdb->prefix, $wpdb->posts) || !is_string($wpdb->prefix) || $wpdb->prefix === ''
+    || !is_string($wpdb->posts) || $wpdb->posts === '' || !method_exists($wpdb, 'prepare')) {
+    throw new RuntimeException('Will Call could not construct the canonical ticket-product query.');
+  }
+
+  $items_table = $wpdb->prefix . 'woocommerce_order_items';
+  $item_meta_table = $wpdb->prefix . 'woocommerce_order_itemmeta';
+  if (!preg_match('/^[A-Za-z0-9_]+$/', $items_table) || !preg_match('/^[A-Za-z0-9_]+$/', $item_meta_table)
+    || !preg_match('/^[A-Za-z0-9_]+$/', $wpdb->posts)) {
+    throw new RuntimeException('Will Call received an invalid order-table name.');
+  }
+
+  $placeholders = implode(',', array_fill(0, count($product_ids), '%d'));
+  $sql = "EXISTS (
+    SELECT 1
+    FROM `{$items_table}` AS roxy_wc_items
+    INNER JOIN `{$item_meta_table}` AS roxy_wc_item_meta
+      ON roxy_wc_item_meta.order_item_id = roxy_wc_items.order_item_id
+    WHERE roxy_wc_items.order_id = `{$wpdb->posts}`.ID
+      AND roxy_wc_items.order_item_type = 'line_item'
+      AND roxy_wc_item_meta.meta_key IN ('_product_id', '_variation_id')
+      AND CAST(roxy_wc_item_meta.meta_value AS UNSIGNED) IN ({$placeholders})
+  )";
+  $prepared = call_user_func_array([$wpdb, 'prepare'], array_merge([$sql], $product_ids));
+  if (!is_string($prepared) || $prepared === '') throw new RuntimeException('Will Call could not prepare the canonical ticket-product query.');
+  return $where . ' AND ' . $prepared;
 }
 
 function roxy_will_call_get_list($product_ids, array $ticket_type_labels = [], bool $fresh = false) {
