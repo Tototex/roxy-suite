@@ -135,7 +135,8 @@ try {
   $large_date = '2038-05-03';
   $movie_table = $store::entries_table_name();
   for ($i = 0; $i < 1001; $i++) {
-    $row = ['report_date'=>$large_date,'movie_title'=>'Batch Fixture','normalized_title'=>'batch fixture','show_time'=>'7:00 PM','general_qty'=>1,'total_tickets'=>1,'gross_total'=>12,'concessions_total'=>0,'is_locked'=>0,'created_at'=>$now,'updated_at'=>$now];
+    $title = 'Batch Fixture ' . $i;
+    $row = ['report_date'=>$large_date,'movie_title'=>$title,'normalized_title'=>strtolower($title),'show_time'=>'7:00 PM','general_qty'=>1,'total_tickets'=>1,'gross_total'=>12,'concessions_total'=>0,'is_locked'=>0,'created_at'=>$now,'updated_at'=>$now];
     if ($wpdb->insert($movie_table, $row) !== 1) throw new RuntimeException('Could not seed large private allocation fixture.');
   }
   $result::$order_fixtures[$large_date] = [[
