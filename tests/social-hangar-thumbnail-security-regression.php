@@ -174,6 +174,9 @@ namespace RoxySocial {
         $GLOBALS['hangar_fixture']['response'] = $response;
         $check($fetch->invoke(null, '/poster.png', 2048) === null, $label);
     }
+    // The WP_Error rejection case above is deliberately terminal; restore a
+    // valid response before later import/sideload fixtures exercise streaming.
+    $GLOBALS['hangar_fixture']['response'] = ['response' => ['code' => 200], 'headers' => ['content-type' => 'image/png'], 'body' => $png];
 
     $upload_dir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'roxy-hangar-thumbnail-' . bin2hex(random_bytes(8));
     if (!mkdir($upload_dir, 0700)) throw new \RuntimeException('Could not create owned temporary upload folder.');

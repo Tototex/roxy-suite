@@ -55,7 +55,7 @@ $reset=static function()use($wpdb,$table,$virtual_base){
     $assert($store::queue_poster_cleanup($poster_path),'poster cleanup persists a path in its private durable table');
     $poster_rows=$store::poster_cleanup_batch(100);
     $assert(is_array($poster_rows)&&count($poster_rows)===1&&($poster_rows[0]['file_path']??'')===$poster_path,'poster cleanup reads a bounded durable batch');
-    $assert($store::record_poster_cleanup_failure($poster_path)&&($store::poster_cleanup_batch(100)[0]['attempts']??0)===1,'poster cleanup failure count persists for retry diagnostics');
+    $assert($store::record_poster_cleanup_failure($poster_path)&&(int)($store::poster_cleanup_batch(100)[0]['attempts']??0)===1,'poster cleanup failure count persists for retry diagnostics');
     $assert($store::remove_poster_cleanup($poster_path)&&$store::poster_cleanup_batch(100)===[],'verified poster cleanup removes only its exact queue record');
     $assert(hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)))===$before,'all production Social rows unchanged');
     $row=$reset();$GLOBALS['cleanup53_exists']=true;$GLOBALS['cleanup53_scheduled']=[];
