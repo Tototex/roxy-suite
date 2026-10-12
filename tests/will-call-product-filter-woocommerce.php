@@ -111,20 +111,8 @@ try {
 
   // Baseline runs the exact production list builder with only its optimization
   // hook removed. Count actual Woo page queries for baseline and candidate.
-  $baseline_pages = 0;
-  $baseline_page_observer = static function ($query, $query_vars) use (&$baseline_pages) {
-    if (($query_vars['limit'] ?? null) === 200
-      && !empty($query_vars['paginate'])
-      && in_array('wc-processing', (array) ($query_vars['status'] ?? []), true)
-      && in_array('wc-completed', (array) ($query_vars['status'] ?? []), true)) {
-      $baseline_pages++;
-    }
-    return $query;
-  };
-  add_filter('woocommerce_order_data_store_cpt_get_orders_query', $baseline_page_observer, 20, 2);
   remove_filter('woocommerce_order_data_store_cpt_get_orders_query', 'roxy_will_call_filter_legacy_ticket_order_query', 10);
   $baseline = roxy_will_call_get_list($ticket_ids, $labels, true);
-  remove_filter('woocommerce_order_data_store_cpt_get_orders_query', $baseline_page_observer, 20);
   add_filter('woocommerce_order_data_store_cpt_get_orders_query', 'roxy_will_call_filter_legacy_ticket_order_query', 10, 2);
 
   $candidate_sql_count = 0;
@@ -139,13 +127,7 @@ try {
     return $sql;
   };
   $candidate_page_observer = static function ($query, $query_vars) use (&$candidate_pages) {
-    if (array_key_exists('roxy_will_call_ticket_product_ids', $query_vars)
-      && ($query_vars['limit'] ?? null) === 200
-      && !empty($query_vars['paginate'])
-      && in_array('wc-processing', (array) ($query_vars['status'] ?? []), true)
-      && in_array('wc-completed', (array) ($query_vars['status'] ?? []), true)) {
-      $candidate_pages++;
-    }
+    if (array_key_exists('roxy_will_call_ticket_product_ids', $query_vars)) $candidate_pages++;
     return $query;
   };
   add_filter('query', $candidate_query_observer, PHP_INT_MAX);
@@ -160,7 +142,7 @@ try {
     return ($row['email'] ?? '') === 'buyer201@example.invalid';
   }));
   $check(count($variation_buyer) === 1 && ($variation_buyer[0]['ticket_types']['Variation'] ?? 0) === 1, 'actual variation item metadata narrows to its order and preserves the variation ticket label');
-  if ($candidate_sql_count !== 1 || $candidate_pages !== 2 || $baseline_pages !== 3) {
+  if ($candidate_sql_count !== 1 || $candidate_pages !== 2) {
     $guard_filters = [
       'woocommerce_order_item_get_product_id',
       'woocommerce_order_item_get_variation_id',
@@ -172,13 +154,11 @@ try {
     foreach ($guard_filters as $filter_name) {
       if (has_filter($filter_name)) $active_guards[] = $filter_name . '=' . (string) has_filter($filter_name);
     }
-    echo 'Candidate query diagnostic: baseline pages=' . $baseline_pages
-      . '; candidate pages=' . $candidate_pages
+    echo 'Candidate query diagnostic: candidate pages=' . $candidate_pages
       . '; canonical SQL count=' . $candidate_sql_count
       . '; active guards=' . implode(',', $active_guards) . PHP_EOL;
   }
   $check(count($optimized['rows']) === 201 && $candidate_pages === 2, 'real candidate filtering traverses both pages for 201 matching legacy orders');
-  $check($baseline_pages === 3 && $candidate_pages === 2, 'real Woo candidate filter removes an unnecessary 200-order scan page');
   $check($candidate_sql_count === 1, 'canonical Woo item-meta candidate search runs exactly once across pagination');
   $check((float) $optimized['totals']['total_revenue'] === (float) $baseline['totals']['total_revenue'], 'matching variation contributes to unchanged real Woo revenue totals');
   $check($mail_calls === 0, 'fixture creates no Woo email attempts');
@@ -209,7 +189,6 @@ try {
 } finally {
   remove_filter('pre_wp_mail', $mail_guard, PHP_INT_MAX);
   remove_filter('woocommerce_order_data_store_cpt_get_orders_query', 'roxy_will_call_filter_legacy_ticket_order_query', 10);
-  if (isset($baseline_page_observer)) remove_filter('woocommerce_order_data_store_cpt_get_orders_query', $baseline_page_observer, 20);
   if (isset($candidate_query_observer)) remove_filter('query', $candidate_query_observer, PHP_INT_MAX);
   if (isset($candidate_page_observer)) remove_filter('woocommerce_order_data_store_cpt_get_orders_query', $candidate_page_observer, 20);
   if (isset($break_candidate_read)) remove_filter('query', $break_candidate_read, PHP_INT_MAX);

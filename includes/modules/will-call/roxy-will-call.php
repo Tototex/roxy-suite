@@ -845,7 +845,9 @@ function roxy_will_call_legacy_cpt_orders_enabled(): bool {
     // actual resolved store instead of disabling this optimization whenever
     // any data-store filter exists.
     $store = WC_Data_Store::load('order');
-    return is_object($store) && get_class($store) === 'WC_Order_Data_Store_CPT';
+    return is_object($store)
+      && method_exists($store, 'get_current_class_name')
+      && $store->get_current_class_name() === 'WC_Order_Data_Store_CPT';
   } catch (Throwable $error) {
     return false;
   }
