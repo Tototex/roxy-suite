@@ -39,6 +39,7 @@ namespace {
 
   $GLOBALS['settings_fixture'] = ['cashflow_woo_gateways' => ''];
   $saved = \RoxyGrosses\Settings::sanitize(['cashflow_woo_gateways' => '']);
+  $GLOBALS['settings_fixture'] = $saved;
   if (($saved['_cashflow_woo_gateways_configured'] ?? '') !== '1'
     || \RoxyGrosses\Settings::get('cashflow_woo_gateways') !== '') {
     throw new RuntimeException('Saving an empty allow-list must retain the explicit opt-out marker.');
