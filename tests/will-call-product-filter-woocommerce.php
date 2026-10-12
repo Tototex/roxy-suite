@@ -113,7 +113,12 @@ try {
   // hook removed. Count actual Woo page queries for baseline and candidate.
   $baseline_pages = 0;
   $baseline_page_observer = static function ($query, $query_vars) use (&$baseline_pages) {
-    $baseline_pages++;
+    if (($query_vars['limit'] ?? null) === 200
+      && !empty($query_vars['paginate'])
+      && in_array('wc-processing', (array) ($query_vars['status'] ?? []), true)
+      && in_array('wc-completed', (array) ($query_vars['status'] ?? []), true)) {
+      $baseline_pages++;
+    }
     return $query;
   };
   add_filter('woocommerce_order_data_store_cpt_get_orders_query', $baseline_page_observer, 20, 2);
@@ -134,7 +139,13 @@ try {
     return $sql;
   };
   $candidate_page_observer = static function ($query, $query_vars) use (&$candidate_pages) {
-    if (array_key_exists('roxy_will_call_ticket_product_ids', $query_vars)) $candidate_pages++;
+    if (array_key_exists('roxy_will_call_ticket_product_ids', $query_vars)
+      && ($query_vars['limit'] ?? null) === 200
+      && !empty($query_vars['paginate'])
+      && in_array('wc-processing', (array) ($query_vars['status'] ?? []), true)
+      && in_array('wc-completed', (array) ($query_vars['status'] ?? []), true)) {
+      $candidate_pages++;
+    }
     return $query;
   };
   add_filter('query', $candidate_query_observer, PHP_INT_MAX);
@@ -156,7 +167,6 @@ try {
       'woocommerce_order_get_items',
       'woocommerce_order_item_class',
       'get_order_item_metadata',
-      'woocommerce_data_stores',
     ];
     $active_guards = [];
     foreach ($guard_filters as $filter_name) {

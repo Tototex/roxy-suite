@@ -838,7 +838,14 @@ function roxy_will_call_legacy_cpt_orders_enabled(): bool {
   }
   try {
     $hpos_enabled = call_user_func([$order_util, 'custom_orders_table_usage_is_enabled']);
-    return is_bool($hpos_enabled) && !$hpos_enabled;
+    if (!is_bool($hpos_enabled) || $hpos_enabled || !class_exists('WC_Data_Store')) return false;
+    // WooCommerce itself uses the woocommerce_data_stores filter to resolve
+    // the active order store. A non-empty has_filter() is therefore normal,
+    // not evidence that another plugin changed item semantics. Verify the
+    // actual resolved store instead of disabling this optimization whenever
+    // any data-store filter exists.
+    $store = WC_Data_Store::load('order');
+    return is_object($store) && get_class($store) === 'WC_Order_Data_Store_CPT';
   } catch (Throwable $error) {
     return false;
   }
@@ -912,7 +919,6 @@ function roxy_will_call_filter_legacy_ticket_order_query(array $query, array $qu
     'woocommerce_order_get_items',
     'woocommerce_order_item_class',
     'get_order_item_metadata',
-    'woocommerce_data_stores',
   ];
   foreach ($variable_order_item_filters as $filter) {
     if (function_exists('has_filter') && has_filter($filter)) return $query;
