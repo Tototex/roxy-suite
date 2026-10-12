@@ -7,6 +7,7 @@ namespace RoxySocial {
         public static function find($id) { return ['id'=>$id]; }
         public static function update_draft(...$args) { self::$saved=$args; return $args[5] === 'revision-'.$args[0]; }
     }
+    class Campaigns { public static function caption_schedule_warning($row) { return ''; } }
 }
 namespace {
     define('ABSPATH', __DIR__);

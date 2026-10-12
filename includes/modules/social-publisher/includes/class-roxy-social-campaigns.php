@@ -245,9 +245,28 @@ final class Campaigns {
         return $claims === $expected ? '' : 'Caption dates or times may not match the latest published showings. Please review them.';
     }
 
-    /** Kept as a compatibility helper for existing tests and integrations. */
+    /** Strict compatibility check for callers that explicitly need verified schedule text. */
     public static function verified_caption_schedule(array $draft): bool {
-        return self::caption_schedule_warning($draft) === '';
+        if (($draft['campaign_key'] ?? '') === 'manual' && empty($draft['showing_ids'])) return true;
+        try { $rows = self::verified_showtimes($draft); }
+        catch (\RuntimeException $e) { return false; }
+        $claims = [];
+        foreach (preg_split('/\R/', (string) ($draft['post_text'] ?? '')) as $line) {
+            if (!preg_match('/\b\d{1,2}(?::\d{2})?\s*[AP]\\.?M\\.?\b/i', $line)) continue;
+            $claim = self::schedule_claim_key((string) $line);
+            if ($claim !== null) $claims[] = $claim;
+            elseif (preg_match('/^\s*(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:day)?\b/i', $line)) return false;
+        }
+        if (count($claims) !== count($rows)) return false;
+        $expected = [];
+        foreach ($rows as $row) {
+            $key = self::schedule_claim_key(wp_date('D, M j \\a\\t g:i A', $row['timestamp'], wp_timezone()));
+            if ($key === null) return false;
+            $expected[] = $key;
+        }
+        sort($claims);
+        sort($expected);
+        return $claims === $expected;
     }
 
     private static function schedule_claim_key(string $line): ?string {
