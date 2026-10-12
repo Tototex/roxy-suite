@@ -175,7 +175,7 @@ check($edit_result === 'edited' && $db->lock_owner === null
 $db->blocked_lock_name = $allocation_key('2038-05-04');
 $partial_edit_failed = false;
 try { $store::with_report_edit_allocation_locks(['2038-05-04', '2038-05-03'], static fn() => throw new RuntimeException('blocked edit must not run')); }
-catch (RuntimeException $error) { $partial_edit_failed = str_contains($error->getMessage(), 'already running'); }
+catch (RuntimeException $error) { $partial_edit_failed = str_contains($error->getMessage(), 'row was not changed'); }
 $db->blocked_lock_name = null;
 check($partial_edit_failed && $db->lock_owner === null && !isset($db->lock_owners[$allocation_key('2038-05-03')]),
     'failed second-date acquisition releases the earlier lock and never runs the edit');
