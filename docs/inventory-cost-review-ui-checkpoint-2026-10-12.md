@@ -10,11 +10,11 @@ The order-review input now carries a `data-cost-known` flag derived from the sam
 
 - `node tests/inventory-cost-review-ui-regression.cjs` passed. It extracts and executes the actual inline vendor-review JavaScript with representative form controls, checking explicit Free at $0, unknown cost blocking, positive-price recalculation, and vendor minimum handling.
 - `git diff --check` passed; Git emitted only normal CRLF conversion notices for tracked files.
-- The existing PHP `inventory-integrity-regression.php` now also checks the server-generated UI known-cost flag for Free versus Unknown. It was not run locally because PHP is unavailable in this environment.
-- The Node regression was added to `.github/workflows/php-compatibility.yml`; no workflow was triggered from this isolated worktree.
+- The existing PHP `inventory-integrity-regression.php` now also checks the server-generated UI known-cost flag for Free versus Unknown. It passes as part of the PHP 8.3 cross-module suite.
+- Hosted run [38239318693](https://github.com/Tototex/roxy-suite/actions/runs/38239318693) passes the focused Node UI regression, PHP 8.0–8.4 syntax matrix, PHP 8.3 cross-module suite, and both disposable WordPress/MySQL fixture jobs.
 
 ## Residual gaps
 
 - This change is local/branch-only; no live settings or data were changed, no mail was sent, and no deployment was performed.
 - Live schema/UI and accuracy of manually entered source/date values remain unverified. `estimate` remains an operator-configured amount and does not imply independently verified supplier pricing. No Square retail or inferred price is substituted for purchase cost.
-- Run the PHP compatibility suite and the existing private WordPress/MySQL migration fixtures in CI before deployment; retain the existing verified-backup gate for any production changes.
+- Retain the existing verified-backup gate before any production change; the historical private MySQL migration checks pass in run [38227532038](https://github.com/Tototex/roxy-suite/actions/runs/38227532038).
