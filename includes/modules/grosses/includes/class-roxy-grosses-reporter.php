@@ -921,7 +921,7 @@ class Reporter {
   }
 
   private static function build_free_ticket_backfill_rows_for_date(string $report_date): array {
-    $existing_rows = Store::list_entries(['day' => $report_date], 500, 0);
+    $existing_rows = Store::list_entries_for_backfill_date($report_date);
     if (!$existing_rows) {
       return [];
     }
@@ -991,7 +991,7 @@ class Reporter {
   }
 
   private static function build_concession_backfill_rows_for_date(string $report_date): array {
-    $existing_rows = Store::list_entries(['day' => $report_date], 500, 0);
+    $existing_rows = Store::list_entries_for_backfill_date($report_date);
     if (!$existing_rows) {
       return [];
     }
@@ -1029,7 +1029,7 @@ class Reporter {
   }
 
   private static function build_live_concession_backfill_rows_for_date(string $report_date): array {
-    $existing_rows = Store::list_live_entries(['day' => $report_date], 500, 0);
+    $existing_rows = Store::list_live_entries_for_backfill_date($report_date);
     if (!$existing_rows) {
       return [];
     }

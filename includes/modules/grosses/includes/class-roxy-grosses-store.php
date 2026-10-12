@@ -1503,6 +1503,64 @@ class Store {
     return is_array($rows) ? $rows : [];
   }
 
+  /** Read every movie row for a date using a fixed, bounded keyset scan for financial backfills. */
+  public static function list_entries_for_backfill_date(string $report_date): array {
+    return self::list_backfill_rows_for_date(self::entries_table_name(), $report_date, 'movie');
+  }
+
+  /** Read every live-show row for a date using a fixed, bounded keyset scan for financial backfills. */
+  public static function list_live_entries_for_backfill_date(string $report_date): array {
+    return self::list_backfill_rows_for_date(self::live_entries_table_name(), $report_date, 'live-show');
+  }
+
+  private static function list_backfill_rows_for_date(string $table, string $report_date, string $dataset): array {
+    global $wpdb;
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/D', $report_date)) throw new \InvalidArgumentException('Invalid report date for ' . $dataset . ' backfill.');
+    $date = \DateTimeImmutable::createFromFormat('!Y-m-d', $report_date, new \DateTimeZone('UTC'));
+    $date_errors = \DateTimeImmutable::getLastErrors();
+    if (!$date || $date->format('Y-m-d') !== $report_date || ($date_errors && ($date_errors['warning_count'] || $date_errors['error_count']))) {
+      throw new \InvalidArgumentException('Invalid calendar date for ' . $dataset . ' backfill.');
+    }
+    if (!is_object($wpdb) || !isset($wpdb->last_error)) throw new \RuntimeException('Could not read all ' . $dataset . ' backfill rows.');
+    if (!preg_match('/^[A-Za-z0-9_]+$/', $table)) throw new \RuntimeException('Invalid ' . $dataset . ' backfill table name.');
+
+    $wpdb->last_error = '';
+    $maximum = $wpdb->get_var($wpdb->prepare("SELECT MAX(id) FROM {$table} WHERE report_date = %s", $report_date));
+    if ($wpdb->last_error !== '') throw new \RuntimeException('Could not establish the ' . $dataset . ' backfill read boundary.');
+    if ($maximum === null) return [];
+    if (!is_numeric($maximum) || (int) $maximum <= 0) throw new \RuntimeException('Invalid ' . $dataset . ' backfill read boundary.');
+    $maximum = (int) $maximum;
+
+    $cursor = 0;
+    $rows = [];
+    $seen = [];
+    for ($page = 0; $cursor < $maximum; $page++) {
+      if ($page >= 200) throw new \RuntimeException('The ' . $dataset . ' backfill exceeds its 100,000-row safety limit.');
+      $wpdb->last_error = '';
+      $batch = $wpdb->get_results($wpdb->prepare(
+        "SELECT * FROM {$table} WHERE report_date = %s AND id > %d AND id <= %d ORDER BY id ASC LIMIT 500",
+        $report_date,
+        $cursor,
+        $maximum
+      ), ARRAY_A);
+      if ($wpdb->last_error !== '' || !is_array($batch)) throw new \RuntimeException('Could not read all ' . $dataset . ' backfill rows.');
+      if (!$batch) break;
+      foreach ($batch as $row) {
+        $id = is_array($row) ? (int) ($row['id'] ?? 0) : 0;
+        if ($id <= $cursor || $id > $maximum || isset($seen[$id]) || (string) ($row['report_date'] ?? '') !== $report_date) {
+          throw new \RuntimeException('The ' . $dataset . ' backfill read returned an invalid or repeated row.');
+        }
+        $seen[$id] = true;
+        $rows[] = $row;
+      }
+      $next_cursor = (int) ($batch[count($batch) - 1]['id'] ?? 0);
+      if ($next_cursor <= $cursor) throw new \RuntimeException('The ' . $dataset . ' backfill read did not advance.');
+      $cursor = $next_cursor;
+    }
+    if ($cursor < $maximum) throw new \RuntimeException('The ' . $dataset . ' backfill rows changed or could not be read through the fixed boundary.');
+    return $rows;
+  }
+
   /** Read every row for one allocation day without the admin table's 1,000-row page cap. */
   public static function list_all_entries_for_rebalance(string $dataset, string $report_date): array {
     global $wpdb;
