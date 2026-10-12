@@ -815,11 +815,17 @@ class CPT {
 
   private static function validated_local_datetime(string $value): ?string {
     if (!preg_match('/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d$/D', $value)) return null;
-    try { $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d\\TH:i', $value, wp_timezone()); }
+    $timezone = wp_timezone();
+    try { $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d\\TH:i', $value, $timezone); }
     catch (\Throwable $error) { return null; }
     $errors = \DateTimeImmutable::getLastErrors();
     if (!$parsed || ($errors && ($errors['warning_count'] || $errors['error_count']))
       || $parsed->format('Y-m-d\\TH:i') !== $value) return null;
+    // createFromFormat can retain a wall time that never occurred during a DST
+    // jump. Round-trip the resulting instant through the site timezone to reject it.
+    try { $roundtrip = (new \DateTimeImmutable('@' . $parsed->getTimestamp()))->setTimezone($timezone); }
+    catch (\Throwable $error) { return null; }
+    if ($roundtrip->format('Y-m-d\\TH:i') !== $value) return null;
     return $value;
   }
 
