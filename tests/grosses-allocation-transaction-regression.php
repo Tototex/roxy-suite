@@ -103,5 +103,20 @@ try {
     $run(static fn() => $store::with_concession_allocation_transaction(static function () use ($db) { $db->value = 33; $db->connection = 18; }));
 } catch (RuntimeException $error) { $connection_lost = str_contains($error->getMessage(), 'lost its database owner'); }
 check($connection_lost && $db->connection === 18 && $db->transaction && $db->value === 33, 'reconnected session is never used to roll back another connection transaction');
+$db->connection = 17;
+$db->lock_owner = null;
+$db->transaction = false;
+$db->value = 12;
+$replacement_db = new AllocationDatabase();
+$replacement_detected = false;
+try {
+    $run(static fn() => $store::with_concession_allocation_transaction(static function () use ($db, $replacement_db) {
+        $db->value = 77;
+        $GLOBALS['wpdb'] = $replacement_db;
+    }));
+} catch (RuntimeException $error) { $replacement_detected = str_contains($error->getMessage(), 'lost its database owner'); }
+check($replacement_detected && $db->value === 12 && !$db->transaction && $db->lock_owner === null
+    && $replacement_db->queries === [], 'replaced global database rolls back and releases through the original owner without using the replacement');
+$GLOBALS['wpdb'] = $db;
 
 echo "OK: Grosses allocation transaction ownership and rollback regression\n";

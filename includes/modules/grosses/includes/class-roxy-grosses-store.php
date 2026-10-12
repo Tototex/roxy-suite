@@ -6,6 +6,7 @@ if (!defined('ABSPATH')) exit;
 class Store {
   private static ?string $concession_allocation_lock = null;
   private static int $concession_allocation_owner = 0;
+  private static $concession_allocation_db = null;
   public const TABLE = 'roxy_grosses_reports';
   public const LOG_TABLE = 'roxy_grosses_logs';
   public const HISTORY_TABLE = 'roxy_grosses_history';
@@ -606,7 +607,33 @@ class Store {
       $where['is_locked']=0;
       unset($payload['is_locked']);
     }
-    $result=$wpdb->update($table,$payload,$where);
+    if (self::$concession_allocation_lock !== null) {
+      self::assert_concession_allocation_owner();
+      $allowed_tables = [self::entries_table_name(), self::live_entries_table_name(), self::rental_entries_table_name()];
+      if (!in_array($table, $allowed_tables, true) || $manual || !$payload) throw new \RuntimeException('Unexpected report write during concessions allocation.');
+      $sets = [];
+      $values = [];
+      foreach ($payload as $column => $value) {
+        if (!preg_match('/^[A-Za-z0-9_]+$/D', (string) $column)) throw new \RuntimeException('Invalid report field during concessions allocation.');
+        $sets[] = '`' . $column . '` = %s';
+        $values[] = $value;
+      }
+      $values[] = $id;
+      $values[] = self::$concession_allocation_lock;
+      $sql = $wpdb->prepare(
+        'UPDATE `' . $table . '` SET ' . implode(',', $sets) . ' WHERE `id` = %d AND `is_locked` = 0 AND IS_USED_LOCK(%s) = CONNECTION_ID()',
+        ...$values
+      );
+      $result = $wpdb->query($sql);
+      if ($result !== false) self::assert_concession_allocation_owner();
+      if ($result === 0) {
+        $row = $wpdb->get_row($wpdb->prepare("SELECT id,is_locked FROM {$table} WHERE id=%d", $id), ARRAY_A);
+        self::assert_concession_allocation_owner();
+        if ($wpdb->last_error !== '' || !$row || !empty($row['is_locked'])) return false;
+      }
+    } else {
+      $result=$wpdb->update($table,$payload,$where);
+    }
     if ($result === false) return false;
     // A zero count can be a valid unchanged update, a missing row or a raced lock.
     if ($result === 0) {
@@ -628,16 +655,19 @@ class Store {
     if ($wpdb->last_error !== '' || (string) $claimed !== '1') throw new \RuntimeException('A concessions allocation for this date is already running or its lock is unavailable.');
     self::$concession_allocation_lock = $lock;
     self::$concession_allocation_owner = $owner;
+    self::$concession_allocation_db = $wpdb;
     try {
       self::assert_concession_allocation_owner();
       return $operation();
     } finally {
-      if ((int) $wpdb->get_var('SELECT CONNECTION_ID()') === $owner
-        && (int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', $lock)) === $owner) {
-        $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock));
+      $owner_db = self::$concession_allocation_db;
+      if (is_object($owner_db) && (int) $owner_db->get_var('SELECT CONNECTION_ID()') === $owner
+        && (int) $owner_db->get_var($owner_db->prepare('SELECT IS_USED_LOCK(%s)', $lock)) === $owner) {
+        $owner_db->get_var($owner_db->prepare('SELECT RELEASE_LOCK(%s)', $lock));
       }
       self::$concession_allocation_lock = null;
       self::$concession_allocation_owner = 0;
+      self::$concession_allocation_db = null;
     }
   }
 
@@ -645,33 +675,35 @@ class Store {
   public static function with_concession_allocation_transaction(callable $operation) {
     global $wpdb;
     self::assert_concession_allocation_owner();
+    $owner_db = self::$concession_allocation_db;
     $tables = [self::entries_table_name(), self::live_entries_table_name(), self::rental_entries_table_name()];
     foreach ($tables as $table) {
-      $status = $wpdb->get_row($wpdb->prepare('SHOW TABLE STATUS WHERE Name = %s', $table), ARRAY_A);
-      if ($wpdb->last_error !== '' || !is_array($status) || strcasecmp((string) ($status['Engine'] ?? ''), 'InnoDB') !== 0) {
+      $status = $owner_db->get_row($owner_db->prepare('SHOW TABLE STATUS WHERE Name = %s', $table), ARRAY_A);
+      if ($owner_db->last_error !== '' || !is_array($status) || strcasecmp((string) ($status['Engine'] ?? ''), 'InnoDB') !== 0) {
         throw new \RuntimeException('Concessions allocation requires verified InnoDB report tables; no rows were changed.');
       }
     }
-    $in_transaction = $wpdb->get_var('SELECT @@in_transaction');
-    if ($wpdb->last_error !== '' || !in_array((string) $in_transaction, ['0', '1'], true) || (string) $in_transaction !== '0') {
-      throw new \RuntimeException('The database transaction state is unavailable or already active; no concessions rows were changed.');
+    $in_transaction = $owner_db->get_var('SELECT @@in_transaction');
+    if ($owner_db->last_error !== '' || !in_array((string) $in_transaction, ['0', '1'], true) || (string) $in_transaction !== '0') {
+      $state = $owner_db->last_error !== '' ? 'query failed' : var_export($in_transaction, true);
+      throw new \RuntimeException('The database transaction state is unavailable or already active (' . $state . '); no concessions rows were changed.');
     }
     $owner = self::$concession_allocation_owner;
-    if ($wpdb->query('START TRANSACTION') === false) throw new \RuntimeException('Could not start the concessions allocation transaction.');
+    if ($owner_db->query('START TRANSACTION') === false) throw new \RuntimeException('Could not start the concessions allocation transaction.');
     $started = true;
     try {
       self::assert_concession_allocation_owner();
-      if ((string) $wpdb->get_var('SELECT @@in_transaction') !== '1' || $wpdb->last_error !== '') throw new \RuntimeException('The concessions transaction could not be verified.');
+      if ((string) $owner_db->get_var('SELECT @@in_transaction') !== '1' || $owner_db->last_error !== '') throw new \RuntimeException('The concessions transaction could not be verified.');
       $result = $operation();
       self::assert_concession_allocation_owner();
-      if ($wpdb->query('COMMIT') === false) throw new \RuntimeException('The concessions allocation commit could not be confirmed.');
+      if ($owner_db->query('COMMIT') === false) throw new \RuntimeException('The concessions allocation commit could not be confirmed.');
       $started = false;
       self::assert_concession_allocation_owner();
-      if ((string) $wpdb->get_var('SELECT @@in_transaction') !== '0' || $wpdb->last_error !== '') throw new \RuntimeException('The concessions allocation commit state could not be verified.');
+      if ((string) $owner_db->get_var('SELECT @@in_transaction') !== '0' || $owner_db->last_error !== '') throw new \RuntimeException('The concessions allocation commit state could not be verified.');
       return $result;
     } catch (\Throwable $error) {
-      if ($started && (int) $wpdb->get_var('SELECT CONNECTION_ID()') === $owner) {
-        $rollback = $wpdb->query('ROLLBACK');
+      if ($started && (int) $owner_db->get_var('SELECT CONNECTION_ID()') === $owner) {
+        $rollback = $owner_db->query('ROLLBACK');
         if ($rollback === false) throw new \RuntimeException('Concessions allocation failed and rollback could not be confirmed; inspect this date before retrying.');
       }
       throw $error;
@@ -680,10 +712,12 @@ class Store {
 
   private static function assert_concession_allocation_owner(): void {
     global $wpdb;
+    $owner_db = self::$concession_allocation_db;
     if (self::$concession_allocation_lock === null || self::$concession_allocation_owner <= 0
-      || (int) $wpdb->get_var('SELECT CONNECTION_ID()') !== self::$concession_allocation_owner
-      || (int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', self::$concession_allocation_lock)) !== self::$concession_allocation_owner
-      || $wpdb->last_error !== '') {
+      || !is_object($owner_db) || $wpdb !== $owner_db
+      || (int) $owner_db->get_var('SELECT CONNECTION_ID()') !== self::$concession_allocation_owner
+      || (int) $owner_db->get_var($owner_db->prepare('SELECT IS_USED_LOCK(%s)', self::$concession_allocation_lock)) !== self::$concession_allocation_owner
+      || $owner_db->last_error !== '') {
       throw new \RuntimeException('The concessions allocation lost its database owner; no further rows were changed.');
     }
   }
