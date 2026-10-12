@@ -66,12 +66,13 @@ $line = [
   'fingerprint' => hash('sha256', '2038-05-04|order-1|line-1'), 'square_order_id' => 'order-1',
   'square_line_uid' => 'line-1', 'catalog_object_id' => 'catalog-1', 'item_name' => 'Chocolate Candy',
   'closed_at' => '2038-05-04T23:30:00-07:00', 'amount_cents' => 1250,
+  'reason' => 'outside_showtime_window (2 dated rows: 7:00 PM, 9:00 PM)',
 ];
 $store = 'RoxyGrosses\\Store';
 $db = $GLOBALS['wpdb'];
 $check($store::record_unmatched_concession_lines('2038-05-04', [$line]) === 1, 'new unmatched line is durably inserted');
 $open = $store::list_unmatched_concession_lines('open', 100);
-$check(count($open) === 1 && $open[0]['amount_cents'] === 1250 && $open[0]['status'] === 'open', 'open queue read returns exact amount and state');
+$check(count($open) === 1 && $open[0]['amount_cents'] === 1250 && $open[0]['status'] === 'open' && $open[0]['reason'] === $line['reason'], 'open queue read preserves the diagnostic reason and exact amount/state');
 $line['amount_cents'] = 1400;
 $store::record_unmatched_concession_lines('2038-05-04', [$line]);
 $open = $store::list_unmatched_concession_lines('open', 100);

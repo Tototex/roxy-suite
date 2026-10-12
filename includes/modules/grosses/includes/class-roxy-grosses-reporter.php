@@ -1843,6 +1843,29 @@ class Reporter {
           if ($line_total_cents > PHP_INT_MAX - $unmatched_cents) throw new \RuntimeException('Unmatched Square concessions exceed the supported amount range.');
           $unmatched_lines++;
           $unmatched_cents += $line_total_cents;
+          $report_times = [];
+          $dated_report_rows = 0;
+          foreach ($reports as $report) {
+            $start_at = $report['_start_at'] ?? null;
+            if (!$start_at instanceof \DateTimeImmutable) continue;
+            $dated_report_rows++;
+            $label = trim((string) ($report['show_time'] ?? ''));
+            $report_times[] = $label !== '' ? $label : $start_at->format('g:i A');
+          }
+          $report_times = array_values(array_unique($report_times));
+          if (!$order_closed_at) {
+            $reason = 'missing_order_timestamp';
+          } elseif (!$reports) {
+            $reason = 'no_report_rows';
+          } elseif ($dated_report_rows === 0) {
+            $reason = 'report_rows_missing_times';
+          } else {
+            $reason = 'outside_showtime_window';
+          }
+          if ($report_times) {
+            $visible_times = array_slice($report_times, 0, 3);
+            $reason .= sprintf(' (%d dated rows: %s%s)', $dated_report_rows, implode(', ', $visible_times), count($report_times) > 3 ? ', ...' : '');
+          }
           $order_id = trim((string) ($order['id'] ?? ''));
           $line_uid = trim((string) ($line_item['uid'] ?? ''));
           // Square normally supplies an order ID. If not, hash the complete
@@ -1864,6 +1887,7 @@ class Reporter {
             'item_name' => (string) ($line_item['name'] ?? ''),
             'closed_at' => $order_closed_at ? $order_closed_at->format(DATE_ATOM) : (string) ($order['closed_at'] ?? $order['created_at'] ?? ''),
             'amount_cents' => $line_total_cents,
+            'reason' => $reason,
           ];
           continue;
         }
@@ -1881,10 +1905,25 @@ class Reporter {
 
     if ($unmatched_lines > 0) {
       Store::record_unmatched_concession_lines($report_date, $unmatched_items);
+      $dated_row_count = 0;
+      $report_times = [];
+      foreach ($reports as $report) {
+        $start_at = $report['_start_at'] ?? null;
+        if (!$start_at instanceof \DateTimeImmutable) continue;
+        $dated_row_count++;
+        $label = trim((string) ($report['show_time'] ?? ''));
+        $report_times[] = $label !== '' ? $label : $start_at->format('g:i A');
+      }
+      $report_times = array_values(array_unique($report_times));
+      $visible_times = array_slice($report_times, 0, 3);
+      $row_context = $report_times
+        ? sprintf(' There were %d dated report row(s): %s%s.', $dated_row_count, implode(', ', $visible_times), count($report_times) > count($visible_times) ? ', ...' : '')
+        : ' No report rows with usable show times were available.';
       throw new \RuntimeException(sprintf(
-        '%d eligible Square concession line(s), totaling $%s, could not be matched to a report row within the show-time window. They were saved to the Grosses Logs unmatched-sales review queue; review this date before refreshing.',
+        '%d eligible Square concession line(s), totaling $%s, could not be matched to a report row within the show-time window.%s They were saved to the Grosses Logs unmatched-sales review queue; review this date before refreshing.',
         $unmatched_lines,
-        number_format($unmatched_cents / 100, 2, '.', ',')
+        number_format($unmatched_cents / 100, 2, '.', ','),
+        $row_context
       ));
     }
     if ($locked_cents > $eligible_cents) throw new \RuntimeException('Locked concessions exceed the matching Square total; review the protected rows before refreshing.');

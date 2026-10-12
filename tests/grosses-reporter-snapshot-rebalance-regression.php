@@ -322,7 +322,7 @@ namespace {
   try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$unmatched_date])); }
   catch (Throwable $error) { $unmatched_failed = str_contains($error->getMessage(), '1 eligible Square concession line(s), totaling $12.50') && str_contains($error->getMessage(), 'review queue'); }
   $queued = \RoxyGrosses\Store::$unmatched_concessions[$unmatched_date] ?? [];
-  $check($unmatched_failed && count($queued) === 1 && $queued[0]['amount_cents'] === 1250 && $queued[0]['square_order_id'] === 'unmatched-order-fixture' && $queued[0]['square_line_uid'] === 'unmatched-line-fixture' && preg_match('/^[a-f0-9]{64}$/D', $queued[0]['fingerprint']) === 1 && count(\RoxyGrosses\Store::$updates) === $before_unmatched_writes && (float) \RoxyGrosses\Store::$movie[$unmatched_date][0]['concessions_total'] === 0.0, 'unmatched eligible sale is persisted to review queue and stops before allocation writes');
+  $check($unmatched_failed && count($queued) === 1 && $queued[0]['amount_cents'] === 1250 && $queued[0]['square_order_id'] === 'unmatched-order-fixture' && $queued[0]['square_line_uid'] === 'unmatched-line-fixture' && $queued[0]['reason'] === 'outside_showtime_window (2 dated rows: 7:00 PM, 9:00 PM)' && preg_match('/^[a-f0-9]{64}$/D', $queued[0]['fingerprint']) === 1 && count(\RoxyGrosses\Store::$updates) === $before_unmatched_writes && (float) \RoxyGrosses\Store::$movie[$unmatched_date][0]['concessions_total'] === 0.0, 'outside-window line records the candidate show times and stops before allocation writes');
 
   $no_rows_date = '2038-05-06';
   \RoxyGrosses\Square::$orders[$no_rows_date] = [[
@@ -332,7 +332,30 @@ namespace {
   $no_rows_detected = false;
   try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$no_rows_date])); }
   catch (Throwable $error) { $no_rows_detected = str_contains($error->getMessage(), '1 eligible Square concession line(s), totaling $2.50'); }
-  $check($no_rows_detected && count(\RoxyGrosses\Store::$unmatched_concessions[$no_rows_date] ?? []) === 1, 'eligible Square concession is queued even when the date has no report rows');
+  $no_rows_queue = \RoxyGrosses\Store::$unmatched_concessions[$no_rows_date] ?? [];
+  $check($no_rows_detected && count($no_rows_queue) === 1 && $no_rows_queue[0]['reason'] === 'no_report_rows', 'eligible Square concession is queued with a distinct reason when no report rows exist');
+
+  $missing_time_date = '2038-05-08';
+  \RoxyGrosses\Store::$movie[$missing_time_date] = [['id'=>7010,'show_time'=>'','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0]];
+  \RoxyGrosses\Square::$orders[$missing_time_date] = [[
+    'id'=>'unmatched-order-missing-show-time','closed_at'=>$missing_time_date.'T20:00:00-07:00',
+    'line_items'=>[['uid'=>'unmatched-line-missing-show-time','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>300,'currency'=>'USD']]],
+  ]];
+  try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$missing_time_date])); }
+  catch (Throwable $error) {}
+  $missing_time_queue = \RoxyGrosses\Store::$unmatched_concessions[$missing_time_date] ?? [];
+  $check(count($missing_time_queue) === 1 && $missing_time_queue[0]['reason'] === 'report_rows_missing_times', 'unmatched queue distinguishes report rows with missing show times');
+
+  $missing_order_time_date = '2038-05-09';
+  \RoxyGrosses\Store::$movie[$missing_order_time_date] = [['id'=>7011,'show_time'=>'7:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0]];
+  \RoxyGrosses\Square::$orders[$missing_order_time_date] = [[
+    'id'=>'unmatched-order-missing-close-time',
+    'line_items'=>[['uid'=>'unmatched-line-missing-close-time','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>400,'currency'=>'USD']]],
+  ]];
+  try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$missing_order_time_date])); }
+  catch (Throwable $error) {}
+  $missing_order_time_queue = \RoxyGrosses\Store::$unmatched_concessions[$missing_order_time_date] ?? [];
+  $check(count($missing_order_time_queue) === 1 && $missing_order_time_queue[0]['reason'] === 'missing_order_timestamp (1 dated rows: 7:00 PM)', 'unmatched queue distinguishes Square orders without a usable close time');
 
   $queue_failure_date = '2038-05-05';
   \RoxyGrosses\Store::$movie[$queue_failure_date] = [

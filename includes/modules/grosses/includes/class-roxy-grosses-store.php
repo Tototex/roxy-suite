@@ -941,7 +941,7 @@ class Store {
         substr(sanitize_text_field((string) ($line['catalog_object_id'] ?? '')), 0, 191),
         substr(sanitize_text_field((string) ($line['item_name'] ?? '')), 0, 255),
         substr(sanitize_text_field((string) ($line['closed_at'] ?? '')), 0, 64),
-        $line['amount_cents'], 'no_show_row_match', $now, $now
+        $line['amount_cents'], substr(sanitize_text_field((string) ($line['reason'] ?? 'no_show_row_match')), 0, 96), $now, $now
       );
       if ($wpdb->query($sql) === false || $wpdb->last_error !== '') throw new \RuntimeException('Could not persist all unmatched Square concession lines for manager review.');
       $recorded++;
