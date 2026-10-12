@@ -2865,6 +2865,7 @@ class Store {
       $date_from,
       $date_to
     ), ARRAY_A);
+    if (!is_array($movie_rows) || !empty($wpdb->last_error)) throw new \RuntimeException('Could not read movie concessions totals.');
     foreach ((array) $movie_rows as $row) {
       $totals[(string) $row['date_key']]['movies'] = round((float) ($row['total'] ?? 0), 2);
     }
@@ -2877,6 +2878,7 @@ class Store {
       $date_from,
       $date_to
     ), ARRAY_A);
+    if (!is_array($live_rows) || !empty($wpdb->last_error)) throw new \RuntimeException('Could not read live-show concessions totals.');
     foreach ((array) $live_rows as $row) {
       $totals[(string) $row['date_key']]['live'] = round((float) ($row['total'] ?? 0), 2);
     }
@@ -2889,6 +2891,7 @@ class Store {
       $date_from,
       $date_to
     ), ARRAY_A);
+    if (!is_array($rental_rows) || !empty($wpdb->last_error)) throw new \RuntimeException('Could not read rental concessions totals.');
     foreach ((array) $rental_rows as $row) {
       $totals[(string) $row['date_key']]['rentals'] = round((float) ($row['total'] ?? 0), 2);
     }

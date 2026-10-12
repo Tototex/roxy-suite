@@ -43,6 +43,7 @@ namespace RoxyGrosses {
     public static array $rental = [];
     public static array $updates = [];
     public static array $logs = [];
+    public static bool $fail_concession_read = false;
     public static array $unmatched_concessions = [];
     public static bool $fail_unmatched_write = false;
     public static bool $fail_update = false;
@@ -84,7 +85,20 @@ namespace RoxyGrosses {
     public static function update_entry(int $id, array $data, bool $manual = false): bool { return self::save('movie', $id, $data); }
     public static function update_live_entry(int $id, array $data, bool $manual = false): bool { return self::save('live', $id, $data); }
     public static function update_rental_entry(int $id, array $data, bool $manual = false): bool { return self::save('rental', $id, $data); }
-    public static function concessions_by_date(string $from, string $to): array { return []; }
+    public static function concessions_by_date(string $from, string $to): array {
+      if (self::$fail_concession_read) throw new \RuntimeException('fixture concession read failure');
+      $totals = [];
+      foreach (['movie'=>self::$movie,'live'=>self::$live,'rental'=>self::$rental] as $kind=>$days) {
+        foreach ($days as $date=>$rows) {
+          if ($date < $from || $date > $to) continue;
+          foreach ($rows as $row) $totals[$date][$kind] = ($totals[$date][$kind] ?? 0.0) + (float) ($row['concessions_total'] ?? 0);
+        }
+      }
+      foreach ($totals as $date=>$row) {
+        $totals[$date]['assigned_total'] = round((float) ($row['movie'] ?? 0) + (float) ($row['live'] ?? 0) + (float) ($row['rental'] ?? 0), 2);
+      }
+      return $totals;
+    }
     public static function record_unmatched_concession_lines(string $date, array $lines): int {
       if (self::$fail_unmatched_write) throw new \RuntimeException('fixture queue write failure');
       self::$unmatched_concessions[$date] = $lines; return count($lines);
@@ -178,6 +192,12 @@ namespace {
     $prior_date => [['line_items'=>[['catalog_object_id'=>'snack','total_money'=>['amount'=>27865,'currency'=>'USD']]]]],
     $target_date => [['line_items'=>[['catalog_object_id'=>'snack','total_money'=>['amount'=>21759,'currency'=>'USD']]]]],
   ];
+  \RoxyGrosses\Store::$movie = [
+    $prior_date => [['id'=>9001,'concessions_total'=>278.65]],
+    $target_date => [['id'=>9002,'concessions_total'=>217.59]],
+  ];
+  \RoxyGrosses\Store::$live = [];
+  \RoxyGrosses\Store::$rental = [];
   \RoxyGrosses\Store::$logs = [];
   \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('log_sync_anomalies', [$target_date, 'closed-day-refresh', [
     ['report_date'=>$prior_date,'film_title'=>'Same Movie','show_time'=>'7:00 PM','total_tickets'=>25,'concessions_total'=>278.65],
@@ -186,16 +206,29 @@ namespace {
   $mismatch_logs = array_values(array_filter(\RoxyGrosses\Store::$logs, static fn(array $log): bool => ($log[0] ?? '') === 'anomaly' && (($log[6]['anomaly_type'] ?? '') === 'concessions_mismatch')));
   $check($mismatch_logs === [], 'same-title prior-day concessions do not create a false current-day mismatch');
 
+  \RoxyGrosses\Store::$movie[$target_date] = [['id'=>9002,'concessions_total'=>100.00]];
+  \RoxyGrosses\Store::$live = [$target_date => [['id'=>9003,'concessions_total'=>50.00]]];
+  \RoxyGrosses\Store::$rental = [$target_date => [['id'=>9004,'concessions_total'=>50.00]]];
   \RoxyGrosses\Store::$logs = [];
   \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('log_sync_anomalies', [$target_date, 'closed-day-refresh', [
     ['report_date'=>$prior_date,'film_title'=>'Same Movie','show_time'=>'7:00 PM','total_tickets'=>25,'concessions_total'=>278.65],
-    ['report_date'=>$target_date,'film_title'=>'Same Movie','show_time'=>'7:00 PM','total_tickets'=>27,'concessions_total'=>200.00],
-  ], []]));
+    ['report_date'=>$target_date,'film_title'=>'Same Movie','show_time'=>'7:00 PM','total_tickets'=>27,'concessions_total'=>100.00],
+  ], [['report_date'=>$target_date,'show_title'=>'Private rental companion','show_time'=>'9:00 PM','total_tickets'=>1,'concessions_total'=>50.00]]]));
   $mismatch_logs = array_values(array_filter(\RoxyGrosses\Store::$logs, static fn(array $log): bool => ($log[0] ?? '') === 'anomaly' && (($log[6]['anomaly_type'] ?? '') === 'concessions_mismatch')));
   $check(count($mismatch_logs) === 1 && ($mismatch_logs[0][6]['square_total'] ?? null) === 217.59
     && ($mismatch_logs[0][6]['assigned_total'] ?? null) === 200.0
     && ($mismatch_logs[0][6]['difference'] ?? null) === 17.59,
-    'real current-day mismatch reports only current-day assigned cents despite lookback rows');
+    'real current-day mismatch reports persisted movie/live/rental totals despite lookback rows');
+
+  \RoxyGrosses\Store::$fail_concession_read = true;
+  \RoxyGrosses\Store::$logs = [];
+  \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('log_sync_anomalies', [$target_date, 'closed-day-refresh', [
+    ['report_date'=>$target_date,'film_title'=>'Same Movie','show_time'=>'7:00 PM','total_tickets'=>27,'concessions_total'=>217.59],
+  ], []]));
+  $unavailable_logs = array_values(array_filter(\RoxyGrosses\Store::$logs, static fn(array $log): bool => ($log[0] ?? '') === 'anomaly' && (($log[6]['anomaly_type'] ?? '') === 'concessions_totals_unavailable')));
+  $check(count($unavailable_logs) === 1 && !array_filter(\RoxyGrosses\Store::$logs, static fn(array $log): bool => ($log[0] ?? '') === 'anomaly' && (($log[6]['anomaly_type'] ?? '') === 'concessions_mismatch')),
+    'unavailable saved totals produce an explicit review alert, not a fabricated mismatch');
+  \RoxyGrosses\Store::$fail_concession_read = false;
 
   foreach (['tomorrow', '2038-05-01T25:61:00Z', '2038-04-30T18:00:00-07:00'] as $bad_closed_at) {
     \RoxyGrosses\Square::$orders = ['2038-05-01' => [['id'=>'bad-range','closed_at'=>$bad_closed_at,'line_items'=>[]]]];

@@ -2830,17 +2830,28 @@ class Reporter {
     }
 
     $square_total = self::square_in_store_purchase_total_for_date($report_date);
-    $assigned_total = 0.0;
-    foreach ($movie_rows as $row) {
-      $assigned_total += (float) ($row['concessions_total'] ?? 0);
-    }
-    foreach ($live_rows as $row) {
-      $assigned_total += (float) ($row['concessions_total'] ?? 0);
+    try {
+      // Compare with persisted post-rebalance allocations for this date. The
+      // in-memory builders may include lookback rows and their provisional
+      // allocations do not necessarily equal the final movie/live/rental split.
+      $assigned_by_date = Store::concessions_by_date($report_date, $report_date);
+      global $wpdb;
+      if (is_object($wpdb) && !empty($wpdb->last_error)) throw new \RuntimeException('Stored concessions totals could not be read.');
+      $assigned_row = $assigned_by_date[$report_date] ?? ['assigned_total' => 0.0];
+      $assigned_total = $assigned_row['assigned_total'] ?? null;
+      if (!is_numeric($assigned_total) || !is_finite((float) $assigned_total)) throw new \RuntimeException('Stored concessions total is invalid.');
+      $assigned_total = (float) $assigned_total;
+    } catch (\Throwable $error) {
+      Store::insert_log('anomaly', $mode, null, $report_date, true,
+        'Concessions comparison could not be verified because the saved report totals were unavailable.', [
+          'anomaly_type' => 'concessions_totals_unavailable',
+        ]);
+      return;
     }
     $difference = round($square_total - $assigned_total, 2);
     if (abs($difference) >= 0.01) {
       Store::insert_log('anomaly', $mode, null, $report_date, true, sprintf(
-        'Concessions mismatch on %s. Square shows $%s, assigned Movies + Live Shows total is $%s, difference $%s.',
+        'Concessions mismatch on %s. Square shows $%s, assigned Movies + Live Shows + Rentals total is $%s, difference $%s.',
         $report_date,
         number_format($square_total, 2),
         number_format($assigned_total, 2),

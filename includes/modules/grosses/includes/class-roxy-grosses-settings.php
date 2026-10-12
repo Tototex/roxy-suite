@@ -762,7 +762,13 @@ class Settings {
     $run_reconciliation = !empty($_GET['run_reconciliation']);
     $rec_from = isset($_GET['reconciliation_from']) ? sanitize_text_field(wp_unslash((string) $_GET['reconciliation_from'])) : $default_from;
     $rec_to = isset($_GET['reconciliation_to']) ? sanitize_text_field(wp_unslash((string) $_GET['reconciliation_to'])) : $default_to;
-    $reconciliation = $run_reconciliation ? Reporter::reconciliation_rows($rec_from, $rec_to) : [];
+    $reconciliation_error = '';
+    try {
+      $reconciliation = $run_reconciliation ? Reporter::reconciliation_rows($rec_from, $rec_to) : [];
+    } catch (\Throwable $error) {
+      $reconciliation = [];
+      $reconciliation_error = 'Reconciliation could not be completed because one or more report totals could not be read. No report rows were changed.';
+    }
     echo '<h2>Logs</h2><p>Review database pulls, daily email sends, advertiser sends, anomalies, and reconciliation gaps.</p>';
     echo '<h3>Log Entries</h3><p>Showing the most recent matching log entries. Use filters to narrow results and page through older activity.</p>';
     echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
@@ -819,11 +825,12 @@ class Settings {
     submit_button('Run Reconciliation','secondary','',false);
     echo '</form>';
     if ($run_reconciliation) {
+      if ($reconciliation_error !== '') echo '<div class="notice notice-error inline"><p>'.esc_html($reconciliation_error).'</p></div>';
       echo '<table class="widefat striped" style="margin-bottom:24px;"><thead><tr><th>Date</th><th>Square</th><th>Movies</th><th>Live Shows</th><th>Rentals</th><th>Assigned</th><th>Difference</th></tr></thead><tbody>';
       foreach ($reconciliation as $row) {
         echo '<tr><td>'.esc_html((string) $row['date']).'</td><td>$'.esc_html(number_format((float) $row['square_total'], 2)).'</td><td>$'.esc_html(number_format((float) $row['movies'], 2)).'</td><td>$'.esc_html(number_format((float) $row['live'], 2)).'</td><td>$'.esc_html(number_format((float) $row['rentals'], 2)).'</td><td>$'.esc_html(number_format((float) $row['assigned_total'], 2)).'</td><td>$'.esc_html(number_format((float) $row['difference'], 2)).'</td></tr>';
       }
-      if(!$reconciliation) echo '<tr><td colspan="7">No reconciliation differences were found in this date range.</td></tr>';
+      if(!$reconciliation && $reconciliation_error === '') echo '<tr><td colspan="7">No reconciliation differences were found in this date range.</td></tr>';
       echo '</tbody></table>';
     } else {
       echo '<p><em>Reconciliation has not run yet for this page load. Use the form above when you want to check a date range.</em></p>';
