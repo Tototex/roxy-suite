@@ -38,6 +38,25 @@ try {
     catch(RuntimeException $e){$check($e->getMessage()==='Ticket write failed','later write failure is not reported as success');}
   }finally{remove_filter('query',$fail);$wpdb->suppress_errors($old_suppress);}
   $check((int)$wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->posts}`")===$before&&(int)$wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->postmeta}`")===1,'later failure rolls back earlier post and metadata');
+  // A connection drop implicitly rolls back its open transaction and releases
+  // its named locks. The stale writer must not continue on wpdb's replacement
+  // connection or try to clean up the old transaction there.
+  $reconnect=new \RoxyST\FixtureIssuance(123);$reconnect_lock=(new ReflectionProperty($reconnect,'lock'));$reconnect_lock->setAccessible(true);$reconnect_key=$reconnect_lock->getValue($reconnect);$reconnect_id=0;$reconnect_rejected=false;
+  try {
+    $reconnect->run(static function($operation)use($wpdb,&$reconnect_id,&$reconnect_rejected){
+      $id=$operation->create('MUST ROLLBACK AFTER RECONNECT');
+      $operation->post_meta($id,'_roxy_ticket_order_id',123);
+      $reconnect_id=(int)$wpdb->get_var('SELECT CONNECTION_ID()');
+      $wpdb->close();
+      if(!$wpdb->db_connect(false))throw new RuntimeException('Fixture database reconnect failed');
+      if((int)$wpdb->get_var('SELECT CONNECTION_ID()')===$reconnect_id)throw new RuntimeException('Fixture did not obtain a new database connection');
+      try{$operation->assert_owner();}catch(RuntimeException $e){$reconnect_rejected=$e->getMessage()==='Ticket connection ownership lost';throw $e;}
+      throw new RuntimeException('Stale ticket writer unexpectedly continued');
+    });
+    throw new RuntimeException('Connection-loss operation unexpectedly committed');
+  }catch(RuntimeException $e){$check($reconnect_rejected&&$e->getMessage()==='Ticket connection ownership lost','mid-transaction reconnect is detected and refuses stale ticket writes');}
+  $check((int)$wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->posts}` WHERE post_title='MUST ROLLBACK AFTER RECONNECT'")===0&&(int)$wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->postmeta}` WHERE meta_key='_roxy_ticket_order_id' AND meta_value='123'")===1,'disconnected ticket transaction rolls back its partial projection');
+  $check((int)$second->get_var($second->prepare('SELECT IS_FREE_LOCK(%s)',$reconnect_key))===1,'disconnect releases the old ticket lock without stale cleanup on the replacement connection');
   $held=new \RoxyST\FixtureIssuance(123);$lock=(new ReflectionProperty($held,'lock'));$lock->setAccessible(true);$key=$lock->getValue($held);
   $check((string)$second->get_var($second->prepare('SELECT GET_LOCK(%s,0)',$key))==='1','second connection acquires competing order lock');
   try{try{$held->run(static fn()=>null);throw new RuntimeException('Contended operation ran');}catch(RuntimeException $e){$check($e->getMessage()==='Ticket issuance is busy','overlapping order operation is blocked');}}
