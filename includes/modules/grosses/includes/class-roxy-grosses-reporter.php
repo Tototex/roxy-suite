@@ -1788,7 +1788,12 @@ class Reporter {
           : ($kind === 'live'
             ? Store::update_live_entry($entry_id, ['concessions_total' => $concessions])
             : Store::update_rental_entry($entry_id, ['concessions_total' => $concessions]));
-        if (!$saved) throw new \RuntimeException('Could not save the concessions allocation for ' . $report_date . '. The report refresh was not completed.');
+        if (!$saved) {
+          global $wpdb;
+          $error = trim((string) ($wpdb->last_error ?? ''));
+          $detail = $error !== '' ? ' Database error: ' . substr($error, 0, 240) : '';
+          throw new \RuntimeException('Could not save the concessions allocation for ' . $report_date . '. The report refresh was not completed.' . $detail);
+        }
         $updated++;
         $concessions_total += $concessions;
       }
