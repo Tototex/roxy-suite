@@ -5,6 +5,7 @@ $root=$args[0]??dirname(__DIR__);
 require __DIR__.'/ticket-fixture-loader.php';
 roxy_fixture_tickets($root,'IssuanceFixtureTickets');
 if (!class_exists('RoxyST\\Tickets', false)) class_alias('RoxyST\\IssuanceFixtureTickets','RoxyST\\Tickets');
+if (!post_type_exists('roxy_ticket')) \RoxyST\IssuanceFixtureTickets::register_post_type();
 require_once $root.'/includes/modules/will-call/roxy-will-call.php';
 add_filter('pre_wp_mail',static fn()=>true);
 remove_action('woocommerce_checkout_order_processed',[\RoxyST\Tickets::class,'on_order_changed'],30);
@@ -22,7 +23,7 @@ try{
   $order=wc_create_order(['status'=>'pending','customer_note'=>'PRIVATE ISSUANCE FIXTURE 2026-10-05 — no payment or fulfillment']);if(is_wp_error($order))throw new RuntimeException('Cannot create private order');
   $item_id=$order->add_product($product,3);$order->calculate_totals();$order->save();
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'actual Woo order issues complete ticket set');
-  global $wpdb;$ids=\RoxyST\IssuanceFixtureTickets::get_order_ticket_ids($order->get_id());$direct=$wpdb->get_col($wpdb->prepare("SELECT p.ID FROM {$wpdb->posts} p JOIN {$wpdb->postmeta} m ON m.post_id=p.ID WHERE p.post_type=%s AND p.post_status=%s AND m.meta_key=%s AND m.meta_value=%s ORDER BY p.ID",'roxy_ticket','publish','_roxy_ticket_order_id',(string)$order->get_id()));$check(count($ids)===3,'three distinct ticket identities are saved (order='.$order->get_id().', ids='.wp_json_encode($ids).', direct='.wp_json_encode($direct).')');
+  $ids=\RoxyST\IssuanceFixtureTickets::get_order_ticket_ids($order->get_id());$check(count($ids)===3&&count(array_unique($ids))===3,'three distinct ticket identities are saved');
   $marathon_order=wc_create_order(['status'=>'processing','customer_note'=>'PRIVATE MARATHON FIXTURE — six separate admissions under one order']);if(is_wp_error($marathon_order))throw new RuntimeException('Marathon fixture order failed');
   $marathon_showings=[];
   for($i=0;$i<6;$i++){
