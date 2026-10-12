@@ -227,7 +227,9 @@ class Conversion {
         }
         check_admin_referer('roxy_rs_fail_' . $request_id);
         if (!self::schema_is_ready()) wp_die('Requested-showing actions are temporarily unavailable while the request data store is repaired.');
-        self::mark_failed($request_id);
+        if (!self::mark_failed($request_id)) {
+            wp_die('This request has a completed or unresolved payment/order. Reconcile its backing and WooCommerce order before marking it failed.');
+        }
         wp_safe_redirect(get_edit_post_link($request_id, ''));
         exit;
     }
@@ -318,6 +320,23 @@ class Conversion {
             return new \WP_Error('request_close_failed', 'The request could not be closed for conversion. No new showing or payment was attempted.');
         }
         $lease->assert_owner();
+        // A prior payment/no-charge completion may have left a charged backing in
+        // review because ticket projection failed. Reconcile those durable orders
+        // before allowing a retry to finalize the request or notify customers.
+        $charged_backings = roxy_rs_repo_list_backings_for_request($request_id, ['charged']);
+        foreach ($charged_backings as $charged) {
+            $lease->assert_owner();
+            $backing_id = (int) ($charged['id'] ?? 0);
+            $order_id = (int) ($charged['woo_order_id'] ?? 0);
+            $order = $order_id > 0 && function_exists('wc_get_order') ? wc_get_order($order_id) : false;
+            if (!$order instanceof \WC_Order
+                || (int) $order->get_meta('_roxy_rs_request_id', true) !== $request_id
+                || (int) $order->get_meta('_roxy_rs_backing_id', true) !== $backing_id
+                || !\RoxyST\Tickets::sync_order_tickets($order_id)) {
+                return new \WP_Error('charged_backing_review_required', 'A completed backing order still needs ticket reconciliation. The request remains unpublished; verify the saved WooCommerce order and ticket records before retrying.');
+            }
+        }
+
         $showing_id = (int) get_post_meta($request_id, CPT::META_APPROVED_SHOWING_ID, true);
         $write_showing = static function () use ($request_id, $post, $target_at, &$showing_id, $lease) {
             if ($showing_id <= 0 || get_post_type($showing_id) !== \RoxyST\CPT::POST_TYPE) {
@@ -610,23 +629,51 @@ class Conversion {
         return (string) preg_replace('/[\x00-\x1F\x7F]+/', ' ', $message);
     }
 
-    public static function mark_failed(int $request_id): void {
-        if (!self::schema_is_ready()) return;
-        update_post_meta($request_id, CPT::META_STATUS, 'failed');
-        update_post_meta($request_id, CPT::META_FAILURE_NOTIFIED, current_time('mysql'));
+    public static function mark_failed(int $request_id): bool {
+        if (!self::schema_is_ready() || $request_id <= 0 || !class_exists(ConversionClaims::class)) return false;
+        $lease = null;
+        try {
+            // Serialize closure with pledge inserts and approval using the same
+            // request lease; otherwise a backing could land between read and close.
+            $lease = ConversionClaims::lease('request:' . $request_id);
+            $lease->assert_owner();
+            wp_cache_delete($request_id, 'post_meta');
+            if (CPT::get_status($request_id) === 'failed') return true;
 
-        $backings = roxy_rs_repo_list_backings_for_request($request_id, ['pending', 'threshold_met', 'approved']);
-        foreach ($backings as $backing) {
-            roxy_rs_repo_update_backing((int) $backing['id'], ['status' => 'failed']);
-        }
+            // Never tell supporters that no cards were charged when any backing
+            // has completed or an order is still present for reconciliation.
+            $all_backings = roxy_rs_repo_list_backings_for_request($request_id);
+            foreach ($all_backings as $backing) {
+                if (($backing['status'] ?? '') === 'charged' || (int) ($backing['woo_order_id'] ?? 0) > 0) return false;
+            }
 
-        $emails = self::request_recipient_emails($request_id, $backings);
-        if ($emails) {
-            $subject = sprintf('Requested showing did not move forward: %s', get_the_title($request_id));
-            $message = "Thanks for supporting \"" . get_the_title($request_id) . "\".\n\n"
-                . "This request did not reach its funding goal before the deadline, so it has been closed and no cards were charged.\n\n"
-                . "We appreciate the support,\nNewport Roxy Theater";
-            self::email_recipients($emails, $subject, $message);
+            foreach ($all_backings as $backing) {
+                if (!in_array($backing['status'] ?? '', ['pending', 'threshold_met', 'approved'], true)) continue;
+                $updated = roxy_rs_repo_update_backing((int) $backing['id'], ['status' => 'failed']);
+                if (is_wp_error($updated)) return false;
+                $verified = roxy_rs_repo_get_backing((int) $backing['id']);
+                if (!$verified || ($verified['status'] ?? '') !== 'failed') return false;
+            }
+
+            $lease->assert_owner();
+            update_post_meta($request_id, CPT::META_STATUS, 'failed');
+            wp_cache_delete($request_id, 'post_meta');
+            if (CPT::get_status($request_id) !== 'failed') return false;
+            update_post_meta($request_id, CPT::META_FAILURE_NOTIFIED, current_time('mysql'));
+
+            $emails = self::request_recipient_emails($request_id, $all_backings);
+            if ($emails) {
+                $subject = sprintf('Requested showing did not move forward: %s', get_the_title($request_id));
+                $message = "Thanks for supporting \"" . get_the_title($request_id) . "\".\n\n"
+                    . "This request did not reach its funding goal before the deadline, so it has been closed and no cards were charged.\n\n"
+                    . "We appreciate the support,\nNewport Roxy Theater";
+                self::email_recipients($emails, $subject, $message);
+            }
+            return true;
+        } catch (\Throwable $error) {
+            return false;
+        } finally {
+            if ($lease !== null) $lease->release_lease();
         }
     }
 

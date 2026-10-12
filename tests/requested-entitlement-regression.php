@@ -180,7 +180,16 @@ namespace {
             return 1;
         }
         public function insert($table, $data) { $this->insert_id++; $data['id']=$this->insert_id; $this->rows[$this->insert_id] = $data; $this->outstanding += (int) $data['subscriber_qty']; return 1; }
-        public function get_results($sql, $output = null) { if ($this->list_error) { $this->last_error = 'Fixture list read failed'; return null; } return array_values($this->rows); }
+        public function get_results($sql, $output = null) {
+            if ($this->list_error) { $this->last_error = 'Fixture list read failed'; return null; }
+            $rows = array_values($this->rows);
+            if (preg_match('/status IN \\(([^)]+)\\)/', $sql, $match)) {
+                preg_match_all("/'((?:[^']|'')*)'/", $match[1], $values);
+                $statuses = array_map(static fn($value) => str_replace("''", "'", $value), $values[1]);
+                $rows = array_values(array_filter($rows, static fn($row) => in_array($row['status'] ?? '', $statuses, true)));
+            }
+            return $rows;
+        }
         public function update($table, $data, $where) { $this->update_calls[] = [$table,$data,$where]; if ($this->final_update_error && ($data['status'] ?? '') === 'charged') { $this->last_error = 'Fixture final result write failure'; return false; } $id=(int)($where['id']??0); if(isset($this->rows[$id]))$this->rows[$id]=array_merge($this->rows[$id],$data); return 1; }
         public function is_locked() { return $this->locked; }
     }
@@ -491,6 +500,40 @@ namespace {
         && $GLOBALS['fixture_post_status'][501] === 'draft'
         && count($GLOBALS['fixture_mails']) === 1 && $GLOBALS['fixture_mails'][0]['to'] === 'admin@example.invalid',
         'ticket issuance failure keeps the request unpublished and sends manager review only');
+
+    // Retrying approval must reconcile a paid/charged backing before finalizing,
+    // and must not send customer confirmation while issuance remains incomplete.
+    $wpdb->rows[1]['status'] = 'charged';
+    $GLOBALS['fixture_order']->meta['_roxy_rs_request_id'] = 501;
+    $GLOBALS['fixture_order']->meta['_roxy_rs_backing_id'] = 1;
+    \RoxyST\Tickets::$sync_result = false;
+    $retry_issuance_failure = \RoxyRS\Conversion::approve_request(501);
+    check_fixture(is_wp_error($retry_issuance_failure) && $retry_issuance_failure->get_error_code() === 'charged_backing_review_required'
+        && $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'conversion_review'
+        && $GLOBALS['fixture_post_status'][501] === 'draft'
+        && count($GLOBALS['fixture_mails']) === 1 && $GLOBALS['fixture_mails'][0]['to'] === 'admin@example.invalid',
+        'repeat approval cannot finalize or confirm a charged backing while ticket reconciliation still fails');
+    \RoxyST\Tickets::$sync_result = true;
+    $reconciled_approval = \RoxyRS\Conversion::approve_request(501);
+    check_fixture($reconciled_approval === 801 && $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'approved'
+        && $GLOBALS['fixture_post_status'][501] === 'publish'
+        && end($GLOBALS['fixture_mails'])['to'] === 'customer@example.invalid',
+        'repeat approval finalizes only after charged-order ticket reconciliation succeeds');
+
+    reset_fixture([]); seed_conversion_backing(7002); $wpdb->rows[1]['status'] = 'charged';
+    check_fixture(\RoxyRS\Conversion::mark_failed(501) === false
+        && $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'active'
+        && $GLOBALS['fixture_mails'] === [],
+        'failure closure refuses charged backing without sending a false no-charge notice');
+
+    reset_fixture([]); seed_conversion_backing();
+    check_fixture(\RoxyRS\Conversion::mark_failed(501) === true
+        && $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'failed'
+        && ($wpdb->rows[1]['status'] ?? '') === 'failed'
+        && count($GLOBALS['fixture_mails']) === 1 && $GLOBALS['fixture_mails'][0]['to'] === 'customer@example.invalid',
+        'unpaid backings close under the request lease and send the no-charge notice only after persistence');
+    check_fixture(\RoxyRS\Conversion::mark_failed(501) === true && count($GLOBALS['fixture_mails']) === 1,
+        'repeated failure closure does not send a duplicate no-charge email');
 
     reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing();
     $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_TARGET_AT] = '2026-10-30 19:00';

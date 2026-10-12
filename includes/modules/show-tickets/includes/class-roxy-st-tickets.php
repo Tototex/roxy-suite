@@ -149,7 +149,7 @@ class Tickets {
 
   private static function sync_order_tickets_locked(int $order_id): void {
     $order = wc_get_order($order_id);
-    if (!$order) return;
+    if (!$order) throw new \RuntimeException('WooCommerce order could not be loaded for ticket reconciliation');
 
     $order_status = (string) $order->get_status();
     $state_for_order = self::state_for_order_status($order_status);

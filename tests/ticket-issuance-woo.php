@@ -23,6 +23,7 @@ try{
   $order=wc_create_order(['status'=>'pending','customer_note'=>'PRIVATE ISSUANCE FIXTURE 2026-10-05 — no payment or fulfillment']);if(is_wp_error($order))throw new RuntimeException('Cannot create private order');
   $item_id=$order->add_product($product,3);$order->calculate_totals();$order->save();
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'actual Woo order issues complete ticket set');
+  $check(!\RoxyST\IssuanceFixtureTickets::sync_order_tickets(2147483000),'missing Woo order is a reconciliation failure, not a successful empty issuance');
   $ids=\RoxyST\IssuanceFixtureTickets::get_order_ticket_ids($order->get_id());$check(count($ids)===3&&count(array_unique($ids))===3,'three distinct ticket identities are saved through an unrelated WP_Query');
   $marathon_order=wc_create_order(['status'=>'processing','customer_note'=>'PRIVATE MARATHON FIXTURE — six separate admissions under one order']);if(is_wp_error($marathon_order))throw new RuntimeException('Marathon fixture order failed');
   $marathon_showings=[];
