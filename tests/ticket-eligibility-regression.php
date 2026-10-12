@@ -41,6 +41,10 @@ check(!$can->invoke(null,102) && !$can->invoke(null,103) && $can->invoke(null,10
 $GLOBALS['meta'][103]['_roxy_checked_in'] = 1;
 \RoxyST\Tickets::undo_check_in_ticket(103);
 check(get_post_meta(103,'_roxy_ticket_state') === 'refunded' && !$can->invoke(null,103), 'T3: undo does not revive refunded used ticket');
+$order->refunded = 1;
+foreach ([101,102,103] as $id) { $GLOBALS['meta'][$id]['_roxy_checked_in']=1; $GLOBALS['meta'][$id]['_roxy_ticket_state']='checked_in'; unset($GLOBALS['meta'][$id]['_roxy_ticket_refunded']); }
+\RoxyST\Tickets::undo_check_in_ticket(103);
+check(get_post_meta(103,'_roxy_ticket_state') === 'refunded' && get_post_meta(103,'_roxy_ticket_refunded') === '1' && !$can->invoke(null,103), 'T3: undo persists refund allocation discovered from current Woo quantity before cached flag exists');
 $order->refunded = 0; $sync->invoke(null,$order,10,[101,102,103],'valid');
 check($can->invoke(null,102) && $can->invoke(null,103), 'T3: explicit refund removal reconciles allocation on sync');
 $GLOBALS['meta'][101]['_roxy_ticket_order_item_id'] = 999;

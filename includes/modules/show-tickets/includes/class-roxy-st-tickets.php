@@ -559,6 +559,13 @@ class Tickets {
       }
       foreach ([self::META_CHECKED_IN,self::META_CHECKED_IN_AT,self::META_CHECKED_IN_BY,'_roxy_checked_in_source'] as $key) self::remove_ticket_meta($ticket_id,$key);
       $order = wc_get_order((int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID));
+      if ($order) {
+        $item_id=(int)self::read_ticket_meta($ticket_id,self::META_ORDER_ITEM_ID);
+        $ticket_ids=self::$issuance->tickets_for_item((int)$order->get_id(),$item_id);
+        $allocated=self::refunded_ticket_ids($order,$item_id,$ticket_ids);
+        if (isset($allocated[$ticket_id])) self::write_ticket_meta($ticket_id,self::META_REFUNDED,'1');
+        else self::remove_ticket_meta($ticket_id,self::META_REFUNDED);
+      }
       self::write_ticket_meta($ticket_id,self::META_STATE,(int)self::read_ticket_meta($ticket_id,self::META_REFUNDED) === 1 ? 'refunded' : ($order ? self::state_for_order_status((string)$order->get_status()) : 'cancelled'));
       return true;
   }

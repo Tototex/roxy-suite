@@ -13,6 +13,7 @@ namespace RoxyST {
     public function post_meta(int $id,string $key,$value,bool $remove=false):void {
       if($remove)\delete_post_meta($id,$key);else \update_post_meta($id,$key,$value);
     }
+    public function tickets_for_item(int $order_id,int $item_id):array{return $GLOBALS['tickets_by_item'][$order_id][$item_id]??[101,102,103];}
     public function will_call_quantity(int $id,string $key):int{return (int)($GLOBALS['baseline']??0);}
     public function member_visit(array $row):bool{return true;}
     public function member_visit_id():int{return 1;}
