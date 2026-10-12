@@ -196,9 +196,20 @@ try {
   ];
   $published_conflict_post['roxy_event_screening_title'][0] = 'PRIVATE FAILED PRODUCT SYNC';
   $published_conflict_post['roxy_event_screening_start'][1] = $conflict_start;
+  $published_conflict_at = DateTimeImmutable::createFromFormat('!Y-m-d\\TH:i', $conflict_start, wp_timezone());
+  $check($published_conflict_at instanceof DateTimeImmutable
+    && !roxy_eb_is_slot_available($published_conflict_at->modify('-2 hours'), $published_conflict_at->modify('+2 hours'), 0, true, $screenings),
+    'published-event rollback fixture has a confirmed room conflict');
   $_POST = $published_conflict_post;
   \RoxyST\Events::save((int)$event_id, get_post((int)$event_id));
   remove_action('save_post_' . \RoxyST\CPT::POST_TYPE, $product_probe, 21);
+  $published_conflict_notice = (string)get_transient('roxy_st_event_invalid_' . get_current_user_id());
+  $check($published_conflict_notice !== '', 'conflicting published schedule edit is rejected with an admin notice');
+  $check((string)get_post_meta((int)$event_id, '_roxy_event_double_general', true) === $original_general,
+    'rejected published schedule edit retains the original event pass price');
+  $check(get_the_title((int)$screenings[0]) === $original_screening_rows[0]['title']
+    && (string)get_post_meta((int)$screenings[1], '_roxy_start', true) === $original_screening_rows[1]['start'],
+    'rejected published schedule edit retains all prior screening values');
   $check($product_title_during_failed_save === $stable_product_title,
     'ticket product synchronization is deferred until the event schedule transaction commits');
   $check(get_the_title($products[0]) === $stable_product_title,
