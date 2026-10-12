@@ -10,8 +10,8 @@ foreach (['reservations.php', 'repository.php', 'availability.php', 'woo.php'] a
     $source = str_replace(['roxy_eb_', 'RoxyEBReservation'], ['roxy_fixture_eb_', 'RoxyEBFixtureReservation'], $source);
     eval(substr($source, 5));
 }
-function roxy_fixture_eb_table_bookings() { global $wpdb; return $wpdb->prefix . 'roxy_event_bookings'; }
-function roxy_fixture_eb_table_blocks() { global $wpdb; return $wpdb->prefix . 'roxy_event_blocks'; }
+function roxy_fixture_eb_table_bookings() { global $wpdb; return $GLOBALS['room_fixture_booking_table'] ?? $wpdb->prefix . 'roxy_event_bookings'; }
+function roxy_fixture_eb_table_blocks() { global $wpdb; return $GLOBALS['room_fixture_block_table'] ?? $wpdb->prefix . 'roxy_event_blocks'; }
 function roxy_fixture_eb_get_settings() { return ['showtime_blocks'=>[], 'sling_mode'=>'disabled', 'booking_product_id'=>(int)($GLOBALS['room_fixture_product_id'] ?? 987654321)]; }
 function roxy_fixture_eb_clear_pizza_reminders($id) { $GLOBALS['room_fixture_events'][]='reminders'; }
 function roxy_fixture_eb_schedule_pizza_reminder($id) { $GLOBALS['room_fixture_events'][]='schedule'; }
@@ -37,8 +37,11 @@ $digest = static function () use ($wpdb, $original_tables) {
 $before = $digest();
 $prefix = $original_prefix . 'room_fixture_' . bin2hex(random_bytes(4)) . '_';
 $tables = [$prefix.'roxy_event_bookings', $prefix.'roxy_event_blocks'];
+$GLOBALS['room_fixture_booking_table'] = $tables[0];
+$GLOBALS['room_fixture_block_table'] = $tables[1];
 $created = [];
 $peer = new wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
+$peer->prefix = $original_prefix;
 $check = static function ($value, $label) { if (!$value) throw new RuntimeException($label); echo 'PASS: '.$label.PHP_EOL; };
 try {
     foreach ($tables as $i => $table) {
@@ -46,7 +49,6 @@ try {
         if ($wpdb->query("CREATE TABLE `$table` LIKE `{$original_tables[$i]}`") === false) throw new RuntimeException('Cannot create private fixture table');
         $created[] = $table;
     }
-    $wpdb->prefix = $prefix;
     $row = ['reserved_start_at'=>'2040-01-02 10:00:00','reserved_end_at'=>'2040-01-02 13:00:00','doors_open_at'=>'2040-01-02 10:30:00','doors_close_at'=>'2040-01-02 12:30:00','woo_order_id'=>900000001];
     $id = roxy_fixture_eb_repo_insert_booking($row);
     $check(is_int($id) && $id>0, 'reservation creation commits with final availability check');
@@ -61,7 +63,7 @@ try {
     $check(is_wp_error(roxy_fixture_eb_repo_update_booking(99999,['notes_admin'=>'missing'])), 'missing row cannot claim successful update');
     $invalid = $row; $invalid['woo_order_id']=900000003; $invalid['reserved_end_at']='2040-01-02 09:00:00';
     $check(is_wp_error(roxy_fixture_eb_repo_insert_booking($invalid)), 'invalid reversed interval rejected');
-    $key = 'roxy_room_'.substr(hash('sha256',$prefix),0,48);
+    $key = 'roxy_room_'.substr(hash('sha256',$original_prefix),0,48);
     $check((string)$peer->get_var($peer->prepare('SELECT GET_LOCK(%s,0)',$key))==='1', 'independent fixture connection owns room lock');
     try { $result=roxy_fixture_eb_repo_update_booking($id,['notes_admin'=>'must not save']); $check(is_wp_error($result) && $result->get_error_code()==='reservation_busy','independent writer cannot mutate under contended room lock'); }
     finally { $peer->get_var($peer->prepare('SELECT RELEASE_LOCK(%s)',$key)); }
@@ -95,14 +97,15 @@ try {
     try {
         $result=roxy_fixture_eb_reservation_run(static function($guard)use($tables,$id){ $guard->update($tables[0],$id,['notes_admin'=>'must roll back']); $guard->update($tables[0],$id,['invalid_fixture_column'=>'fail']); return true; });
         $check(is_wp_error($result) && roxy_fixture_eb_repo_get_booking($id)['notes_admin']==='private fixture','SQL write failure rolls back earlier change in the same transaction');
-        $wpdb->prefix=$prefix.'missing_';
+        $GLOBALS['room_fixture_booking_table']=$prefix.'missing_roxy_event_bookings';
+        $GLOBALS['room_fixture_block_table']=$prefix.'missing_roxy_event_blocks';
         $check(is_wp_error(roxy_fixture_eb_repo_list_bookings_in_range('2040-01-02 10:00:00','2040-01-02 13:00:00')),'failed availability read is not an empty successful result');
         $start=new DateTimeImmutable('2040-01-02 10:00:00',wp_timezone()); $end=$start->modify('+3 hours');
         $check(roxy_fixture_eb_is_slot_available($start,$end)===false,'public availability fails closed on missing storage');
         $check(is_wp_error(roxy_fixture_eb_get_calendar_blocks($start,$end)),'calendar exposes read failure instead of empty available month');
         $thrown=false; try { roxy_fixture_eb_is_slot_available($start,$end,0,true); } catch(Throwable $error) { $thrown=true; }
         $check($thrown,'payment completion distinguishes read failure from an actual room conflict');
-    } finally { $wpdb->prefix=$prefix; $wpdb->suppress_errors($quiet); }
+    } finally { $GLOBALS['room_fixture_booking_table']=$tables[0]; $GLOBALS['room_fixture_block_table']=$tables[1]; $wpdb->suppress_errors($quiet); }
     $wpdb->query('START TRANSACTION');
     try { $check(is_wp_error(roxy_fixture_eb_repo_update_booking($id,['notes_admin'=>'outer transaction'])),'existing external transaction is not implicitly committed'); }
     finally { $wpdb->query('ROLLBACK'); }
@@ -204,14 +207,13 @@ try {
     // Model a competing valid reservation arriving after the callback's initial
     // availability read but before it takes the shared room lock.
     $racing_order = $make_booking_order('2040-01-04 10:00:00');
-    $race_key = 'roxy_room_'.substr(hash('sha256',$prefix),0,48);
+    $race_key = 'roxy_room_'.substr(hash('sha256',$original_prefix),0,48);
     $race_inserted = false;
     $race_filter = static function ($sql) use (&$race_inserted,$race_key,$peer) {
         if ($race_inserted || strpos($sql,"GET_LOCK('".$race_key."'")===false) return $sql;
         $race_inserted = true;
         $main = $GLOBALS['wpdb'];
         $GLOBALS['wpdb'] = $peer;
-        $peer->prefix = $GLOBALS['room_fixture_prefix'];
         try {
             $other = roxy_fixture_eb_repo_insert_booking([
                 'reserved_start_at'=>'2040-01-04 09:30:00','reserved_end_at'=>'2040-01-04 12:30:00',
@@ -221,7 +223,6 @@ try {
         } finally { $GLOBALS['wpdb'] = $main; }
         return $sql;
     };
-    $GLOBALS['room_fixture_prefix']=$prefix;
     add_filter('query',$race_filter,PHP_INT_MAX);
     try { roxy_fixture_eb_on_payment_complete((int) $racing_order->get_id()); }
     finally { remove_filter('query',$race_filter,PHP_INT_MAX); }
@@ -231,11 +232,11 @@ try {
     $check(!in_array('booking_confirmed',$race_events,true) && !in_array('customer_confirmed',$race_events,true),'conflicting paid callback sends no booking confirmation');
     $check((int)($GLOBALS['room_fixture_mail_calls']??0)===$payment_mail_before,'private callback fixtures never reach real email transport');
 } finally {
-    $wpdb->prefix=$original_prefix;
     $peer->close();
     foreach (array_reverse($created) as $table) $wpdb->query("DROP TABLE `$table`");
     foreach ($GLOBALS['room_fixture_order_ids'] as $order_id) { $order = wc_get_order((int)$order_id); if ($order) $order->delete(true); }
     if (!empty($GLOBALS['room_fixture_product_id'])) wp_delete_post((int) $GLOBALS['room_fixture_product_id'], true);
+    unset($GLOBALS['room_fixture_booking_table'], $GLOBALS['room_fixture_block_table']);
 }
 $check($before===$digest(),'all original booking and manual block rows unchanged');
 echo 'Only private fixture tables removed; no provider/email work.'.PHP_EOL;
