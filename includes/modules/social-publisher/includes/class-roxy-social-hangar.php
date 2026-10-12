@@ -8,6 +8,7 @@ final class Hangar {
     private const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
     private const USER_OPTION = 'roxy_social_hangar_user';
     private const PASS_OPTION = 'roxy_social_hangar_pass';
+    private const POSTER_CLEANUP_HOOK = 'roxy_social_cleanup_video_poster';
 
     public static function save_credentials(string $user, string $password): bool {
         try { $encrypted=self::encrypt($password); } catch (\Throwable $error) { return false; }
@@ -128,7 +129,7 @@ final class Hangar {
         $flushed = $written === $length && @fflush($handle);
         $closed = @fclose($handle);
         if (!$flushed || !$closed) {
-            @unlink($poster_path);
+            self::delete_owned_video_thumbnail_file_or_queue($poster_path);
             return;
         }
 
@@ -145,11 +146,11 @@ final class Hangar {
             else update_post_meta($attachment_id, '_roxy_social_video_poster_url', $old_url);
             if ($old_file === '' || $old_file === null) delete_post_meta($attachment_id, '_roxy_social_video_poster_file');
             else update_post_meta($attachment_id, '_roxy_social_video_poster_file', $old_file);
-            @unlink($poster_path);
+            self::delete_owned_video_thumbnail_file_or_queue($poster_path);
             return;
         }
         if (is_string($old_file) && $old_file !== '' && $old_file !== $poster_path && !self::delete_owned_video_thumbnail_file($old_file)) {
-            error_log('Roxy Social could not remove a replaced Hangar video poster file.');
+            self::schedule_video_thumbnail_cleanup($old_file, 1);
         }
     }
 
@@ -165,9 +166,37 @@ final class Hangar {
         return @unlink($poster_realpath) || !file_exists($poster_realpath);
     }
 
+    private static function delete_owned_video_thumbnail_file_or_queue(string $file): bool {
+        if (self::delete_owned_video_thumbnail_file($file)) return true;
+        self::schedule_video_thumbnail_cleanup($file, 1);
+        return false;
+    }
+
+    private static function schedule_video_thumbnail_cleanup(string $file, int $attempt): void {
+        $attempt = max(1, min(5, $attempt));
+        $args = [$file, $attempt];
+        if (wp_next_scheduled(self::POSTER_CLEANUP_HOOK, $args)) return;
+        $scheduled = wp_schedule_single_event(time() + min(3600, 60 * (2 ** ($attempt - 1))), self::POSTER_CLEANUP_HOOK, $args);
+        if (!$scheduled && !wp_next_scheduled(self::POSTER_CLEANUP_HOOK, $args)) {
+            error_log('Roxy Social could not queue a failed Hangar video poster cleanup.');
+        }
+    }
+
+    /** Retry deletion only for generated poster files still owned by this module. */
+    public static function retry_video_thumbnail_cleanup($file = '', $attempt = 1): void {
+        if (!is_string($file) || !is_numeric($attempt)) return;
+        $attempt = max(1, min(5, (int) $attempt));
+        if (self::delete_owned_video_thumbnail_file($file)) return;
+        if ($attempt < 5) {
+            self::schedule_video_thumbnail_cleanup($file, $attempt + 1);
+            return;
+        }
+        error_log('Roxy Social could not remove a Hangar video poster after bounded retries.');
+    }
+
     public static function delete_video_thumbnail(int $attachment_id): void {
         $file = (string) get_post_meta($attachment_id, '_roxy_social_video_poster_file', true);
-        self::delete_owned_video_thumbnail_file($file);
+        self::delete_owned_video_thumbnail_file_or_queue($file);
         delete_post_meta($attachment_id, '_roxy_social_video_poster_url');
         delete_post_meta($attachment_id, '_roxy_social_video_poster_file');
     }

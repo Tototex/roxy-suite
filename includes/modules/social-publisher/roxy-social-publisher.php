@@ -28,6 +28,7 @@ add_action('plugins_loaded', function () {
     \RoxySocial\Admin::init();
     \RoxySocial\AI::init();
     add_action('delete_attachment', ['\\RoxySocial\\Hangar', 'delete_video_thumbnail']);
+    add_action('roxy_social_cleanup_video_poster', ['\\RoxySocial\\Hangar', 'retry_video_thumbnail_cleanup'], 10, 2);
     add_action('roxy_social_cleanup', ['\\RoxySocial\\Store', 'cleanup_expired']);
     add_action('roxy_social_cleanup_page', ['\\RoxySocial\\Store', 'cleanup_expired'], 10, 2);
     add_action('roxy_social_cleanup_media_page', ['\\RoxySocial\\Store', 'cleanup_detached_media_page'], 10, 2);

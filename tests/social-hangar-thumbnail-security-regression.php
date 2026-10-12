@@ -8,7 +8,7 @@ namespace RoxySocial {
 
     final class Secrets { public static function decrypt(string $value): string { return $value === '' ? '' : 'fixture-password'; } }
 
-    $GLOBALS['hangar_fixture'] = ['get' => [], 'post' => [], 'cache' => [], 'meta' => [], 'headers' => [], 'response' => null, 'search_body' => '[]'];
+    $GLOBALS['hangar_fixture'] = ['get' => [], 'post' => [], 'cache' => [], 'meta' => [], 'headers' => [], 'response' => null, 'search_body' => '[]', 'scheduled' => []];
     function get_option($key, $default = false) { return $key === 'roxy_social_hangar_user' ? 'fixture-user' : ($key === 'roxy_social_hangar_pass' ? 'encrypted' : $default); }
     function wp_remote_post($url, $args = []) { $GLOBALS['hangar_fixture']['post'][] = [$url, $args]; return ['response' => ['code' => 302], 'headers' => ['set-cookie' => 'sid=fixture']]; }
     function wp_remote_get($url, $args = []) {
@@ -24,9 +24,15 @@ namespace RoxySocial {
     function add_query_arg($args, $url) { return $url . '?' . http_build_query($args); }
     function set_transient($key, $value, $expiration) { $GLOBALS['hangar_fixture']['cache'][$key] = $value; }
     function get_transient($key) { return $GLOBALS['hangar_fixture']['cache'][$key] ?? false; }
+    function wp_next_scheduled($hook, $args = []) { foreach ($GLOBALS['hangar_fixture']['scheduled'] as $event) if ($event['hook'] === $hook && $event['args'] === $args) return 1; return false; }
+    function wp_schedule_single_event($timestamp, $hook, $args = []) { $GLOBALS['hangar_fixture']['scheduled'][] = ['time' => $timestamp, 'hook' => $hook, 'args' => $args]; return true; }
     function update_post_meta($id, $key, $value) {
         if (($GLOBALS['hangar_fixture']['fail_meta_key'] ?? '') === $key) return false;
-        $GLOBALS['hangar_fixture']['meta'][$id][$key] = $value; return true;
+        $GLOBALS['hangar_fixture']['meta'][$id][$key] = $value;
+        if ((int) ($GLOBALS['hangar_fixture']['readonly_upload_dir_after_meta_for'] ?? 0) === (int) $id && $key === '_roxy_social_video_poster_file') {
+            chmod($GLOBALS['hangar_fixture']['upload_dir'], 0500);
+        }
+        return true;
     }
     function get_post_meta($id, $key, $single = false) { return $GLOBALS['hangar_fixture']['meta'][$id][$key] ?? ''; }
     function delete_post_meta($id, $key) { unset($GLOBALS['hangar_fixture']['meta'][$id][$key]); return true; }
@@ -153,6 +159,22 @@ namespace RoxySocial {
     $replacement_path = $GLOBALS['hangar_fixture']['meta'][509]['_roxy_social_video_poster_file'] ?? '';
     $check(!file_exists($replace_old_path) && is_file($replacement_path) && file_get_contents($replacement_path) === $png,
         'verified poster replacement removes only the previous owned poster and retains the new file');
+    $stale_path = $upload_dir . DIRECTORY_SEPARATOR . 'stale-poster.png';
+    file_put_contents($stale_path, 'old-poster');
+    $GLOBALS['hangar_fixture']['meta'][512] = [
+        '_roxy_social_video_poster_url' => 'https://fixture.invalid/uploads/stale-poster.png',
+        '_roxy_social_video_poster_file' => $stale_path,
+    ];
+    $GLOBALS['hangar_fixture']['readonly_upload_dir_after_meta_for'] = 512;
+    $save_poster->invoke(null, 512, 31, 'replacement-cleanup.mp4');
+    chmod($upload_dir, 0700);
+    unset($GLOBALS['hangar_fixture']['readonly_upload_dir_after_meta_for']);
+    $new_stale_replacement = $GLOBALS['hangar_fixture']['meta'][512]['_roxy_social_video_poster_file'] ?? '';
+    $queued_replacement = end($GLOBALS['hangar_fixture']['scheduled']);
+    $check(is_file($stale_path) && is_file($new_stale_replacement) && ($queued_replacement['args'][0] ?? '') === $stale_path,
+        'failed deletion of a replaced poster queues the old owned file without disturbing the verified replacement');
+    Hangar::retry_video_thumbnail_cleanup($stale_path, 1);
+    $check(!file_exists($stale_path) && is_file($new_stale_replacement), 'replacement cleanup retry removes only the stale poster');
     $outside_old_path = $upload_dir . '-previous-poster.png';
     file_put_contents($outside_old_path, 'preserve-outside-poster');
     $GLOBALS['hangar_fixture']['meta'][510] = [
@@ -187,6 +209,19 @@ namespace RoxySocial {
     $GLOBALS['hangar_fixture']['meta'][508]['_roxy_social_video_poster_file'] = $numbered_path;
     Hangar::delete_video_thumbnail(508);
     $check(!file_exists($numbered_path), 'attachment cleanup removes WordPress collision-renamed poster files');
+
+    $retry_path = $upload_dir . DIRECTORY_SEPARATOR . 'retry-poster.png';
+    file_put_contents($retry_path, $png);
+    $GLOBALS['hangar_fixture']['meta'][511]['_roxy_social_video_poster_file'] = $retry_path;
+    chmod($upload_dir, 0500);
+    Hangar::delete_video_thumbnail(511);
+    chmod($upload_dir, 0700);
+    $queued = end($GLOBALS['hangar_fixture']['scheduled']);
+    $check(is_file($retry_path) && !isset($GLOBALS['hangar_fixture']['meta'][511]['_roxy_social_video_poster_file'])
+        && ($queued['hook'] ?? '') === 'roxy_social_cleanup_video_poster' && ($queued['args'][0] ?? '') === $retry_path,
+        'failed poster unlink preserves the file path in a bounded retry event after attachment metadata is removed');
+    Hangar::retry_video_thumbnail_cleanup($retry_path, 1);
+    $check(!file_exists($retry_path), 'poster cleanup retry removes the owned file once directory permissions recover');
 
     $GLOBALS['hangar_fixture']['response'] = ['response' => ['code' => 200], 'headers' => ['content-type' => 'image/png'], 'body' => $png];
     $GLOBALS['hangar_fixture']['search_body'] = json_encode([
