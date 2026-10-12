@@ -541,13 +541,13 @@ class Tickets {
 
   private static function apply_undo(int $ticket_id, string $expected_source): bool {
       if (!self::$issuance || (int)self::read_ticket_meta($ticket_id,self::META_CHECKED_IN) !== 1) return false;
+      $order_id=(int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID);
       if ($expected_source !== '' && self::read_ticket_meta($ticket_id,'_roxy_checked_in_source') !== $expected_source) return false;
       if(self::read_ticket_meta($ticket_id,'_roxy_checked_in_source')==='member') {
         $visit_id=(int)self::read_ticket_meta($ticket_id,'_roxy_member_visit_id');
         $sub_id=(int)self::read_ticket_meta($ticket_id,'_roxy_member_visit_subscription_id');
         // No guessing by name/time: historical unlinked arrivals require review.
         if($visit_id<=0 || $sub_id<=0 || self::read_ticket_meta($ticket_id,self::META_TICKET_TYPE)!=='subscriber')return false;
-        $order_id=(int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID);
         $user_id=(int)self::$issuance->post_meta_value($order_id,'_customer_user');
         $audit=self::$issuance->undo_member_visit($visit_id,$sub_id,(int)self::read_ticket_meta($ticket_id,self::META_SHOWING_ID),$user_id);
         $history=self::read_ticket_meta($ticket_id,'_roxy_member_visit_undo_history');
@@ -558,10 +558,10 @@ class Tickets {
         self::remove_ticket_meta($ticket_id,'_roxy_member_visit_subscription_id');
       }
       foreach ([self::META_CHECKED_IN,self::META_CHECKED_IN_AT,self::META_CHECKED_IN_BY,'_roxy_checked_in_source'] as $key) self::remove_ticket_meta($ticket_id,$key);
-      $order = wc_get_order((int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID));
+      $order = wc_get_order($order_id);
       if ($order) {
         $item_id=(int)self::read_ticket_meta($ticket_id,self::META_ORDER_ITEM_ID);
-        $ticket_ids=self::$issuance->tickets_for_item((int)$order->get_id(),$item_id);
+        $ticket_ids=self::$issuance->tickets_for_item($order_id,$item_id);
         $allocated=self::refunded_ticket_ids($order,$item_id,$ticket_ids);
         if (isset($allocated[$ticket_id])) self::write_ticket_meta($ticket_id,self::META_REFUNDED,'1');
         else self::remove_ticket_meta($ticket_id,self::META_REFUNDED);
