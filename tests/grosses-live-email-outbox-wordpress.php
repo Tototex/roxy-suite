@@ -5,7 +5,12 @@
  */
 namespace RoxyGrosses {
   final class Settings {
-    public static function get($key, $default = '') { return $key === 'theater_name' ? 'Roxy Fixture Theater' : $default; }
+    public static function get($key, $default = '') {
+      if ($key === 'theater_name') return 'Roxy Fixture Theater';
+      if ($key === 'admin_email') return 'grosses-admin@example.invalid';
+      return $default;
+    }
+    public static function get_report_timezone(): string { return 'UTC'; }
     public static function email_list(): array { return ['grosses-admin@example.invalid']; }
   }
 
@@ -123,7 +128,15 @@ namespace {
       $fixture_db->charset = $fixture_charset;
     }
 
-    echo "Passed {$checks} real daily/live Grosses outbox route checks; all mail was intercepted before transport.\n";
+    $failure_mail_start = count($mail_calls);
+    \RoxyGrosses\Reporter::notify_admin_failure('Fixture Grosses failure', '2039-07-18', 'scheduled-provisional', 'Fixture failure only.');
+    $failure_mail = $mail_calls[$failure_mail_start] ?? [];
+    $failure_recipients = $failure_mail['to'] ?? [];
+    $fixture_vendor_addresses = ['inventory-vendor@example.invalid'];
+    $check(count($mail_calls) === $failure_mail_start + 1 && $failure_recipients === 'grosses-admin@example.invalid', 'Grosses failure alert targets only the configured admin fixture');
+    $check(!array_intersect((array) $failure_recipients, $fixture_vendor_addresses), 'Grosses failure alert never targets the Inventory vendor fixture');
+
+    echo "Passed {$checks} real daily/live Grosses outbox route checks; report and failure-alert mail were intercepted before transport.\n";
   } finally {
     remove_filter('pre_wp_mail', $mail_interceptor, PHP_INT_MAX);
     $wpdb = $original_db;
