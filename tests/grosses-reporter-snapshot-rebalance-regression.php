@@ -389,6 +389,22 @@ namespace {
   $saved_day_cents = 0;
   foreach ([\RoxyGrosses\Store::$movie,\RoxyGrosses\Store::$live,\RoxyGrosses\Store::$rental] as $dataset) $saved_day_cents += (int) round((float) ($dataset['2038-05-01'][0]['concessions_total'] ?? 0) * 100);
   $check($locked['updated'] === 2 && (int) round((float) \RoxyGrosses\Store::$movie['2038-05-01'][0]['concessions_total'] * 100) === $locked_cents && $saved_day_cents === 1001, 'locked movie amount stays fixed and remaining allocation is conserved across editable rows');
+  $mixed_locked_date = '2038-05-12';
+  \RoxyGrosses\Store::$movie[$mixed_locked_date] = [
+    ['id'=>7101,'show_time'=>'7:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>1,'concessions_total'=>5.00],
+    ['id'=>7102,'show_time'=>'9:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0.00],
+  ];
+  \RoxyGrosses\Square::$orders[$mixed_locked_date] = [
+    ['id'=>'locked-show-order','closed_at'=>$mixed_locked_date.'T19:00:00-07:00','line_items'=>[['uid'=>'locked-show-line','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>500,'currency'=>'USD']]]],
+    ['id'=>'editable-show-order','closed_at'=>$mixed_locked_date.'T21:00:00-07:00','line_items'=>[['uid'=>'editable-show-line','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>500,'currency'=>'USD']]]],
+  ];
+  $mixed_locked = \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$mixed_locked_date]));
+  $mixed_locked_total = (int) round((float) \RoxyGrosses\Store::$movie[$mixed_locked_date][0]['concessions_total'] * 100)
+    + (int) round((float) \RoxyGrosses\Store::$movie[$mixed_locked_date][1]['concessions_total'] * 100);
+  $check($mixed_locked['updated'] === 1 && (float) \RoxyGrosses\Store::$movie[$mixed_locked_date][0]['concessions_total'] === 5.0
+    && (float) \RoxyGrosses\Store::$movie[$mixed_locked_date][1]['concessions_total'] === 5.0 && $mixed_locked_total === 1000,
+    'locked-only sales remain fixed while editable shows receive the remaining daily cents');
+
   \RoxyGrosses\Store::$movie['2038-05-01'][0]['concessions_total'] = 20.0;
   $updates_before_mismatch = count(\RoxyGrosses\Store::$updates);
   $mismatch_failed = false;

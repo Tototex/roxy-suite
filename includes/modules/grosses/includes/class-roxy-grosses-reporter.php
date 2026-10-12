@@ -1931,7 +1931,7 @@ class Reporter {
     $remaining_cents = $eligible_cents - $locked_cents;
     if ($remaining_cents === 0) return;
     $provisional_total = array_sum($provisional);
-    if ($provisional_total !== $eligible_cents || !$provisional) throw new \RuntimeException('Concessions could not be fully matched to editable report rows; review this date manually.');
+    if ($provisional_total <= 0 || !$provisional) throw new \RuntimeException('Concessions could not be matched to editable report rows for the remaining amount; review this date manually.');
     $assigned = 0;
     $remainders = [];
     $allocated = [];
