@@ -127,7 +127,11 @@ try{
   $check($rejected&&$count_checked($ids)===3&&get_post_meta($ids[0],'_roxy_checked_in_source',true)==='ticket','group cannot erase an unrelated QR admission');
   \RoxyST\IssuanceFixtureTickets::apply_will_call_group($ids,1,true,$summary);
   $check($count_checked($ids)===1&&get_post_meta($ids[0],'_roxy_checked_in_source',true)==='ticket','group undo preserves earlier QR identity and source');
-  \RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0]);$summary['baseline_used']=0;\RoxyST\IssuanceFixtureTickets::apply_will_call_group($ids,0,false,$summary);
+  \RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0]);$summary['baseline_used']=0;$stale_summary_rejected=false;
+  try{\RoxyST\IssuanceFixtureTickets::apply_will_call_group($ids,0,false,$summary);}catch(RuntimeException $e){$stale_summary_rejected=true;}
+  $stale_summary=(int)$wpdb->get_var($wpdb->prepare("SELECT used_qty FROM {$wpdb->prefix}roxy_will_call_checkins WHERE product_id=%d AND customer_key=%s",$summary['context_id'],$summary['customer_key']));
+  $check($stale_summary_rejected&&$stale_summary===1&&$count_checked($ids)===0,'ticket undo cannot silently erase a stale higher aggregate; the summary remains for manager review');
+  $wpdb->delete($wpdb->prefix.'roxy_will_call_checkins',['product_id'=>$summary['context_id'],'customer_key'=>$summary['customer_key']]);
   $group_order=wc_create_order(['status'=>'processing','customer_note'=>'PRIVATE ISSUANCE FIXTURE 2026-10-05 — private second group order']);if(is_wp_error($group_order))throw new RuntimeException('Second fixture order failed');$group_order->add_product($product,1);$group_order->calculate_totals();$group_order->save();\RoxyST\IssuanceFixtureTickets::sync_order_tickets($group_order->get_id());$group_ids=\RoxyST\IssuanceFixtureTickets::get_order_ticket_ids($group_order->get_id());$both=array_merge($ids,$group_ids);
   \RoxyST\IssuanceFixtureTickets::apply_will_call_group($both,4,false,$summary);
   $check(count($group_ids)===1&&$count_checked($both)===4,'one customer group commits tickets spanning two Woo orders');
