@@ -99,6 +99,14 @@ jobs:
             echo "::error title=Ticket issuance private Woo fixture failed::$details"
             exit "$status"
           fi
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/will-call-product-filter-woocommerce.php" "$GITHUB_WORKSPACE" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 50 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Will Call private Woo product-filter fixture failed::$details"
+            exit "$status"
+          fi
           if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/ticket-issuance-mysql.php" "$GITHUB_WORKSPACE" >"$output" 2>&1; then
             cat "$output"
           else
