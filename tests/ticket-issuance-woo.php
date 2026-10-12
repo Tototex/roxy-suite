@@ -18,7 +18,7 @@ $check=static function($ok,$label){if(!$ok)throw new RuntimeException($label);ec
 try{
   $show=wp_insert_post(['post_type'=>'roxy_showing','post_status'=>'draft','post_title'=>'PRIVATE ISSUANCE FIXTURE 2026-10-05'],true);if(is_wp_error($show))throw new RuntimeException('Cannot create fixture');$created[]=$show;
   $product=new WC_Product_Simple();$product->set_name('PRIVATE ISSUANCE FIXTURE 2026-10-05');$product->set_status('draft');$product->set_catalog_visibility('hidden');$product->set_regular_price('0');$pid=$product->save();$created[]=$pid;
-  update_post_meta($pid,ROXY_ST_META_SHOWING_ID,$show);update_post_meta($pid,ROXY_ST_META_TICKET_TYPE,'general');
+  update_post_meta($pid,ROXY_ST_META_SHOWING_ID,$show);update_post_meta($pid,ROXY_ST_META_TICKET_TYPE,'general');update_post_meta($show,'_roxy_pid_adult',$pid);update_post_meta($show,'_roxy_start',wp_date('Y-m-d').' 23:00');
   $order=wc_create_order(['status'=>'pending','customer_note'=>'PRIVATE ISSUANCE FIXTURE 2026-10-05 — no payment or fulfillment']);if(is_wp_error($order))throw new RuntimeException('Cannot create private order');
   $item_id=$order->add_product($product,3);$order->calculate_totals();$order->save();
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'actual Woo order issues complete ticket set');
@@ -152,9 +152,13 @@ try{
   $legacy_stored=(int)$wpdb->get_var($wpdb->prepare("SELECT used_qty FROM {$wpdb->prefix}roxy_will_call_checkins WHERE product_id=%d AND customer_key=%s",$summary['context_id'],$summary['customer_key']));
   $check($legacy_rejected&&$legacy_stored===2&&(int)get_post_meta($ids[0],'_roxy_checked_in',true)===1,'ticket-level save refuses to overwrite a higher legacy aggregate and preserves both sources for review');
   \RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0],'ticket');
+  foreach($ids as $ticket_id)$check(\RoxyST\IssuanceFixtureTickets::check_in_ticket($ticket_id,9,'ticket'),'fixture ticket checks in before later refund');
   $refund=wc_create_refund(['order_id'=>$order->get_id(),'amount'=>0,'reason'=>'PRIVATE ISSUANCE FIXTURE','refund_payment'=>false,'restock_items'=>false,'line_items'=>[$item_id=>['qty'=>1,'refund_total'=>0,'refund_tax'=>[]]]]);if(is_wp_error($refund))throw new RuntimeException('Fixture refund failed');
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'actual zero-dollar line refund reconciles');
   $check(count(array_filter($ids,static fn($id)=>get_post_meta($id,'_roxy_ticket_state',true)==='refunded'))===1,'one refund invalidates exactly one existing ticket');
+  \RoxyST\Sales::clear_showing_cache($show);$refunded_stats=\RoxyST\Sales::get_showing_stats($show);
+  $check((int)($refunded_stats['sold_qty']??-1)===2,'a later refund removes one ticket from reportable sold quantity');
+  $check(\RoxyST\IssuanceFixtureTickets::count_checked_in_for_showing($show)===3&&count(array_filter($ids,static fn($id)=>(int)get_post_meta($id,'_roxy_checked_in',true)===1))===3,'a later refund preserves all three actual door check-ins separately from reportable sales');
   $order->update_status('cancelled');$check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'cancellation reconciles with original identities');
   $check(count(array_filter($ids,static fn($id)=>get_post_meta($id,'_roxy_ticket_state',true)==='valid'))===0,'cancelled fixture has no valid tickets');
   update_post_meta($ids[2],'_roxy_ticket_order_id',999999999);
