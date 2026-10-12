@@ -443,7 +443,6 @@ class Members_Dashboard {
         for ($offset = 0; $offset < $total; $offset += 100) {
             $batch = array_slice($ids, $offset, 100);
             yield $batch;
-            foreach (array_keys($batch) as $index) unset($ids[$offset + $index]);
         }
     }
 

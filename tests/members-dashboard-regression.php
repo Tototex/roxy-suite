@@ -41,7 +41,7 @@ function wcs_get_orders_with_meta_query($query) {
         'order' => 'DESC',
     ]);
     if (!empty($GLOBALS['mutate_after_identity_snapshot'])) {
-        $GLOBALS['subscription_status_overrides'][150]='active';
+        $GLOBALS['subscription_status_overrides'][$GLOBALS['mutate_snapshot_id']??150]=$GLOBALS['mutate_snapshot_status']??'active';
         $GLOBALS['mutate_after_identity_snapshot']=false;
     }
     return $ids;
@@ -142,6 +142,12 @@ try {
     if($snapshot_count!==256 || ($GLOBALS['subscription_status_overrides'][150]??'')!=='active' || $GLOBALS['wc_get_orders_limits']!==[-1])throw new RuntimeException('Status mutation changed the captured dashboard identity snapshot');
     unset($GLOBALS['subscription_status_overrides'][150]);
     echo "PASS: a status change after identity capture cannot shift pages, omit an existing member, or add a mid-read member.\n";
+    $GLOBALS['subscription_status_overrides'][151]='active';
+    $GLOBALS['mutate_snapshot_id']=151;$GLOBALS['mutate_snapshot_status']='on-hold';$GLOBALS['mutate_after_identity_snapshot']=true;
+    $snapshot_count=$new->invoke(null,$filters)['total_rows'];
+    if($snapshot_count!==257 || ($GLOBALS['subscription_status_overrides'][151]??'')!=='on-hold')throw new RuntimeException('A captured member was omitted after becoming inactive mid-read');
+    unset($GLOBALS['subscription_status_overrides'][151],$GLOBALS['mutate_snapshot_id'],$GLOBALS['mutate_snapshot_status']);
+    echo "PASS: a member captured as eligible remains in this dashboard's identity snapshot after a later status change.\n";
     foreach([0,-9,'bad',[]] as $invalid){$_GET=['member_page'=>$invalid];if($new->invoke(null,$filters)['page']!==1)throw new RuntimeException('Invalid page not normalized');}
     $_GET=['member_page'=>2];$snapshot=$new->invoke(null,$filters);
     $navigation=new ReflectionMethod('RoxySuite\\Members_DashboardCandidate','pagination');
