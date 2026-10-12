@@ -48,6 +48,9 @@ $check = static function ($condition, string $label) use (&$checks): void {
 $table_exists = static function (string $table) use ($wpdb): bool {
     return $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table))) === $table;
 };
+$database_errors = [];
+$capture_database_error = static function ($error) use (&$database_errors): void { $database_errors[] = (string)$error; };
+add_action('wpdb_error', $capture_database_error, 10, 1);
 
 $wpdb->prefix = $private_prefix;
 try {
@@ -73,8 +76,10 @@ try {
         override_qty DECIMAL(12,2) NULL,
         calculated_at DATETIME NULL,
         updated_at DATETIME NOT NULL,
-        PRIMARY KEY (id), UNIQUE KEY square_variation_id (square_variation_id),
-        KEY vendor (vendor), KEY active (active)
+        PRIMARY KEY  (id),
+        UNIQUE KEY square_variation_id (square_variation_id),
+        KEY vendor (vendor),
+        KEY active (active)
     ) ENGINE=InnoDB " . $wpdb->get_charset_collate());
     if ($created === false || !empty($wpdb->last_error)) throw new RuntimeException('Could not create the private legacy Inventory schema: ' . $wpdb->last_error);
 
@@ -104,6 +109,23 @@ try {
     $required = ['tracking_status', 'unit_cost_status', 'unit_cost_source', 'unit_cost_checked_at', 'supplier_sku'];
     $check(count(array_diff($required, $columns)) === 0, 'installer adds and verifies all tracking and cost provenance columns');
 
+    $required_indexes = [
+        $tables[0] => ['PRIMARY' => [0, 'id'], 'square_variation_id' => [0, 'square_variation_id'], 'vendor' => [1, 'vendor'], 'active' => [1, 'active']],
+        $tables[1] => ['PRIMARY' => [0, 'id'], 'name' => [0, 'name']],
+        $tables[2] => ['PRIMARY' => [0, 'id'], 'created_at' => [1, 'created_at']],
+        $tables[3] => ['PRIMARY' => [0, 'id'], 'submission_key' => [0, 'submission_key'], 'vendor' => [1, 'vendor'], 'created_at' => [1, 'created_at']],
+    ];
+    foreach ($required_indexes as $table => $expected_indexes) {
+        $index_rows = $wpdb->get_results("SHOW INDEX FROM `{$table}`", ARRAY_A);
+        if (!is_array($index_rows) || !empty($wpdb->last_error)) throw new RuntimeException('Could not inspect upgraded Inventory indexes: ' . $wpdb->last_error);
+        $actual_indexes = [];
+        foreach ($index_rows as $index_row) $actual_indexes[(string)$index_row['Key_name']] = [(int)$index_row['Non_unique'], (string)$index_row['Column_name']];
+        foreach ($expected_indexes as $name => $expected) {
+            if (($actual_indexes[$name] ?? null) !== $expected) throw new RuntimeException('Inventory upgrade is missing or misconfigures index ' . $name . ' on ' . $table . '.');
+        }
+    }
+    $check(true, 'existing and idempotency indexes are present with the required uniqueness');
+
     $positive = $wpdb->get_row($wpdb->prepare("SELECT * FROM `{$legacy_products}` WHERE id=%d", $positive_id), ARRAY_A);
     $zero = $wpdb->get_row($wpdb->prepare("SELECT * FROM `{$legacy_products}` WHERE id=%d", $zero_id), ARRAY_A);
     if (!empty($wpdb->last_error)) throw new RuntimeException('Could not read upgraded private Inventory rows: ' . $wpdb->last_error);
@@ -121,9 +143,11 @@ try {
         'provenance migration marker is saved only after the data migration');
     $check($table_exists($tables[1]) && $table_exists($tables[2]) && $table_exists($tables[3]),
         'installer creates the remaining Inventory tables under the same private prefix');
+    $check($database_errors === [], 'schema upgrade emits no WordPress/MySQL query errors');
 
     echo "Passed {$checks} real WordPress/MySQL Inventory cost migration checks. No mail, Square, WooCommerce, or production tables were used.\n";
 } finally {
+    remove_action('wpdb_error', $capture_database_error, 10);
     foreach ($tables as $table) {
         if (preg_match('/^' . preg_quote($original_prefix, '/') . preg_quote($token, '/') . 'roxy_inventory_[a-z_]+$/', $table) && $table_exists($table)) {
             if ($wpdb->query("DROP TABLE `{$table}`") === false) error_log('Could not remove private Inventory fixture table: ' . $table);

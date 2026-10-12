@@ -133,32 +133,66 @@ class Store {
     public static function install_schema(): void {
         global $wpdb; require_once ABSPATH . 'wp-admin/includes/upgrade.php'; $charset = $wpdb->get_charset_collate();
         dbDelta("CREATE TABLE " . self::products_table() . " (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, square_variation_id VARCHAR(80) NOT NULL,
-            square_item_id VARCHAR(80) NULL, name VARCHAR(190) NOT NULL, sku VARCHAR(190) NULL,
-            vendor VARCHAR(100) NULL, tracking_status VARCHAR(20) NOT NULL DEFAULT 'tracked', active TINYINT(1) NOT NULL DEFAULT 1, on_hand DECIMAL(12,2) NOT NULL DEFAULT 0,
-            pack_size DECIMAL(12,2) NOT NULL DEFAULT 1, reorder_point DECIMAL(12,2) NOT NULL DEFAULT 0,
-            target_stock DECIMAL(12,2) NOT NULL DEFAULT 0, unit_cost DECIMAL(12,2) NOT NULL DEFAULT 0,
-            unit_cost_status VARCHAR(20) NOT NULL DEFAULT 'unknown', unit_cost_source VARCHAR(190) NULL,
-            unit_cost_checked_at DATE NULL, supplier_sku VARCHAR(190) NULL,
-            override_qty DECIMAL(12,2) NULL, calculated_at DATETIME NULL, updated_at DATETIME NOT NULL,
-            PRIMARY KEY (id), UNIQUE KEY square_variation_id (square_variation_id), KEY vendor (vendor), KEY active (active)
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            square_variation_id VARCHAR(80) NOT NULL,
+            square_item_id VARCHAR(80) NULL,
+            name VARCHAR(190) NOT NULL,
+            sku VARCHAR(190) NULL,
+            vendor VARCHAR(100) NULL,
+            tracking_status VARCHAR(20) NOT NULL DEFAULT 'tracked',
+            active TINYINT(1) NOT NULL DEFAULT 1,
+            on_hand DECIMAL(12,2) NOT NULL DEFAULT 0,
+            pack_size DECIMAL(12,2) NOT NULL DEFAULT 1,
+            reorder_point DECIMAL(12,2) NOT NULL DEFAULT 0,
+            target_stock DECIMAL(12,2) NOT NULL DEFAULT 0,
+            unit_cost DECIMAL(12,2) NOT NULL DEFAULT 0,
+            unit_cost_status VARCHAR(20) NOT NULL DEFAULT 'unknown',
+            unit_cost_source VARCHAR(190) NULL,
+            unit_cost_checked_at DATE NULL,
+            supplier_sku VARCHAR(190) NULL,
+            override_qty DECIMAL(12,2) NULL,
+            calculated_at DATETIME NULL,
+            updated_at DATETIME NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY square_variation_id (square_variation_id),
+            KEY vendor (vendor),
+            KEY active (active)
         ) $charset;");
         dbDelta("CREATE TABLE " . self::vendors_table() . " (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, name VARCHAR(100) NOT NULL, order_method VARCHAR(30) NOT NULL DEFAULT 'email',
-            email VARCHAR(190) NULL, minimum_amount DECIMAL(12,2) NOT NULL DEFAULT 0, delivery_notes TEXT NULL,
-            active TINYINT(1) NOT NULL DEFAULT 1, updated_at DATETIME NOT NULL,
-            PRIMARY KEY (id), UNIQUE KEY name (name)
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            name VARCHAR(100) NOT NULL,
+            order_method VARCHAR(30) NOT NULL DEFAULT 'email',
+            email VARCHAR(190) NULL,
+            minimum_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+            delivery_notes TEXT NULL,
+            active TINYINT(1) NOT NULL DEFAULT 1,
+            updated_at DATETIME NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY name (name)
         ) $charset;");
         dbDelta("CREATE TABLE " . self::runs_table() . " (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, run_type VARCHAR(30) NOT NULL, status VARCHAR(20) NOT NULL,
-            message TEXT NULL, created_at DATETIME NOT NULL, PRIMARY KEY (id), KEY created_at (created_at)
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            run_type VARCHAR(30) NOT NULL,
+            status VARCHAR(20) NOT NULL,
+            message TEXT NULL,
+            created_at DATETIME NOT NULL,
+            PRIMARY KEY  (id),
+            KEY created_at (created_at)
         ) $charset;");
         dbDelta("CREATE TABLE " . self::orders_table() . " (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, vendor VARCHAR(100) NOT NULL,
-            status VARCHAR(30) NOT NULL DEFAULT 'approval_emailed', estimated_total DECIMAL(12,2) NOT NULL DEFAULT 0,
-            minimum_amount DECIMAL(12,2) NOT NULL DEFAULT 0, item_count INT NOT NULL DEFAULT 0,
-            payload LONGTEXT NULL, submission_key VARCHAR(64) NULL, created_at DATETIME NOT NULL,
-            PRIMARY KEY (id), UNIQUE KEY submission_key (submission_key), KEY vendor (vendor), KEY created_at (created_at)
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            vendor VARCHAR(100) NOT NULL,
+            status VARCHAR(30) NOT NULL DEFAULT 'approval_emailed',
+            estimated_total DECIMAL(12,2) NOT NULL DEFAULT 0,
+            minimum_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+            item_count INT NOT NULL DEFAULT 0,
+            payload LONGTEXT NULL,
+            submission_key VARCHAR(64) NULL,
+            created_at DATETIME NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY submission_key (submission_key),
+            KEY vendor (vendor),
+            KEY created_at (created_at)
         ) $charset;");
         self::ensure_product_column('tracking_status', "VARCHAR(20) NOT NULL DEFAULT 'tracked' AFTER vendor");
         self::ensure_product_column('unit_cost_status', "VARCHAR(20) NOT NULL DEFAULT 'unknown' AFTER unit_cost");
