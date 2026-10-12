@@ -40,9 +40,11 @@ $write_guard = static function ($sql) use ($wpdb, $maps) {
 };
 $http_guard = static fn() => new WP_Error('private_fixture', 'Network disabled in allocation fixture.');
 $mail_guard = static function () { throw new RuntimeException('Email disabled in allocation fixture.'); };
+$cron_guard = static fn($pre, $event = null, $wp_error = false) => true;
 add_filter('query', $write_guard, PHP_INT_MAX);
 add_filter('pre_http_request', $http_guard, PHP_INT_MAX, 3);
 add_filter('pre_wp_mail', $mail_guard, PHP_INT_MAX, 2);
+add_filter('pre_schedule_event', $cron_guard, PHP_INT_MAX, 3);
 try {
   foreach ($maps as $production_name => $fixture_name) {
     if (!preg_match('/^roxy_fixture_[a-f0-9]{10}_(movie|live|rental)$/', $fixture_name)) throw new RuntimeException('Unsafe fixture table name.');
@@ -164,5 +166,6 @@ try {
   remove_filter('query', $write_guard, PHP_INT_MAX);
   remove_filter('pre_http_request', $http_guard, PHP_INT_MAX);
   remove_filter('pre_wp_mail', $mail_guard, PHP_INT_MAX);
+  remove_filter('pre_schedule_event', $cron_guard, PHP_INT_MAX);
   $wpdb->suppress_errors($silenced);
 }
