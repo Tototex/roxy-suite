@@ -3,7 +3,7 @@
 namespace RoxyST {
     final class CPT { public const POST_TYPE = 'roxy_showing'; }
     final class Products { public static function ensure_products_for_showing($id): void {} }
-    final class Tickets { public static function sync_order_tickets($id): void {} }
+    final class Tickets { public static bool $sync_result = true; public static function sync_order_tickets($id): bool { return self::$sync_result; } }
     final class Settings { public static function get_price(string $key, float $fallback): float { return (float) $fallback; } }
     final class Issuance {
         public static bool $busy = false;
@@ -269,6 +269,7 @@ namespace {
         global $wpdb;
         $wpdb = new FixtureWpdb(); $GLOBALS['wpdb'] = $wpdb;
         \RoxyST\Reservations::$used = 0; \RoxyST\Holds::$allow = true; \RoxyST\Holds::$calls = 0;
+        \RoxyST\Tickets::$sync_result = true;
         \RoxyST\Issuance::$busy = false; \RoxyST\Issuance::$lost = false; \RoxyST\Issuance::$released = 0;
         \RoxyRS\ConversionClaims::$started = [];
         \RoxyRS\PledgeAttempts::$pending = []; \RoxyRS\PledgeAttempts::$receipts = [];
@@ -474,6 +475,21 @@ namespace {
     check_fixture($GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'conversion_review'
         && $GLOBALS['fixture_post_status'][501] === 'draft' && $GLOBALS['fixture_mails'] === [],
         'post-order finalization failure keeps request in review and sends no customer confirmation');
+
+    reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing();
+    $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_TARGET_AT] = '2026-10-30 19:00';
+    $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_APPROVED_SHOWING_ID] = 801;
+    \RoxyST\Tickets::$sync_result = false;
+    $issuance_failure = \RoxyRS\Conversion::approve_request(501);
+    check_fixture(is_wp_error($issuance_failure) && $issuance_failure->get_error_code() === 'backing_review_required',
+        'post-payment ticket issuance failure returns manager-review state');
+    check_fixture($GLOBALS['fixture_order']->completed === 1 && ($wpdb->rows[1]['status'] ?? '') === 'charged'
+        && (int) ($wpdb->rows[1]['woo_order_id'] ?? 0) === 7001,
+        'ticket issuance failure preserves the completed order and charged backing without retrying payment');
+    check_fixture($GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'conversion_review'
+        && $GLOBALS['fixture_post_status'][501] === 'draft'
+        && count($GLOBALS['fixture_mails']) === 1 && $GLOBALS['fixture_mails'][0]['to'] === 'admin@example.invalid',
+        'ticket issuance failure keeps the request unpublished and sends manager review only');
 
     reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing();
     $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_TARGET_AT] = '2026-10-30 19:00';

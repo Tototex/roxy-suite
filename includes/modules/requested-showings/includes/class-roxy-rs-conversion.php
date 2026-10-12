@@ -368,11 +368,16 @@ class Conversion {
             if (is_wp_error($result)) {
                 $needs_review = true;
                 $backing_id = (int) ($backing['id'] ?? 0);
-                roxy_rs_repo_update_backing((int) $backing['id'], [
-                    'status' => 'approved',
+                $review_update = [
                     'approved_showing_id' => $showing_id,
                     'admin_note' => $result->get_error_message(),
-                ]);
+                ];
+                // If payment/no-charge completion was already durably recorded,
+                // a later ticket projection failure must not downgrade it.
+                if ($result->get_error_code() !== 'ticket_issuance_review_required') {
+                    $review_update['status'] = 'approved';
+                }
+                roxy_rs_repo_update_backing((int) $backing['id'], $review_update);
                 $review_backing = roxy_rs_repo_get_backing($backing_id);
                 $review_order_id = (int) ($review_backing['woo_order_id'] ?? 0);
                 $review_order = $review_order_id > 0 && function_exists('wc_get_order') ? wc_get_order($review_order_id) : false;
@@ -945,6 +950,10 @@ class Conversion {
             }
         }
 
+        if (!class_exists('\\RoxyST\\Tickets') || !is_callable(['\\RoxyST\\Tickets', 'sync_order_tickets'])) {
+            return new \WP_Error('ticket_issuance_unavailable', 'Ticket issuance could not be verified. No payment was attempted.');
+        }
+
         $charge_total = (int) ($backing['charge_total'] ?? 0);
         $lease->assert_owner();
         if ($charge_total > 0) {
@@ -989,8 +998,12 @@ class Conversion {
             || (string) ($completed_backing['charge_intent_id'] ?? '') !== $expected_intent) {
             return new \WP_Error('backing_result_unverified', 'Payment or no-charge completion occurred, but its backing link could not be verified. Do not charge it again.');
         }
-        if (class_exists('\\RoxyST\\Tickets')) {
-            \RoxyST\Tickets::sync_order_tickets($order->get_id());
+        try {
+            if (\RoxyST\Tickets::sync_order_tickets($order->get_id()) !== true) {
+                return new \WP_Error('ticket_issuance_review_required', 'The payment/order is recorded, but one or more tickets could not be verified. No second payment was attempted; manager review is required.');
+            }
+        } catch (\Throwable $error) {
+            return new \WP_Error('ticket_issuance_review_required', 'The payment/order is recorded, but ticket issuance could not be verified. No second payment was attempted; manager review is required.');
         }
 
         return $order->get_id();
