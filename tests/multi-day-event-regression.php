@@ -1,6 +1,7 @@
 <?php
 if (!defined('WP_CLI') || !WP_CLI) exit;
 $root = $args[0] ?? dirname(__DIR__);
+global $wpdb;
 $check = static function ($ok, string $message): void {
   if (!$ok) throw new RuntimeException($message);
   echo 'PASS: ' . $message . PHP_EOL;

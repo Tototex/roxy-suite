@@ -174,7 +174,7 @@ try {
     $_REQUEST = $_POST;
 
     register_shutdown_function(static function () use (
-        &$failure, &$request_id, &$showing_id, &$user_id, &$subscriber_product_id, &$backing_id, &$order_id,
+        &$failure, &$checks, &$request_id, &$showing_id, &$user_id, &$subscriber_product_id, &$backing_id, &$order_id,
         &$mail_attempts, &$http_attempts, $mail_guard_registered, $http_guard_registered, $marker, $email, $check, $mail_blocker, $http_blocker
     ): void {
         global $wpdb;
