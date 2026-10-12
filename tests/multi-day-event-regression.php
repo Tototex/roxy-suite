@@ -229,6 +229,7 @@ try {
   \RoxyST\Events::save((int)$event_id, get_post((int)$event_id));
   $check(get_the_title($products[0]) === $stable_product_title,
     'restoring the original screening title synchronizes its ticket product after commit');
+  $_POST = $old_post;
   wp_update_post(['ID'=>(int)$event_id,'post_status'=>'draft']);
   $check(count(array_filter($screenings,static fn($id)=>get_post_status($id)==='draft'))===6,
     'drafting the event deactivates all linked screenings');
