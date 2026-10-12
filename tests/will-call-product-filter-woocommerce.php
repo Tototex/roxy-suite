@@ -149,9 +149,7 @@ try {
     return ($row['email'] ?? '') === 'buyer201@example.invalid';
   }));
   $check(count($variation_buyer) === 1 && ($variation_buyer[0]['ticket_types']['Variation'] ?? 0) === 1, 'actual variation item metadata narrows to its order and preserves the variation ticket label');
-  $check(count($optimized['rows']) === 201 && $candidate_pages === 2, 'real candidate filtering traverses both pages for 201 matching legacy orders');
-  $check($baseline_pages === 3 && $candidate_pages === 2, 'real Woo candidate filter removes an unnecessary 200-order scan page');
-  if ($candidate_sql_count !== 1) {
+  if ($candidate_sql_count !== 1 || $candidate_pages !== 2 || $baseline_pages !== 3) {
     $guard_filters = [
       'woocommerce_order_item_get_product_id',
       'woocommerce_order_item_get_variation_id',
@@ -164,8 +162,13 @@ try {
     foreach ($guard_filters as $filter_name) {
       if (has_filter($filter_name)) $active_guards[] = $filter_name . '=' . (string) has_filter($filter_name);
     }
-    echo 'Candidate query diagnostic: SQL count=' . $candidate_sql_count . '; active guards=' . implode(',', $active_guards) . PHP_EOL;
+    echo 'Candidate query diagnostic: baseline pages=' . $baseline_pages
+      . '; candidate pages=' . $candidate_pages
+      . '; canonical SQL count=' . $candidate_sql_count
+      . '; active guards=' . implode(',', $active_guards) . PHP_EOL;
   }
+  $check(count($optimized['rows']) === 201 && $candidate_pages === 2, 'real candidate filtering traverses both pages for 201 matching legacy orders');
+  $check($baseline_pages === 3 && $candidate_pages === 2, 'real Woo candidate filter removes an unnecessary 200-order scan page');
   $check($candidate_sql_count === 1, 'canonical Woo item-meta candidate search runs exactly once across pagination');
   $check((float) $optimized['totals']['total_revenue'] === (float) $baseline['totals']['total_revenue'], 'matching variation contributes to unchanged real Woo revenue totals');
   $check($mail_calls === 0, 'fixture creates no Woo email attempts');
