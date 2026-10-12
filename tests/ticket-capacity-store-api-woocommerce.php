@@ -1,10 +1,21 @@
 <?php
-/** Private WP-CLI fixture: Store API capacity checks; no public products, orders, or payments. */
+/** Private WP-CLI fixture: Store API capacity/allowance checks; synthetic Woo orders only, no payments. */
 if (!defined('ABSPATH') || !class_exists('WC_Cart')) throw new RuntimeException('Loaded Woo required.');
 global $wpdb;
 $ids = [];
+$orders = [];
+$users = [];
+$saved_user_id = get_current_user_id();
 $saved = [WC()->cart, WC()->session, WC()->customer];
 $checks = 0;
+$GLOBALS['roxy_store_api_fixture_subscriptions'] = [];
+if (!function_exists('wcs_get_users_subscriptions')) {
+    // The registered disposable workflow installs WooCommerce, not WCS. This
+    // test-local adapter supplies only an in-memory active entitlement.
+    function wcs_get_users_subscriptions($user_id) {
+        return $GLOBALS['roxy_store_api_fixture_subscriptions'][(int) $user_id] ?? [];
+    }
+}
 $assert = static function ($ok, $label) use (&$checks) {
     if (!$ok) throw new RuntimeException($label);
     echo "PASS: $label\n";
@@ -88,13 +99,115 @@ try {
     wc_clear_notices();
     $controller->validate_cart();
     $assert(wc_notice_count('error') === 0, 'Store API allows checkout validation when capacity is available');
+
+    // The cart validator can cache zero paid subscriber usage. A purchase made
+    // after that read must still be seen by the Store API's durable hold claim.
+    if (!function_exists('wcs_get_users_subscriptions') || !class_exists(RoxyST\Holds::class)) {
+        throw new RuntimeException('Subscriber entitlement API and ticket holds are required for the Store API regression.');
+    }
+    update_post_meta($product_id, ROXY_ST_META_TICKET_TYPE, 'subscriber');
+    $user_id = wp_insert_user([
+        'user_login' => 'roxy-store-api-subscriber-' . bin2hex(random_bytes(5)),
+        'user_pass' => wp_generate_password(32),
+        'user_email' => 'fixture-' . bin2hex(random_bytes(5)) . '@example.test',
+        'role' => 'customer',
+    ]);
+    if (is_wp_error($user_id)) throw new RuntimeException('Private subscriber user could not be created.');
+    $users[] = (int) $user_id;
+    wp_set_current_user((int) $user_id);
+    $entitlement_item = new class { public function get_quantity() { return 1; } };
+    $entitlement = new class($entitlement_item) {
+        private $item;
+        public function __construct($item) { $this->item = $item; }
+        public function has_status($status) { return $status === 'active'; }
+        public function get_items() { return [$this->item]; }
+    };
+    $GLOBALS['roxy_store_api_fixture_subscriptions'][(int) $user_id] = [$entitlement];
+    $assert(RoxyST\Capacity::subscription_entitlement_count((int) $user_id) === 1,
+        'in-memory fixture grants exactly one active subscriber admission');
+
+    WC()->customer = new WC_Customer((int) $user_id, false);
+    WC()->cart = new WC_Cart();
+    $request->set_param('quantity', 1);
+    wc_clear_notices();
+    $controller->validate_add_to_cart($product, $request);
+    $assert(wc_notice_count('error') === 0, 'Store API accepts one subscriber seat within the fresh paid-usage allowance');
+
+    // Create a private, zero-value synthetic paid order after the zero-usage
+    // read above. No gateway or payment is invoked; mail is intercepted.
+    $product->set_price(0); // Subscriber tickets are complimentary.
+    add_filter('pre_wp_mail', static fn() => true);
+    foreach ([
+        ['woocommerce_order_status_changed', [RoxyST\Tickets::class, 'on_order_changed'], 30],
+        ['woocommerce_order_status_changed', [RoxyST\Sales::class, 'on_order_changed'], 20],
+    ] as [$hook, $callback, $priority]) {
+        if (class_exists(RoxyST\Tickets::class) || class_exists(RoxyST\Sales::class)) remove_action($hook, $callback, $priority);
+    }
+    $paid_order = wc_create_order(['customer_id' => (int) $user_id, 'customer_note' => 'PRIVATE synthetic subscriber-usage fixture']);
+    if (is_wp_error($paid_order)) throw new RuntimeException('Private synthetic usage order could not be created.');
+    $orders[] = $paid_order;
+    $paid_order->add_product($product, 1);
+    $paid_order->calculate_totals();
+    $paid_order->save();
+    $paid_order->update_status('processing');
+    // Match the marker written by the ticket order projection. Without it,
+    // wc_get_orders() would not find this synthetic order in the paid-usage
+    // query even if the request-local cache were cleared.
+    $usage_marker = '_roxy_contains_showing_' . $showing_id;
+    update_post_meta($paid_order->get_id(), $usage_marker, '1');
+    $fresh_paid_order_ids = wc_get_orders([
+        'customer_id' => (int) $user_id,
+        'status' => ['wc-processing', 'wc-completed'],
+        'limit' => -1,
+        'return' => 'ids',
+        'type' => 'shop_order',
+        'meta_query' => [['key' => $usage_marker, 'value' => '1']],
+    ]);
+    $assert(is_array($fresh_paid_order_ids) && in_array((int) $paid_order->get_id(), array_map('intval', $fresh_paid_order_ids), true),
+        'synthetic paid order carries the production showing marker and is visible to a fresh usage query');
+    $assert(RoxyST\Capacity::purchased_subscriber_qty_for_showing_user($showing_id, (int) $user_id) === 0,
+        'request-local paid-usage cache remains stale after the synthetic paid order is added');
+    $assert(RoxyST\Reservations::quantity_for_showing($showing_id, 0, (int) $user_id) === 1,
+        'private paid subscriber order consumes the account allowance in fresh reservation data');
+
+    WC()->cart->cart_contents = ['private-subscriber-fixture' => [
+        'product_id' => $product_id, 'variation_id' => 0, 'variation' => [], 'quantity' => 1,
+        'data' => $product, 'data_hash' => wc_get_cart_item_data_hash($product),
+    ]];
+    wc_clear_notices();
+    $controller->validate_cart();
+    $assert(wc_notice_count('error') === 0, 'fixture reproduces a stale request-local cart allowance after new paid usage appears');
+
+    $candidate_order = wc_create_order(['customer_id' => (int) $user_id, 'customer_note' => 'PRIVATE Store API hold claim fixture']);
+    if (is_wp_error($candidate_order)) throw new RuntimeException('Private Store API candidate order could not be created.');
+    $orders[] = $candidate_order;
+    $candidate_order->add_product($product, 1);
+    $candidate_order->calculate_totals();
+    $candidate_order->save();
+    $blocked = false;
+    try { RoxyST\Holds::claim_store_api($candidate_order); }
+    catch (Automattic\WooCommerce\StoreApi\Exceptions\RouteException $error) {
+        $blocked = $error->error_code === 'roxy_seat_unavailable';
+    }
+    $assert($blocked, 'Store API durable hold claim rejects paid subscriber usage added after stale cart validation');
+    $assert(!(int) get_post_meta($candidate_order->get_id(), '_roxy_seat_hold_managed', true)
+        && !(int) get_post_meta($candidate_order->get_id(), '_roxy_seat_hold_until', true),
+        'rejected Store API subscriber claim creates no durable seat hold');
+
     $assert((int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->posts} WHERE ID IN (%d,%d) AND post_status='draft'", $showing_id, $product_id)) === 2, 'fixture records remain private drafts');
-    echo "Passed $checks installed Store API capacity checks. No checkout, order, or payment created.\n";
+    echo "Passed $checks installed Store API capacity checks. Only private synthetic Woo records were created; no checkout or payment was made.\n";
 } finally {
+    foreach ($orders as $order) $order->delete(true);
+    unset($GLOBALS['roxy_store_api_fixture_subscriptions']);
     foreach ($ids as $id) {
         $wpdb->delete($wpdb->postmeta, ['post_id' => $id]);
         $wpdb->delete($wpdb->posts, ['ID' => $id]);
         clean_post_cache($id);
     }
+    if ($users) {
+        require_once ABSPATH . 'wp-admin/includes/user.php';
+        foreach ($users as $user_id) wp_delete_user($user_id);
+    }
+    wp_set_current_user($saved_user_id);
     [WC()->cart, WC()->session, WC()->customer] = $saved;
 }
