@@ -10,6 +10,19 @@ $prefix_before=$wpdb->prefix;
 $fixture_prefix='roxy_pub_fixture_'.bin2hex(random_bytes(5)).'_';
 $table=$fixture_prefix.\RoxySocial\PublishFixtureStore::TABLE;
 $suppressed=$wpdb->suppress_errors(true);
+final class PublishFixtureConnectionReadFailure {
+    private $delegate;
+    private int $connection_reads=0;
+    public string $last_error='';
+    public function __construct($delegate){$this->delegate=$delegate;}
+    public function __get($name){return $this->delegate->$name;}
+    public function __set($name,$value):void{$this->delegate->$name=$value;}
+    public function __call($name,$arguments){return $this->delegate->$name(...$arguments);}
+    public function get_var($query=null,$x=0,$y=0){
+        if(trim((string)$query)==='SELECT CONNECTION_ID()'&&++$this->connection_reads===2){$this->last_error='simulated ownership verification read failure';return null;}
+        return $this->delegate->get_var($query,$x,$y);
+    }
+}
 function roxy_publish_fixture_check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS: $label\n";}
 try {
     if(false===$wpdb->query("CREATE TEMPORARY TABLE `$table` (id BIGINT PRIMARY KEY, status VARCHAR(24), last_error TEXT NULL, updated_at DATETIME, facebook_post_id VARCHAR(190) NULL, instagram_media_id VARCHAR(190) NULL, instagram_container_id VARCHAR(190) NULL)"))throw new RuntimeException('Temporary fixture table creation failed');
@@ -45,6 +58,13 @@ try {
         if($claim)\RoxySocial\PublishFixtureStore::release_publish_lock($claim);
         $second_connection->close();
     }
+    $verification_lock='roxy-social-'.substr(hash('sha256',DB_NAME.':'.\RoxySocial\PublishFixtureStore::table_name().':3'),0,48);
+    $wpdb=new PublishFixtureConnectionReadFailure($first_connection);
+    try{$failed_claim=\RoxySocial\PublishFixtureStore::acquire_publish_lock(3);}
+    finally{$wpdb=$first_connection;}
+    roxy_publish_fixture_check($failed_claim===null
+        &&(int)$wpdb->get_var($wpdb->prepare('SELECT IS_FREE_LOCK(%s)',$verification_lock))===1,
+        'transient ownership verification failure releases the same-connection worker lock');
     roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::update_publish_result(1,'publishing','','123'),'real SQL persists platform success');
     roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::update_publish_result(1,'publishing','','123'),'unchanged same-second update correctly verifies existing row');
     roxy_publish_fixture_check(!\RoxySocial\PublishFixtureStore::update_publish_result(999,'posted','','123'),'missing row cannot report durable success');

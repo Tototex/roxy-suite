@@ -632,17 +632,33 @@ final class Store {
         global $wpdb;
         if ($id <= 0) return null;
         $name = 'roxy-social-' . substr(hash('sha256', DB_NAME . ':' . self::table_name() . ':' . $id), 0, 48);
-        if ((string) $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $name)) !== '1') return null;
-        $claim = ['name' => $name, 'connection' => (string) $wpdb->get_var('SELECT CONNECTION_ID()')];
-        if (!self::owns_publish_lock($claim)) return null;
+        $wpdb->last_error = '';
+        $locked = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $name));
+        if ($wpdb->last_error !== '' || (string) $locked !== '1') return null;
+        $wpdb->last_error = '';
+        $connection = (string) $wpdb->get_var('SELECT CONNECTION_ID()');
+        if ($wpdb->last_error !== '' || !preg_match('/^[1-9][0-9]*$/D', $connection)) $connection = '';
+        $claim = ['name' => $name, 'connection' => $connection];
+        if (!self::owns_publish_lock($claim)) {
+            // RELEASE_LOCK is scoped by MySQL to the current connection, so
+            // this best-effort cleanup cannot release another worker's lock.
+            // It handles transient verification failures and reconnects after
+            // GET_LOCK without leaving a stale claim on the old session.
+            $wpdb->last_error = '';
+            $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $name));
+            return null;
+        }
         return $claim;
     }
 
     public static function owns_publish_lock(array $claim): bool {
         global $wpdb;
+        $wpdb->last_error = '';
         $connection = (string) $wpdb->get_var('SELECT CONNECTION_ID()');
-        return $connection !== '' && $connection === (string) ($claim['connection'] ?? '')
-            && (string) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', (string) ($claim['name'] ?? ''))) === $connection;
+        if ($wpdb->last_error !== '' || $connection === '' || $connection !== (string) ($claim['connection'] ?? '')) return false;
+        $wpdb->last_error = '';
+        $owner = (string) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', (string) ($claim['name'] ?? '')));
+        return $wpdb->last_error === '' && $owner === $connection;
     }
 
     public static function release_publish_lock(array $claim): void {
