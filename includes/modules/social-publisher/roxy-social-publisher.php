@@ -16,20 +16,21 @@ require_once __DIR__ . '/includes/class-roxy-social-ai.php';
 add_action('admin_init',['\\RoxySocial\\Secrets','migrate_legacy_options'],1);
 
 add_action('plugins_loaded', function () {
-    if (get_option('roxy_social_schema_version') !== '1.7') {
+    if (get_option('roxy_social_schema_version') !== '1.8') {
         if (!\RoxySocial\Store::install_schema()) {
-            error_log('Roxy Social schema migration to 1.7 failed verification; schema version was not advanced.');
+            error_log('Roxy Social schema migration to 1.8 failed verification; schema version was not advanced.');
         } else {
-            update_option('roxy_social_schema_version', '1.7');
-            if (get_option('roxy_social_schema_version') !== '1.7') error_log('Roxy Social schema migration completed but version marker did not persist.');
+            update_option('roxy_social_schema_version', '1.8');
+            if (get_option('roxy_social_schema_version') !== '1.8') error_log('Roxy Social schema migration completed but version marker did not persist.');
         }
     }
     \RoxySocial\Campaigns::init();
     \RoxySocial\Admin::init();
     \RoxySocial\AI::init();
-    add_action('delete_attachment', ['\\RoxySocial\\Hangar', 'delete_video_thumbnail']);
+    add_filter('pre_delete_attachment', ['\\RoxySocial\\Hangar', 'preserve_video_thumbnail_before_delete'], 10, 3);
     add_action('roxy_social_cleanup_video_poster', ['\\RoxySocial\\Hangar', 'retry_video_thumbnail_cleanup'], 10, 2);
     add_action('roxy_social_cleanup', ['\\RoxySocial\\Store', 'cleanup_expired']);
+    add_action('roxy_social_cleanup', ['\\RoxySocial\\Hangar', 'cleanup_video_thumbnail_queue']);
     add_action('roxy_social_cleanup_page', ['\\RoxySocial\\Store', 'cleanup_expired'], 10, 2);
     add_action('roxy_social_cleanup_media_page', ['\\RoxySocial\\Store', 'cleanup_detached_media_page'], 10, 2);
     if (!wp_next_scheduled('roxy_social_cleanup')) wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', 'roxy_social_cleanup');

@@ -4,11 +4,11 @@ if(!defined('WP_CLI')||!WP_CLI)exit;
 global $wpdb;
 $path=$args[0]??'';if(!is_file($path))throw new RuntimeException('Candidate Store required.');
 $namespace='SocialCleanup53_'.bin2hex(random_bytes(4));
-$suffix='fixture_social_cleanup53_'.bin2hex(random_bytes(5));$table=$wpdb->prefix.$suffix;$queue_suffix=$suffix.'_queue';$queue_table=$wpdb->prefix.$queue_suffix;
+$suffix='fixture_social_cleanup53_'.bin2hex(random_bytes(5));$table=$wpdb->prefix.$suffix;$queue_suffix=$suffix.'_queue';$queue_table=$wpdb->prefix.$queue_suffix;$poster_queue_suffix=$suffix.'_poster_queue';$poster_queue_table=$wpdb->prefix.$poster_queue_suffix;
 $production=$wpdb->prefix.'roxy_social_posts';
 $before=hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)));
 $code=file_get_contents($path);
-$code=str_replace(['namespace RoxySocial;',"'roxy_social_posts'","'roxy_social_media_cleanup'"],['namespace '.$namespace.';',var_export($suffix,true),var_export($queue_suffix,true)],$code);
+$code=str_replace(['namespace RoxySocial;',"'roxy_social_posts'","'roxy_social_media_cleanup'","'roxy_social_poster_cleanup'"],['namespace '.$namespace.';',var_export($suffix,true),var_export($queue_suffix,true),var_export($poster_queue_suffix,true)],$code);
 eval('?>'.$code);$store=$namespace.'\\Store';
 eval('namespace '.$namespace.';
 function apply_filters($hook,$value){return $hook==="roxy_social_enable_detached_media_cleanup"?($GLOBALS["cleanup53_detached_enabled"]??$value):$value;}
@@ -19,11 +19,11 @@ function wp_delete_attachment($id,$force=false){$GLOBALS["cleanup53_delete_calls
 function wp_schedule_single_event($timestamp,$hook,$args=[]){$GLOBALS["cleanup53_scheduled"][]=[$timestamp,$hook,$args];return true;}
 ');
 $checks=0;$assert=static function($ok,$label)use(&$checks){if(!$ok)throw new RuntimeException($label);$checks++;echo 'PASS: '.$label.PHP_EOL;};
-$block=static function($sql)use($table,$queue_table){if(preg_match('/^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i',$sql)&&strpos($sql,$table)===false&&strpos($sql,$queue_table)===false)throw new RuntimeException('Non-private cleanup SQL mutation.');return $sql;};
+$block=static function($sql)use($table,$queue_table,$poster_queue_table){if(preg_match('/^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i',$sql)&&strpos($sql,$table)===false&&strpos($sql,$queue_table)===false&&strpos($sql,$poster_queue_table)===false)throw new RuntimeException('Non-private cleanup SQL mutation.');return $sql;};
 $mail=static function(){throw new RuntimeException('Unexpected mail.');};$http=static function(){throw new RuntimeException('Unexpected HTTP.');};
 $old=$wpdb->suppress_errors(true);$created=false;
 try {
-    if($wpdb->query('CREATE TEMPORARY TABLE '.$table.' LIKE '.$production)===false||$wpdb->query('CREATE TEMPORARY TABLE '.$queue_table.' (attachment_id BIGINT UNSIGNED NOT NULL, social_post_id BIGINT UNSIGNED NOT NULL, cleanup_after DATETIME NOT NULL, created_at DATETIME NOT NULL, PRIMARY KEY (attachment_id), KEY cleanup_after (cleanup_after), KEY social_post_id (social_post_id))')===false)throw new RuntimeException('Private cleanup schema failed.');$created=true;
+    if($wpdb->query('CREATE TEMPORARY TABLE '.$table.' LIKE '.$production)===false||$wpdb->query('CREATE TEMPORARY TABLE '.$queue_table.' (attachment_id BIGINT UNSIGNED NOT NULL, social_post_id BIGINT UNSIGNED NOT NULL, cleanup_after DATETIME NOT NULL, created_at DATETIME NOT NULL, PRIMARY KEY (attachment_id), KEY cleanup_after (cleanup_after), KEY social_post_id (social_post_id))')===false||$wpdb->query('CREATE TEMPORARY TABLE '.$poster_queue_table.' (path_hash CHAR(64) NOT NULL, file_path TEXT NOT NULL, attempts INT UNSIGNED NOT NULL DEFAULT 0, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, PRIMARY KEY (path_hash), KEY updated_at (updated_at))')===false)throw new RuntimeException('Private cleanup schema failed.');$created=true;
     add_filter('query',$block,PHP_INT_MAX);add_filter('pre_wp_mail',$mail,PHP_INT_MAX);add_filter('pre_http_request',$http,PHP_INT_MAX);
 $virtual_base=random_int(50000000000,90000000000);
 $reset=static function()use($wpdb,$table,$virtual_base){
@@ -51,6 +51,12 @@ $reset=static function()use($wpdb,$table,$virtual_base){
     $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0&&(int)$wpdb->get_var('SELECT COUNT(*) FROM '.$queue_table)===1,'detached owned media remains queued and untouched without explicit opt-in');
     $GLOBALS['cleanup53_detached_enabled']=true;
     $assert($store::cleanup_expired()===1&&$GLOBALS['cleanup53_delete_calls']===1&&(int)$wpdb->get_var('SELECT COUNT(*) FROM '.$queue_table)===0,'explicitly enabled detached cleanup deletes after deadline and removes its queue record');
+    $poster_path=sys_get_temp_dir().'/fixture-hangar-poster-'.bin2hex(random_bytes(6)).'-poster.png';
+    $assert($store::queue_poster_cleanup($poster_path),'poster cleanup persists a path in its private durable table');
+    $poster_rows=$store::poster_cleanup_batch(100);
+    $assert(is_array($poster_rows)&&count($poster_rows)===1&&($poster_rows[0]['file_path']??'')===$poster_path,'poster cleanup reads a bounded durable batch');
+    $assert($store::record_poster_cleanup_failure($poster_path)&&($store::poster_cleanup_batch(100)[0]['attempts']??0)===1,'poster cleanup failure count persists for retry diagnostics');
+    $assert($store::remove_poster_cleanup($poster_path)&&$store::poster_cleanup_batch(100)===[],'verified poster cleanup removes only its exact queue record');
     $assert(hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)))===$before,'all production Social rows unchanged');
     $row=$reset();$GLOBALS['cleanup53_exists']=true;$GLOBALS['cleanup53_scheduled']=[];
     for($id=2;$id<=101;$id++){$later=$row;$later['id']=$id;$later['post_key']='PRIVATE-cleanup-'.$id;$later['temporary_attachment_id']=$virtual_base+$id;$later['media_url']='https://fixture.example.invalid/cleanup53-'.$later['temporary_attachment_id'].'.mp4';if($wpdb->insert($table,$later)!==1)throw new RuntimeException('Private pagination row failed.');}
@@ -58,7 +64,7 @@ $reset=static function()use($wpdb,$table,$virtual_base){
     $assert($pagination_result===1&&($pagination_schedule[1]??'')==='roxy_social_cleanup_page'&&($pagination_schedule[2]??[])===[100,101],'actual private-table cleanup schedules exactly the remaining bounded high-water page; '.json_encode(['result'=>$pagination_result,'scheduled'=>$GLOBALS['cleanup53_scheduled']]));
     $assert(hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)))===$before,'pagination leaves production Social rows unchanged');
 } finally {
-    if($created&&($wpdb->query('DROP TEMPORARY TABLE '.$queue_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$table)===false))throw new RuntimeException('Private cleanup schema removal failed.');
+    if($created&&($wpdb->query('DROP TEMPORARY TABLE '.$poster_queue_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$queue_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$table)===false))throw new RuntimeException('Private cleanup schema removal failed.');
     remove_filter('query',$block,PHP_INT_MAX);remove_filter('pre_wp_mail',$mail,PHP_INT_MAX);remove_filter('pre_http_request',$http,PHP_INT_MAX);$wpdb->suppress_errors($old);
 }
 echo 'Passed '.$checks.' actual cleanup-SQL assertions with virtual media; private schema removed.'.PHP_EOL;

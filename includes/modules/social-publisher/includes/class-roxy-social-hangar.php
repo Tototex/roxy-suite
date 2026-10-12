@@ -64,34 +64,40 @@ final class Hangar {
         if (!$draft || (string) $draft['status'] !== 'draft' || !empty($draft['facebook_post_id']) || !empty($draft['instagram_media_id']) || !empty($draft['instagram_container_id'])) return 0;
         $tmp = wp_tempnam($filename);
         if (!$tmp) return 0;
-        $response = wp_remote_get(self::download_url($asset_id), [
-            'timeout' => 300,
-            'redirection' => 3,
-            'cookies' => self::login_cookies(),
-            'stream' => true,
-            'filename' => $tmp,
-            'limit_response_size' => self::MAX_VIDEO_BYTES,
-        ]);
-        if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) >= 400) { @unlink($tmp); return 0; }
-        $size = filesize($tmp);
-        if ($size === false || $size <= 0 || $size >= self::MAX_VIDEO_BYTES) { @unlink($tmp); return 0; }
-        require_once ABSPATH . 'wp-admin/includes/file.php';
-        require_once ABSPATH . 'wp-admin/includes/media.php';
-        require_once ABSPATH . 'wp-admin/includes/image.php';
-        $attachment_id = media_handle_sideload(['name' => sanitize_file_name($filename), 'tmp_name' => $tmp], $post_id);
-        if (is_wp_error($attachment_id)) { @unlink($tmp); return 0; }
-        $attachment_id = (int) $attachment_id;
-        if ($attachment_id <= 0) { @unlink($tmp); return 0; }
-        $is_video = in_array($extension, ['mp4', 'mov', 'm4v'], true);
-        if (!self::tag_imported_attachment($attachment_id, $asset_id, $is_video)
-            || !Store::update_imported_media($draft_id, $attachment_id, $is_video ? 'video' : 'image', self::cleanup_time($draft), $asset_id, $filename, $draft)) {
-            // This new upload was never assigned. Do not touch the previously
-            // selected media or any approved publication on a stale response.
-            wp_delete_attachment($attachment_id, true);
-            return 0;
+        try {
+            $response = wp_remote_get(self::download_url($asset_id), [
+                'timeout' => 300,
+                'redirection' => 3,
+                'cookies' => self::login_cookies(),
+                'stream' => true,
+                'filename' => $tmp,
+                'limit_response_size' => self::MAX_VIDEO_BYTES,
+            ]);
+            if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) >= 400) return 0;
+            $size = filesize($tmp);
+            if ($size === false || $size <= 0 || $size >= self::MAX_VIDEO_BYTES) return 0;
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+            require_once ABSPATH . 'wp-admin/includes/media.php';
+            require_once ABSPATH . 'wp-admin/includes/image.php';
+            $attachment_id = media_handle_sideload(['name' => sanitize_file_name($filename), 'tmp_name' => $tmp], $post_id);
+            if (is_wp_error($attachment_id)) return 0;
+            $attachment_id = (int) $attachment_id;
+            if ($attachment_id <= 0) return 0;
+            $is_video = in_array($extension, ['mp4', 'mov', 'm4v'], true);
+            if (!self::tag_imported_attachment($attachment_id, $asset_id, $is_video)
+                || !Store::update_imported_media($draft_id, $attachment_id, $is_video ? 'video' : 'image', self::cleanup_time($draft), $asset_id, $filename, $draft)) {
+                // This new upload was never assigned. Do not touch the previously
+                // selected media or any approved publication on a stale response.
+                wp_delete_attachment($attachment_id, true);
+                return 0;
+            }
+            if ($is_video) self::save_video_thumbnail($attachment_id, $asset_id, $filename);
+            return $attachment_id;
+        } finally {
+            // WordPress normally moves the sideload source; exceptions from HTTP
+            // or media hooks must not strand the request-owned temp file.
+            if (is_file($tmp)) @unlink($tmp);
         }
-        if ($is_video) self::save_video_thumbnail($attachment_id, $asset_id, $filename);
-        return $attachment_id;
     }
 
     /** Mark an imported attachment before a draft starts referencing it. */
@@ -136,6 +142,14 @@ final class Hangar {
         $poster_url = trailingslashit($uploads['url']) . $poster_name;
         $old_url = get_post_meta($attachment_id, '_roxy_social_video_poster_url', true);
         $old_file = get_post_meta($attachment_id, '_roxy_social_video_poster_file', true);
+        $old_file_queued = is_string($old_file) && $old_file !== '' && $old_file !== $poster_path;
+        if ($old_file_queued && !Store::queue_poster_cleanup($old_file)) {
+            // Even the newly fetched path may be shared (for example when two
+            // attachments refer to the same asset); use the guarded queue path.
+            self::delete_owned_video_thumbnail_file_or_queue($poster_path);
+            error_log('Roxy Social could not retain the previous Hangar video poster for cleanup; replacement was not applied.');
+            return;
+        }
         update_post_meta($attachment_id, '_roxy_social_video_poster_url', $poster_url);
         update_post_meta($attachment_id, '_roxy_social_video_poster_file', $poster_path);
         if ((string) get_post_meta($attachment_id, '_roxy_social_video_poster_url', true) !== $poster_url
@@ -149,8 +163,8 @@ final class Hangar {
             self::delete_owned_video_thumbnail_file_or_queue($poster_path);
             return;
         }
-        if (is_string($old_file) && $old_file !== '' && $old_file !== $poster_path && !self::delete_owned_video_thumbnail_file($old_file)) {
-            self::schedule_video_thumbnail_cleanup($old_file, 1);
+        if ($old_file_queued) {
+            self::retry_video_thumbnail_cleanup($old_file, 1);
         }
     }
 
@@ -172,7 +186,15 @@ final class Hangar {
     }
 
     private static function delete_owned_video_thumbnail_file_or_queue(string $file): bool {
-        if (self::delete_owned_video_thumbnail_file($file)) return true;
+        $referenced = $file !== '' ? Store::poster_path_is_referenced($file) : false;
+        if ($referenced === false && self::delete_owned_video_thumbnail_file($file)) {
+            if ($file !== '' && !Store::remove_poster_cleanup($file)) error_log('Roxy Social could not clear a completed Hangar video poster cleanup record.');
+            return true;
+        }
+        if (!Store::queue_poster_cleanup($file)) {
+            error_log('Roxy Social could not persist a failed Hangar video poster cleanup.');
+            return false;
+        }
         self::schedule_video_thumbnail_cleanup($file, 1);
         return false;
     }
@@ -183,27 +205,74 @@ final class Hangar {
         if (wp_next_scheduled(self::POSTER_CLEANUP_HOOK, $args)) return;
         $scheduled = wp_schedule_single_event(time() + min(3600, 60 * (2 ** ($attempt - 1))), self::POSTER_CLEANUP_HOOK, $args);
         if (!$scheduled && !wp_next_scheduled(self::POSTER_CLEANUP_HOOK, $args)) {
-            error_log('Roxy Social could not queue a failed Hangar video poster cleanup.');
+            // The Store queue is durable; regular roxy_social_cleanup recovers
+            // this work even if this one-shot event cannot be registered.
+            error_log('Roxy Social could not schedule a Hangar video poster cleanup; it remains in the durable queue.');
         }
     }
 
     /** Retry deletion only for generated poster files still owned by this module. */
     public static function retry_video_thumbnail_cleanup($file = '', $attempt = 1): void {
         if (!is_string($file) || !is_numeric($attempt)) return;
+        if (!Store::queue_poster_cleanup($file)) {
+            error_log('Roxy Social could not persist a Hangar video poster cleanup retry.');
+            return;
+        }
         $attempt = max(1, min(5, (int) $attempt));
-        if (self::delete_owned_video_thumbnail_file($file)) return;
+        $referenced = Store::poster_path_is_referenced($file);
+        if ($referenced === true || $referenced === null) {
+            Store::record_poster_cleanup_failure($file);
+            return;
+        }
+        if (self::delete_owned_video_thumbnail_file($file)) {
+            if (!Store::remove_poster_cleanup($file)) error_log('Roxy Social removed a Hangar video poster but could not clear its durable cleanup record.');
+            return;
+        }
+        Store::record_poster_cleanup_failure($file);
         if ($attempt < 5) {
             self::schedule_video_thumbnail_cleanup($file, $attempt + 1);
             return;
         }
-        error_log('Roxy Social could not remove a Hangar video poster after bounded retries.');
+        // Keep the durable row after the bounded fast retry chain. The daily
+        // cleanup hook starts another bounded chain when storage recovers.
+        error_log('Roxy Social could not remove a Hangar video poster after bounded retries; durable cleanup remains queued.');
     }
 
-    public static function delete_video_thumbnail(int $attachment_id): void {
+    /** Retry durable poster cleanup during regular cleanup, even without WP-Cron events. */
+    public static function cleanup_video_thumbnail_queue(): int {
+        $rows = Store::poster_cleanup_batch(100);
+        if ($rows === null) {
+            error_log('Roxy Social could not read the durable Hangar poster cleanup queue.');
+            return 0;
+        }
+        $removed = 0;
+        foreach ($rows as $row) {
+            $file = is_array($row) ? (string) ($row['file_path'] ?? '') : '';
+            if ($file === '') continue;
+            $before = is_file($file);
+            self::retry_video_thumbnail_cleanup($file, 1);
+            if ($before && !is_file($file)) $removed++;
+        }
+        return $removed;
+    }
+
+    /** Keep an attachment and its poster pointer if durable cleanup cannot be recorded. */
+    public static function preserve_video_thumbnail_before_delete($delete, $post, $force_delete = false) {
+        if ($delete !== null || !is_object($post) || ($post->post_type ?? '') !== 'attachment') return $delete;
+        $attachment_id = (int) ($post->ID ?? 0);
+        if ($attachment_id <= 0) return $delete;
         $file = (string) get_post_meta($attachment_id, '_roxy_social_video_poster_file', true);
-        self::delete_owned_video_thumbnail_file_or_queue($file);
-        delete_post_meta($attachment_id, '_roxy_social_video_poster_url');
-        delete_post_meta($attachment_id, '_roxy_social_video_poster_file');
+        if ($file === '') return $delete;
+
+        // The attachment still owns this path at pre_delete_attachment time. Queue it
+        // first; the shared-reference check in the worker prevents unlink until
+        // core has removed this and any other attachment's metadata.
+        if (!Store::queue_poster_cleanup($file)) {
+            error_log('Roxy Social blocked attachment deletion because its Hangar poster cleanup could not be persisted.');
+            return false;
+        }
+        self::schedule_video_thumbnail_cleanup($file, 1);
+        return $delete;
     }
 
     private static function cleanup_time(array $draft): ?string {
@@ -303,22 +372,23 @@ final class Hangar {
         if ($body === '' || strlen($body) > 25 * 1024 * 1024) return 0;
         $tmp = wp_tempnam($filename);
         if (!$tmp || !self::write_download_temp_file($tmp, $body)) return 0;
-        require_once ABSPATH . 'wp-admin/includes/file.php';
-        require_once ABSPATH . 'wp-admin/includes/media.php';
-        require_once ABSPATH . 'wp-admin/includes/image.php';
-        $attachment_id = media_handle_sideload(['name' => sanitize_file_name($filename), 'tmp_name' => $tmp], $post_id);
-        if (is_wp_error($attachment_id)) {
-            @unlink($tmp);
-            return 0;
+        try {
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+            require_once ABSPATH . 'wp-admin/includes/media.php';
+            require_once ABSPATH . 'wp-admin/includes/image.php';
+            $attachment_id = media_handle_sideload(['name' => sanitize_file_name($filename), 'tmp_name' => $tmp], $post_id);
+            if (is_wp_error($attachment_id)) return 0;
+            $attachment_id = (int) $attachment_id;
+            if ($attachment_id <= 0 || !self::assign_featured_image($post_id, $attachment_id, $asset_id)) {
+                // The new file was not successfully attached to this post. Keep
+                // the existing featured image and remove only this request's file.
+                if ($attachment_id > 0 && (int) get_post_thumbnail_id($post_id) !== $attachment_id) wp_delete_attachment($attachment_id, true);
+                return 0;
+            }
+            return (int) $attachment_id;
+        } finally {
+            if (is_file($tmp)) @unlink($tmp);
         }
-        $attachment_id = (int) $attachment_id;
-        if ($attachment_id <= 0 || !self::assign_featured_image($post_id, $attachment_id, $asset_id)) {
-            // The new file was not successfully attached to this post. Keep
-            // the existing featured image and remove only this request's file.
-            if ($attachment_id > 0 && (int) get_post_thumbnail_id($post_id) !== $attachment_id) wp_delete_attachment($attachment_id, true);
-            return 0;
-        }
-        return (int) $attachment_id;
     }
 
     /** Persist and read back the asset identity and featured-image assignment. */

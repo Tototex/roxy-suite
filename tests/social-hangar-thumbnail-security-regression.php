@@ -1,20 +1,81 @@
 <?php
 // Isolated Hangar thumbnail URL/fetch checks. Run with: php tests/social-hangar-thumbnail-security-regression.php [candidate-file]
-namespace { class WP_Error {} }
+namespace {
+    class WP_Error {}
+    $hangar_wp_root = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'roxy-hangar-wp-includes-' . bin2hex(random_bytes(6));
+    foreach (['file.php', 'media.php', 'image.php'] as $include_file) {
+        $include_dir = $hangar_wp_root . DIRECTORY_SEPARATOR . 'wp-admin' . DIRECTORY_SEPARATOR . 'includes';
+        if (!is_dir($include_dir) && !mkdir($include_dir, 0700, true)) throw new RuntimeException('Could not create temporary WordPress include fixture.');
+        if (file_put_contents($include_dir . DIRECTORY_SEPARATOR . $include_file, '<?php') === false) throw new RuntimeException('Could not create temporary WordPress include file.');
+    }
+    define('ABSPATH', $hangar_wp_root . DIRECTORY_SEPARATOR);
+    register_shutdown_function(static function () use ($hangar_wp_root): void {
+        $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($hangar_wp_root, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+        foreach ($iterator as $entry) $entry->isDir() ? @rmdir($entry->getPathname()) : @unlink($entry->getPathname());
+        if (is_dir($hangar_wp_root)) @rmdir($hangar_wp_root);
+    });
+}
 
 namespace RoxySocial {
-    if (!defined('ABSPATH')) define('ABSPATH', __DIR__ . '/');
     if (!defined('HOUR_IN_SECONDS')) define('HOUR_IN_SECONDS', 3600);
 
     final class Secrets { public static function decrypt(string $value): string { return $value === '' ? '' : 'fixture-password'; } }
+    final class Store {
+        public static array $poster_queue = [];
+        private static int $queue_clock = 0;
+        public static function find(int $id): array { return ['id' => $id, 'status' => 'draft']; }
+        public static function update_imported_media(...$args): bool { return true; }
+        public static function queue_poster_cleanup(string $path): bool {
+            if (!empty($GLOBALS['hangar_fixture']['fail_poster_queue'])) return false;
+            $hash = hash('sha256', $path);
+            self::$poster_queue[$hash] = ['file_path' => $path, 'attempts' => self::$poster_queue[$hash]['attempts'] ?? 0, 'updated_order' => ++self::$queue_clock];
+            return true;
+        }
+        public static function poster_cleanup_batch(int $limit = 100): ?array {
+            $rows = array_values(self::$poster_queue);
+            usort($rows, static fn($a, $b) => $a['updated_order'] <=> $b['updated_order']);
+            return array_slice($rows, 0, $limit);
+        }
+        public static function record_poster_cleanup_failure(string $path): bool {
+            $hash = hash('sha256', $path);
+            if (!isset(self::$poster_queue[$hash])) return false;
+            self::$poster_queue[$hash]['attempts']++;
+            self::$poster_queue[$hash]['updated_order'] = ++self::$queue_clock;
+            return true;
+        }
+        public static function remove_poster_cleanup(string $path): bool { unset(self::$poster_queue[hash('sha256', $path)]); return true; }
+        public static function poster_path_is_referenced(string $path): ?bool {
+            if (!empty($GLOBALS['hangar_fixture']['reference_read_failed'])) return null;
+            if (!empty($GLOBALS['hangar_fixture']['referenced_poster'])) return true;
+            foreach ($GLOBALS['hangar_fixture']['meta'] as $metadata) {
+                if (($metadata['_roxy_social_video_poster_file'] ?? null) === $path) return true;
+            }
+            return false;
+        }
+    }
 
     $GLOBALS['hangar_fixture'] = ['get' => [], 'post' => [], 'cache' => [], 'meta' => [], 'headers' => [], 'response' => null, 'search_body' => '[]', 'scheduled' => []];
     function get_option($key, $default = false) { return $key === 'roxy_social_hangar_user' ? 'fixture-user' : ($key === 'roxy_social_hangar_pass' ? 'encrypted' : $default); }
     function wp_remote_post($url, $args = []) { $GLOBALS['hangar_fixture']['post'][] = [$url, $args]; return ['response' => ['code' => 302], 'headers' => ['set-cookie' => 'sid=fixture']]; }
     function wp_remote_get($url, $args = []) {
         $GLOBALS['hangar_fixture']['get'][] = [$url, $args];
+        if (!empty($GLOBALS['hangar_fixture']['throw_http'])) throw new \RuntimeException('Injected HTTP hook exception.');
         if (strpos($url, 'digitalAssets/') !== false) return ['response' => ['code' => 200], 'headers' => ['content-type' => 'application/json'], 'body' => $GLOBALS['hangar_fixture']['search_body']];
-        return $GLOBALS['hangar_fixture']['response'] ?? ['response' => ['code' => 200], 'headers' => ['content-type' => 'image/png'], 'body' => base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/nJ8AAAAASUVORK5CYII=')];
+        $response = $GLOBALS['hangar_fixture']['response'] ?? ['response' => ['code' => 200], 'headers' => ['content-type' => 'image/png'], 'body' => base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC0lEQVR42mP8/x8AAwMCAO+/nJ8AAAAASUVORK5CYII=')];
+        if (!empty($args['stream']) && !empty($args['filename'])) file_put_contents($args['filename'], (string) ($response['body'] ?? ''));
+        return $response;
+    }
+    function wp_tempnam($filename = '') {
+        $path = $GLOBALS['hangar_fixture']['temp_files_dir'] . DIRECTORY_SEPARATOR . 'download-' . bin2hex(random_bytes(6)) . '-' . basename((string) $filename);
+        $handle = fopen($path, 'x+b');
+        if (!is_resource($handle)) return false;
+        fclose($handle);
+        $GLOBALS['hangar_fixture']['temp_files'][] = $path;
+        return $path;
+    }
+    function media_handle_sideload($file, $post_id) {
+        if (!empty($GLOBALS['hangar_fixture']['throw_sideload'])) throw new \RuntimeException('Injected sideload hook exception.');
+        return new \WP_Error();
     }
     function is_wp_error($value) { return $value instanceof \WP_Error; }
     function wp_remote_retrieve_response_code($response) { return (int) ($response['response']['code'] ?? 0); }
@@ -25,7 +86,11 @@ namespace RoxySocial {
     function set_transient($key, $value, $expiration) { $GLOBALS['hangar_fixture']['cache'][$key] = $value; }
     function get_transient($key) { return $GLOBALS['hangar_fixture']['cache'][$key] ?? false; }
     function wp_next_scheduled($hook, $args = []) { foreach ($GLOBALS['hangar_fixture']['scheduled'] as $event) if ($event['hook'] === $hook && $event['args'] === $args) return 1; return false; }
-    function wp_schedule_single_event($timestamp, $hook, $args = []) { $GLOBALS['hangar_fixture']['scheduled'][] = ['time' => $timestamp, 'hook' => $hook, 'args' => $args]; return true; }
+    function wp_schedule_single_event($timestamp, $hook, $args = []) {
+        if (!empty($GLOBALS['hangar_fixture']['reject_schedule'])) return false;
+        $GLOBALS['hangar_fixture']['scheduled'][] = ['time' => $timestamp, 'hook' => $hook, 'args' => $args];
+        return true;
+    }
     function update_post_meta($id, $key, $value) {
         if (($GLOBALS['hangar_fixture']['fail_meta_key'] ?? '') === $key) return false;
         $GLOBALS['hangar_fixture']['meta'][$id][$key] = $value;
@@ -109,6 +174,8 @@ namespace RoxySocial {
     $upload_dir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'roxy-hangar-thumbnail-' . bin2hex(random_bytes(8));
     if (!mkdir($upload_dir, 0700)) throw new \RuntimeException('Could not create owned temporary upload folder.');
     $GLOBALS['hangar_fixture']['upload_dir'] = $upload_dir;
+    $GLOBALS['hangar_fixture']['temp_files_dir'] = $upload_dir;
+    $GLOBALS['hangar_fixture']['temp_files'] = [];
     register_shutdown_function(static function () use ($upload_dir): void {
         foreach (glob($upload_dir . DIRECTORY_SEPARATOR . '*') ?: [] as $owned_file) if (is_file($owned_file)) @unlink($owned_file);
         if (is_dir($upload_dir)) @rmdir($upload_dir);
@@ -122,6 +189,23 @@ namespace RoxySocial {
     $check($write_download->invoke(null, $download_temp, $png) === true && file_get_contents($download_temp) === $png, 'featured-image temp download verifies complete byte count');
     $check($write_download->invoke(null, $download_temp, '') === false && !file_exists($download_temp), 'invalid temp download body fails and removes the request-owned temp file');
     $check($write_download->invoke(null, $upload_dir, $png) === false && is_dir($upload_dir), 'failed temp write does not remove a non-file path');
+
+    foreach ([
+        ['social-http', static fn() => Hangar::import_social_asset(901, 'asset.mp4', 11, 21), 'thrown HTTP hook cleans the social-asset download temp'],
+        ['social-sideload', static fn() => Hangar::import_social_asset(902, 'asset.mp4', 11, 22), 'thrown sideload hook cleans the social-asset download temp'],
+        ['featured-http', static fn() => Hangar::import_featured_image(903, 'featured.png', 31), 'featured-image HTTP exception creates no temp file'],
+        ['featured-sideload', static fn() => Hangar::import_featured_image(904, 'featured.png', 32), 'thrown sideload hook cleans the featured-image temp'],
+    ] as [$mode, $call, $label]) {
+        $before_temps = count($GLOBALS['hangar_fixture']['temp_files']);
+        $GLOBALS['hangar_fixture']['throw_http'] = str_ends_with($mode, 'http');
+        $GLOBALS['hangar_fixture']['throw_sideload'] = str_ends_with($mode, 'sideload');
+        $thrown = false;
+        try { $call(); } catch (\RuntimeException $error) { $thrown = true; }
+        $GLOBALS['hangar_fixture']['throw_http'] = false;
+        $GLOBALS['hangar_fixture']['throw_sideload'] = false;
+        $new_temps = array_slice($GLOBALS['hangar_fixture']['temp_files'], $before_temps);
+        $check($thrown && (!$new_temps || count(array_filter($new_temps, 'is_file')) === 0), $label);
+    }
     $GLOBALS['hangar_fixture']['cache']['roxy_social_hangar_thumb_31'] = '/posters/source.png';
     $GLOBALS['hangar_fixture']['response'] = ['response' => ['code' => 200], 'headers' => ['content-type' => 'image/png'], 'body' => $png];
     $save_poster->invoke(null, 501, 31, 'movie.mp4');
@@ -199,42 +283,88 @@ namespace RoxySocial {
     $outside_path = $upload_dir . '-outside-poster.png';
     file_put_contents($outside_path, 'keep-outside-file');
     $GLOBALS['hangar_fixture']['meta'][505]['_roxy_social_video_poster_file'] = $outside_path;
-    Hangar::delete_video_thumbnail(505);
-    $check(is_file($outside_path) && !isset($GLOBALS['hangar_fixture']['meta'][505]['_roxy_social_video_poster_file']), 'attachment cleanup cannot unlink a poster path outside the uploads directory');
+    $delete_result = Hangar::preserve_video_thumbnail_before_delete(null, (object) ['ID' => 505, 'post_type' => 'attachment'], true);
+    $check($delete_result === null && is_file($outside_path) && isset($GLOBALS['hangar_fixture']['meta'][505]['_roxy_social_video_poster_file']), 'pre-delete queues poster without unlinking or dropping the still-live attachment pointer');
+    unset($GLOBALS['hangar_fixture']['meta'][505]);
+    Hangar::cleanup_video_thumbnail_queue();
+    $check(is_file($outside_path), 'cleanup preserves a poster path outside the configured uploads directory');
     unlink($outside_path);
     $owned_path = $upload_dir . DIRECTORY_SEPARATOR . 'owned-poster.png';
     file_put_contents($owned_path, $png);
     $GLOBALS['hangar_fixture']['meta'][506]['_roxy_social_video_poster_file'] = $owned_path;
-    Hangar::delete_video_thumbnail(506);
-    $check(!file_exists($owned_path), 'attachment cleanup removes a plugin-named poster within uploads');
+    $delete_result = Hangar::preserve_video_thumbnail_before_delete(null, (object) ['ID' => 506, 'post_type' => 'attachment'], true);
+    $check($delete_result === null && is_file($owned_path), 'attachment poster is queued before WordPress deletion');
+    unset($GLOBALS['hangar_fixture']['meta'][506]);
+    Hangar::cleanup_video_thumbnail_queue();
+    $check(!file_exists($owned_path), 'regular cleanup removes an unreferenced plugin-named poster within uploads');
     $numbered_path = $upload_dir . DIRECTORY_SEPARATOR . 'collision-poster-1.png';
     file_put_contents($numbered_path, $png);
     $GLOBALS['hangar_fixture']['meta'][508]['_roxy_social_video_poster_file'] = $numbered_path;
-    Hangar::delete_video_thumbnail(508);
-    $check(!file_exists($numbered_path), 'attachment cleanup removes WordPress collision-renamed poster files');
+    Hangar::preserve_video_thumbnail_before_delete(null, (object) ['ID' => 508, 'post_type' => 'attachment'], true);
+    unset($GLOBALS['hangar_fixture']['meta'][508]);
+    Hangar::cleanup_video_thumbnail_queue();
+    $check(!file_exists($numbered_path), 'regular cleanup removes WordPress collision-renamed poster files');
 
     $retry_path = $upload_dir . DIRECTORY_SEPARATOR . 'retry-poster.png';
     file_put_contents($retry_path, $png);
     $GLOBALS['hangar_fixture']['meta'][511]['_roxy_social_video_poster_file'] = $retry_path;
-    chmod($upload_dir, 0500);
-    Hangar::delete_video_thumbnail(511);
-    chmod($upload_dir, 0700);
-    $queued = end($GLOBALS['hangar_fixture']['scheduled']);
-    $check(is_file($retry_path) && !isset($GLOBALS['hangar_fixture']['meta'][511]['_roxy_social_video_poster_file'])
-        && ($queued['hook'] ?? '') === 'roxy_social_cleanup_video_poster' && ($queued['args'][0] ?? '') === $retry_path,
-        'failed poster unlink preserves the file path in a bounded retry event after attachment metadata is removed');
-    Hangar::retry_video_thumbnail_cleanup($retry_path, 1);
-    $check(!file_exists($retry_path), 'poster cleanup retry removes the owned file once directory permissions recover');
+    $GLOBALS['hangar_fixture']['reject_schedule'] = true;
+    Hangar::preserve_video_thumbnail_before_delete(null, (object) ['ID' => 511, 'post_type' => 'attachment'], true);
+    unset($GLOBALS['hangar_fixture']['meta'][511]);
+    $GLOBALS['hangar_fixture']['uploads_unavailable'] = true;
+    Hangar::retry_video_thumbnail_cleanup($retry_path, 5);
+    $check(is_file($retry_path) && isset(Store::$poster_queue[hash('sha256', $retry_path)])
+        && $GLOBALS['hangar_fixture']['scheduled'] === [], 'cron rejection and exhausted bounded retries retain the durable poster cleanup row');
+    unset($GLOBALS['hangar_fixture']['uploads_unavailable'], $GLOBALS['hangar_fixture']['reject_schedule']);
+    Hangar::cleanup_video_thumbnail_queue();
+    $check(!file_exists($retry_path) && !isset(Store::$poster_queue[hash('sha256', $retry_path)]), 'daily cleanup recovers a durable poster after cron rejection and retry exhaustion');
+
+    $queue_failure_path = $upload_dir . DIRECTORY_SEPARATOR . 'queue-failure-poster.png';
+    file_put_contents($queue_failure_path, $png);
+    $GLOBALS['hangar_fixture']['meta'][514]['_roxy_social_video_poster_file'] = $queue_failure_path;
+    $GLOBALS['hangar_fixture']['fail_poster_queue'] = true;
+    $delete_result = Hangar::preserve_video_thumbnail_before_delete(null, (object) ['ID' => 514, 'post_type' => 'attachment'], true);
+    $check($delete_result === false && is_file($queue_failure_path)
+        && ($GLOBALS['hangar_fixture']['meta'][514]['_roxy_social_video_poster_file'] ?? '') === $queue_failure_path,
+        'durable queue write failure vetoes attachment deletion and preserves its poster pointer');
+    unset($GLOBALS['hangar_fixture']['fail_poster_queue']);
+    Hangar::preserve_video_thumbnail_before_delete(null, (object) ['ID' => 514, 'post_type' => 'attachment'], true);
+    unset($GLOBALS['hangar_fixture']['meta'][514]);
+    Hangar::cleanup_video_thumbnail_queue();
+    $check(!file_exists($queue_failure_path), 'vetoed attachment can be safely deleted and its poster cleaned after queue recovery');
+
+    $shared_path = $upload_dir . DIRECTORY_SEPARATOR . 'shared-poster.png';
+    file_put_contents($shared_path, $png);
+    $GLOBALS['hangar_fixture']['meta'][515]['_roxy_social_video_poster_file'] = $shared_path;
+    $GLOBALS['hangar_fixture']['meta'][516]['_roxy_social_video_poster_file'] = $shared_path;
+    Hangar::preserve_video_thumbnail_before_delete(null, (object) ['ID' => 515, 'post_type' => 'attachment'], true);
+    unset($GLOBALS['hangar_fixture']['meta'][515]);
+    Hangar::cleanup_video_thumbnail_queue();
+    $check(is_file($shared_path) && isset(Store::$poster_queue[hash('sha256', $shared_path)]), 'shared attachment reference prevents poster unlink and keeps its queue row');
+    unset($GLOBALS['hangar_fixture']['meta'][516]);
+    Hangar::cleanup_video_thumbnail_queue();
+    $check(!file_exists($shared_path), 'shared poster is removed only after its final attachment reference disappears');
+
+    $GLOBALS['hangar_fixture']['uploads_unavailable'] = true;
+    Store::$poster_queue = [];
+    for ($index = 0; $index < 105; $index++) Store::queue_poster_cleanup($upload_dir . DIRECTORY_SEPARATOR . sprintf('fairness-%03d-poster.png', $index));
+    Hangar::cleanup_video_thumbnail_queue();
+    $first_pass = count(array_filter(Store::$poster_queue, static fn($row) => $row['attempts'] > 0));
+    Hangar::cleanup_video_thumbnail_queue();
+    $all_attempted = count(array_filter(Store::$poster_queue, static fn($row) => $row['attempts'] > 0));
+    unset($GLOBALS['hangar_fixture']['uploads_unavailable']);
+    $check($first_pass === 100 && $all_attempted === 105, 'updated cleanup timestamps rotate bounded batches so queued paths beyond the first 100 are reached');
 
     $unavailable_root_path = $upload_dir . DIRECTORY_SEPARATOR . 'uploads-unavailable-poster.png';
     file_put_contents($unavailable_root_path, $png);
     $GLOBALS['hangar_fixture']['meta'][513] = ['_roxy_social_video_poster_file' => $unavailable_root_path];
     $GLOBALS['hangar_fixture']['uploads_unavailable'] = true;
-    Hangar::delete_video_thumbnail(513);
+    $delete_result = Hangar::preserve_video_thumbnail_before_delete(null, (object) ['ID' => 513, 'post_type' => 'attachment'], true);
+    $check($delete_result === null && isset($GLOBALS['hangar_fixture']['meta'][513]['_roxy_social_video_poster_file']), 'unavailable uploads root does not discard the live attachment pointer before core deletion');
+    unset($GLOBALS['hangar_fixture']['meta'][513]);
     unset($GLOBALS['hangar_fixture']['uploads_unavailable']);
     $unavailable_root_event = end($GLOBALS['hangar_fixture']['scheduled']);
     $check(is_file($unavailable_root_path)
-        && !isset($GLOBALS['hangar_fixture']['meta'][513]['_roxy_social_video_poster_file'])
         && ($unavailable_root_event['hook'] ?? '') === 'roxy_social_cleanup_video_poster'
         && ($unavailable_root_event['args'][0] ?? '') === $unavailable_root_path,
         'unavailable uploads root preserves owned poster path in bounded retry instead of dropping cleanup');

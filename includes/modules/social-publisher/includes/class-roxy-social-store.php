@@ -16,6 +16,11 @@ final class Store {
         return $wpdb->prefix . 'roxy_social_media_cleanup';
     }
 
+    public static function poster_cleanup_table_name(): string {
+        global $wpdb;
+        return $wpdb->prefix . 'roxy_social_poster_cleanup';
+    }
+
     public static function install_schema(): bool {
         global $wpdb;
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
@@ -58,6 +63,15 @@ final class Store {
             KEY cleanup_after (cleanup_after),
             KEY social_post_id (social_post_id)
         ) {$charset};");
+        dbDelta("CREATE TABLE " . self::poster_cleanup_table_name() . " (
+            path_hash CHAR(64) NOT NULL,
+            file_path TEXT NOT NULL,
+            attempts INT UNSIGNED NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            PRIMARY KEY (path_hash),
+            KEY updated_at (updated_at)
+        ) {$charset};");
         $wpdb->last_error = '';
         $main_name = self::table_name();
         $main_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($main_name))) === $main_name;
@@ -65,7 +79,82 @@ final class Store {
         $wpdb->last_error = '';
         $cleanup_name = self::cleanup_table_name();
         $cleanup_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($cleanup_name))) === $cleanup_name;
-        return $main_exists && $cleanup_exists && $main_error === '' && $wpdb->last_error === '';
+        $cleanup_error = $wpdb->last_error;
+        $wpdb->last_error = '';
+        $poster_cleanup_name = self::poster_cleanup_table_name();
+        $poster_cleanup_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($poster_cleanup_name))) === $poster_cleanup_name;
+        return $main_exists && $cleanup_exists && $poster_cleanup_exists && $main_error === '' && $cleanup_error === '' && $wpdb->last_error === '';
+    }
+
+    /** Persist a plugin-owned poster path before its attachment metadata is removed. */
+    public static function queue_poster_cleanup(string $file_path): bool {
+        global $wpdb;
+        if ($file_path === '') return false;
+        $table = self::poster_cleanup_table_name();
+        $hash = hash('sha256', $file_path);
+        $now = current_time('mysql');
+        $wpdb->last_error = '';
+        $result = $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $table . ' (path_hash, file_path, attempts, created_at, updated_at) VALUES (%s, %s, 0, %s, %s) ON DUPLICATE KEY UPDATE file_path = VALUES(file_path), updated_at = VALUES(updated_at)',
+            $hash, $file_path, $now, $now
+        ));
+        if ($result === false || $wpdb->last_error !== '') return false;
+        $wpdb->last_error = '';
+        $saved = $wpdb->get_row($wpdb->prepare('SELECT path_hash, file_path FROM ' . $table . ' WHERE path_hash = %s', $hash), ARRAY_A);
+        return $wpdb->last_error === '' && is_array($saved)
+            && (string) ($saved['path_hash'] ?? '') === $hash
+            && (string) ($saved['file_path'] ?? '') === $file_path;
+    }
+
+    /** Return a bounded oldest-first batch, or null when the queue cannot be read safely. */
+    public static function poster_cleanup_batch(int $limit = 100): ?array {
+        global $wpdb;
+        $limit = max(1, min(500, $limit));
+        $wpdb->last_error = '';
+        $rows = $wpdb->get_results($wpdb->prepare(
+            'SELECT path_hash, file_path, attempts FROM ' . self::poster_cleanup_table_name() . ' ORDER BY updated_at ASC, path_hash ASC LIMIT %d',
+            $limit
+        ), ARRAY_A);
+        return $wpdb->last_error === '' && is_array($rows) ? $rows : null;
+    }
+
+    public static function record_poster_cleanup_failure(string $file_path): bool {
+        global $wpdb;
+        $hash = hash('sha256', $file_path);
+        $table = self::poster_cleanup_table_name();
+        $wpdb->last_error = '';
+        $result = $wpdb->query($wpdb->prepare(
+            'UPDATE ' . $table . ' SET attempts = attempts + 1, updated_at = %s WHERE path_hash = %s AND file_path = %s',
+            current_time('mysql'), $hash, $file_path
+        ));
+        if ($result === false || $wpdb->last_error !== '') return false;
+        $wpdb->last_error = '';
+        $saved = $wpdb->get_row($wpdb->prepare('SELECT attempts, file_path FROM ' . $table . ' WHERE path_hash = %s', $hash), ARRAY_A);
+        return $wpdb->last_error === '' && is_array($saved) && (string) ($saved['file_path'] ?? '') === $file_path;
+    }
+
+    public static function remove_poster_cleanup(string $file_path): bool {
+        global $wpdb;
+        $hash = hash('sha256', $file_path);
+        $table = self::poster_cleanup_table_name();
+        $wpdb->last_error = '';
+        $result = $wpdb->query($wpdb->prepare('DELETE FROM ' . $table . ' WHERE path_hash = %s AND file_path = %s', $hash, $file_path));
+        if ($result === false || $wpdb->last_error !== '') return false;
+        $wpdb->last_error = '';
+        $remaining = $wpdb->get_var($wpdb->prepare('SELECT path_hash FROM ' . $table . ' WHERE path_hash = %s', $hash));
+        return $wpdb->last_error === '' && $remaining === null;
+    }
+
+    /** null means the reference lookup failed; callers must keep the queue row. */
+    public static function poster_path_is_referenced(string $file_path): ?bool {
+        global $wpdb;
+        $wpdb->last_error = '';
+        $reference = $wpdb->get_var($wpdb->prepare(
+            "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value = %s LIMIT 1",
+            '_roxy_social_video_poster_file', $file_path
+        ));
+        if ($wpdb->last_error !== '') return null;
+        return $reference !== null;
     }
 
     private static function queue_detached_media(int $attachment_id, int $social_post_id): bool {
