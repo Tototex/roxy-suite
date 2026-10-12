@@ -685,7 +685,7 @@ class Store {
     }
     $in_transaction = $owner_db->get_var('SELECT @@in_transaction');
     if ($owner_db->last_error !== '' || !in_array((string) $in_transaction, ['0', '1'], true) || (string) $in_transaction !== '0') {
-      $state = $owner_db->last_error !== '' ? 'query failed' : var_export($in_transaction, true);
+      $state = $owner_db->last_error !== '' ? 'query failed: ' . $owner_db->last_error : var_export($in_transaction, true);
       throw new \RuntimeException('The database transaction state is unavailable or already active (' . $state . '); no concessions rows were changed.');
     }
     $owner = self::$concession_allocation_owner;
