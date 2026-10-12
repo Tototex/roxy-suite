@@ -5,6 +5,8 @@ global $wpdb;
 $ids = [];
 $orders = [];
 $users = [];
+$removed_actions = [];
+$mail_interceptor = static fn() => true;
 $saved_user_id = get_current_user_id();
 $saved = [WC()->cart, WC()->session, WC()->customer];
 $checks = 0;
@@ -136,12 +138,16 @@ try {
     // Create a private, zero-value synthetic paid order after the zero-usage
     // read above. No gateway or payment is invoked; mail is intercepted.
     $product->set_price(0); // Subscriber tickets are complimentary.
-    add_filter('pre_wp_mail', static fn() => true);
+    add_filter('pre_wp_mail', $mail_interceptor, PHP_INT_MAX);
     foreach ([
         ['woocommerce_order_status_changed', [RoxyST\Tickets::class, 'on_order_changed'], 30],
         ['woocommerce_order_status_changed', [RoxyST\Sales::class, 'on_order_changed'], 20],
     ] as [$hook, $callback, $priority]) {
-        if (class_exists(RoxyST\Tickets::class) || class_exists(RoxyST\Sales::class)) remove_action($hook, $callback, $priority);
+        $registered_priority = has_action($hook, $callback);
+        if ($registered_priority !== false) {
+            remove_action($hook, $callback, $registered_priority);
+            $removed_actions[] = [$hook, $callback, $registered_priority];
+        }
     }
     $paid_order = wc_create_order(['customer_id' => (int) $user_id, 'customer_note' => 'PRIVATE synthetic subscriber-usage fixture']);
     if (is_wp_error($paid_order)) throw new RuntimeException('Private synthetic usage order could not be created.');
@@ -194,20 +200,59 @@ try {
         && !(int) get_post_meta($candidate_order->get_id(), '_roxy_seat_hold_until', true),
         'rejected Store API subscriber claim creates no durable seat hold');
 
+    // Positive control: the same order must be claimable when one more active
+    // subscriber admission is available, proving the prior rejection was the
+    // fresh-usage limit rather than an unrelated Store API hold error.
+    $GLOBALS['roxy_store_api_fixture_subscriptions'][(int) $user_id][] = $entitlement;
+    $assert(RoxyST\Capacity::subscription_entitlement_count((int) $user_id) === 2,
+        'positive control increases the in-memory subscriber entitlement to two');
+    $accepted = false;
+    try {
+        RoxyST\Holds::claim_store_api($candidate_order);
+        $accepted = true;
+    } catch (Automattic\WooCommerce\StoreApi\Exceptions\RouteException $error) {}
+    $assert($accepted && (int) get_post_meta($candidate_order->get_id(), '_roxy_seat_hold_managed', true) === 1
+        && (int) get_post_meta($candidate_order->get_id(), '_roxy_seat_hold_until', true) > time(),
+        'same Store API order receives a durable hold when entitlement is sufficient');
+
     $assert((int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->posts} WHERE ID IN (%d,%d) AND post_status='draft'", $showing_id, $product_id)) === 2, 'fixture records remain private drafts');
     echo "Passed $checks installed Store API capacity checks. Only private synthetic Woo records were created; no checkout or payment was made.\n";
 } finally {
-    foreach ($orders as $order) $order->delete(true);
+    $cleanup_errors = [];
+    foreach ($orders as $order) {
+        $order_id = (int) $order->get_id();
+        try {
+            $order->delete(true);
+            if (wc_get_order($order_id)) $cleanup_errors[] = 'Private Woo order cleanup failed.';
+        } catch (Throwable $error) {
+            $cleanup_errors[] = 'Private Woo order cleanup failed: ' . $error->getMessage();
+        }
+    }
     unset($GLOBALS['roxy_store_api_fixture_subscriptions']);
     foreach ($ids as $id) {
-        $wpdb->delete($wpdb->postmeta, ['post_id' => $id]);
-        $wpdb->delete($wpdb->posts, ['ID' => $id]);
-        clean_post_cache($id);
+        try {
+            $wpdb->delete($wpdb->postmeta, ['post_id' => $id]);
+            $wpdb->delete($wpdb->posts, ['ID' => $id]);
+            clean_post_cache($id);
+            if (get_post($id) !== null) $cleanup_errors[] = 'Private fixture post cleanup failed.';
+        } catch (Throwable $error) {
+            $cleanup_errors[] = 'Private fixture post cleanup failed: ' . $error->getMessage();
+        }
     }
     if ($users) {
         require_once ABSPATH . 'wp-admin/includes/user.php';
-        foreach ($users as $user_id) wp_delete_user($user_id);
+        foreach ($users as $user_id) {
+            try {
+                wp_delete_user($user_id);
+                if (get_userdata($user_id)) $cleanup_errors[] = 'Private fixture user cleanup failed.';
+            } catch (Throwable $error) {
+                $cleanup_errors[] = 'Private fixture user cleanup failed: ' . $error->getMessage();
+            }
+        }
     }
+    remove_filter('pre_wp_mail', $mail_interceptor, PHP_INT_MAX);
+    foreach ($removed_actions as [$hook, $callback, $priority]) add_action($hook, $callback, $priority, 1);
     wp_set_current_user($saved_user_id);
     [WC()->cart, WC()->session, WC()->customer] = $saved;
+    if ($cleanup_errors) throw new RuntimeException(implode(' ', array_unique($cleanup_errors)));
 }
