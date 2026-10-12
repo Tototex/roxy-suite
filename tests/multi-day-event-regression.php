@@ -275,6 +275,7 @@ try {
       'showing_id' => $sid,
       'status' => get_post_status($sid),
       'ticket_type' => (string)get_post_meta($pid, ROXY_ST_META_TICKET_TYPE, true),
+      'profile' => (string)get_post_meta($sid, '_roxy_pricing_profile', true),
       'expected_product' => (int)get_post_meta($sid, '_roxy_pid_adult', true),
       'sales_open' => \RoxyST\Eligibility::showing_sales_open($sid),
       'unit_price' => $item['roxy_event_unit_price'] ?? null,
@@ -293,12 +294,14 @@ try {
   sort($double_line_sorted);
   $double_quantities = array_column($double_line_diagnostics, 'quantity');
   $double_event_meta = reset($double_cart_items) ?: [];
+  $double_actual_ids = array_values(array_map('intval', (array)($double_event_meta['roxy_event_bundle_showing_ids'] ?? [])));
+  $double_runtime_prices = $price_method->invoke(null, (float)get_post_meta((int)$event_id, '_roxy_event_double_general', true), count($double_actual_ids));
   $double_runtime_signature = wp_hash(wp_json_encode([
     (int)($double_event_meta['roxy_event_id'] ?? 0),
     (string)($double_event_meta['roxy_event_bundle_kind'] ?? ''),
-    array_values(array_map('intval', (array)($double_event_meta['roxy_event_bundle_showing_ids'] ?? []))),
+    $double_actual_ids,
     (string)($double_event_meta['roxy_event_ticket_type'] ?? ''),
-    $double_prices,
+    $double_runtime_prices,
     $double_bundle,
   ]), 'auth');
   $check($double_total===20.0 && !$double_notices,
@@ -310,6 +313,11 @@ try {
       . ', unique_lines=' . count(array_unique($double_line_showings)) . '/' . count($double_ids)
       . ', uniform_positive_quantity=' . (int)(count(array_unique($double_quantities)) === 1 && ($double_quantities[0] ?? 0) > 0)
       . ', runtime_signature_matches=' . (int)hash_equals($double_runtime_signature, $double_signature)
+      . ', actual_ids=' . wp_json_encode($double_actual_ids) . ', actual_line_order=' . wp_json_encode($double_line_showings)
+      . ', event_prices=' . wp_json_encode([
+        'general' => get_post_meta((int)$event_id, '_roxy_event_double_general', true),
+        'discount' => get_post_meta((int)$event_id, '_roxy_event_double_discount', true),
+      ]) . ', runtime_prices=' . wp_json_encode($double_runtime_prices)
       . ', lines=' . wp_json_encode($double_line_diagnostics)
       . ', errors=' . wp_json_encode($double_notices) . ')');
 
