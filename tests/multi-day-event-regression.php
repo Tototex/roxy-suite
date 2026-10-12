@@ -261,7 +261,18 @@ try {
   WC()->cart->calculate_totals();
   wc_clear_notices();
   \RoxyST\Events::validate_cart_bundles();
-  $check(round((float)WC()->cart->get_total('edit'),2)===20.0 && !wc_has_notice('An event pass is incomplete or no longer matches the event. Remove all items in that pass and add it again.','error'),'valid $20 double-feature pass accepts integer-allocated line prices');
+  $double_total = round((float)WC()->cart->get_total('edit'), 2);
+  $double_notices = wc_get_notices('error');
+  $check($double_total===20.0 && !$double_notices,
+    'valid $20 double-feature pass accepts integer-allocated line prices (total=' . $double_total
+      . ', prices=' . wp_json_encode($double_prices)
+      . ', cart=' . wp_json_encode(array_map(static fn($item) => [
+        'product_id' => (int)($item['product_id'] ?? 0),
+        'showing_id' => (int)get_post_meta((int)($item['product_id'] ?? 0), ROXY_ST_META_SHOWING_ID, true),
+        'unit_price' => $item['roxy_event_unit_price'] ?? null,
+        'bundle_ids' => $item['roxy_event_bundle_showing_ids'] ?? [],
+      ], WC()->cart->get_cart()))
+      . ', errors=' . wp_json_encode($double_notices) . ')');
 
   WC()->cart->empty_cart();
   foreach ($products as $i=>$pid) {
