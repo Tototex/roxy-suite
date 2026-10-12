@@ -14,6 +14,35 @@ permissions:
   contents: read
 
 jobs:
+  social-admin-browser:
+    name: Social admin browser regressions
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned Playwright and Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-save --no-package-lock playwright@1.62.1
+          npx playwright install --with-deps chromium
+      - name: Render and test Social admin layouts and bulk editor
+        env:
+          ROXY_BROWSER_CHANNEL: chromium
+          ROXY_PHP_PATH: php
+        run: |
+          node tests/social-ai-references-browser.cjs
+          node tests/social-bulk-editor-browser.cjs
+
   requested-showings-private-lifecycle:
     name: Requested Showings private WordPress/Woo lifecycle
     runs-on: ubuntu-24.04

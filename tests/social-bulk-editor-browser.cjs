@@ -3,12 +3,12 @@ const path = require('path');
 const {spawnSync} = require('child_process');
 const {chromium} = require(process.env.ROXY_PLAYWRIGHT_PATH || 'playwright');
 const root = path.resolve(__dirname, '..');
-const php = process.env.ROXY_PHP_PATH;
+const php = process.env.ROXY_PHP_PATH || 'php';
 const html = spawnSync(php, [path.join(__dirname, 'social-bulk-editor-regression.php'), '--render'], {encoding:'utf8'});
 if (html.status !== 0) throw new Error(html.stderr || html.stdout);
 function assert(ok, message) { if (!ok) throw new Error(message); }
 (async () => {
-    const browser = await chromium.launch({headless:true,channel:process.env.ROXY_BROWSER_CHANNEL || 'chrome'});
+    const browser = await chromium.launch({headless:true,channel:process.env.ROXY_BROWSER_CHANNEL || 'chromium'});
     try {
         const page = await browser.newPage();
         let requests = [], failFirst = false;
