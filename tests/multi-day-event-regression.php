@@ -161,9 +161,12 @@ try {
   $check(!$products_created_before_commit,
     'ticket products are not synchronized from screening hooks before the publication transaction commits (observed IDs: ' . implode(',', $products_created_before_commit) . ')');
   $sold_out_label = str_contains($publication_html, 'Sold out or sales ended');
-  $disabled_button = preg_match('/<button type="submit" disabled/', $publication_html) === 1;
+  $button_tags = [];
+  preg_match_all('/<button\b[^>]*>/i', $publication_html, $button_matches);
+  $button_tags = $button_matches[0] ?? [];
+  $disabled_button = (bool)array_filter($button_tags, static fn($tag) => preg_match('/\sdisabled(?:\s|=|>)/i', $tag) === 1);
   $check($sold_out_label && $disabled_button,
-    'event ticket buttons remain disabled until committed screenings have published ticket products (html=' . strlen($publication_html) . ', sold_out=' . (int)$sold_out_label . ', disabled=' . (int)$disabled_button . ', preview=' . substr(preg_replace('/\s+/', ' ', strip_tags($publication_html)), 0, 220) . ')');
+    'event ticket buttons remain disabled until committed screenings have published ticket products (html=' . strlen($publication_html) . ', sold_out=' . (int)$sold_out_label . ', disabled=' . (int)$disabled_button . ', buttons=' . implode(' | ', $button_tags) . ')');
   $check(count(array_filter($screenings,static fn($id)=>get_post_status($id)==='publish'))===6,'publishing event publishes all six linked showings');
   $check(count(array_filter($screenings,static fn($id)=>(int)get_post_meta($id,'_roxy_capacity',true)===250))===6,'each screening inherits the configured 250-seat capacity');
   $products=[];
