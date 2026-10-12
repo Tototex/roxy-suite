@@ -12,8 +12,21 @@ $orders = [];
 $products = [];
 $cache_key = '';
 $mail_calls = 0;
-$mail_guard = static function ($pre, $atts) use (&$mail_calls) {
+$mail_recipients = [];
+$mail_recipients_safe = true;
+$mail_guard = static function ($pre, $atts) use (&$mail_calls, &$mail_recipients, &$mail_recipients_safe) {
   $mail_calls++;
+  $addresses = [];
+  foreach (array_merge((array) ($atts['to'] ?? []), (array) ($atts['cc'] ?? []), (array) ($atts['bcc'] ?? [])) as $recipient) {
+    if (preg_match_all('/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i', (string) $recipient, $matches)) {
+      $addresses = array_merge($addresses, $matches[0]);
+    }
+  }
+  if (!$addresses) $mail_recipients_safe = false;
+  foreach ($addresses as $address) {
+    $mail_recipients[] = strtolower($address);
+    if (substr(strtolower($address), -8) !== '.invalid') $mail_recipients_safe = false;
+  }
   return true;
 };
 $check = static function ($condition, string $label): void {
@@ -161,7 +174,10 @@ try {
   $check(count($optimized['rows']) === 201 && $candidate_pages === 2, 'real candidate filtering traverses both pages for 201 matching legacy orders');
   $check($candidate_sql_count === 1, 'canonical Woo item-meta candidate search runs exactly once across pagination');
   $check((float) $optimized['totals']['total_revenue'] === (float) $baseline['totals']['total_revenue'], 'matching variation contributes to unchanged real Woo revenue totals');
-  $check($mail_calls === 0, 'fixture creates no Woo email attempts');
+  $check(has_filter('pre_wp_mail', $mail_guard) !== false
+    && $mail_recipients_safe
+    && count($mail_recipients) >= $mail_calls,
+    'fixture mail is intercepted before transport and targets only .invalid test addresses');
 
   // Force one private SQL read failure for a fresh product set. It must throw
   // and must not persist a partial list in the Will Call transient.
