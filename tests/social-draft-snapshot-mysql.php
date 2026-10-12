@@ -81,8 +81,13 @@ try {
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::delete_unposted(1)===0&&(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `$queue_table` WHERE attachment_id = %d",2147483003))===1,'deleting an unposted draft retains cleanup tracking for its video');
     $row=roxy_snapshot_row(['media_type'=>'video','temporary_attachment_id'=>2147483004,'cleanup_after'=>'2026-10-01 00:00:00']);
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::update_imported_media(1,8888,'video','2099-01-01 00:00:00',123,'replacement.mp4',$row)&&(int)\RoxySocial\DraftFixtureStore::find(1)['temporary_attachment_id']===8888&&(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `$queue_table` WHERE attachment_id = %d",2147483004))===1,'replacing imported video queues old attachment and tracks the new one');
+    $wpdb->delete($queue_table,['attachment_id'=>2147483005]);
     $row=roxy_snapshot_row(['media_type'=>'video','temporary_attachment_id'=>2147483005,'cleanup_after'=>'2026-10-01 00:00:00']);
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::clear_media(1)===0&&\RoxySocial\DraftFixtureStore::find(1)['temporary_attachment_id']===null&&(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `$queue_table` WHERE attachment_id = %d",2147483005))===1,'manual clear removes media from draft while retaining cleanup tracking');
+    $row=roxy_snapshot_row(['media_type'=>'video','temporary_attachment_id'=>2147483006,'cleanup_after'=>'2026-10-01 00:00:00']);
+    $wpdb->query("DROP TEMPORARY TABLE `$queue_table`");
+    roxy_snapshot_check(\RoxySocial\DraftFixtureStore::clear_media(1)===null&&(int)\RoxySocial\DraftFixtureStore::find(1)['temporary_attachment_id']===2147483006,'cleanup queue failure preserves media on a draft when manually clearing it');
+    $wpdb->query("CREATE TEMPORARY TABLE `$queue_table` (attachment_id BIGINT UNSIGNED NOT NULL, social_post_id BIGINT UNSIGNED NOT NULL, cleanup_after DATETIME NOT NULL, created_at DATETIME NOT NULL, PRIMARY KEY (attachment_id), KEY cleanup_after (cleanup_after), KEY social_post_id (social_post_id))");
     $row=roxy_snapshot_row();\RoxySocial\DraftFixtureStore::save_ai_result($row,'Generated caption first');
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::update_imported_media(1,999,'image',null,123,'fixture.jpg',$row)&&\RoxySocial\DraftFixtureStore::find(1)['post_text']==='Generated caption first','AI-first completion safely rebases media without losing generated text');
     $row=roxy_snapshot_row();\RoxySocial\DraftFixtureStore::update_draft(1,'Manager caption','2026-10-05 10:00:00',null,null,\RoxySocial\DraftFixtureStore::draft_revision($row));
