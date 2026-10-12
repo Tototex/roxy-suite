@@ -128,6 +128,31 @@ try {
   $check($result::$calls === $dates, 'unique sorted target/lookback dates served the actual allocation');
   $method = new ReflectionMethod($reporter, 'rebalance_concessions_for_date');
   $method->setAccessible(true);
+
+  // Exercise the real Store and Reporter with more than 1,000 editable rows.
+  // The allocator should persist these with bounded multi-row updates rather
+  // than one metadata-enriching UPDATE per report row.
+  $large_date = '2038-05-03';
+  $movie_table = $store::entries_table_name();
+  for ($i = 0; $i < 1001; $i++) {
+    $row = ['report_date'=>$large_date,'movie_title'=>'Batch Fixture','normalized_title'=>'batch fixture','show_time'=>'7:00 PM','general_qty'=>1,'total_tickets'=>1,'gross_total'=>12,'concessions_total'=>0,'is_locked'=>0,'created_at'=>$now,'updated_at'=>$now];
+    if ($wpdb->insert($movie_table, $row) !== 1) throw new RuntimeException('Could not seed large private allocation fixture.');
+  }
+  $result::$order_fixtures[$large_date] = [[
+    'closed_at'=>$large_date.'T19:00:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1001,'currency'=>'USD']]],
+  ]];
+  $batch_updates = 0;
+  $count_batch_updates = static function (string $sql) use (&$batch_updates, $movie_table): string {
+    if (stripos(ltrim($sql), 'UPDATE ') === 0 && strpos($sql, $movie_table) !== false) $batch_updates++;
+    return $sql;
+  };
+  add_filter('query', $count_batch_updates);
+  try { $result::with_sale_snapshot(static fn() => $method->invoke(null, $large_date)); }
+  finally { remove_filter('query', $count_batch_updates); }
+  $large_cents = (int) $wpdb->get_var($wpdb->prepare("SELECT ROUND(SUM(concessions_total)*100) FROM `{$movie_table}` WHERE report_date=%s", $large_date));
+  $check($batch_updates === 6 && $large_cents === 1001, 'real Store writes 1,001 rows in six bounded batches and conserves every cent');
+  unset($result::$order_fixtures[$large_date]);
+
   $fixture_concession_totals = static function () use ($wpdb, $store, $date): array {
     $totals = [];
     foreach ([$store::entries_table_name(), $store::live_entries_table_name(), $store::rental_entries_table_name()] as $table) {

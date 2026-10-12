@@ -42,6 +42,7 @@ namespace RoxyGrosses {
     public static array $live = [];
     public static array $rental = [];
     public static array $updates = [];
+    public static array $allocation_batches = [];
     public static array $logs = [];
     public static bool $fail_concession_read = false;
     public static array $unmatched_concessions = [];
@@ -85,6 +86,15 @@ namespace RoxyGrosses {
     public static function update_entry(int $id, array $data, bool $manual = false): bool { return self::save('movie', $id, $data); }
     public static function update_live_entry(int $id, array $data, bool $manual = false): bool { return self::save('live', $id, $data); }
     public static function update_rental_entry(int $id, array $data, bool $manual = false): bool { return self::save('rental', $id, $data); }
+    public static function update_concessions_allocation_batch(string $kind, array $allocations): bool {
+      foreach (array_chunk($allocations, 200, true) as $batch) {
+        self::$allocation_batches[] = [$kind, count($batch)];
+        foreach ($batch as $id => $cents) {
+          if (!self::save($kind, (int) $id, ['concessions_total' => (int) $cents / 100])) return false;
+        }
+      }
+      return true;
+    }
     public static function concessions_by_date(string $from, string $to): array {
       if (self::$fail_concession_read) throw new \RuntimeException('fixture concession read failure');
       $totals = [];
@@ -267,6 +277,7 @@ namespace {
     ]];
   }
   \RoxyGrosses\Store::$updates = [];
+  \RoxyGrosses\Store::$allocation_batches = [];
   \RoxyGrosses\Square::$calls = [];
   \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_report_dates', [[['report_date'=>'2038-05-01'],['report_date'=>'2038-05-01'],['report_date'=>'2038-05-02']], '2038-05-02']));
   $check(\RoxyGrosses\Square::$calls === $dates, 'affected report dates are unique, sorted, and include the requested date');
@@ -303,7 +314,7 @@ namespace {
   \RoxyGrosses\Store::$updates = [];
   \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$large_date]));
   $allocated_cents = array_sum(array_map(static fn(array $row): int => (int) round((float) ($row['concessions_total'] ?? 0) * 100), \RoxyGrosses\Store::$movie[$large_date]));
-  $check(count(\RoxyGrosses\Store::$updates) === 1001 && $allocated_cents === 1001, 'rebalance reads and conserves every row beyond the former 1,000-row cap');
+  $check(count(\RoxyGrosses\Store::$updates) === 1001 && count(\RoxyGrosses\Store::$allocation_batches) === 6 && $allocated_cents === 1001, 'rebalance conserves every row beyond the former 1,000-row cap using six bounded write batches');
 
   // Eligible sales outside every report row's show-time window must be surfaced
   // before writes instead of silently disappearing from daily reconciliation.

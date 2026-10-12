@@ -1822,6 +1822,7 @@ class Reporter {
     return Store::with_concession_allocation_transaction(static function () use ($reports, $report_date): array {
       $updated = 0;
       $concessions_total = 0.0;
+      $allocation_updates = ['movie' => [], 'live' => [], 'rental' => []];
       foreach ($reports as $report) {
         $entry_id = (int) ($report['_entry_id'] ?? 0);
         $kind = (string) ($report['_entry_kind'] ?? '');
@@ -1831,19 +1832,20 @@ class Reporter {
           $concessions_total += $concessions;
           continue;
         }
-        $saved = $kind === 'movie'
-          ? Store::update_entry($entry_id, ['concessions_total' => $concessions])
-          : ($kind === 'live'
-            ? Store::update_live_entry($entry_id, ['concessions_total' => $concessions])
-            : Store::update_rental_entry($entry_id, ['concessions_total' => $concessions]));
-        if (!$saved) {
+        if (!array_key_exists($kind, $allocation_updates)) throw new \RuntimeException('Unexpected concessions allocation row type.');
+        $cents = (int) round($concessions * 100);
+        $allocation_updates[$kind][$entry_id] = $cents;
+        $concessions_total += $cents / 100;
+      }
+      foreach ($allocation_updates as $kind => $changes) {
+        if (!$changes) continue;
+        if (!Store::update_concessions_allocation_batch($kind, $changes)) {
           global $wpdb;
           $error = trim((string) ($wpdb->last_error ?? ''));
           $detail = $error !== '' ? ' Database error: ' . substr($error, 0, 240) : '';
           throw new \RuntimeException('Could not save the concessions allocation for ' . $report_date . '. The report refresh was not completed.' . $detail);
         }
-        $updated++;
-        $concessions_total += $concessions;
+        $updated += count($changes);
       }
       return ['rows' => count($reports), 'updated' => $updated, 'concessions_total' => round($concessions_total, 2)];
     });

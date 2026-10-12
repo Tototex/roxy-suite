@@ -1812,6 +1812,73 @@ class Store {
     return $saved;
   }
 
+  /** Persist one bounded batch of allocation-only changes under the daily owner lock. */
+  public static function update_concessions_allocation_batch(string $dataset, array $allocations): bool {
+    global $wpdb;
+    self::assert_concession_allocation_owner();
+    $tables = [
+      'movie' => self::entries_table_name(),
+      'live' => self::live_entries_table_name(),
+      'rental' => self::rental_entries_table_name(),
+    ];
+    if (!isset($tables[$dataset])) throw new \InvalidArgumentException('Invalid concessions allocation dataset.');
+    $table = $tables[$dataset];
+    $expected = [];
+    foreach ($allocations as $entry_id => $cents) {
+      $id = filter_var($entry_id, FILTER_VALIDATE_INT);
+      if ($id === false || $id <= 0 || !is_numeric($cents) || !is_finite((float) $cents)
+        || floor((float) $cents) !== (float) $cents || (float) $cents < 0 || (float) $cents > 999999999999) return false;
+      $expected[(int) $id] = (int) $cents;
+    }
+    if (!$expected) return true;
+
+    $owner_db = self::$concession_allocation_db;
+    $lock = self::$concession_allocation_lock;
+    $updated_at = current_time('mysql');
+    foreach (array_chunk($expected, 200, true) as $chunk) {
+      self::assert_concession_allocation_owner();
+      $ids = array_keys($chunk);
+      $case_sql = [];
+      $params = [];
+      foreach ($chunk as $id => $cents) {
+        $case_sql[] = 'WHEN %d THEN %s';
+        $params[] = $id;
+        $params[] = number_format($cents / 100, 2, '.', '');
+      }
+      $id_placeholders = implode(',', array_fill(0, count($ids), '%d'));
+      $params[] = $updated_at;
+      array_push($params, ...$ids);
+      $params[] = $lock;
+      $sql = $owner_db->prepare(
+        'UPDATE `' . $table . '` SET `concessions_total` = CASE `id` ' . implode(' ', $case_sql)
+          . ' ELSE `concessions_total` END, `updated_at` = %s WHERE `id` IN (' . $id_placeholders
+          . ') AND `is_locked` = 0 AND IS_USED_LOCK(%s) = CONNECTION_ID()',
+        ...$params
+      );
+      $owner_db->last_error = '';
+      if ($owner_db->query($sql) === false || $owner_db->last_error !== '') return false;
+      self::assert_concession_allocation_owner();
+
+      // MySQL reports zero changed rows for a valid no-op update. Verify each
+      // requested value and lock state instead of relying on affected_rows.
+      $read_sql = $owner_db->prepare(
+        'SELECT `id`, `is_locked`, ROUND(`concessions_total` * 100) AS `cents` FROM `' . $table
+          . '` WHERE `id` IN (' . $id_placeholders . ')',
+        ...$ids
+      );
+      $owner_db->last_error = '';
+      $rows = $owner_db->get_results($read_sql, ARRAY_A);
+      if ($owner_db->last_error !== '' || !is_array($rows) || count($rows) !== count($chunk)) return false;
+      foreach ($rows as $row) {
+        $id = (int) ($row['id'] ?? 0);
+        if (!array_key_exists($id, $chunk) || !empty($row['is_locked']) || !is_numeric($row['cents'] ?? null)
+          || (int) $row['cents'] !== $chunk[$id]) return false;
+      }
+      self::assert_concession_allocation_owner();
+    }
+    return true;
+  }
+
   public static function entries_summary(array $filters = []): array {
     global $wpdb;
     [$where, $params] = self::entry_where_sql($filters);
