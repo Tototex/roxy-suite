@@ -102,7 +102,11 @@ try {
   $method = new ReflectionMethod($reporter, 'rebalance_concessions_for_report_dates');
   $method->setAccessible(true);
   $result = $namespace . '\\Square';
-  $result::with_sale_snapshot(static fn() => $method->invoke(null, [['report_date'=>$date],['report_date'=>$date]], $dates[1]));
+  try {
+    $result::with_sale_snapshot(static fn() => $method->invoke(null, [['report_date'=>$date],['report_date'=>$date]], $dates[1]));
+  } catch (Throwable $error) {
+    throw new RuntimeException('Initial private allocation failed: ' . $error->getMessage() . ' Database detail: ' . $wpdb->last_error . ' Query: ' . $wpdb->last_query, 0, $error);
+  }
   foreach ($dates as $read_date) {
     $sum_cents = 0;
   foreach ([$store::entries_table_name(), $store::live_entries_table_name(), $store::rental_entries_table_name()] as $table) {
@@ -145,7 +149,10 @@ try {
   add_filter('query', $fault);
   $thrown = false;
   try { $result::with_sale_snapshot(static fn() => $method->invoke(null, $date)); }
-  catch (Throwable $error) { $thrown = strpos($error->getMessage(), 'Could not save the concessions allocation') !== false; }
+  catch (Throwable $error) {
+    $thrown = strpos($error->getMessage(), 'Could not save the concessions allocation') !== false;
+    if ($thrown && $wpdb->last_error !== '') throw new RuntimeException('Expected injected update failure; database detail: ' . $wpdb->last_error . ' Query: ' . $wpdb->last_query, 0, $error);
+  }
   finally { remove_filter('query', $fault); }
   $check($updates_seen === 2 && $thrown && $fixture_concession_totals() === $before_failed_allocation, 'later real Store update failure rolls back an earlier private-table allocation write');
   $movie_table = $store::entries_table_name();
