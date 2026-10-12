@@ -49,10 +49,14 @@ try {
     $request->set_param('quantity', 4);
     wc_clear_notices();
     $blocked = false;
+    $api_error = null;
     try { $controller->validate_add_to_cart($product, $request); }
-    catch (Automattic\WooCommerce\StoreApi\Exceptions\RouteException $error) { $blocked = true; }
+    catch (Automattic\WooCommerce\StoreApi\Exceptions\RouteException $error) { $blocked = true; $api_error = $error; }
     $assert($blocked, 'Store API rejects an add-to-cart quantity above available capacity');
-    $assert(str_contains(wp_strip_all_tags(wc_print_notices(true)), 'not have enough seats remaining'), 'Store API capacity rejection carries the seat-limit notice');
+    $assert($api_error instanceof Automattic\WooCommerce\StoreApi\Exceptions\RouteException
+        && $api_error->error_code === 'woocommerce_rest_add_to_cart_error'
+        && str_contains(wp_strip_all_tags($api_error->getMessage()), 'not have enough seats remaining'),
+        'Store API response carries the expected seat-limit error');
 
     $request->set_param('quantity', 2);
     wc_clear_notices();
