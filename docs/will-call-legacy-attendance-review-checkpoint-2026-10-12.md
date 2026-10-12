@@ -15,4 +15,5 @@ Older Will Call data stores one aggregate `used_qty` per customer and context. N
 
 - Added standalone regression coverage for separate display of the historical and ticket-level counts.
 - Added a disposable WordPress/Woo fixture that will assert the warning/disabled controls, unchanged aggregate after rendering, and failed transactional overwrite with unchanged ticket and aggregate state.
-- Hosted PHP syntax, isolated suite, and private WordPress/Woo fixture are pending for this checkpoint.
+- Hosted run [38231760221](https://github.com/Tototex/roxy-suite/actions/runs/38231760221) passes PHP 8.0–8.4 and the full PHP 8.3 suite. The private WordPress/Woo fixture confirms the warning/disabled row, no mutation on render, refusal to overwrite the higher aggregate, and preservation of both underlying states. A second fixture case confirms a separate QR undo cannot silently leave then overwrite a stale aggregate.
+- The guard remains branch-only; no production file or historical record was changed. Resolving flagged rows still requires a manager reconciliation policy.
