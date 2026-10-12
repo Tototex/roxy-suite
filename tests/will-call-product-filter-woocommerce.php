@@ -141,6 +141,9 @@ try {
   // hook removed.
   remove_filter('woocommerce_order_data_store_cpt_get_orders_query', 'roxy_will_call_filter_legacy_ticket_order_query', PHP_INT_MAX);
   $baseline = roxy_will_call_get_list($ticket_ids, $labels, true);
+  // Do not let WordPress/Woo reuse the full-scan query result when measuring
+  // whether the private SQL predicate is embedded in optimized pagination.
+  wp_cache_flush();
   add_filter('woocommerce_order_data_store_cpt_get_orders_query', 'roxy_will_call_filter_legacy_ticket_order_query', PHP_INT_MAX, 2);
 
   $candidate_sql_count = 0;
