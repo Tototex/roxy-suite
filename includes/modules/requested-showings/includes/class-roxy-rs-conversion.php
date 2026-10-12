@@ -456,7 +456,15 @@ class Conversion {
             return new \WP_Error('approval_state_review_required', 'The final request approval state could not be saved or verified. Review the request, showing and backing/order records before retrying. Customer confirmation was not sent.');
         }
 
-        $emails = self::request_recipient_emails($request_id, $backings);
+        // Include already-charged backings that were reconciled on a retry, so
+        // their supporters receive the final confirmation too.
+        try {
+            $notification_backings = roxy_rs_repo_list_backings_for_request($request_id);
+        } catch (\Throwable $error) {
+            self::restore_conversion_review_status($request_id, true);
+            return new \WP_Error('approval_recipients_review_required', 'The backing list could not be verified. The request remains in review and customer confirmation was not sent.');
+        }
+        $emails = self::request_recipient_emails($request_id, $notification_backings);
         if ($emails) {
             $subject = sprintf('Requested showing confirmed: %s', get_the_title($request_id));
             $message = "Your requested showing has been confirmed and converted into a real Roxy showing.\n\n"
