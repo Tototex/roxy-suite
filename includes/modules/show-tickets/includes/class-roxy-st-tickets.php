@@ -579,6 +579,7 @@ class Tickets {
           if ($summary) {
             $stored=$operation->will_call_quantity((int)$summary['context_id'],(string)$summary['customer_key']);
             $current=$identities ? count($checked) : $stored;
+            if ($identities && $stored > $current) throw new \RuntimeException('Saved historical attendance exceeds the current ticket records. Manager review is required; no attendance was changed.');
             if ($current!==(int)$summary['baseline_used']) throw new \RuntimeException('Another admission changed this customer. Refresh before retrying.');
             if (!$identities && $quantity<$stored && !$allow_undo) throw new \RuntimeException('Reducing admission requires explicit Undo confirmation.');
           }

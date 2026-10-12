@@ -4,13 +4,15 @@ if (!defined('WP_CLI') || !WP_CLI) exit;
 $root=$args[0]??dirname(__DIR__);
 require __DIR__.'/ticket-fixture-loader.php';
 roxy_fixture_tickets($root,'IssuanceFixtureTickets');
+if (!class_exists('RoxyST\\Tickets', false)) class_alias('RoxyST\\IssuanceFixtureTickets','RoxyST\\Tickets');
+require_once $root.'/includes/modules/will-call/roxy-will-call.php';
 add_filter('pre_wp_mail',static fn()=>true);
 remove_action('woocommerce_checkout_order_processed',[\RoxyST\Tickets::class,'on_order_changed'],30);
 remove_action('woocommerce_order_status_changed',[\RoxyST\Tickets::class,'on_order_changed'],30);
 remove_action('woocommerce_refund_created',[\RoxyST\Tickets::class,'on_refund_created'],30);
 remove_action('woocommerce_refund_deleted',[\RoxyST\Tickets::class,'on_refund_deleted'],30);
 remove_action('woocommerce_order_status_changed',[\RoxyST\Sales::class,'on_order_changed'],20);
-$created=[];$order=null;$refund=null;$group_order=null;$group_ids=[];$marathon_order=null;$marathon_ids=[];$summary=null;
+$created=[];$order=null;$refund=null;$group_order=null;$group_ids=[];$marathon_order=null;$marathon_ids=[];$summary=null;$display_key='';
 $wp_cli_path=(string)(getenv('ROXY_WP_CLI')?:'/usr/local/bin/wp');
 $check=static function($ok,$label){if(!$ok)throw new RuntimeException($label);echo 'PASS: '.$label.PHP_EOL;};
 try{
@@ -130,6 +132,22 @@ try{
   \RoxyST\IssuanceFixtureTickets::apply_will_call_group($both,4,false,$summary);
   $check(count($group_ids)===1&&$count_checked($both)===4,'one customer group commits tickets spanning two Woo orders');
   $summary['baseline_used']=4;\RoxyST\IssuanceFixtureTickets::apply_will_call_group($both,0,true,$summary);
+  $check(\RoxyST\IssuanceFixtureTickets::check_in_ticket($ids[0],9,'ticket'),'historical aggregate fixture establishes a ticket-level admission');
+  $display_key=roxy_will_call_customer_key((string)get_post_meta($ids[0],'_roxy_ticket_customer_name',true),(string)get_post_meta($ids[0],'_roxy_ticket_customer_email',true));
+  $wpdb->replace($wpdb->prefix.'roxy_will_call_checkins',['product_id'=>$pid,'customer_key'=>$display_key,'checked_in'=>1,'used_qty'=>2,'updated_at'=>current_time('mysql')],['%d','%s','%d','%d','%s']);
+  ob_start();
+  try {roxy_will_call_render_table('product',$pid,[['customer_key'=>$display_key,'name'=>'Private Fixture Buyer','email'=>'','qty'=>3,'ticket_types'=>['General'=>3],'orders'=>[],'latest_order_ts'=>0,'source'=>'order']],['total_qty'=>3,'total_revenue'=>0,'order_count'=>1]);$review_html=(string)ob_get_contents();}
+  finally {ob_end_clean();}
+  $check(str_contains($review_html,'Attendance needs review')&&str_contains($review_html,'Legacy count: 2; ticket records: 1')&&preg_match('/class="roxy-used"[^>]*disabled/',$review_html)===1,'Will Call UI flags the legacy mismatch and disables edits without merging the counts');
+  $display_stored=(int)$wpdb->get_var($wpdb->prepare("SELECT used_qty FROM {$wpdb->prefix}roxy_will_call_checkins WHERE product_id=%d AND customer_key=%s",$pid,$display_key));
+  $check($display_stored===2,'rendering the review-required UI does not change the historical aggregate');
+  $wpdb->delete($wpdb->prefix.'roxy_will_call_checkins',['product_id'=>$pid,'customer_key'=>$display_key]);
+  $wpdb->replace($wpdb->prefix.'roxy_will_call_checkins',['product_id'=>$summary['context_id'],'customer_key'=>$summary['customer_key'],'checked_in'=>1,'used_qty'=>2,'updated_at'=>current_time('mysql')],['%d','%s','%d','%d','%s']);
+  $summary['baseline_used']=1;$legacy_rejected=false;
+  try{\RoxyST\IssuanceFixtureTickets::apply_will_call_group($both,1,false,$summary);}catch(RuntimeException $e){$legacy_rejected=true;}
+  $legacy_stored=(int)$wpdb->get_var($wpdb->prepare("SELECT used_qty FROM {$wpdb->prefix}roxy_will_call_checkins WHERE product_id=%d AND customer_key=%s",$summary['context_id'],$summary['customer_key']));
+  $check($legacy_rejected&&$legacy_stored===2&&(int)get_post_meta($ids[0],'_roxy_checked_in',true)===1,'ticket-level save refuses to overwrite a higher legacy aggregate and preserves both sources for review');
+  \RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0],'ticket');
   $refund=wc_create_refund(['order_id'=>$order->get_id(),'amount'=>0,'reason'=>'PRIVATE ISSUANCE FIXTURE','refund_payment'=>false,'restock_items'=>false,'line_items'=>[$item_id=>['qty'=>1,'refund_total'=>0,'refund_tax'=>[]]]]);if(is_wp_error($refund))throw new RuntimeException('Fixture refund failed');
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'actual zero-dollar line refund reconciles');
   $check(count(array_filter($ids,static fn($id)=>get_post_meta($id,'_roxy_ticket_state',true)==='refunded'))===1,'one refund invalidates exactly one existing ticket');
@@ -143,6 +161,7 @@ try{
   echo 'TICKET_ISSUANCE_WOO_OK'.PHP_EOL;
 }finally{
   if($summary){global $wpdb;$wpdb->delete($wpdb->prefix.'roxy_will_call_checkins',['product_id'=>$summary['context_id'],'customer_key'=>$summary['customer_key']]);}
+  if($display_key!=='')$wpdb->delete($wpdb->prefix.'roxy_will_call_checkins',['product_id'=>$pid,'customer_key'=>$display_key]);
   if($marathon_order instanceof WC_Order){foreach(array_unique(array_merge($marathon_ids??[],\RoxyST\IssuanceFixtureTickets::get_order_ticket_ids($marathon_order->get_id()))) as $id)wp_delete_post($id,true);$marathon_order->delete(true);}
   if($group_order instanceof WC_Order){foreach($group_ids as $id)wp_delete_post($id,true);$group_order->delete(true);}
   if($refund instanceof WC_Order_Refund)$refund->delete(true);

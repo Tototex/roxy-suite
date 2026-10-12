@@ -109,6 +109,10 @@ check(roxy_will_call_apply_ticket_checkin_state([201,202,101,102,103],1)===[103]
 unset($GLOBALS['orders'][2],$GLOBALS['meta'][201],$GLOBALS['meta'][202]);
 $key=roxy_will_call_customer_key('Test Buyer','buyer@example.test');
 check(roxy_will_call_authoritative_checkins(8,[$key=>['used_qty'=>0]])[$key]['used_qty']===1,'initial Used count includes actual QR admission');
+$GLOBALS['baseline']=2;
+$legacy_review=roxy_will_call_authoritative_checkins(8,roxy_will_call_get_checkins_map(8));
+check(($legacy_review[$key]['requires_review']??false)===true&&$legacy_review[$key]['legacy_used_qty']===2&&$legacy_review[$key]['used_qty']===1,'higher saved aggregate is surfaced separately from ticket-level attendance without combining counts');
+$GLOBALS['baseline']=0;
 $list=roxy_will_call_get_list([8],['8'=>'General'],true);
 check($list['totals']['total_qty']===2 && abs($list['totals']['total_revenue']-13.2)<0.00001,'partial refunds reduce quantity and collected revenue including tax');
 $saved_orders=$GLOBALS['orders']; $GLOBALS['orders']=[];

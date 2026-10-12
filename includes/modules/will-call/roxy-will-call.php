@@ -1057,9 +1057,11 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
   $order_count = isset($totals['order_count']) ? (int) $totals['order_count'] : 0;
 
   $checked_in_total = 0;
+  $legacy_review_count = 0;
   foreach ($rows as $r) {
     $key = $r['customer_key'];
     $saved = isset($checkins[$key]) ? $checkins[$key] : ['checked_in' => 0, 'used_qty' => 0];
+    if (!empty($saved['requires_review'])) $legacy_review_count++;
     if (($r['source'] ?? '') === 'member_admit') {
       $saved = ['checked_in' => 1, 'used_qty' => (int) ($r['qty'] ?? 0)];
     }
@@ -1090,6 +1092,7 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
   echo '  <div class="metric"><div class="label">Remaining</div><div class="value" id="roxy-wc-remaining">' . esc_html(number_format_i18n($remaining_total)) . '</div></div>';
   echo '  <div class="metric"><div class="label">Total revenue</div><div class="value">' . wp_kses_post(wc_price($total_revenue)) . '</div></div>';
   echo '  <div class="metric"><div class="label">Matching orders</div><div class="value">' . esc_html(number_format_i18n($order_count)) . '</div></div>';
+  if ($legacy_review_count > 0) echo '  <div class="metric"><div class="label">Attendance needs review</div><div class="value">' . esc_html(number_format_i18n($legacy_review_count)) . '</div></div>';
   echo '  <div class="roxy-wc-summary-breakdown" id="roxy-wc-type-breakdown">';
   if ($checked_in_type_totals) {
     foreach ($checked_in_type_totals as $label => $qty) {
@@ -1100,6 +1103,9 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
   }
   echo '  </div>';
   echo '</div>';
+  if ($legacy_review_count > 0) {
+    echo '<div class="notice notice-warning inline"><p>Some saved historical attendance counts are higher than the current ticket-level records. These rows are excluded from exact check-in totals and locked until a manager reviews them. The counts are not combined or changed automatically.</p></div>';
+  }
 
   echo '<div class="roxy-wc-search-wrap">';
   echo '  <label for="roxy-wc-search">Search will call list</label>';
@@ -1127,8 +1133,11 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
     $key = $r['customer_key'];
     $qty = (int) $r['qty'];
     $saved = isset($checkins[$key]) ? $checkins[$key] : ['checked_in' => 0, 'used_qty' => 0];
-    $readonly = ($r['source'] ?? '') === 'member_admit';
-    if ($readonly) $saved=['checked_in'=>1,'used_qty'=>$qty];
+    $requires_review = !empty($saved['requires_review']);
+    $legacy_used_qty = max(0, (int) ($saved['legacy_used_qty'] ?? 0));
+    $ticket_used_qty = max(0, (int) ($saved['used_qty'] ?? 0));
+    $readonly = ($r['source'] ?? '') === 'member_admit' || $requires_review;
+    if (($r['source'] ?? '') === 'member_admit') $saved=['checked_in'=>1,'used_qty'=>$qty];
     $checked = ((int) $saved['checked_in'] === 1);
     $used_qty = (int) $saved['used_qty'];
     if ($used_qty < 0) $used_qty = 0;
@@ -1188,7 +1197,7 @@ function roxy_will_call_render_table($mode, $id, $rows, $totals) {
     echo '<td>' . wp_kses_post($ticket_types_html) . '</td>';
     echo '<td><input class="roxy-used" type="number" min="0" max="' . esc_attr($qty) . '" value="' . esc_attr($used_qty) . '"'.($readonly?' disabled':'').' /></td>';
     echo '<td><label><input class="roxy-checked" type="checkbox" ' . checked($checked, true, false) . ($readonly?' disabled':'').' /> yes</label></td>';
-    echo '<td><span class="roxy-wc-saved">Saved ✓</span><span class="roxy-wc-queued">Queued ⏳</span><span class="roxy-wc-syncing">Syncing…</span><span class="roxy-wc-error">Sync failed</span></td>';
+    echo '<td>' . ($requires_review ? '<strong>Review required</strong><br><span>Legacy count: ' . esc_html($legacy_used_qty) . '; ticket records: ' . esc_html($ticket_used_qty) . '</span>' : '') . '<span class="roxy-wc-saved">Saved ✓</span><span class="roxy-wc-queued">Queued ⏳</span><span class="roxy-wc-syncing">Syncing…</span><span class="roxy-wc-error">Sync failed</span></td>';
     echo '</tr>';
   }
 
@@ -1280,7 +1289,14 @@ function roxy_will_call_authoritative_checkins(int $context_id, array $saved): a
     if (!isset($counts[$key])) $counts[$key]=0;
     if (\RoxyST\Tickets::ticket_is_eligible($id) && (int)get_post_meta($id,'_roxy_checked_in',true)===1) $counts[$key]++;
   }
-  foreach($counts as $key=>$qty) $saved[$key]=['checked_in'=>$qty>0?1:0,'used_qty'=>$qty];
+  foreach($counts as $key=>$qty) {
+    $legacy_qty = max(0, (int) ($saved[$key]['used_qty'] ?? 0));
+    $saved[$key]=['checked_in'=>$qty>0?1:0,'used_qty'=>$qty];
+    if ($legacy_qty > $qty) {
+      $saved[$key]['requires_review'] = true;
+      $saved[$key]['legacy_used_qty'] = $legacy_qty;
+    }
+  }
   return $saved;
 }
 
