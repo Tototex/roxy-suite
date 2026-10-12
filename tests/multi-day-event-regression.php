@@ -168,6 +168,28 @@ try {
   $check($sold_out_label && $disabled_button,
     'event ticket buttons remain disabled until committed screenings have published ticket products (html=' . strlen($publication_html) . ', sold_out=' . (int)$sold_out_label . ', disabled=' . (int)$disabled_button . ', buttons=' . implode(' | ', $button_tags) . ')');
   $check(count(array_filter($screenings,static fn($id)=>get_post_status($id)==='publish'))===6,'publishing event publishes all six linked showings');
+  $original_wp_query = $GLOBALS['wp_query'] ?? null;
+  $original_wp_the_query = $GLOBALS['wp_the_query'] ?? null;
+  $single_screening_query = new WP_Query();
+  $GLOBALS['wp_query'] = $GLOBALS['wp_the_query'] = $single_screening_query;
+  $single_screening_query->query([
+    'post_type'=>\RoxyST\CPT::POST_TYPE,
+    'post_status'=>'publish',
+    'name'=>get_post_field('post_name',(int)$screenings[0]),
+  ]);
+  $single_screening_id = (int)($single_screening_query->post->ID ?? 0);
+  $GLOBALS['wp_query'] = $original_wp_query;
+  $GLOBALS['wp_the_query'] = $original_wp_the_query;
+  $check($single_screening_query->is_singular() && $single_screening_id === (int)$screenings[0],
+    'linked screening remains resolvable by its single permalink for the event redirect');
+  $archive_query = new WP_Query();
+  $GLOBALS['wp_query'] = $GLOBALS['wp_the_query'] = $archive_query;
+  $archive_query->query(['post_type'=>\RoxyST\CPT::POST_TYPE,'post_status'=>'publish','posts_per_page'=>-1]);
+  $archive_ids = array_map('intval',wp_list_pluck($archive_query->posts,'ID'));
+  $GLOBALS['wp_query'] = $original_wp_query;
+  $GLOBALS['wp_the_query'] = $original_wp_the_query;
+  $check(!array_intersect($screenings,$archive_ids),
+    'public showing archive still omits event-linked screenings');
   $check(count(array_filter($screenings,static fn($id)=>(int)get_post_meta($id,'_roxy_capacity',true)===250))===6,'each screening inherits the configured 250-seat capacity');
   $products=[];
   foreach ($screenings as $id) {

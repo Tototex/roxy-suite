@@ -60,8 +60,9 @@ namespace {
 
     final class FixtureRedirect extends \RuntimeException { public $url; public function __construct($url) { $this->url = $url; } }
     final class WP_Error {
-        private $message;
-        public function __construct($code = '', $message = '') { $this->message = (string) $message; }
+        private $code; private $message;
+        public function __construct($code = '', $message = '') { $this->code = (string) $code; $this->message = (string) $message; }
+        public function get_error_code() { return $this->code; }
         public function get_error_message() { return $this->message; }
     }
     final class FixtureSubscription {

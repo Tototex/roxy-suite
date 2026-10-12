@@ -666,7 +666,8 @@ final class Events {
   }
 
   public static function hide_event_screenings_from_archive($query): void {
-    if (!($query instanceof \WP_Query) || is_admin() || !$query->is_main_query() || (!$query->is_post_type_archive(CPT::POST_TYPE) && $query->get('post_type')!==CPT::POST_TYPE)) return;
+    if (!($query instanceof \WP_Query) || is_admin() || !$query->is_main_query() || $query->is_singular()
+      || (!$query->is_post_type_archive(CPT::POST_TYPE) && $query->get('post_type')!==CPT::POST_TYPE)) return;
     $meta=(array)$query->get('meta_query');$meta[]=['relation'=>'OR',['key'=>'_roxy_event_id','compare'=>'NOT EXISTS'],['key'=>'_roxy_event_id','value'=>'','compare'=>'=']];$query->set('meta_query',$meta);
   }
 }
