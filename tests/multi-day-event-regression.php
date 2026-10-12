@@ -331,8 +331,12 @@ try {
   wp_update_post(['ID'=>(int)$event_id,'post_status'=>'draft']);
   if (get_post_status((int)$event_id) !== 'draft') throw new RuntimeException('The event could not be returned to draft for publication-conflict test.');
 
-  $block_publication = static function($check, $postarr) use ($screenings) {
-    if ((int)($postarr['ID'] ?? 0) === (int)$screenings[1] && ($postarr['post_status'] ?? '') === 'publish') return false;
+  $blocked_publication_hook_called = false;
+  $block_publication = static function($check, $postarr) use ($screenings, &$blocked_publication_hook_called) {
+    if ((int)($postarr['ID'] ?? 0) === (int)$screenings[1] && ($postarr['post_status'] ?? '') === 'publish') {
+      $blocked_publication_hook_called = true;
+      return false;
+    }
     return $check;
   };
   add_filter('pre_wp_update_post', $block_publication, 10, 2);
@@ -340,7 +344,10 @@ try {
   remove_filter('pre_wp_update_post', $block_publication, 10);
   $check(get_post_status((int)$event_id) === 'draft'
     && count(array_filter($screenings,static fn($id)=>get_post_status($id)==='publish'))===0,
-    'failure on a later screening rolls back the earlier publication and returns the event to draft');
+    'failure on a later screening rolls back the earlier publication and returns the event to draft (hook=' . (int)$blocked_publication_hook_called
+      . ', event=' . get_post_status((int)$event_id)
+      . ', screenings=' . wp_json_encode(array_map(static fn($id)=>get_post_status((int)$id), $screenings))
+      . ', notice=' . (string)get_transient('roxy_st_event_invalid_' . get_current_user_id()) . ')');
   delete_transient('roxy_st_event_invalid_' . get_current_user_id());
 
   $blocked_start = (string)get_post_meta((int)$screenings[0], '_roxy_start', true);
