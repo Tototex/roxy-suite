@@ -63,6 +63,31 @@ final class EmailOutbox {
     return $json;
   }
 
+  /** Store exception text as tagged ASCII-safe JSON; older rows remain readable as-is. */
+  private static function encode_error_text(string $error): string {
+    try {
+      return 'json:' . json_encode($error, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    } catch (\JsonException $exception) {
+      throw new \InvalidArgumentException('Grosses email outbox error text must be JSON-encodable.', 0, $exception);
+    }
+  }
+
+  private static function decode_error_text(string $stored): string {
+    if (strpos($stored, 'json:') !== 0) return $stored;
+    $decoded = json_decode(substr($stored, 5), true);
+    return is_string($decoded) ? $decoded : $stored;
+  }
+
+  private static function decode_error_rows(array $rows): array {
+    foreach ($rows as &$row) {
+      if (is_array($row) && isset($row['error_text']) && is_string($row['error_text'])) {
+        $row['error_text'] = self::decode_error_text($row['error_text']);
+      }
+    }
+    unset($row);
+    return $rows;
+  }
+
   private static function valid_date(?string $date): ?string {
     if ($date === null) return null;
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) throw new \InvalidArgumentException('Report date must be null or a valid YYYY-MM-DD date.');
@@ -172,7 +197,7 @@ final class EmailOutbox {
     $now = gmdate('Y-m-d H:i:s');
     $query = $wpdb->prepare(
       "UPDATE {$table} SET status = %s, updated_at = %s, error_text = %s WHERE id = %d AND status = 'sending'",
-      $status, $now, $error, $id
+      $status, $now, self::encode_error_text($error), $id
     );
     $result = $wpdb->query($query);
     if ($result === false || !empty($wpdb->last_error)) return false;
@@ -190,7 +215,7 @@ final class EmailOutbox {
     $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$table} WHERE key_hash = %s LIMIT 1", $key_hash), ARRAY_A);
     if ($row === null && !empty($wpdb->last_error)) throw self::storage_error('lookup');
     if ($row === false) throw self::storage_error('lookup');
-    return is_array($row) ? $row : null;
+    return is_array($row) ? self::decode_error_rows([$row])[0] : null;
   }
 
   /** Read recent rows only; limit is intentionally capped. */
@@ -200,6 +225,6 @@ final class EmailOutbox {
     $table = self::table_name();
     $rows = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$table} ORDER BY id DESC LIMIT %d", $limit), ARRAY_A);
     if (!is_array($rows) || !empty($wpdb->last_error)) throw self::storage_error('list');
-    return $rows;
+    return self::decode_error_rows($rows);
   }
 }

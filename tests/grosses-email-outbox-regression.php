@@ -59,13 +59,15 @@ try {
   $check($outbox::ensure_schema(true), 'schema creation is repeatable');
 
   $logical_key = 'grosses:daily:2039-04-05';
+  $unicode_subject = 'Fixture report ' . "\u{2014}" . ' manager ' . "\u{2019}" . ' 🍿';
+  $unicode_body = 'Provisional ' . "\u{2014}" . ' “review” — 🎟️';
   $payload = [
     'to' => ['manager@example.invalid'],
-    'subject' => 'Fixture report ' . "\u{2014}" . ' manager ' . "\u{2019}" . ' 🍿',
-    'body' => 'Provisional ' . "\u{2014}" . ' “review” — 🎟️',
+    'subject' => $unicode_subject,
+    'body' => $unicode_body,
     'attachment' => ['name' => 'report.csv'],
   ];
-  $context = ['trigger' => 'scheduled', 'fixture' => true];
+  $context = ['trigger' => 'scheduled', 'fixture' => true, 'label' => 'Scheduled — provisional 🍿'];
 
   // Reproduce WordPress rejecting a prepared write when its cached connection
   // charset cannot represent raw Unicode. The production outbox stores JSON
@@ -80,8 +82,8 @@ try {
   $check($legacy_write === false && strpos((string) $fixture_db->last_error, 'contains invalid data') !== false,
     'pre-fix raw Unicode write reproduces the WordPress charset rejection');
   $first = $outbox::claim($logical_key, 'daily_report', 41, '2039-04-05', $payload, $context);
-  $fixture_db->charset = $fixture_charset;
   $check($first['claimed'] === true && $first['id'] > 0 && $first['status'] === 'sending', 'first atomic claim persists sending before any caller-side mail action');
+  $fixture_db->charset = $fixture_charset;
 
   // A second independent MySQL connection attempts the exact same logical send.
   $check((string) $fixture_db->get_var('SELECT CONNECTION_ID()') !== (string) $other_db->get_var('SELECT CONNECTION_ID()'), 'contending handles are independent database connections');
@@ -92,10 +94,14 @@ try {
 
   $before_duplicate = $outbox::find($logical_key);
   $check(($before_duplicate['payload_json'] ?? '') === json_encode($payload, JSON_UNESCAPED_SLASHES)
-    && ($before_duplicate['context_json'] ?? '') === json_encode($context, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)
+    && ($before_duplicate['context_json'] ?? '') === json_encode($context, JSON_UNESCAPED_SLASHES)
     && ($before_duplicate['kind'] ?? '') === 'daily_report' && (int) ($before_duplicate['source_id'] ?? -1) === 41
     && ($before_duplicate['report_date'] ?? '') === '2039-04-05' && ($before_duplicate['status'] ?? '') === 'sending',
     'duplicate SQL preserves original payload, context, source/date, and blocking state');
+  $stored_payload = json_decode((string) ($before_duplicate['payload_json'] ?? ''), true);
+  $stored_context = json_decode((string) ($before_duplicate['context_json'] ?? ''), true);
+  $check(($stored_payload['subject'] ?? '') === $unicode_subject && ($stored_payload['body'] ?? '') === $unicode_body
+    && ($stored_context['label'] ?? '') === 'Scheduled — provisional 🍿', 'ASCII-safe persisted JSON round-trips Unicode payload and context exactly');
 
   $check($outbox::finish((int) $first['id'], 'accepted'), 'accepted result is recorded');
   $accepted = $outbox::find($logical_key);
@@ -107,6 +113,21 @@ try {
   $uncertain_claim = $outbox::claim($uncertain_key, 'daily_report', 42, '2039-04-06', ['report' => 'uncertain fixture'], ['trigger' => 'manual']);
   $check($outbox::finish((int) $uncertain_claim['id'], 'uncertain', 'mail acceptance could not be established'), 'uncertain result can be recorded');
   $check(($outbox::find($uncertain_key)['status'] ?? '') === 'uncertain', 'uncertain result is readable and remains distinct from accepted');
+
+  $unicode_error_key = 'grosses:daily:2039-04-07';
+  $unicode_error_claim = $outbox::claim($unicode_error_key, 'daily_report', 45, '2039-04-07', ['report' => 'fixture'], ['trigger' => 'scheduled']);
+  $unicode_error = 'wp_mail threw: provider response — “temporary” 🍿';
+  $fixture_db->charset = 'ascii';
+  $legacy_error_write = $fixture_db->query($fixture_db->prepare(
+    "UPDATE `{$table}` SET status = %s, error_text = %s WHERE id = %d AND status = 'sending'",
+    'uncertain', $unicode_error, (int) $unicode_error_claim['id']
+  ));
+  $check($legacy_error_write === false && strpos((string) $fixture_db->last_error, 'contains invalid data') !== false,
+    'pre-fix raw Unicode provider error reproduces the WordPress charset rejection');
+  $unicode_finish_ok = $outbox::finish((int) $unicode_error_claim['id'], 'uncertain', $unicode_error);
+  $fixture_db->charset = $fixture_charset;
+  $check($unicode_finish_ok && ($outbox::find($unicode_error_key)['error_text'] ?? '') === $unicode_error,
+    'Unicode provider error can be durably recorded under a restrictive database charset and reads back unchanged');
 
   // A database write error must not clear the durable sending state.
   $wpdb = new GrossesOutboxWriteFailureFixture();
