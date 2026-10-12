@@ -147,6 +147,10 @@ try {
     $product_ids_during_publication[] = (int)get_post_meta((int)$screening_id, '_roxy_pid_adult', true);
     if ($publication_html === '') $publication_html = \RoxyST\Events::render((int)$event_id);
   };
+  $check(count(array_filter($screenings, static fn($id) => get_post_status((int)$id) === 'draft')) === 6,
+    'all linked screenings are drafts immediately before parent publication');
+  $check(count(array_filter($screenings, static fn($id) => (int)get_post_meta((int)$id, '_roxy_pid_adult', true) > 0)) === 0,
+    'no adult ticket products exist before parent publication');
   $_POST = $old_post;
   add_action('save_post_' . \RoxyST\CPT::POST_TYPE, $publication_probe, 21, 2);
   wp_update_post(['ID'=>(int)$event_id,'post_status'=>'publish']);
@@ -156,8 +160,10 @@ try {
   $products_created_before_commit = array_values(array_filter($product_ids_during_publication));
   $check(!$products_created_before_commit,
     'ticket products are not synchronized from screening hooks before the publication transaction commits (observed IDs: ' . implode(',', $products_created_before_commit) . ')');
-  $check(str_contains($publication_html, 'Sold out or sales ended') && preg_match('/<button type="submit" disabled/', $publication_html) === 1,
-    'event ticket buttons remain disabled until committed screenings have published ticket products');
+  $sold_out_label = str_contains($publication_html, 'Sold out or sales ended');
+  $disabled_button = preg_match('/<button type="submit" disabled/', $publication_html) === 1;
+  $check($sold_out_label && $disabled_button,
+    'event ticket buttons remain disabled until committed screenings have published ticket products (html=' . strlen($publication_html) . ', sold_out=' . (int)$sold_out_label . ', disabled=' . (int)$disabled_button . ', preview=' . substr(preg_replace('/\s+/', ' ', strip_tags($publication_html)), 0, 220) . ')');
   $check(count(array_filter($screenings,static fn($id)=>get_post_status($id)==='publish'))===6,'publishing event publishes all six linked showings');
   $check(count(array_filter($screenings,static fn($id)=>(int)get_post_meta($id,'_roxy_capacity',true)===250))===6,'each screening inherits the configured 250-seat capacity');
   $products=[];
