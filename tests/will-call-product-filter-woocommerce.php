@@ -96,7 +96,9 @@ try {
     $status = ($index === 201) ? 'completed' : 'processing';
     $make_order($ticket, 'Buyer ' . str_pad((string) $index, 3, '0', STR_PAD_LEFT), 'buyer' . $index . '@example.invalid', $status);
   }
-  $make_order($unrelated, 'Unrelated buyer', 'unrelated@example.invalid');
+  for ($index = 1; $index <= 201; $index++) {
+    $make_order($unrelated, 'Unrelated buyer ' . $index, 'unrelated' . $index . '@example.invalid');
+  }
   $make_order($simple, 'Cancelled buyer', 'cancelled@example.invalid', 'cancelled');
   $old_order = $make_order($simple, 'Old buyer', 'old@example.invalid');
   $old_order->set_date_created(new WC_DateTime('2020-01-01 12:00:00'));
@@ -108,9 +110,16 @@ try {
   $cache_key = roxy_will_call_cache_key($ticket_ids, $labels);
 
   // Baseline runs the exact production list builder with only its optimization
-  // hook removed. Then rerun fresh with the real Woo CPT filter registered.
+  // hook removed. Count actual Woo page queries for baseline and candidate.
+  $baseline_pages = 0;
+  $baseline_page_observer = static function ($query, $query_vars) use (&$baseline_pages) {
+    $baseline_pages++;
+    return $query;
+  };
+  add_filter('woocommerce_order_data_store_cpt_get_orders_query', $baseline_page_observer, 20, 2);
   remove_filter('woocommerce_order_data_store_cpt_get_orders_query', 'roxy_will_call_filter_legacy_ticket_order_query', 10);
   $baseline = roxy_will_call_get_list($ticket_ids, $labels, true);
+  remove_filter('woocommerce_order_data_store_cpt_get_orders_query', $baseline_page_observer, 20);
   add_filter('woocommerce_order_data_store_cpt_get_orders_query', 'roxy_will_call_filter_legacy_ticket_order_query', 10, 2);
 
   $candidate_sql_count = 0;
@@ -141,6 +150,22 @@ try {
   }));
   $check(count($variation_buyer) === 1 && ($variation_buyer[0]['ticket_types']['Variation'] ?? 0) === 1, 'actual variation item metadata narrows to its order and preserves the variation ticket label');
   $check(count($optimized['rows']) === 201 && $candidate_pages === 2, 'real candidate filtering traverses both pages for 201 matching legacy orders');
+  $check($baseline_pages === 3 && $candidate_pages === 2, 'real Woo candidate filter removes an unnecessary 200-order scan page');
+  if ($candidate_sql_count !== 1) {
+    $guard_filters = [
+      'woocommerce_order_item_get_product_id',
+      'woocommerce_order_item_get_variation_id',
+      'woocommerce_order_get_items',
+      'woocommerce_order_item_class',
+      'get_order_item_metadata',
+      'woocommerce_data_stores',
+    ];
+    $active_guards = [];
+    foreach ($guard_filters as $filter_name) {
+      if (has_filter($filter_name)) $active_guards[] = $filter_name . '=' . (string) has_filter($filter_name);
+    }
+    echo 'Candidate query diagnostic: SQL count=' . $candidate_sql_count . '; active guards=' . implode(',', $active_guards) . PHP_EOL;
+  }
   $check($candidate_sql_count === 1, 'canonical Woo item-meta candidate search runs exactly once across pagination');
   $check((float) $optimized['totals']['total_revenue'] === (float) $baseline['totals']['total_revenue'], 'matching variation contributes to unchanged real Woo revenue totals');
   $check($mail_calls === 0, 'fixture creates no Woo email attempts');
@@ -171,6 +196,7 @@ try {
 } finally {
   remove_filter('pre_wp_mail', $mail_guard, PHP_INT_MAX);
   remove_filter('woocommerce_order_data_store_cpt_get_orders_query', 'roxy_will_call_filter_legacy_ticket_order_query', 10);
+  if (isset($baseline_page_observer)) remove_filter('woocommerce_order_data_store_cpt_get_orders_query', $baseline_page_observer, 20);
   if (isset($candidate_query_observer)) remove_filter('query', $candidate_query_observer, PHP_INT_MAX);
   if (isset($candidate_page_observer)) remove_filter('woocommerce_order_data_store_cpt_get_orders_query', $candidate_page_observer, 20);
   if (isset($break_candidate_read)) remove_filter('query', $break_candidate_read, PHP_INT_MAX);
