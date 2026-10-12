@@ -6,6 +6,7 @@
 namespace RoxyGrosses {
   final class Settings {
     public static function get($key, $default = '') { return $key === 'theater_name' ? 'Roxy Fixture Theater' : $default; }
+    public static function email_list(): array { return ['grosses-admin@example.invalid']; }
   }
 
   final class Store {
@@ -97,7 +98,32 @@ namespace {
     $invalid = $method->invoke(null, $row, ["bad\xFF@example.invalid"], true, 'manual-live-email');
     $check(empty($invalid['success']) && count($mail_calls) === $mail_count_before_invalid, 'invalid UTF-8 recipient data is rejected before mail');
 
-    echo "Passed {$checks} real live-Grosses outbox route checks; mail was intercepted before transport.\n";
+    // Reproduce the exact scheduled-provisional failure at the real daily
+    // Grosses sender boundary, with WordPress rejecting raw Unicode for the
+    // connection charset. The message is intercepted before mail transport.
+    $daily_sender = new \ReflectionMethod(\RoxyGrosses\Reporter::class, 'send_email');
+    $daily_sender->setAccessible(true);
+    $daily_rows = [[
+      'report_date' => '2039-07-18', 'show_time' => '19:30', 'film_title' => 'Fixture Feature',
+      'general_qty' => 2, 'discount_qty' => 1, 'group_qty' => 0, 'total_tickets' => 3, 'gross_total' => 32.00,
+    ]];
+    $daily_summary = ['report_date' => '2039-07-18', 'gross_total' => 32.00, 'paid_tickets' => 3, 'total_tickets' => 3];
+    $daily_mail_start = count($mail_calls);
+    $fixture_charset = $fixture_db->charset;
+    $fixture_db->charset = 'ascii';
+    try {
+      $daily = $daily_sender->invoke(null, $daily_rows, $daily_summary, 'scheduled-provisional', null, 'daily-grosses', 7413, '2039-07-18', 'f4d9f4e1-2b8c-4a95-a66d-c1d9a43024b8');
+      $check(!empty($daily['success']) && count($mail_calls) === $daily_mail_start + 1, 'scheduled daily Grosses send survives the reproduced restrictive-charset failure');
+      $daily_mail = $mail_calls[$daily_mail_start] ?? [];
+      $check(($daily_mail['to'] ?? null) === ['grosses-admin@example.invalid'], 'scheduled daily Grosses email targets only the configured admin fixture, never a vendor');
+      $check(str_contains((string) ($daily_mail['subject'] ?? ''), 'PROVISIONAL — CLOSED-DAY REFRESH PENDING'), 'intercepted daily email retains the original Unicode provisional subject');
+      $daily_duplicate = $daily_sender->invoke(null, $daily_rows, $daily_summary, 'scheduled-provisional', null, 'daily-grosses', 7413, '2039-07-18', 'f4d9f4e1-2b8c-4a95-a66d-c1d9a43024b8');
+      $check(!empty($daily_duplicate['already_accepted']) && count($mail_calls) === $daily_mail_start + 1, 'accepted scheduled daily snapshot is not mailed twice');
+    } finally {
+      $fixture_db->charset = $fixture_charset;
+    }
+
+    echo "Passed {$checks} real daily/live Grosses outbox route checks; all mail was intercepted before transport.\n";
   } finally {
     remove_filter('pre_wp_mail', $mail_interceptor, PHP_INT_MAX);
     $wpdb = $original_db;
