@@ -10,15 +10,16 @@ function add_filter(...$args) {}
 function remove_filter(...$args) {}
 class FakeDatabase {
     public $prefix='test_'; public $products=[]; public $orders=[]; public $insert_id=0;
-    public $busy=false; public $fail_write=false; public $cancel_during_reset=false; public $commands=[]; private $saved;
+    public $busy=false; public $fail_write=false; public $fail_open_order_read=false; public $last_error=''; public $cancel_during_reset=false; public $commands=[]; private $saved;
     public function prepare($sql,...$args) { if(count($args)===1 && is_array($args[0]))$args=$args[0];foreach($args as $a)$sql=preg_replace('/%[sdf]/',is_numeric($a)?(string)$a:"'".$a."'",$sql,1);return $sql; }
     public function get_var($sql) { if(preg_match('/SELECT id FROM .*products WHERE id=(\d+)/',$sql,$m))return $this->products[(int)$m[1]]['id']??null;return strpos($sql,'GET_LOCK')!==false && $this->busy ? 0 : 1; }
     public function suppress_errors($value) { return false; }
     public function query($sql) { $this->commands[]=$sql; if(strpos($sql,'RELEASE SAVEPOINT ')===0)return false; if($sql==='START TRANSACTION')$this->saved=[$this->products,$this->orders]; if($sql==='ROLLBACK')[$this->products,$this->orders]=$this->saved; return 0; }
     public function get_results($sql,$format) { return strpos($sql,'products')!==false ? array_values($this->products) : array_values(array_filter($this->orders,fn($o)=>$o['status']==='ordered')); }
     public function get_row($sql,$format) {
+        $this->last_error='';
         if(preg_match('/submission_key=\x27([^\x27]+)\x27/',$sql,$m))foreach($this->orders as $o)if(($o['submission_key']??'')===$m[1])return $o;
-        if(strpos($sql,"status IN")!==false){foreach($this->orders as $o)if(in_array($o['status'],['pending_manager','approval_emailed','ordered']))return $o;return null;}
+        if(strpos($sql,"status IN")!==false){if($this->fail_open_order_read){$this->last_error='Database unavailable';return null;}foreach($this->orders as $o)if(in_array($o['status'],['pending_manager','approval_emailed','ordered']))return $o;return null;}
         if(preg_match('/id=(\d+)/',$sql,$m))return $this->orders[(int)$m[1]]??null;
         return null;
     }
@@ -65,6 +66,9 @@ check(rejected(fn()=>\RoxyInventory\Admin::reviewed_lines($vendor,[$p],$small)),
 $wpdb->busy=true;
 check(rejected(fn()=>\RoxyInventory\Store::create_order('Test vendor',$lines,$total,12,'pending_manager','key')) && !$wpdb->orders,'concurrent lock failure prevents insertion');
 $wpdb->busy=false;
+$wpdb->fail_open_order_read=true;
+check(rejected(fn()=>\RoxyInventory\Store::create_order('Test vendor',$lines,$total,12,'pending_manager','key')) && !$wpdb->orders,'open-order database read failure prevents a duplicate order insertion');
+$wpdb->fail_open_order_read=false;
 $id=\RoxyInventory\Store::create_order('Test vendor',$lines,$total,12,'pending_manager','key');
 check($id===1 && \RoxyInventory\Store::order_for_submission('key')['id']===1,'submission identity persisted');
 check(rejected(fn()=>\RoxyInventory\Store::create_order('Test vendor',$lines,$total,12)) && count($wpdb->orders)===1,'second open vendor order rejected inside serialized insertion');
