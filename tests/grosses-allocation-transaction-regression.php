@@ -11,6 +11,8 @@ final class AllocationDatabase {
     public string $last_error = '';
     public int $connection = 17;
     public ?int $lock_owner = null;
+    public array $lock_owners = [];
+    public ?string $blocked_lock_name = null;
     public bool $transaction = false;
     public string $engine = 'InnoDB';
     public bool $lock_busy = false;
@@ -28,14 +30,27 @@ final class AllocationDatabase {
         $this->last_error = '';
         if ($query === 'SELECT CONNECTION_ID()') return $this->connection;
         if (str_starts_with($query, 'SELECT GET_LOCK(')) {
-            if ($this->lock_busy || $this->lock_owner !== null) return 0;
-            $this->lock_owner = $this->connection; return 1;
+            preg_match("/GET_LOCK\\('([^']+)'/", $query, $match);
+            $name = (string) ($match[1] ?? '');
+            if ($this->lock_busy || $name === '' || $name === $this->blocked_lock_name
+                || (isset($this->lock_owners[$name]) && $this->lock_owners[$name] !== $this->connection)) return 0;
+            $this->lock_owners[$name] = $this->connection;
+            $this->lock_owner = $this->connection;
+            return 1;
         }
-        if (str_starts_with($query, 'SELECT IS_USED_LOCK(')) return $this->lock_owner;
+        if (str_starts_with($query, 'SELECT IS_USED_LOCK(')) {
+            if ($this->lock_owner === null) return null;
+            preg_match("/IS_USED_LOCK\\('([^']+)'/", $query, $match);
+            return $this->lock_owners[$match[1] ?? ''] ?? $this->lock_owner;
+        }
         if ($query === 'SELECT 1') return 1;
         if (str_starts_with($query, 'SELECT RELEASE_LOCK(')) {
-            if ($this->lock_owner !== $this->connection) return 0;
-            $this->lock_owner = null; return 1;
+            preg_match("/RELEASE_LOCK\\('([^']+)'/", $query, $match);
+            $name = (string) ($match[1] ?? '');
+            if (($this->lock_owners[$name] ?? null) !== $this->connection) return 0;
+            unset($this->lock_owners[$name]);
+            $this->lock_owner = $this->lock_owners ? $this->connection : null;
+            return 1;
         }
         if ($query === 'SELECT @@in_transaction') return $this->transaction ? 1 : 0;
         throw new RuntimeException('Unexpected fixture read: ' . $query);
@@ -142,5 +157,37 @@ try {
 check($replacement_detected && $db->value === 12 && !$db->transaction && $db->lock_owner === null
     && $replacement_db->queries === [], 'replaced global database rolls back and releases through the original owner without using the replacement');
 $GLOBALS['wpdb'] = $db;
+
+$allocation_key = static fn(string $date): string => 'roxy_grosses_alloc_' . substr(hash('sha256', $store::entries_table_name() . '|' . $date), 0, 24);
+$edit_dates = ['2038-05-03', '2038-05-02', '2038-05-03'];
+$edit_result = $store::with_report_edit_allocation_locks($edit_dates, static function () use ($db, $allocation_key): string {
+    foreach (['2038-05-02', '2038-05-03'] as $date) {
+        $owner = (int) $db->get_var($db->prepare('SELECT IS_USED_LOCK(%s)', $allocation_key($date)));
+        if ($owner !== $db->connection) throw new RuntimeException('Both report dates must remain locked during the edit.');
+    }
+    return 'edited';
+});
+check($edit_result === 'edited' && $db->lock_owner === null
+    && !isset($db->lock_owners[$allocation_key('2038-05-02')])
+    && !isset($db->lock_owners[$allocation_key('2038-05-03')]),
+    'manual edit owns deduplicated old/new report-date locks together and releases both');
+
+$db->blocked_lock_name = $allocation_key('2038-05-04');
+$partial_edit_failed = false;
+try { $store::with_report_edit_allocation_locks(['2038-05-04', '2038-05-03'], static fn() => throw new RuntimeException('blocked edit must not run')); }
+catch (RuntimeException $error) { $partial_edit_failed = str_contains($error->getMessage(), 'already running'); }
+$db->blocked_lock_name = null;
+check($partial_edit_failed && $db->lock_owner === null && !isset($db->lock_owners[$allocation_key('2038-05-03')]),
+    'failed second-date acquisition releases the earlier lock and never runs the edit');
+
+$invalid_edit_failed = false;
+try { $store::with_report_edit_allocation_locks(['2038-02-30'], static fn() => null); }
+catch (InvalidArgumentException $error) { $invalid_edit_failed = str_contains($error->getMessage(), 'calendar date'); }
+check($invalid_edit_failed && $db->lock_owner === null, 'invalid calendar dates are rejected before a manual-edit lock is taken');
+
+$nested_edit_failed = false;
+try { $run(static fn() => $store::with_report_edit_allocation_locks(['2038-05-01'], static fn() => null)); }
+catch (RuntimeException $error) { $nested_edit_failed = str_contains($error->getMessage(), 'already active'); }
+check($nested_edit_failed && $db->lock_owner === null, 'manual row edits cannot nest inside an active concessions allocation');
 
 echo "OK: Grosses allocation transaction ownership and rollback regression\n";
