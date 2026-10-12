@@ -263,15 +263,31 @@ try {
   \RoxyST\Events::validate_cart_bundles();
   $double_total = round((float)WC()->cart->get_total('edit'), 2);
   $double_notices = wc_get_notices('error');
+  $current_package_method = new ReflectionMethod(\RoxyST\Events::class, 'package_is_current');
+  $current_package_method->setAccessible(true);
+  $double_current_package = $current_package_method->invoke(null, (int)$event_id, 'double', $double_ids);
+  $double_line_diagnostics = array_map(static function($item) use ($double_bundle, $double_signature, $double_ids, $event_id) {
+    $pid = (int)($item['product_id'] ?? 0);
+    $sid = (int)get_post_meta($pid, ROXY_ST_META_SHOWING_ID, true);
+    return [
+      'product_id' => $pid,
+      'showing_id' => $sid,
+      'status' => get_post_status($sid),
+      'ticket_type' => (string)get_post_meta($pid, ROXY_ST_META_TICKET_TYPE, true),
+      'expected_product' => (int)get_post_meta($sid, '_roxy_pid_adult', true),
+      'sales_open' => \RoxyST\Eligibility::showing_sales_open($sid),
+      'unit_price' => $item['roxy_event_unit_price'] ?? null,
+      'bundle_id_matches' => ($item['roxy_event_bundle_id'] ?? '') === $double_bundle,
+      'event_id_matches' => (int)($item['roxy_event_id'] ?? 0) === (int)$event_id,
+      'bundle_ids_match' => array_values(array_map('intval', (array)($item['roxy_event_bundle_showing_ids'] ?? []))) === $double_ids,
+      'signature_matches' => hash_equals($double_signature, (string)($item['roxy_event_bundle_signature'] ?? '')),
+    ];
+  }, WC()->cart->get_cart());
   $check($double_total===20.0 && !$double_notices,
     'valid $20 double-feature pass accepts integer-allocated line prices (total=' . $double_total
       . ', prices=' . wp_json_encode($double_prices)
-      . ', cart=' . wp_json_encode(array_map(static fn($item) => [
-        'product_id' => (int)($item['product_id'] ?? 0),
-        'showing_id' => (int)get_post_meta((int)($item['product_id'] ?? 0), ROXY_ST_META_SHOWING_ID, true),
-        'unit_price' => $item['roxy_event_unit_price'] ?? null,
-        'bundle_ids' => $item['roxy_event_bundle_showing_ids'] ?? [],
-      ], WC()->cart->get_cart()))
+      . ', package_is_current=' . (int)$double_current_package
+      . ', lines=' . wp_json_encode($double_line_diagnostics)
       . ', errors=' . wp_json_encode($double_notices) . ')');
 
   WC()->cart->empty_cart();
