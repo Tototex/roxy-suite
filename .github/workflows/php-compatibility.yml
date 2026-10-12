@@ -107,6 +107,22 @@ jobs:
             echo "::error title=Ticket issuance transaction fixture failed::$details"
             exit "$status"
           fi
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval 'require_once getenv("GITHUB_WORKSPACE") . "/includes/modules/grosses/includes/class-roxy-grosses-store.php"; if (!\RoxyGrosses\Store::install_schema()) { throw new RuntimeException("Could not create Grosses migration fixture schema."); }' >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 50 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Grosses migration schema fixture failed::$details"
+            exit "$status"
+          fi
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/grosses-data-migration-mysql.php" "$GITHUB_WORKSPACE/includes/modules/grosses/includes/class-roxy-grosses-store.php" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 50 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Grosses migration private-MySQL fixture failed::$details"
+            exit "$status"
+          fi
 
   social-database-fixtures:
     name: Social lifecycle private-MySQL fixtures

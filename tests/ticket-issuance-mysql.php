@@ -6,7 +6,7 @@ require __DIR__.'/ticket-fixture-loader.php';
 roxy_fixture_issuance($root);
 global $wpdb;
 $original = ['prefix'=>$wpdb->prefix,'posts'=>$wpdb->posts,'postmeta'=>$wpdb->postmeta];
-$prefix = $wpdb->prefix.'roxy_issue_test_20261005_';
+$prefix = $wpdb->prefix.'roxy_issue_test_'.bin2hex(random_bytes(8)).'_';
 $tables = [$prefix.'posts'=>$wpdb->posts,$prefix.'postmeta'=>$wpdb->postmeta,$prefix.'woocommerce_order_items'=>$wpdb->prefix.'woocommerce_order_items',$prefix.'woocommerce_order_itemmeta'=>$wpdb->prefix.'woocommerce_order_itemmeta'];
 $created = [];
 $check = static function($ok,$label){if(!$ok)throw new RuntimeException($label);echo 'PASS: '.$label.PHP_EOL;};
@@ -97,6 +97,23 @@ try {
   $blocked=end($lease_keys);$second->get_var($second->prepare('SELECT GET_LOCK(%s,0)',$blocked));
   try{try{$lease->acquire_lease();throw new RuntimeException('Contended lease acquired');}catch(RuntimeException $e){$check($e->getMessage()==='Seat confirmation is busy','competing confirmation refuses a partial lease');}}
   finally{$lease->release_lease();$free=true;foreach(array_slice($lease_keys,0,-1) as $key)$free=$free&&(int)$wpdb->get_var($wpdb->prepare('SELECT IS_FREE_LOCK(%s)',$key))===1;$check($free,'partial confirmation failure releases earlier acquired references');$second->get_var($second->prepare('SELECT RELEASE_LOCK(%s)',$blocked));}
+  // Confirmation leases span WooCommerce's order save without a transaction.
+  // A dropped connection releases MySQL's named locks; stale cleanup must not
+  // release locks that a different connection acquires after the reconnect.
+  $lease_reconnect=new \RoxyST\FixtureIssuance([123],['lease-reconnect-private']);$lease_reconnect_keys=$locks->getValue($lease_reconnect);
+  $lease_reconnect->acquire_lease();$lease_connection=(int)$wpdb->get_var('SELECT CONNECTION_ID()');
+  $wpdb->close();if(!$wpdb->db_connect(false))throw new RuntimeException('Fixture lease reconnect failed');
+  $check((int)$wpdb->get_var('SELECT CONNECTION_ID()')!==$lease_connection,'confirmation lease reconnect uses a replacement connection');
+  try{$lease_reconnect->assert_owner();throw new RuntimeException('Stale confirmation lease unexpectedly retained ownership');}
+  catch(RuntimeException $e){$check($e->getMessage()==='Ticket connection ownership lost','confirmation lease rejects ownership after disconnect');}
+  $free=true;foreach($lease_reconnect_keys as $key)$free=$free&&(int)$second->get_var($second->prepare('SELECT IS_FREE_LOCK(%s)',$key))===1;
+  $check($free,'disconnect releases every confirmation lease lock');
+  $lease_reconnect->release_lease();
+  foreach($lease_reconnect_keys as $key)if((string)$second->get_var($second->prepare('SELECT GET_LOCK(%s,0)',$key))!=='1')throw new RuntimeException('Replacement connection could not acquire released confirmation lease');
+  try{$lease_reconnect->release_lease();$owned=true;foreach($lease_reconnect_keys as $key)$owned=$owned&&(int)$second->get_var($second->prepare('SELECT IS_USED_LOCK(%s)',$key))===(int)$second->get_var('SELECT CONNECTION_ID()');$check($owned,'stale confirmation cleanup cannot release a replacement connection lease');}
+  finally{foreach($lease_reconnect_keys as $key)$second->get_var($second->prepare('SELECT RELEASE_LOCK(%s)',$key));}
+  $lease_reconnect->acquire_lease();$lease_reacquired=true;foreach($lease_reconnect_keys as $key)$lease_reacquired=$lease_reacquired&&(int)$second->get_var($second->prepare('SELECT IS_USED_LOCK(%s)',$key))===(int)$wpdb->get_var('SELECT CONNECTION_ID()');
+  $check($lease_reacquired,'confirmation lease can be safely reacquired on the replacement connection');$lease_reconnect->release_lease();
   echo 'TICKET_LEASE_MYSQL_OK'.PHP_EOL;
 }finally{
   $second->close();$wpdb->prefix=$original['prefix'];$wpdb->posts=$original['posts'];$wpdb->postmeta=$original['postmeta'];

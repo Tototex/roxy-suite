@@ -732,75 +732,109 @@ class Store {
 
   private static function backfill_history_from_saved_reports(): void {
     global $wpdb;
-
-    $saved_reports = $wpdb->get_results(
-      'SELECT id, mode, payload_json FROM ' . self::table_name() . ' ORDER BY id DESC',
-      ARRAY_A
-    );
-    if ($wpdb->last_error !== '') throw new \RuntimeException('Saved reports could not be read for migration.');
-
+    $table = self::table_name();
+    [$maximum, $expected] = self::migration_read_boundary($table, 'saved reports');
+    $cursor = $maximum + 1;
+    $processed = 0;
     $seen = [];
-    foreach ((array) $saved_reports as $saved_report) {
-      $payload = json_decode((string) ($saved_report['payload_json'] ?? ''), true);
-      $rows = is_array($payload['rows'] ?? null) ? $payload['rows'] : [];
-      if (!$rows) {
-        continue;
-      }
-
-      $fresh_rows = [];
-      foreach ($rows as $row) {
-        $report_date = sanitize_text_field((string) ($row['report_date'] ?? ''));
-        $showing_id = max(0, (int) ($row['showing_id'] ?? 0));
-        if ($report_date === '') {
-          continue;
+    while ($cursor > 1) {
+      $batch = $wpdb->get_results($wpdb->prepare(
+        'SELECT id, mode, payload_json FROM ' . $table . ' WHERE id < %d AND id <= %d ORDER BY id DESC LIMIT %d',
+        $cursor,
+        $maximum,
+        100
+      ), ARRAY_A);
+      if ($wpdb->last_error !== '' || !is_array($batch)) throw new \RuntimeException('Saved report migration page could not be read.');
+      if (!$batch) break;
+      foreach ($batch as $saved_report) {
+        $id = (int) ($saved_report['id'] ?? 0);
+        if ($id <= 0 || $id >= $cursor || $id > $maximum) throw new \RuntimeException('Saved report migration page was invalid or repeated.');
+        $cursor = $id;
+        $processed++;
+        $payload = json_decode((string) ($saved_report['payload_json'] ?? ''), true);
+        $rows = is_array($payload['rows'] ?? null) ? $payload['rows'] : [];
+        $fresh_rows = [];
+        foreach ($rows as $row) {
+          if (!is_array($row)) continue;
+          $report_date = sanitize_text_field((string) ($row['report_date'] ?? ''));
+          if ($report_date === '') continue;
+          $key = $report_date . '|' . max(0, (int) ($row['showing_id'] ?? 0));
+          if (isset($seen[$key])) continue;
+          $seen[$key] = true;
+          $fresh_rows[] = $row;
         }
-
-        $key = $report_date . '|' . $showing_id;
-        if (isset($seen[$key])) {
-          continue;
-        }
-
-        $seen[$key] = true;
-        $fresh_rows[] = $row;
+        if ($fresh_rows) self::upsert_history_rows($fresh_rows, (string) ($saved_report['mode'] ?? ''), $id, true);
       }
-
-      if ($fresh_rows) {
-        self::upsert_history_rows($fresh_rows, (string) ($saved_report['mode'] ?? ''), (int) ($saved_report['id'] ?? 0), true);
-      }
+      if (count($batch) < 100) break;
     }
+    if ($processed !== $expected) throw new \RuntimeException('Saved report rows changed or could not be read through the fixed migration boundary.');
   }
 
   private static function migrate_history_to_entries(): void {
-    $rows = self::history_rows_all();
-    if (!$rows) {
-      return;
+    global $wpdb;
+    $table = self::history_table_name();
+    [$maximum, $expected] = self::migration_read_boundary($table, 'legacy history');
+    $cursor_date = null;
+    $cursor_title = '';
+    $cursor_id = 0;
+    $processed = 0;
+    while ($processed < $expected) {
+      $sql = 'SELECT id, report_date, showing_id, show_time, theater_name, film_title, general_qty, discount_qty, group_qty, total_tickets, gross_total, source_mode, source_report_id FROM ' . $table;
+      if ($cursor_date === null) {
+        $sql .= ' WHERE id <= %d ORDER BY report_date ASC, film_title ASC, id ASC LIMIT %d';
+        $rows = $wpdb->get_results($wpdb->prepare($sql, $maximum, 100), ARRAY_A);
+      } else {
+        $sql .= ' WHERE id <= %d AND (report_date > %s OR (report_date = %s AND (film_title > %s OR (film_title = %s AND id > %d)))) ORDER BY report_date ASC, film_title ASC, id ASC LIMIT %d';
+        $rows = $wpdb->get_results($wpdb->prepare($sql, $maximum, $cursor_date, $cursor_date, $cursor_title, $cursor_title, $cursor_id, 100), ARRAY_A);
+      }
+      if ($wpdb->last_error !== '' || !is_array($rows)) throw new \RuntimeException('Legacy history migration page could not be read.');
+      if (!$rows) break;
+      $entries = [];
+      foreach ($rows as $row) {
+        $id = (int) ($row['id'] ?? 0);
+        $row_date = (string) ($row['report_date'] ?? '');
+        $row_title = (string) ($row['film_title'] ?? '');
+        if ($id <= 0 || $id > $maximum) throw new \RuntimeException('Legacy history migration page was invalid or repeated.');
+        $cursor_date = $row_date;
+        $cursor_title = $row_title;
+        $cursor_id = $id;
+        $processed++;
+        $entries[] = [
+          'report_date' => (string) ($row['report_date'] ?? ''),
+          'movie_title' => (string) ($row['film_title'] ?? ''),
+          'show_time' => (string) ($row['show_time'] ?? ''),
+          'showing_id' => max(0, (int) ($row['showing_id'] ?? 0)),
+          'theater_name' => (string) ($row['theater_name'] ?? ''),
+          'general_qty' => max(0, (int) ($row['general_qty'] ?? 0)),
+          'discount_qty' => max(0, (int) ($row['discount_qty'] ?? 0)),
+          'group_qty' => max(0, (int) ($row['group_qty'] ?? 0)),
+          'subscriber_qty' => 0,
+          'live_qty' => 0,
+          'other_qty' => 0,
+          'total_tickets' => max(0, (int) ($row['total_tickets'] ?? 0)),
+          'gross_total' => round((float) ($row['gross_total'] ?? 0), 2),
+          'source_type' => 'saved_report_migration',
+          'source_ref' => (string) ($row['source_mode'] ?? ''),
+          'source_report_id' => !empty($row['source_report_id']) ? (int) $row['source_report_id'] : null,
+          'notes' => 'Migrated from historical grosses rows',
+        ];
+      }
+      // History does not contain all current fields; never replace a current row.
+      self::upsert_entries($entries, 'skip');
+      if (count($rows) < 100) break;
     }
+    if ($processed !== $expected) throw new \RuntimeException('Legacy history rows changed or could not be read through the fixed migration boundary.');
+  }
 
-    $entries = [];
-    foreach ($rows as $row) {
-      $entries[] = [
-        'report_date' => (string) ($row['report_date'] ?? ''),
-        'movie_title' => (string) ($row['film_title'] ?? ''),
-        'show_time' => (string) ($row['show_time'] ?? ''),
-        'showing_id' => max(0, (int) ($row['showing_id'] ?? 0)),
-        'theater_name' => (string) ($row['theater_name'] ?? ''),
-        'general_qty' => max(0, (int) ($row['general_qty'] ?? 0)),
-        'discount_qty' => max(0, (int) ($row['discount_qty'] ?? 0)),
-        'group_qty' => max(0, (int) ($row['group_qty'] ?? 0)),
-        'subscriber_qty' => 0,
-        'live_qty' => 0,
-        'other_qty' => 0,
-        'total_tickets' => max(0, (int) ($row['total_tickets'] ?? 0)),
-        'gross_total' => round((float) ($row['gross_total'] ?? 0), 2),
-        'source_type' => 'saved_report_migration',
-        'source_ref' => (string) ($row['source_mode'] ?? ''),
-        'source_report_id' => !empty($row['source_report_id']) ? (int) $row['source_report_id'] : null,
-        'notes' => 'Migrated from historical grosses rows',
-      ];
-    }
-
-    // History does not contain all current fields; never replace a current row.
-    self::upsert_entries($entries, 'skip');
+  /** Capture fixed ID and row-count boundaries before a retryable, paged one-time migration. */
+  private static function migration_read_boundary(string $table, string $label): array {
+    global $wpdb;
+    if (!preg_match('/^[A-Za-z0-9_]+$/', $table)) throw new \RuntimeException('Invalid ' . $label . ' migration table.');
+    $maximum = $wpdb->get_var('SELECT COALESCE(MAX(id), 0) FROM ' . $table);
+    if ($wpdb->last_error !== '' || !is_numeric($maximum)) throw new \RuntimeException('Could not establish the ' . $label . ' migration boundary.');
+    $expected = $wpdb->get_var('SELECT COUNT(*) FROM ' . $table . ' WHERE id <= ' . (int) $maximum);
+    if ($wpdb->last_error !== '' || !is_numeric($expected)) throw new \RuntimeException('Could not count the ' . $label . ' migration boundary.');
+    return [(int) $maximum, (int) $expected];
   }
 
   public static function create_report(string $report_end_date, int $lookback_days, string $mode, string $status, array $summary, array $rows): int {

@@ -50,7 +50,7 @@ try {
     $fired=false;
     $inject=static function($sql)use(&$fired,$fault,$reports,$history,$entries,$store,$wpdb){
       $match=($fault==='saved read'&&strpos($sql,'SELECT id, mode, payload_json FROM '.$reports)===0)
-        ||($fault==='history read'&&strpos($sql,'SELECT report_date, showing_id')===0&&strpos($sql,$history)!==false)
+        ||($fault==='history read'&&strpos($sql,'SELECT id, report_date, showing_id')===0&&strpos($sql,$history)!==false)
         ||($fault==='history write'&&strpos($sql,"INSERT INTO `$history`")===0)
         ||($fault==='entry write'&&strpos($sql,"INSERT INTO `$entries`")===0)
         ||($fault==='marker write'&&preg_match('/^INSERT INTO `'.preg_quote($wpdb->options,'/').'`/',$sql)&&strpos($sql,$store::ENTRY_MIGRATION_OPTION)!==false)
@@ -65,6 +65,37 @@ try {
     $store::maybe_backfill_history();
     $assert(get_option($option)==='1',"$fault recovery retries successfully");
   }
+  // Force both migrations across multiple bounded pages, then fail page two and retry.
+  delete_option($store::HISTORY_BACKFILL_OPTION);
+  for($i=0;$i<205;$i++) {
+    $date=gmdate('Y-m-d',strtotime('2041-01-01 +'.$i.' days'));
+    $saved=['report_date'=>$date,'showing_id'=>19400000+$i,'film_title'=>'Paged saved '.$i,'show_time'=>'18:00','total_tickets'=>1,'gross_total'=>1];
+    if(!$store::create_report($date,1,'paged-fixture','draft',['total_tickets'=>1,'gross_total'=>1],[$saved]))throw new RuntimeException('Could not seed paged saved-report fixture');
+  }
+  $saved_page=0;$saved_fault=false;
+  $saved_inject=static function($sql)use(&$saved_page,&$saved_fault,$reports){
+    if(strpos($sql,'SELECT id, mode, payload_json FROM '.$reports.' WHERE id <')===0&&++$saved_page===2){$saved_fault=true;return 'SELECT * FROM roxy_fixture38_missing_table';}
+    return $sql;
+  };
+  add_filter('query',$saved_inject);$store::maybe_backfill_history();remove_filter('query',$saved_inject);
+  $assert($saved_fault&&(string)get_option($store::HISTORY_BACKFILL_OPTION,'')==='','second saved-report page failure leaves migration retryable');
+  $store::maybe_backfill_history();
+  $assert(get_option($store::HISTORY_BACKFILL_OPTION)==='1'&&(int)$wpdb->get_var("SELECT COUNT(*) FROM {$history} WHERE report_date BETWEEN '2041-01-01' AND '2041-07-24'")===205,'paged saved-report retry completes every row through its captured boundary');
+
+  delete_option($store::ENTRY_MIGRATION_OPTION);
+  $legacy=[];
+  for($i=0;$i<205;$i++)$legacy[]=['report_date'=>gmdate('Y-m-d',strtotime('2042-01-01 +'.$i.' days')),'showing_id'=>19500000+$i,'film_title'=>'Paged legacy '.$i,'show_time'=>'19:00','total_tickets'=>2,'gross_total'=>12,'source_mode'=>'legacy-fixture'];
+  $store::upsert_history_rows($legacy,'legacy-fixture');
+  $history_page=0;$history_fault=false;
+  $history_inject=static function($sql)use(&$history_page,&$history_fault,$history){
+    if(strpos($sql,'SELECT id, report_date, showing_id, show_time')===0&&strpos($sql,' FROM '.$history.' WHERE id <= ')!==false&&strpos($sql,'ORDER BY report_date ASC, film_title ASC, id ASC LIMIT 100')!==false&&++$history_page===2){$history_fault=true;return 'SELECT * FROM roxy_fixture38_missing_table';}
+    return $sql;
+  };
+  add_filter('query',$history_inject);$store::maybe_backfill_history();remove_filter('query',$history_inject);
+  $assert($history_fault&&(string)get_option($store::ENTRY_MIGRATION_OPTION,'')==='','second legacy-history page failure leaves entry migration retryable');
+  $store::maybe_backfill_history();
+  $assert(get_option($store::ENTRY_MIGRATION_OPTION)==='1'&&(int)$wpdb->get_var("SELECT COUNT(*) FROM {$entries} WHERE report_date BETWEEN '2042-01-01' AND '2042-07-24'")===205,'paged legacy-history retry inserts every row and is completion-stamped');
+  $assert($before===$store::get_entry($corrected),'paged migration and retries preserve a current correction');
   delete_option($store::ENTRY_MIGRATION_OPTION);
   $other=new wpdb(DB_USER,DB_PASSWORD,DB_NAME,DB_HOST);$other->suppress_errors(true);
   $lock='roxy_fixture38_migration_'.substr(hash('sha256',$wpdb->prefix),0,24);
@@ -75,6 +106,8 @@ try {
   echo "Passed $checks actual MySQL non-destructive migration checks. Production reporting untouched.\n";
 } finally {
   if(isset($inject))remove_filter('query',$inject);
+  if(isset($saved_inject))remove_filter('query',$saved_inject);
+  if(isset($history_inject))remove_filter('query',$history_inject);
   if(isset($guard))remove_filter('query',$guard);
   foreach($tables as $table)$wpdb->query("DROP TABLE {$table}");
   foreach($options as $option)delete_option($option);
