@@ -16,6 +16,9 @@ final class AllocationDatabase {
     public bool $lock_busy = false;
     public int $value = 0;
     private int $before = 0;
+    private ?int $savepoint_before = null;
+    private bool $savepoint_active = false;
+    private bool $suppress = false;
     public array $queries = [];
     public function prepare(string $query, ...$args): string {
         foreach ($args as $arg) $query = preg_replace('/%[sd]/', is_int($arg) ? (string)$arg : "'" . addslashes((string)$arg) . "'", $query, 1);
@@ -29,6 +32,7 @@ final class AllocationDatabase {
             $this->lock_owner = $this->connection; return 1;
         }
         if (str_starts_with($query, 'SELECT IS_USED_LOCK(')) return $this->lock_owner;
+        if ($query === 'SELECT 1') return 1;
         if (str_starts_with($query, 'SELECT RELEASE_LOCK(')) {
             if ($this->lock_owner !== $this->connection) return 0;
             $this->lock_owner = null; return 1;
@@ -45,6 +49,24 @@ final class AllocationDatabase {
     public function query(string $query) {
         $this->queries[] = $query;
         $this->last_error = '';
+        if (str_starts_with($query, 'SAVEPOINT `')) {
+            $this->savepoint_active = $this->transaction;
+            $this->savepoint_before = $this->value;
+            return 0;
+        }
+        if (str_starts_with($query, 'ROLLBACK TO SAVEPOINT `')) {
+            if (!$this->transaction || !$this->savepoint_active) {
+                $this->last_error = 'SAVEPOINT does not exist';
+                return false;
+            }
+            $this->value = (int) $this->savepoint_before;
+            return 0;
+        }
+        if (str_starts_with($query, 'RELEASE SAVEPOINT `')) {
+            if (!$this->transaction || !$this->savepoint_active) return false;
+            $this->savepoint_active = false;
+            return 0;
+        }
         if ($query === 'START TRANSACTION') {
             if ($this->transaction) return false;
             $this->before = $this->value; $this->transaction = true; return 0;
@@ -59,6 +81,7 @@ final class AllocationDatabase {
         }
         throw new RuntimeException('Unexpected fixture write: ' . $query);
     }
+    public function suppress_errors(bool $suppress = true): bool { $previous = $this->suppress; $this->suppress = $suppress; return $previous; }
 }
 $GLOBALS['wpdb'] = new AllocationDatabase();
 require dirname(__DIR__) . '/includes/modules/grosses/includes/class-roxy-grosses-store.php';

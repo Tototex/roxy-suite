@@ -711,10 +711,21 @@ class Store {
   }
 
   private static function concession_allocation_transaction_state($db): ?string {
-    $status = $db->get_row("SHOW SESSION STATUS LIKE 'In_transaction'", ARRAY_A);
-    if ($db->last_error !== '' || !is_array($status) || !isset($status['Value'])) return null;
-    $state = (string) $status['Value'];
-    return in_array($state, ['0', '1'], true) ? $state : null;
+    $savepoint = 'roxy_alloc_probe_' . bin2hex(random_bytes(6));
+    $was_suppressed = $db->suppress_errors(true);
+    try {
+      if ($db->query('SAVEPOINT `' . $savepoint . '`') === false) return null;
+      if ($db->query('ROLLBACK TO SAVEPOINT `' . $savepoint . '`') === false) {
+        $error = (string) $db->last_error;
+        if (stripos($error, 'SAVEPOINT') === false || stripos($error, 'does not exist') === false) return null;
+        $db->get_var('SELECT 1'); // Clear the expected no-active-transaction error.
+        return $db->last_error === '' ? '0' : null;
+      }
+      if ($db->query('RELEASE SAVEPOINT `' . $savepoint . '`') === false) return null;
+      return $db->last_error === '' ? '1' : null;
+    } finally {
+      $db->suppress_errors($was_suppressed);
+    }
   }
 
   private static function assert_concession_allocation_owner(): void {
