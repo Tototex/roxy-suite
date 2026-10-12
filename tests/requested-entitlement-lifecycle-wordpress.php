@@ -115,6 +115,8 @@ try {
     $GLOBALS['r2_lifecycle_subscriptions'][$user_id] = [new RoxyRequestedLifecycleSubscriptionFixture('active', 2)];
 
     $target = (new DateTimeImmutable('now', wp_timezone()))->modify('+60 days')->setTime(19, 0);
+    // Keep the fixture outside the default Fri/Sat/Sun fixed showtime blocks.
+    while (in_array((int) $target->format('w'), [0, 5, 6], true)) $target = $target->modify('+1 day');
     $target_text = $target->format('Y-m-d H:i');
     $request_result = wp_insert_post([
         'post_type' => \RoxyRS\CPT::POST_TYPE,
