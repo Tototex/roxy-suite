@@ -153,6 +153,8 @@ try{
   $check($legacy_rejected&&$legacy_stored===2&&(int)get_post_meta($ids[0],'_roxy_checked_in',true)===1,'ticket-level save refuses to overwrite a higher legacy aggregate and preserves both sources for review');
   \RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0],'ticket');
   foreach($ids as $ticket_id)$check(\RoxyST\IssuanceFixtureTickets::check_in_ticket($ticket_id,9,'ticket'),'fixture ticket checks in before later refund');
+  \RoxyST\Sales::clear_showing_cache($show);$before_refund_stats=\RoxyST\Sales::get_showing_stats($show);
+  $check((int)($before_refund_stats['sold_qty']??-1)===4&&\RoxyST\IssuanceFixtureTickets::count_checked_in_for_showing($show)===3,'four paid tickets count as sales while only three actual door check-ins count as attendance');
   $refund=wc_create_refund(['order_id'=>$order->get_id(),'amount'=>0,'reason'=>'PRIVATE ISSUANCE FIXTURE','refund_payment'=>false,'restock_items'=>false,'line_items'=>[$item_id=>['qty'=>1,'refund_total'=>0,'refund_tax'=>[]]]]);if(is_wp_error($refund))throw new RuntimeException('Fixture refund failed');
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'actual zero-dollar line refund reconciles');
   $check(count(array_filter($ids,static fn($id)=>get_post_meta($id,'_roxy_ticket_state',true)==='refunded'))===1,'one refund invalidates exactly one existing ticket');
