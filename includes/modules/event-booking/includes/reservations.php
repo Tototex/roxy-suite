@@ -178,7 +178,7 @@ function roxy_eb_reservation_run(callable $callback, array $additional_transacti
 function roxy_eb_with_showing_time_lock(string $show_start, $ignore_showing_id, callable $write, bool $uses_terms = false) {
     global $wpdb;
     $start = null;
-    foreach (['!Y-m-d\\TH:i', '!Y-m-d\\TH:i:s', '!Y-m-d H:i:s'] as $format) {
+    foreach (['!Y-m-d\\TH:i', '!Y-m-d\\TH:i:s', '!Y-m-d H:i', '!Y-m-d H:i:s'] as $format) {
         $candidate = DateTimeImmutable::createFromFormat($format, $show_start, wp_timezone());
         $errors = DateTimeImmutable::getLastErrors();
         if ($candidate && ($errors === false || (!$errors['warning_count'] && !$errors['error_count']))) {

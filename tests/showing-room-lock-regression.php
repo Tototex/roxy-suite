@@ -156,6 +156,13 @@ $nested = roxy_eb_with_showing_time_lock('2040-01-02T19:00', 501, static functio
 });
 $check($nested === true && $nested_terms_guarded, 'nested schedule changes guard taxonomy writes under one room claim');
 
+$minute_precision_write = false;
+$minute_precision = roxy_eb_with_showing_time_lock('2040-02-10 19:00', 0, static function () use (&$minute_precision_write) {
+    $minute_precision_write = true;
+    return true;
+});
+$check($minute_precision === true && $minute_precision_write, 'minute-precision SQL-style showtime is accepted by the shared room lock');
+
 $before = count($GLOBALS['room_lock_owners']);
 $invalid = roxy_eb_with_showing_time_lock('2040-02-30T19:00', 0, static fn() => true);
 $check(is_wp_error($invalid) && $invalid->get_error_code() === 'reservation_time' && count($GLOBALS['room_lock_owners']) === $before, 'invalid calendar date is rejected before taking a lock');

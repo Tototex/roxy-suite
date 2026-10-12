@@ -342,6 +342,21 @@ try {
   $check(count(array_filter($screenings,static fn($id)=>get_post_status($id)==='publish'))===0,
     'after the injected cleanup failure, all fixture screenings can be manually returned to draft');
   delete_transient('roxy_st_event_invalid_' . get_current_user_id());
+
+  wp_update_post(['ID'=>(int)$screenings[0],'post_status'=>'publish']);
+  $block_delete_cleanup = static function($check, $postarr) use ($screenings) {
+    if ((int)($postarr['ID'] ?? 0) === (int)$screenings[0] && ($postarr['post_status'] ?? '') === 'draft') return false;
+    return $check;
+  };
+  add_filter('pre_wp_update_post', $block_delete_cleanup, 10, 2);
+  $deleted_event = wp_delete_post((int)$event_id, true);
+  remove_filter('pre_wp_update_post', $block_delete_cleanup, 10);
+  $check($deleted_event === false && get_post((int)$event_id) !== null
+    && get_post_status((int)$screenings[0]) === 'publish'
+    && str_contains((string)get_transient('roxy_st_event_invalid_' . get_current_user_id()), 'Event deletion was stopped'),
+    'event deletion is blocked and reported if a linked screening cannot be deactivated');
+  wp_update_post(['ID'=>(int)$screenings[0],'post_status'=>'draft']);
+  delete_transient('roxy_st_event_invalid_' . get_current_user_id());
 } finally {
   foreach ($created as $id) {
     if (get_post_type($id)===\RoxyST\CPT::POST_TYPE) {

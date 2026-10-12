@@ -14,7 +14,7 @@ final class Events {
     add_action('add_meta_boxes', [__CLASS__, 'metabox']);
     add_action('save_post_' . self::POST_TYPE, [__CLASS__, 'save'], 20, 2);
     add_action('transition_post_status', [__CLASS__, 'event_status_changed'], 20, 3);
-    add_action('before_delete_post', [__CLASS__, 'event_deleted'], 20, 2);
+    add_filter('pre_delete_post', [__CLASS__, 'guard_event_delete'], PHP_INT_MAX, 3);
     add_action('save_post_' . CPT::POST_TYPE, [__CLASS__, 'refresh_event_date'], 30, 2);
     add_action('admin_notices', [__CLASS__, 'admin_notice']);
     add_action('admin_post_roxy_st_event_save_schedule', [__CLASS__, 'handle_admin_save_schedule']);
@@ -317,9 +317,13 @@ final class Events {
     }
   }
 
-  public static function event_deleted(int $event_id, $post): void {
-    if (!$post || $post->post_type !== self::POST_TYPE) return;
-    foreach ((array)get_post_meta($event_id,self::META_SHOWINGS,true) as $screening_id) if (get_post_status((int)$screening_id)==='publish') wp_update_post(['ID'=>(int)$screening_id,'post_status'=>'draft']);
+  public static function guard_event_delete($delete, $post, bool $force_delete) {
+    if ($delete !== null || !$post || $post->post_type !== self::POST_TYPE) return $delete;
+    $event_id=(int)$post->ID;
+    $screening_ids=(array)get_post_meta($event_id,self::META_SHOWINGS,true);
+    if(self::demote_screenings($screening_ids)) return null;
+    set_transient('roxy_st_event_invalid_' . get_current_user_id(), 'Event deletion was stopped because one or more linked screenings could not be deactivated. Immediately review the event and its ticket products, then retry deletion.', MINUTE_IN_SECONDS);
+    return false;
   }
 
   private static function sibling_screening_ids(int $event_id): array {
