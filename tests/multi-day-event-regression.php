@@ -340,16 +340,16 @@ try {
       . ', cached=' . (int)isset($cached_published_events[(int)$event_id]) . ')');
 
   $blocked_publication_hook_called = false;
-  $block_publication = static function($check, $postarr) use ($screenings, &$blocked_publication_hook_called) {
-    if ((int)($postarr['ID'] ?? 0) === (int)$screenings[1] && ($postarr['post_status'] ?? '') === 'publish') {
+  $block_publication = static function($data, $postarr) use ($screenings, &$blocked_publication_hook_called) {
+    if ((int)($postarr['ID'] ?? 0) === (int)$screenings[1] && ($data['post_status'] ?? '') === 'publish') {
       $blocked_publication_hook_called = true;
-      return false;
+      $data['post_status'] = 'draft';
     }
-    return $check;
+    return $data;
   };
-  add_filter('pre_wp_update_post', $block_publication, 10, 2);
+  add_filter('wp_insert_post_data', $block_publication, 10, 2);
   wp_update_post(['ID'=>(int)$event_id,'post_status'=>'publish']);
-  remove_filter('pre_wp_update_post', $block_publication, 10);
+  remove_filter('wp_insert_post_data', $block_publication, 10);
   $check(get_post_status((int)$event_id) === 'draft'
     && count(array_filter($screenings,static fn($id)=>get_post_status($id)==='publish'))===0,
     'failure on a later screening rolls back the earlier publication and returns the event to draft (hook=' . (int)$blocked_publication_hook_called
