@@ -165,7 +165,7 @@ function roxy_eb_check_lead_time(DateTimeImmutable $doorsOpen) {
     return $doorsOpen >= $now->modify('+' . $lead . ' hours');
 }
 
-function roxy_eb_is_slot_available(DateTimeImmutable $reservedStart, DateTimeImmutable $reservedEnd, $ignore_booking_id = 0, bool $throw_read_errors = false, int $ignore_showing_id = 0) {
+function roxy_eb_is_slot_available(DateTimeImmutable $reservedStart, DateTimeImmutable $reservedEnd, $ignore_booking_id = 0, bool $throw_read_errors = false, $ignore_showing_id = 0) {
     $start_mysql = roxy_eb_datetime_to_mysql($reservedStart);
     $end_mysql   = roxy_eb_datetime_to_mysql($reservedEnd);
 
@@ -189,9 +189,10 @@ function roxy_eb_is_slot_available(DateTimeImmutable $reservedStart, DateTimeImm
         if ($sbStart < $reservedEnd && $sbEnd > $reservedStart) return false;
     }
 
+    $ignored_showings = array_fill_keys(array_map('intval', (array)$ignore_showing_id), true);
     $showingBlocks = roxy_eb_get_showing_blocks_for_range($reservedStart, $reservedEnd);
     foreach ($showingBlocks as $sb) {
-        if ($ignore_showing_id > 0 && (int) ($sb['showing_id'] ?? 0) === $ignore_showing_id) continue;
+        if (isset($ignored_showings[(int)($sb['showing_id'] ?? 0)])) continue;
         /** @var DateTimeImmutable $sbStart */
         $sbStart = $sb['start'];
         $sbEnd = $sb['end'];

@@ -108,6 +108,14 @@ $insert_result = roxy_eb_with_showing_time_lock('2040-01-02T19:00', 501, static 
 });
 $check($insert_result === true, 'post inserts retain a same-statement room-lock ownership predicate');
 
+$guarded_block_insert = '';
+$block_insert_result = roxy_eb_with_showing_time_lock('2040-01-02T19:00', 501, static function ($guard) use (&$guarded_block_insert) {
+    $predicate = $guard->predicate();
+    $guarded_block_insert = $guard->guard_transaction_query("INSERT INTO `fixture_blocks` (`title`) SELECT 'Comedy' FROM DUAL WHERE " . $predicate);
+    return $guarded_block_insert === "INSERT INTO `fixture_blocks` (`title`) SELECT 'Comedy' FROM DUAL WHERE " . $predicate;
+});
+$check($block_insert_result === true, 'reservation inserts already carrying the room-owner predicate pass through unchanged');
+
 $guarded_update = '';
 $update_result = roxy_eb_with_showing_time_lock('2040-01-02T19:00', 501, static function ($guard) use (&$guarded_update) {
     $guarded_update = $guard->guard_transaction_query("UPDATE `fixture_postmeta` SET `meta_value`='new' WHERE `post_id`=501");
@@ -129,6 +137,11 @@ $GLOBALS['room_showings'][502] = '2040-01-02T20:00';
 $other_write = false;
 $other = roxy_eb_with_showing_time_lock('2040-01-02T19:00', 501, static function () use (&$other_write) { $other_write = true; return true; });
 $check(is_wp_error($other) && $other->get_error_code() === 'reservation_conflict' && !$other_write, 'rescheduling ignores only itself and rejects another showing in the interval');
+
+$GLOBALS['room_showings'] = [501=>'2040-01-02T17:30',502=>'2040-01-02T19:30'];
+$siblings_write = false;
+$siblings = roxy_eb_with_showing_time_lock('2040-01-02T19:30', [501,502], static function () use (&$siblings_write) { $siblings_write = true; return true; });
+$check($siblings === true && $siblings_write, 'a multi-show event may schedule its own adjacent screenings under one shared-room policy');
 
 $GLOBALS['room_showings'] = [501=>'2040-01-02T19:00'];
 $GLOBALS['room_bookings'] = [];

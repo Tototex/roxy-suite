@@ -357,6 +357,9 @@ register_activation_hook(__FILE__, function () {
     if (class_exists('WooCommerce') && class_exists('\RoxyST\CPT')) {
         \RoxyST\CPT::register();
     }
+    if (class_exists('WooCommerce') && class_exists('\RoxyST\Events')) {
+        \RoxyST\Events::register();
+    }
 
     // Grosses schema + defaults
     if (class_exists('\\RoxyGrosses\\Store')) {

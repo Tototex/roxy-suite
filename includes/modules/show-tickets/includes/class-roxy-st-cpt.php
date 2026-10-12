@@ -22,6 +22,7 @@ class CPT {
     add_action('admin_notices', [__CLASS__, 'admin_notices']);
     add_action('admin_notices', [__CLASS__, 'duration_input_notice']);
     add_action('admin_notices', [__CLASS__, 'render_admin_tabs']);
+    add_action('admin_footer-edit.php', [__CLASS__, 'render_multi_day_event_action']);
   }
 
   public static function register(): void {
@@ -70,14 +71,27 @@ class CPT {
 
   public static function render_admin_tabs(): void {
     $screen = function_exists('get_current_screen') ? get_current_screen() : null;
-    if (!$screen || $screen->id !== 'edit-' . self::POST_TYPE) {
+    if (!$screen) {
       return;
     }
 
+    $showings_screen = $screen->id === 'edit-' . self::POST_TYPE;
+    $events_screen = in_array($screen->id, ['edit-' . Events::POST_TYPE, Events::POST_TYPE], true);
+    if (!$showings_screen && !$events_screen) return;
+
     echo '<nav class="nav-tab-wrapper" style="margin:12px 0 16px;">';
-    echo '<a href="' . esc_url(admin_url('edit.php?post_type=' . self::POST_TYPE)) . '" class="nav-tab nav-tab-active">Showings</a>';
+    echo '<a href="' . esc_url(admin_url('edit.php?post_type=' . self::POST_TYPE)) . '" class="nav-tab' . ($showings_screen ? ' nav-tab-active' : '') . '">Showings</a>';
+    echo '<a href="' . esc_url(admin_url('edit.php?post_type=' . Events::POST_TYPE)) . '" class="nav-tab' . ($events_screen ? ' nav-tab-active' : '') . '">Multi-day Events</a>';
     echo '<a href="' . esc_url(admin_url('admin.php?page=roxy-show-tickets&tab=settings')) . '" class="nav-tab">Settings</a>';
     echo '</nav>';
+  }
+
+  public static function render_multi_day_event_action(): void {
+    $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+    if (!$screen || $screen->id !== 'edit-' . self::POST_TYPE) return;
+
+    $url = admin_url('post-new.php?post_type=' . Events::POST_TYPE);
+    echo '<script>(function(){var add=document.querySelector(".wrap .page-title-action");if(!add)return;var link=document.createElement("a");link.className="page-title-action";link.href=' . wp_json_encode($url) . ';link.textContent="Add Multi-day Event";add.insertAdjacentElement("afterend",link)})();</script>';
   }
 
   public static function render_metabox($post): void {
@@ -145,12 +159,19 @@ class CPT {
     foreach ($profiles as $k => $label) {
       echo '<option value="' . esc_attr($k) . '" ' . selected($profile, $k, false) . '>' . esc_html($label) . '</option>';
     }
+    if ($is_new_showing) {
+      echo '<option value="__roxy_multi_day_event__">Multi-day / Marathon — create grouped event</option>';
+    }
     echo '</select>';
+
+    if ($is_new_showing) {
+      echo '<div class="roxy-help">For a marathon or event with multiple screenings, choose <strong>Multi-day / Marathon</strong> here to open the grouped event builder. It creates one event page while keeping each screening&#8217;s tickets and capacity separate.</div>';
+    }
 
     // Notes — one shown at a time based on profile; initial display set by PHP to avoid flash
     echo '<div class="roxy-help" id="roxy-ticket-products-note" style="display:' . ($profile === 'free_event' ? 'none' : '') . '"><strong>Note:</strong> Ticket products are auto-created/updated when you save this showing. Global defaults can be edited under <a href="' . esc_url(admin_url('admin.php?page=roxy-show-tickets')) . '">Show Tickets → Settings</a>.</div>';
     echo '<div class="roxy-help" id="roxy-free-event-note" style="display:' . ($profile === 'free_event' ? '' : 'none') . '"><strong>Free Event:</strong> No ticket products will be created. This showing appears in the public listing with &ldquo;Free Admission&rdquo; shown instead of a ticket form. Any previously created ticket products for this showing will be trashed on save.</div>';
-    echo '<script>document.addEventListener("DOMContentLoaded",function(){var sel=document.getElementById("roxy_pricing_profile");var live=document.getElementById("roxy-live-tier-fields");var tNote=document.getElementById("roxy-ticket-products-note");var fNote=document.getElementById("roxy-free-event-note");if(!sel)return;function upd(){var v=sel.value;if(live)live.style.display=(v==="live_event")?"contents":"none";if(tNote)tNote.style.display=(v==="free_event")?"none":"";if(fNote)fNote.style.display=(v==="free_event")?"":"none";}sel.addEventListener("change",upd);upd();});</script>';
+    echo '<script>document.addEventListener("DOMContentLoaded",function(){var sel=document.getElementById("roxy_pricing_profile");var live=document.getElementById("roxy-live-tier-fields");var tNote=document.getElementById("roxy-ticket-products-note");var fNote=document.getElementById("roxy-free-event-note");if(!sel)return;function upd(){var v=sel.value;if(v==="__roxy_multi_day_event__"){window.location.href=' . wp_json_encode(admin_url('post-new.php?post_type=' . Events::POST_TYPE)) . ';return;}if(live)live.style.display=(v==="live_event")?"contents":"none";if(tNote)tNote.style.display=(v==="free_event")?"none":"";if(fNote)fNote.style.display=(v==="free_event")?"":"none";}sel.addEventListener("change",upd);upd();});</script>';
 
     // Live tier fields — wrapped so JS can show/hide as a group; display:contents keeps them in the parent grid
     echo '<div id="roxy-live-tier-fields" style="display:' . ($profile === 'live_event' ? 'contents' : 'none') . '">';

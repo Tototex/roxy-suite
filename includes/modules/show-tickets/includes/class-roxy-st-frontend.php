@@ -8,6 +8,7 @@ class Frontend {
     add_shortcode('roxy_showings', [__CLASS__, 'shortcode_showings']);
     add_shortcode('roxy_showings_home', [__CLASS__, 'shortcode_showings_home']);
     add_filter('the_content', [__CLASS__, 'append_single_showing_content']);
+    add_filter('the_content', [Events::class, 'append_event_content'], 20);
 
     add_action('admin_post_nopriv_roxy_st_add', [__CLASS__, 'handle_add']);
     add_action('admin_post_roxy_st_add', [__CLASS__, 'handle_add']);
@@ -175,6 +176,13 @@ class Frontend {
       }
     }
 
+    $posts = array_merge($posts, Events::eligible_public_events($now->getTimestamp(), $window_end->getTimestamp()));
+    usort($posts, static function ($a, $b) {
+      $a_time = get_post_type($a) === Events::POST_TYPE ? (string)get_post_meta($a->ID, '_roxy_event_first_start', true) : (string)get_post_meta($a->ID, '_roxy_start', true);
+      $b_time = get_post_type($b) === Events::POST_TYPE ? (string)get_post_meta($b->ID, '_roxy_event_first_start', true) : (string)get_post_meta($b->ID, '_roxy_start', true);
+      return strcmp($a_time, $b_time) ?: ((int)$a->ID <=> (int)$b->ID);
+    });
+
     if (empty($posts)) {
       echo '<p>No upcoming showings found.</p>';
       if ($show_all_button && $all_button_url !== '') {
@@ -187,6 +195,26 @@ class Frontend {
     global $post;
     foreach ($posts as $post) {
       setup_postdata($post);
+      if (get_post_type($post) === Events::POST_TYPE) {
+        $event_id = (int)$post->ID;
+        $event_url = get_permalink($event_id);
+        $event_image = $show_images && has_post_thumbnail($event_id) ? get_the_post_thumbnail($event_id, 'medium', ['style'=>'width:100%;height:auto;border-radius:10px']) : '';
+        $event_dates = [];
+        foreach ((array)get_post_meta($event_id, Events::META_SHOWINGS, true) as $screening_id) {
+          $timestamp = Eligibility::showing_start_timestamp((int)$screening_id);
+          if ($timestamp !== null) $event_dates[wp_date('Y-m-d', $timestamp)] = $timestamp;
+        }
+        ksort($event_dates);
+        $date_labels = [];
+        $years = array_unique(array_map(static fn($timestamp) => wp_date('Y', $timestamp), $event_dates));
+        foreach ($event_dates as $timestamp) $date_labels[] = wp_date(count($years) === 1 ? 'D, M j' : 'D, M j, Y', $timestamp);
+        if (count($years) === 1 && $date_labels) $date_labels[count($date_labels) - 1] .= ', ' . reset($years);
+        echo '<div class="roxy-st-card roxy-st-event-card" style="border:1px solid #ddd;border-radius:14px;padding:14px"><div style="display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:start"><div>' . $event_image . '</div><div><div style="font-weight:700;font-size:18px;margin-bottom:4px"><a href="' . esc_url($event_url) . '" style="text-decoration:none;color:inherit">' . esc_html(get_the_title($event_id)) . '</a></div>';
+        if ($date_labels) echo '<div style="opacity:.8;margin-bottom:8px">' . esc_html(implode(' · ', $date_labels)) . '</div>';
+        if (has_excerpt($event_id)) echo '<div style="margin-bottom:10px">' . esc_html(get_the_excerpt($event_id)) . '</div>';
+        echo '<a href="' . esc_url($event_url) . '" style="font-weight:600">Schedule and tickets</a></div></div></div>';
+        continue;
+      }
       $sid = $post->ID;
       $title = get_the_title();
       $start_timestamp = Eligibility::showing_start_timestamp((int) $sid);
@@ -242,12 +270,11 @@ class Frontend {
         'meta_key' => '_roxy_start',
         'orderby' => ['meta_value' => 'ASC', 'ID' => 'ASC'],
         'no_found_rows' => true,
-        'meta_query' => [[
-          'key' => '_roxy_start',
-          'value' => [$query_start->format('Y-m-d\TH:i'), $window_end->format('Y-m-d\TH:i')],
-          'compare' => 'BETWEEN',
-          'type' => 'CHAR',
-        ]],
+        'meta_query' => [
+          'relation' => 'AND',
+          ['key' => '_roxy_start', 'value' => [$query_start->format('Y-m-d\TH:i'), $window_end->format('Y-m-d\TH:i')], 'compare' => 'BETWEEN', 'type' => 'CHAR'],
+          ['relation' => 'OR', ['key' => '_roxy_event_id', 'compare' => 'NOT EXISTS'], ['key' => '_roxy_event_id', 'value' => '', 'compare' => '=']],
+        ],
       ]);
       foreach ($q->posts as $showing) {
         if (Eligibility::showing_sales_open((int) $showing->ID, $now->getTimestamp())) {

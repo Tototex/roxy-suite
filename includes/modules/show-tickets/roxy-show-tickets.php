@@ -26,6 +26,7 @@ require_once ROXY_ST_PATH . 'includes/class-roxy-st-cart-pricing.php';
 require_once ROXY_ST_PATH . 'includes/class-roxy-st-capacity.php';
 require_once ROXY_ST_PATH . 'includes/class-roxy-st-holds.php';
 require_once ROXY_ST_PATH . 'includes/class-roxy-st-frontend.php';
+require_once ROXY_ST_PATH . 'includes/class-roxy-st-events.php';
 
 add_action('plugins_loaded', function () {
   if (!class_exists('WooCommerce')) return;
@@ -40,4 +41,5 @@ add_action('plugins_loaded', function () {
   \RoxyST\Capacity::init();
   \RoxyST\Holds::init();
   \RoxyST\Frontend::init();
+  \RoxyST\Events::init();
 });

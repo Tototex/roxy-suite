@@ -10,7 +10,7 @@ remove_action('woocommerce_order_status_changed',[\RoxyST\Tickets::class,'on_ord
 remove_action('woocommerce_refund_created',[\RoxyST\Tickets::class,'on_refund_created'],30);
 remove_action('woocommerce_refund_deleted',[\RoxyST\Tickets::class,'on_refund_deleted'],30);
 remove_action('woocommerce_order_status_changed',[\RoxyST\Sales::class,'on_order_changed'],20);
-$created=[];$order=null;$refund=null;$group_order=null;$group_ids=[];$summary=null;
+$created=[];$order=null;$refund=null;$group_order=null;$group_ids=[];$marathon_order=null;$marathon_ids=[];$summary=null;
 $check=static function($ok,$label){if(!$ok)throw new RuntimeException($label);echo 'PASS: '.$label.PHP_EOL;};
 try{
   $show=wp_insert_post(['post_type'=>'roxy_showing','post_status'=>'draft','post_title'=>'PRIVATE ISSUANCE FIXTURE 2026-10-05'],true);if(is_wp_error($show))throw new RuntimeException('Cannot create fixture');$created[]=$show;
@@ -20,6 +20,19 @@ try{
   $item_id=$order->add_product($product,3);$order->calculate_totals();$order->save();
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'actual Woo order issues complete ticket set');
   $ids=\RoxyST\IssuanceFixtureTickets::get_order_ticket_ids($order->get_id());$check(count($ids)===3,'three distinct ticket identities are saved');
+  $marathon_order=wc_create_order(['status'=>'processing','customer_note'=>'PRIVATE MARATHON FIXTURE — six separate admissions under one order']);if(is_wp_error($marathon_order))throw new RuntimeException('Marathon fixture order failed');
+  $marathon_showings=[];
+  for($i=0;$i<6;$i++){
+    $showing_id=wp_insert_post(['post_type'=>'roxy_showing','post_status'=>'draft','post_title'=>'PRIVATE MARATHON FIXTURE '.$i],true);if(is_wp_error($showing_id))throw new RuntimeException('Marathon showing fixture failed');$created[]=$showing_id;$marathon_showings[]=$showing_id;
+    $show_product=new WC_Product_Simple();$show_product->set_name('PRIVATE MARATHON FIXTURE '.$i);$show_product->set_status('draft');$show_product->set_catalog_visibility('hidden');$show_product->set_regular_price('7.50');$show_product_id=$show_product->save();$created[]=$show_product_id;update_post_meta($show_product_id,ROXY_ST_META_SHOWING_ID,$showing_id);update_post_meta($show_product_id,ROXY_ST_META_TICKET_TYPE,'marathon');$marathon_order->add_product($show_product,1);
+  }
+  $marathon_order->calculate_totals();$marathon_order->save();
+  $check((float)$marathon_order->get_total()===45.0&&\RoxyST\IssuanceFixtureTickets::sync_order_tickets($marathon_order->get_id()),'one $45 order with six showing-specific lines issues through normal ticket flow');
+  $marathon_ids=\RoxyST\IssuanceFixtureTickets::get_order_ticket_ids($marathon_order->get_id());$marathon_ticket_showings=array_map(static fn($id)=>(int)get_post_meta($id,'_roxy_ticket_showing_id',true),$marathon_ids);
+  $check(count($marathon_ids)===6&&count(array_unique($marathon_ids))===6&&$marathon_ticket_showings===$marathon_showings,'marathon order has six unique QR ticket records, one tied to each showing');
+  $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($marathon_order->get_id())&&\RoxyST\IssuanceFixtureTickets::get_order_ticket_ids($marathon_order->get_id())===$marathon_ids,'reconciling a marathon order does not duplicate any QR admission');
+  $scan_results=[];foreach($marathon_ids as $ticket_id)$scan_results[]=\RoxyST\IssuanceFixtureTickets::check_in_ticket($ticket_id,9,'ticket');
+  $check(!in_array(false,$scan_results,true)&&count(array_filter($marathon_ids,static fn($id)=>(int)get_post_meta($id,'_roxy_checked_in',true)===1))===6,'each showing-specific marathon QR scans independently without consuming other admissions');
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id())&&\RoxyST\IssuanceFixtureTickets::get_order_ticket_ids($order->get_id())===$ids,'repeated issuance reuses identities without duplicate posts');
   wc_delete_order_item_meta($item_id,'_roxy_ticket_ids');
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id())&&\RoxyST\IssuanceFixtureTickets::get_order_ticket_ids($order->get_id())===$ids,'lost order-item links recover canonical sequences without duplicate tickets');
@@ -123,6 +136,7 @@ try{
   echo 'TICKET_ISSUANCE_WOO_OK'.PHP_EOL;
 }finally{
   if($summary){global $wpdb;$wpdb->delete($wpdb->prefix.'roxy_will_call_checkins',['product_id'=>$summary['context_id'],'customer_key'=>$summary['customer_key']]);}
+  if($marathon_order instanceof WC_Order){foreach(array_unique(array_merge($marathon_ids??[],\RoxyST\IssuanceFixtureTickets::get_order_ticket_ids($marathon_order->get_id()))) as $id)wp_delete_post($id,true);$marathon_order->delete(true);}
   if($group_order instanceof WC_Order){foreach($group_ids as $id)wp_delete_post($id,true);$group_order->delete(true);}
   if($refund instanceof WC_Order_Refund)$refund->delete(true);
   if($order instanceof WC_Order){foreach(range(1,3) as $attempt)wp_clear_scheduled_hook('roxy_st_retry_order_tickets',[$order->get_id(),$attempt]);foreach(array_unique(array_merge($ids??[],\RoxyST\IssuanceFixtureTickets::get_order_ticket_ids($order->get_id()))) as $id)wp_delete_post($id,true);$order->delete(true);}

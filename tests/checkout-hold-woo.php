@@ -83,13 +83,20 @@ try {
  $arrivals=Fixture_Roxy_Sub_Check::walkup_quantity_for_showing($show);$check($wins===1&&$qty()+$arrivals===1,'checkout and member walk-up competing for last seat share exactly one winner');
  foreach($workers as $w){fclose($w['pipes'][1]);fclose($w['pipes'][2]);proc_close($w['process']);}$workers=[];
  \RoxyST\FixtureHolds::release($e);$wpdb->delete($wpdb->prefix.'roxy_member_scans',['subscription_id'=>$sub->get_id(),'showing_id'=>$show]);
- $show2=wp_insert_post(['post_type'=>'roxy_showing','post_status'=>'draft','post_title'=>$label],true);if(is_wp_error($show2))throw new RuntimeException('Second private showing failed');$created[]=$show2;update_post_meta($show2,'_roxy_capacity',0);
- $p2=new WC_Product_Simple();$p2->set_name($label);$p2->set_status('draft');$p2->set_catalog_visibility('hidden');$p2->set_regular_price('0');$pid2=$p2->save();$created[]=$pid2;update_post_meta($pid2,ROXY_ST_META_SHOWING_ID,$show2);update_post_meta($pid2,ROXY_ST_META_TICKET_TYPE,'adult');
- $multi=$make();$multi->add_product($p2,1);$multi->calculate_totals();$multi->save();try{\RoxyST\FixtureHolds::claim($multi);$denied=false;}catch(Throwable $ex){$denied=true;}
- $check($denied&&!get_post_meta($multi->get_id(),'_roxy_seat_hold_managed',true)&&$qty()===0,'one full showing rejects the entire multi-showing hold without reserving the other');
- update_post_meta($show2,'_roxy_capacity',1);\RoxyST\FixtureHolds::claim($multi);
- $check($qty()===1&&\RoxyST\FixtureReservations::quantity_for_showing($show2)===1,'multi-showing retry reserves both available seats atomically');
- $multi->update_status('cancelled');$check($qty()===0&&\RoxyST\FixtureReservations::quantity_for_showing($show2)===0,'multi-showing cancellation releases both reservations');
+ $showings=[$show];$products=[$p];
+ for($i=1;$i<6;$i++){
+  $sid=wp_insert_post(['post_type'=>'roxy_showing','post_status'=>'draft','post_title'=>$label.' '.$i],true);if(is_wp_error($sid))throw new RuntimeException('Private marathon showing failed');$created[]=$sid;update_post_meta($sid,'_roxy_capacity',1);$showings[]=$sid;
+  $ticket_product=new WC_Product_Simple();$ticket_product->set_name($label.' '.$i);$ticket_product->set_status('draft');$ticket_product->set_catalog_visibility('hidden');$ticket_product->set_regular_price('7.50');$product_id=$ticket_product->save();$created[]=$product_id;update_post_meta($product_id,ROXY_ST_META_SHOWING_ID,$sid);update_post_meta($product_id,ROXY_ST_META_TICKET_TYPE,'adult');$products[]=$ticket_product;
+ }
+ update_post_meta($show,'_roxy_capacity',1);$p->set_regular_price('7.50');$p->save();update_post_meta($showings[5],'_roxy_capacity',0);
+ $multi=wc_create_order(['status'=>'pending','customer_note'=>$label.' — six-admission marathon fixture']);if(is_wp_error($multi))throw new RuntimeException('Marathon fixture order failed');$orders[]=$multi;
+ foreach($products as $ticket_product)$multi->add_product($ticket_product,1);
+ $multi->calculate_totals();$multi->save();
+ try{\RoxyST\FixtureHolds::claim($multi);$denied=false;}catch(Throwable $ex){$denied=true;}
+ $check($denied&&!get_post_meta($multi->get_id(),'_roxy_seat_hold_managed',true)&&array_sum(array_map(static fn($sid)=>\RoxyST\FixtureReservations::quantity_for_showing($sid),$showings))===0,'one full showing rejects a six-showing pass without partially holding other seats');
+ update_post_meta($showings[5],'_roxy_capacity',1);\RoxyST\FixtureHolds::claim($multi);
+ $check((float)$multi->get_total()===45.0&&count($showings)===6&&array_sum(array_map(static fn($sid)=>\RoxyST\FixtureReservations::quantity_for_showing($sid),$showings))===6,'one $45 Woo order durably reserves one seat at each of six showings');
+ $multi->update_status('cancelled');$check(array_sum(array_map(static fn($sid)=>\RoxyST\FixtureReservations::quantity_for_showing($sid),$showings))===0,'cancelling a six-showing pass releases all six reservations');
  echo 'CHECKOUT_HOLD_WOO_OK'.PHP_EOL;
 } finally {
  foreach($workers as $w){if(proc_get_status($w['process'])['running'])proc_terminate($w['process']);fclose($w['pipes'][1]);fclose($w['pipes'][2]);proc_close($w['process']);}

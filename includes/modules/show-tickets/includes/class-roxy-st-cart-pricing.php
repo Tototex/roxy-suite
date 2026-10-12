@@ -42,22 +42,27 @@ class CartPricing {
 
     $showing_id = (int) get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true);
     $ticket_type = (string) get_post_meta($product_id, ROXY_ST_META_TICKET_TYPE, true);
-    $price = self::current_price($showing_id, $ticket_type);
+    $price = isset($item['roxy_event_unit_price']) && is_numeric($item['roxy_event_unit_price'])
+      ? (float)$item['roxy_event_unit_price']
+      : self::current_price($showing_id, $ticket_type);
     if ($price === null) return;
 
     $decimals = function_exists('wc_get_price_decimals') ? wc_get_price_decimals() : 2;
     $price = round(max(0.0, $price), $decimals);
     $current = round((float) $product->get_price(), $decimals);
+    $has_event_price = isset($item['roxy_event_unit_price']) && is_numeric($item['roxy_event_unit_price']);
     $baseline = isset($item[self::BASELINE_KEY]) && is_numeric($item[self::BASELINE_KEY])
       ? round((float) $item[self::BASELINE_KEY], $decimals)
       : $current;
     // Legacy sessions contain the previously quoted pre-coupon, ex-tax subtotal
     // even when Woo has reloaded a product whose stored price already changed.
-    if (!isset($item[self::BASELINE_KEY]) && isset($item['line_subtotal'], $item['quantity']) && is_numeric($item['line_subtotal']) && (float) $item['quantity'] > 0) {
+    if (!$has_event_price && !isset($item[self::BASELINE_KEY]) && isset($item['line_subtotal'], $item['quantity']) && is_numeric($item['line_subtotal']) && (float) $item['quantity'] > 0) {
       $baseline = round((float) $item['line_subtotal'] / (float) $item['quantity'], $decimals);
     }
 
-    if ($baseline !== $price) {
+    if ($has_event_price) {
+      $baseline = $price;
+    } elseif ($baseline !== $price) {
       self::$price_changed_in_request = true;
       self::add_price_change_notice($product, $baseline, $price, $cart_key);
     }

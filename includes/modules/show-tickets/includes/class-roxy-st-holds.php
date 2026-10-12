@@ -72,7 +72,7 @@ final class Holds {
       if((int)get_post_meta($id,'_roxy_seat_hold_managed',true)===1)throw new \RuntimeException('The ticket mapping changed. Contact the theater.');
       return false;
     }
-    if(count($captured['shows'])>4)throw new \RuntimeException('Please order tickets for no more than four showings at once.');
+    if(count($captured['shows'])>32)throw new \RuntimeException('Please order tickets for no more than 32 showings at once.');
     $scopes=array_map(static fn($sid)=>'walkup:'.$sid,array_keys($captured['shows']));
     $operation=new Issuance($id,$scopes);
     $operation->run(static function(Issuance $writer)use($order,$id,$captured):void {

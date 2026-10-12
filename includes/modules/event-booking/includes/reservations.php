@@ -84,6 +84,7 @@ final class RoxyEBReservation {
         $this->assert_owner();
         $sql = rtrim(trim($sql), ';');
         $predicate = $this->predicate();
+        if (str_contains($sql, $predicate)) return $sql;
         if (preg_match('/^(INSERT\s+INTO\s+`?(?:' . $pattern . ')`?\s*\([^)]*\))\s+VALUES\s*\(([\s\S]*)\)$/i', $sql, $match)) {
             return $match[1] . ' SELECT ' . $match[2] . ' FROM DUAL WHERE ' . $predicate;
         }
@@ -91,7 +92,7 @@ final class RoxyEBReservation {
             $where = $this->where_offset($sql);
             if ($where !== null) return substr($sql, 0, $where + 5) . ' (' . substr($sql, $where + 5) . ') AND (' . $predicate . ')';
         }
-        throw new RuntimeException('Unsupported showing write inside a protected room change. Nothing further was written.');
+        throw new RuntimeException('Unsupported database write inside a protected room change. Nothing further was written.');
     }
     private function where_offset(string $sql): ?int {
         $quote = null;
@@ -174,7 +175,7 @@ function roxy_eb_reservation_run(callable $callback, array $additional_transacti
 }
 
 /** Serialize a managed showing-time write with event bookings and manual room blocks. */
-function roxy_eb_with_showing_time_lock(string $show_start, int $ignore_showing_id, callable $write, bool $uses_terms = false) {
+function roxy_eb_with_showing_time_lock(string $show_start, $ignore_showing_id, callable $write, bool $uses_terms = false) {
     global $wpdb;
     $start = null;
     foreach (['!Y-m-d\\TH:i', '!Y-m-d\\TH:i:s', '!Y-m-d H:i:s'] as $format) {

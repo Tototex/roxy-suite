@@ -17,7 +17,7 @@ final class Issuance {
     $ids = array_unique(array_map('intval', (array)$order_ids));
     if (count($ids)>64) throw new \RuntimeException('Too many orders in this group. Use individual ticket check-in.');
     $scopes=array_values(array_unique(array_filter((array)$scope,static fn($value)=>is_string($value)&&$value!=='')));
-    if(count($scopes)>4 || ($ids && min($ids)<=0) || (!$ids && !$scopes)) throw new \RuntimeException('Invalid admission lock scope');
+    if(count($scopes)>32 || ($ids && min($ids)<=0) || (!$ids && !$scopes)) throw new \RuntimeException('Invalid admission lock scope');
     foreach ($ids as $id) $this->locks[] = 'roxy_ticket_' . substr(hash('sha256', $wpdb->prefix . ':' . $id), 0, 48);
     foreach($scopes as $value) $this->locks[] = 'roxy_scope_' . substr(hash('sha256', $wpdb->prefix . ':' . $value), 0, 48);
     sort($this->locks, SORT_STRING);
