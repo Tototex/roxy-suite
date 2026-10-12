@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace RoxyGrosses {
   final class Settings {
-    public static array $values = ['cashflow_woo_gateways' => 'stripe'];
+    public static array $values = ['cashflow_woo_gateways' => "stripe\npaypal"];
     public static function get_report_timezone(): string { return 'America/Los_Angeles'; }
     public static function get(string $key, $default = '') { return self::$values[$key] ?? $default; }
     public static function line_list(string $value): array { return array_values(array_filter(array_map('trim', preg_split('/[\r\n,]+/', $value) ?: []), 'strlen')); }
@@ -105,7 +105,10 @@ namespace {
     'amount_money' => ['amount' => 200, 'currency' => 'USD'], 'updated_at' => '2026-10-03T03:00:00Z',
   ]];
   $GLOBALS['wc_pages'] = [
-    'shop_order' => [1 => [new \RoxyGrosses\FakeOrder(21, 'stripe', '30.00', 'stripe-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z'))]],
+    'shop_order' => [1 => [
+      new \RoxyGrosses\FakeOrder(21, 'stripe', '30.00', 'stripe-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
+      new \RoxyGrosses\FakeOrder(99, 'paypal', '20.00', 'paypal-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
+    ]],
     'shop_order_refund' => [1 => [
       new \RoxyGrosses\FakeRefund(22, 21, '5.00', new \DateTimeImmutable('2026-10-03T04:00:00Z')),
       new \RoxyGrosses\FakeRefund(23, 99, '10.00', new \DateTimeImmutable('2026-10-03T05:00:00Z')),
@@ -125,16 +128,16 @@ namespace {
   ];
   $GLOBALS['wc_page_counts'] = ['shop_order' => 1, 'shop_order_refund' => 1];
   $report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
-  $assert($report['totals']['square_collected_cents'] === 1500 && $report['totals']['woocommerce_collected_cents'] === 3000, 'daily cashflow includes completed Square payment and allow-listed Woo paid amount, excluding non-completed payments');
-  $assert($report['totals']['square_refunded_cents'] === 200 && $report['totals']['woocommerce_refunded_cents'] === 500 && $report['totals']['net_cents'] === 3800, 'daily cashflow subtracts approved-gateway provider refunds on their refund date and omits unapproved-gateway refunds');
-  $assert($report['counts'] === ['square_collections'=>1,'woocommerce_collections'=>1,'square_refunds'=>1,'woocommerce_refunds'=>1], 'daily report counts only provider events attributed to selected local date');
+  $assert($report['totals']['square_collected_cents'] === 1500 && $report['totals']['woocommerce_collected_cents'] === 5000, 'daily cashflow includes completed Square, Stripe, and PayPal collections while excluding non-completed payments');
+  $assert($report['totals']['square_refunded_cents'] === 200 && $report['totals']['woocommerce_refunded_cents'] === 1500 && $report['totals']['net_cents'] === 4800, 'daily cashflow subtracts refunds for both approved online gateways and omits offline gateway refunds');
+  $assert($report['counts'] === ['square_collections'=>1,'woocommerce_collections'=>2,'square_refunds'=>1,'woocommerce_refunds'=>2], 'daily report counts only events from the approved providers attributed to selected local date');
   $assert($report['refund_date_bases']['square'] === ['square_updated_at_proxy'] && $report['refund_date_bases']['woocommerce'] === ['woocommerce_refund_creation_proxy'], 'daily report retains explicit refund-date provenance');
   $assert(count($report['review_exceptions']['woocommerce_manual_refunds']) === 1
     && $report['review_exceptions']['woocommerce_manual_refunds'][0]['refund_id'] === 24
     && $report['review_exceptions']['woocommerce_manual_refunds'][0]['amount_cents'] === 750,
     'manual WooCommerce refund is visible as a read-only review exception');
   $assert(!in_array(25, array_column($report['review_exceptions']['woocommerce_manual_refunds'], 'refund_id'), true),
-    'manual refund from a gateway outside the configured allow-list is not included in review exceptions');
+    'manual refund from an offline gateway outside the configured allow-list is not included in review exceptions');
   $assert(count($report['review_exceptions']['square_returns_and_exchanges']) === 1
     && $report['review_exceptions']['square_returns_and_exchanges'][0]['order_id'] === 'sq-exchange'
     && $report['review_exceptions']['square_returns_and_exchanges'][0]['tender_cents'] === 1250,
@@ -152,7 +155,7 @@ namespace {
     'returns' => [['uid' => 'return-1']],
     'tenders' => [['amount_money' => ['amount' => 1250, 'currency' => 'USD']]],
   ]];
-  $assert($report['totals']['woocommerce_refunded_cents'] === 500 && $report['totals']['net_cents'] === 3800,
+  $assert($report['totals']['woocommerce_refunded_cents'] === 1500 && $report['totals']['net_cents'] === 4800,
     'manual Woo refund and Square exchange tender remain excluded from cashflow totals');
   $assert($GLOBALS['wc_queries'][0]['date_paid'] === '1790924400...1791010799' && $GLOBALS['wc_queries'][1]['date_created'] === '1790924400...1791010799', 'WooCommerce queries use exact UTC bounds for the report timezone day');
   $assert(\RoxyGrosses\Square::$calls[0] === ['payments', '2026-10-02T07:00:00Z', '2026-10-03T07:00:00Z'], 'Square payment read uses exact UTC boundaries for the selected report-timezone day');
@@ -223,13 +226,13 @@ namespace {
   $provider_call_count_before_invalid_configuration = count(\RoxyGrosses\Square::$calls);
   \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = '';
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'combined report refuses to silently omit WooCommerce collections when gateway allow-list is empty');
-  \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = 'stripe';
+  \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = "stripe\npaypal";
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-02-30'), 'invalid calendar date fails before provider reads');
   $assert(count(\RoxyGrosses\Square::$calls) === $provider_call_count_before_invalid_configuration, 'invalid date and missing gateway configuration cause no additional provider reads');
   \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = 'square_credit_card';
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'Square-backed Woo gateway cannot be added to separately reported Square collections');
   $assert(count(\RoxyGrosses\Square::$calls) === $provider_call_count_before_invalid_configuration, 'overlapping Square gateway configuration fails before provider reads');
-  \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = 'stripe';
+  \RoxyGrosses\Settings::$values['cashflow_woo_gateways'] = "stripe\npaypal";
 
   $GLOBALS['wc_queries'] = [];
   $page_one = [];
