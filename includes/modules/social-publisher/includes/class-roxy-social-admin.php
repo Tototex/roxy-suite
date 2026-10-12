@@ -71,6 +71,7 @@ final class Admin {
         $rows = Store::all_recent();
         $filter = self::list_filter((string) ($_GET['status'] ?? 'draft'));
         if ($filter !== 'all') $rows = array_values(array_filter($rows, static function ($row) use ($filter) { return (string) $row['status'] === $filter; }));
+        if ($filter === 'posted') $rows = array_reverse($rows);
         echo '<p>Review showing-based drafts here. Only approved posts publish when their scheduled time arrives.</p>';
         if (isset($_GET['removed_live'])) {
             $removed = (string) $_GET['removed_live'] === '1';
@@ -99,7 +100,12 @@ final class Admin {
             echo '<td>' . esc_html(ucwords(str_replace('-', ' ', (string) $row['campaign_key']))) . '</td>';
             echo '<td><textarea form="roxy-social-draft-' . (int) $row['id'] . '" name="post_text" rows="5" style="width:100%;min-width:320px">' . esc_textarea($row['post_text']) . '</textarea></td>';
             $media_label = $row['media_type'] === 'video' ? 'Video' : 'Poster';
-            echo '<td>' . ($row['media_url'] ? '<a href="' . esc_url($row['media_url']) . '" target="_blank">' . ($row['media_type'] === 'video' ? '<span style="display:block;width:72px;height:48px;background:#1d2327;color:#fff;text-align:center;padding-top:24px">Video</span>' : '<img src="' . esc_url($row['media_url']) . '" alt="Poster" style="width:72px;height:96px;object-fit:contain;display:block">') . esc_html($media_label) . '</a>' : '&mdash;');
+            $row_media_urls = json_decode((string) ($row['media_urls'] ?? ''), true);
+            if (!is_array($row_media_urls) || !$row_media_urls) $row_media_urls = !empty($row['media_url']) && $row['media_type'] === 'image' ? [(string) $row['media_url']] : [];
+            echo '<td>';
+            if ($row['media_type'] === 'video' && $row['media_url']) echo '<a href="' . esc_url($row['media_url']) . '" target="_blank"><span style="display:block;width:72px;height:48px;background:#1d2327;color:#fff;text-align:center;padding-top:24px">Video</span>Video</a>';
+            elseif ($row_media_urls) { foreach (array_slice($row_media_urls, 0, 10) as $image_url) echo '<a href="' . esc_url($image_url) . '" target="_blank" style="display:inline-block;margin:0 4px 4px 0"><img src="' . esc_url($image_url) . '" alt="Post image" style="width:60px;height:72px;object-fit:contain;display:block"></a>'; echo '<br><span class="description">' . count($row_media_urls) . ' image(s)</span>'; }
+            else echo '&mdash;';
             if ($row['trailer_url']) echo '<br><a href="' . esc_url($row['trailer_url']) . '" target="_blank">Trailer</a>';
             if (!empty($row['hangar_filename'])) echo '<br><strong>Hangar:</strong> ' . esc_html($row['hangar_filename']);
             if ($row['media_type'] === 'video') {
@@ -112,7 +118,7 @@ final class Admin {
             }
             $facebook_state = !empty($row['facebook_post_id']) ? 'Posted' : (($status === 'publishing') ? 'Publishing' : (($status === 'approved') ? 'Scheduled' : (($status === 'failed' && strpos((string) $row['last_error'], 'Facebook:') !== false) ? 'Failed' : 'Not posted')));
             $instagram_state = !empty($row['instagram_media_id']) ? 'Posted' : (($status === 'publishing') ? 'Publishing' : (($status === 'approved') ? 'Scheduled' : (($status === 'failed' && stripos((string) $row['last_error'], 'Instagram video is still processing') !== false) ? 'Processing' : (($status === 'failed' && strpos((string) $row['last_error'], 'Instagram:') !== false) ? 'Failed' : 'Not posted'))));
-            echo '</td><td><strong>' . esc_html(ucwords(str_replace('_', ' ', $status))) . '</strong><br><span class="description">Facebook: ' . esc_html($facebook_state) . '<br>Instagram: ' . esc_html($instagram_state) . '</span></td><td><form id="roxy-social-draft-' . (int) $row['id'] . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_update_draft"><input type="hidden" name="return_status" value="' . esc_attr($filter) . '"><input type="hidden" name="id" value="' . (int) $row['id'] . '"><input type="hidden" name="media_url" value="' . esc_attr((string) $row['media_url']) . '"><input type="hidden" name="media_type" value="' . esc_attr((string) $row['media_type']) . '"><input type="hidden" name="media_changed" value="0"><input type="hidden" name="draft_revision" value="' . esc_attr(Store::draft_revision($row)) . '">' . wp_nonce_field('roxy_social_update_draft_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit" hidden style="display:none!important"' . ((!in_array($status, ['draft', 'approved', 'needs_review', 'failed'], true) || !empty($row['facebook_post_id']) || !empty($row['instagram_media_id']) || !empty($row['instagram_container_id'])) ? ' disabled' : '') . '>Save</button></form>';
+            echo '</td><td><strong>' . esc_html(ucwords(str_replace('_', ' ', $status))) . '</strong><br><span class="description">Facebook: ' . esc_html($facebook_state) . '<br>Instagram: ' . esc_html($instagram_state) . '</span></td><td><form id="roxy-social-draft-' . (int) $row['id'] . '" method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_update_draft"><input type="hidden" name="return_status" value="' . esc_attr($filter) . '"><input type="hidden" name="id" value="' . (int) $row['id'] . '"><input type="hidden" name="media_url" value="' . esc_attr((string) $row['media_url']) . '"><input type="hidden" name="media_urls" value="' . esc_attr((string) ($row['media_urls'] ?? '[]')) . '"><input type="hidden" name="media_type" value="' . esc_attr((string) $row['media_type']) . '"><input type="hidden" name="media_changed" value="0"><input type="hidden" name="draft_revision" value="' . esc_attr(Store::draft_revision($row)) . '">' . wp_nonce_field('roxy_social_update_draft_' . (int) $row['id'], '_wpnonce', true, false) . '<button class="button" type="submit" hidden style="display:none!important"' . ((!in_array($status, ['draft', 'approved', 'needs_review', 'failed'], true) || !empty($row['facebook_post_id']) || !empty($row['instagram_media_id']) || !empty($row['instagram_container_id'])) ? ' disabled' : '') . '>Save</button></form>';
             $has_published_ids = !empty($row['facebook_post_id']) || !empty($row['instagram_media_id']);
             if ($status === 'needs_review' && ($row['ai_status'] ?? '') === 'pending' && !$has_published_ids && empty($row['instagram_container_id'])) {
                 $retry_url = wp_nonce_url(add_query_arg(['action' => 'roxy_social_retry_ai', 'id' => (int) $row['id'], 'draft_revision' => Store::draft_revision($row)], admin_url('admin-post.php')), 'roxy_social_retry_ai_' . (int) $row['id']);
@@ -143,6 +149,8 @@ final class Admin {
                 echo ' <a class="button" href="' . esc_url($delete_url) . '" onclick="return confirm(\'Delete this unposted draft and its temporary media?\')">Delete</a>';
             }
             if (!empty($row['last_error'])) echo '<p class="description" style="color:#b32d2e">' . esc_html($row['last_error']) . '</p>';
+            $schedule_warning = Campaigns::caption_schedule_warning($row);
+            if ($schedule_warning !== '') echo '<p class="description" style="color:#996800"><strong>Schedule check:</strong> ' . esc_html($schedule_warning) . '</p>';
             echo '</td></tr>';
         }
         echo '</tbody></table><p><button type="button" class="button button-primary roxy-social-save-all">Save All</button> <span class="roxy-social-save-message" role="status" aria-live="polite"></span></p></div>';
@@ -170,8 +178,9 @@ final class Admin {
         $media_url = isset($_POST['media_url']) ? esc_url_raw((string) $_POST['media_url']) : null;
         $media_type = isset($_POST['media_type']) ? sanitize_key((string) $_POST['media_type']) : null;
         $media_changed = isset($_POST['media_changed']) && (string) $_POST['media_changed'] === '1';
+        $media_urls = $media_changed ? Store::sanitize_media_urls((array) json_decode(wp_unslash((string) ($_POST['media_urls'] ?? '[]')), true)) : null;
         if (!$media_changed) $media_url = null;
-        $saved = $id > 0 && $text !== '' && $parsed && Store::update_draft($id, $text, $parsed->format('Y-m-d H:i:s'), $media_url, $media_type, (string) ($_POST['draft_revision'] ?? ''));
+        $saved = $id > 0 && $text !== '' && $parsed && Store::update_draft($id, $text, $parsed->format('Y-m-d H:i:s'), $media_url, $media_type, (string) ($_POST['draft_revision'] ?? ''), $media_urls);
         if (wp_doing_ajax()) {
             if (!$saved) wp_send_json_error(['message' => 'This post changed or could not be saved. Your edits are still on this page.'], 409);
             wp_send_json_success(['revision' => Store::draft_revision(Store::find($id))]);
@@ -217,10 +226,11 @@ final class Admin {
         check_admin_referer('roxy_social_create_manual');
         $text = sanitize_textarea_field((string) ($_POST['post_text'] ?? ''));
         $scheduled = date_create(sanitize_text_field((string) ($_POST['scheduled_for'] ?? '')), wp_timezone());
-        $media_url = esc_url_raw((string) ($_POST['media_url'] ?? ''));
-        $media_type = self::media_type_from_url($media_url);
+        $media_urls = Store::sanitize_media_urls((array) json_decode(wp_unslash((string) ($_POST['media_urls'] ?? '[]')), true));
+        $media_url = $media_urls[0] ?? esc_url_raw((string) ($_POST['media_url'] ?? ''));
+        $media_type = count($media_urls) > 1 ? 'image' : self::media_type_from_url($media_url);
         if ($text === '' || !$scheduled) wp_safe_redirect(self::drafts_url(['manual_error' => 'missing']));
-        else { Store::create_manual(['post_text' => $text, 'scheduled_for' => $scheduled->format('Y-m-d H:i:s'), 'platform' => sanitize_key((string) ($_POST['platform'] ?? 'both')), 'media_url' => $media_url, 'media_type' => $media_type]); wp_safe_redirect(self::drafts_url(['manual_created' => '1'])); }
+        else { Store::create_manual(['post_text' => $text, 'scheduled_for' => $scheduled->format('Y-m-d H:i:s'), 'platform' => sanitize_key((string) ($_POST['platform'] ?? 'both')), 'media_url' => $media_url, 'media_urls' => $media_urls, 'media_type' => $media_type]); wp_safe_redirect(self::drafts_url(['manual_created' => '1'])); }
         exit;
     }
 
@@ -232,9 +242,9 @@ final class Admin {
         echo '<input type="hidden" name="action" value="roxy_social_create_manual">' . wp_nonce_field('roxy_social_create_manual', '_wpnonce', true, false);
         echo '<p><label><strong>Post text</strong><br><textarea name="post_text" rows="5" style="width:100%;max-width:760px" required placeholder="Write the post caption..."></textarea></label></p>';
         echo '<p><label><strong>Scheduled for</strong><br><input type="datetime-local" name="scheduled_for" value="' . esc_attr($default_time) . '" required></label> <label style="margin-left:18px"><strong>Send to</strong><br><select name="platform"><option value="both">Facebook and Instagram</option><option value="facebook">Facebook only</option><option value="instagram">Instagram only</option></select></label></p>';
-        echo '<p><label><strong>Media URL</strong><br><input id="roxy-manual-media-url" type="url" name="media_url" style="width:100%;max-width:760px" placeholder="Optional for Facebook-only text posts"></label> <button type="button" class="button" id="roxy-manual-media-button">Choose from Media Library</button></p>';
-        echo '<p class="description">Manual posts use the same approval and scheduling process as showing posts. Media type is detected automatically. Instagram posts require media.</p><p><button type="submit" class="button button-primary">Save Manual Draft</button></p></form></details>';
-        echo '<script>(function(){var b=document.getElementById("roxy-manual-media-button"),u=document.getElementById("roxy-manual-media-url"),tries=0;function bind(){if(!b||!u)return;if(!window.wp||!wp.media){if(tries++<100)window.setTimeout(bind,100);return;}b.onclick=function(){var frame=wp.media({title:"Choose post media",button:{text:"Use this media"},multiple:false});frame.on("select",function(){var a=frame.state().get("selection").first().toJSON();u.value=a.url||"";});frame.open();};}bind();})();</script>';
+        echo '<p><label><strong>Media URL</strong><br><input id="roxy-manual-media-url" type="url" name="media_url" style="width:100%;max-width:760px" placeholder="Optional for Facebook-only text posts or video"></label></p><input type="hidden" id="roxy-manual-media-urls" name="media_urls" value="[]"><p><strong>Images</strong><br><span id="roxy-manual-media-list" class="description">No images selected.</span><br><button type="button" class="button" id="roxy-manual-media-button">Choose images from Media Library</button></p>';
+        echo '<p class="description">Choose up to 10 images. Multiple images publish as an album on Facebook and a carousel on Instagram. Manual posts use the same approval and scheduling process as showing posts. Instagram posts require media.</p><p><button type="submit" class="button button-primary">Save Manual Draft</button></p></form></details>';
+        echo '<script>(function(){var b=document.getElementById("roxy-manual-media-button"),v=document.getElementById("roxy-manual-media-urls"),u=document.getElementById("roxy-manual-media-url"),list=document.getElementById("roxy-manual-media-list"),tries=0;function bind(){if(!b||!v||!u)return;if(!window.wp||!wp.media){if(tries++<100)window.setTimeout(bind,100);return;}function show(items){var images=items.filter(function(a){return /\\.(jpe?g|png|webp)(?:[?#]|$)/i.test(a.url||"")}),limited=images.slice(0,10);v.value=JSON.stringify(limited.map(function(a){return a.url||""}));if(limited.length){u.value=limited[0].url||"";list.textContent=limited.length+" image(s) selected"+(images.length>10?" (only the first 10 will be used)":"")+": "+limited.map(function(a){return a.filename||a.url.split("/").pop()}).join(", ");}else list.textContent="No images selected. Use Media URL for video.";}u.addEventListener("input",function(){if(v.value!=="[]"){v.value="[]";list.textContent="No library images selected. Media URL will be used.";}});b.onclick=function(){var frame=wp.media({title:"Choose post images",button:{text:"Use selected images"},multiple:true,library:{type:"image"}});frame.on("select",function(){show(frame.state().get("selection").toJSON());});frame.open();};}bind();})();</script>';
     }
 
     private static function media_type_from_url(string $url): string {

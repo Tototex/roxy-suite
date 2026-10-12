@@ -16,12 +16,12 @@ require_once __DIR__ . '/includes/class-roxy-social-ai.php';
 add_action('admin_init',['\\RoxySocial\\Secrets','migrate_legacy_options'],1);
 
 add_action('plugins_loaded', function () {
-    if (get_option('roxy_social_schema_version') !== '1.8') {
+    if (get_option('roxy_social_schema_version') !== '1.9') {
         if (!\RoxySocial\Store::install_schema()) {
-            error_log('Roxy Social schema migration to 1.8 failed verification; schema version was not advanced.');
+            error_log('Roxy Social schema migration to 1.9 failed verification; schema version was not advanced.');
         } else {
-            update_option('roxy_social_schema_version', '1.8');
-            if (get_option('roxy_social_schema_version') !== '1.8') error_log('Roxy Social schema migration completed but version marker did not persist.');
+            update_option('roxy_social_schema_version', '1.9');
+            if (get_option('roxy_social_schema_version') !== '1.9') error_log('Roxy Social schema migration completed but version marker did not persist.');
         }
     }
     \RoxySocial\Campaigns::init();

@@ -46,6 +46,7 @@ namespace {
     }
     function esc_url_raw($s){return $s;}
     function sanitize_text_field($s){return $s;}
+    function wp_json_encode($value){return json_encode($value);}
     function wp_schedule_single_event($timestamp,$hook,$args=[]){$GLOBALS['schedule_state']=\RoxySocial\Store::$row['status'];if(!$GLOBALS['schedule_ok'])return false;$GLOBALS['scheduled_events'][]=[$timestamp,$hook,$args];return true;}
     function wp_next_scheduled($hook,$args=[]){foreach($GLOBALS['scheduled_events'] as $event)if($event[1]===$hook&&$event[2]===$args)return $event[0];return false;}
     function is_wp_error($r){return $r instanceof \RuntimeException;}
@@ -71,10 +72,10 @@ namespace {
     }
     function check($ok,$label){if(!$ok){fwrite(STDERR,"::error title=Social publisher regression failed::".$label."\n");throw new \RuntimeException($label);}echo "PASS: $label\n";}
     require ($argv[1]??dirname(__DIR__)).'/includes/modules/social-publisher/includes/class-roxy-social-publisher.php';
-    reset_fixture();\RoxySocial\Campaigns::$verified=false;
-    check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='needs_review'&&!$GLOBALS['calls'],'stale caption schedule stops before any provider call');
-    reset_fixture('both','failed');\RoxySocial\Store::$row['facebook_post_id']='123';\RoxySocial\Campaigns::$verified=false;
-    check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['facebook_post_id']==='123'&&!$GLOBALS['calls'],'schedule change on partial retry retains existing public ID and requires review');
+    reset_fixture();\RoxySocial\Campaigns::$verified=false;$GLOBALS['responses']=[response(['id'=>'123']),response(['id'=>'234']),response(['id'=>'345'])];
+    check(\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='posted'&&count($GLOBALS['calls'])===3,'caption schedule warning does not block publication to selected accounts');
+    reset_fixture('both','failed');\RoxySocial\Store::$row['facebook_post_id']='123';\RoxySocial\Campaigns::$verified=false;$GLOBALS['responses']=[response(['id'=>'234']),response(['id'=>'345'])];
+    check(\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['facebook_post_id']==='123'&&\RoxySocial\Store::$row['status']==='posted'&&count($GLOBALS['calls'])===2,'schedule wording does not block safe retry to only the missing account');
     $decode=new \ReflectionMethod(\RoxySocial\Publisher::class,'decode_response');$decode->setAccessible(true);
     foreach([response(['id'=>'123'],500),response([]),['status'=>200,'body'=>'not JSON'],response(['id'=>['123']]),response(['id'=>'']),new \RuntimeException('timeout')] as $r){
         $v=$decode->invoke(null,$r,true,false);check(!empty($v['error'])&&!empty($v['ambiguous']),'unknown or invalid publication never becomes success');
@@ -85,6 +86,17 @@ namespace {
     check(\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='posted','both confirmed platforms mark posted');
     check($GLOBALS['calls'][1][2]['facebook_post_id']==='123','Facebook ID durable before Instagram call');
     check($GLOBALS['calls'][2][2]['instagram_container_id']==='234'&&\RoxySocial\Store::$row['instagram_container_id']===null,'container retained until publication ID saved');
+    reset_fixture();\RoxySocial\Store::$row['media_urls']=json_encode(['https://fixture.test/one.jpg','https://fixture.test/two.png','https://fixture.test/three.webp']);
+    $GLOBALS['responses']=[response(['id'=>'101']),response(['id'=>'102']),response(['id'=>'103']),response(['id'=>'104']),response(['id'=>'201']),response(['id'=>'202']),response(['id'=>'203']),response(['id'=>'204']),response(['id'=>'205'])];
+    check(\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='posted'&&count($GLOBALS['calls'])===9,'three-image post publishes successfully to both platforms');
+    check(str_ends_with($GLOBALS['calls'][0][0],'/11/photos')&&($GLOBALS['calls'][0][1]['body']['published']??'')==='false'
+        &&str_ends_with($GLOBALS['calls'][3][0],'/11/feed')&&isset($GLOBALS['calls'][3][1]['body']['attached_media[2]']),
+        'Facebook multi-image post uploads unpublished photos then creates one album feed post');
+    check(($GLOBALS['calls'][4][1]['body']['is_carousel_item']??'')==='true'
+        &&($GLOBALS['calls'][7][1]['body']['media_type']??'')==='CAROUSEL'
+        &&($GLOBALS['calls'][7][1]['body']['children']??'')==='201,202,203'
+        &&str_ends_with($GLOBALS['calls'][8][0],'/media_publish'),
+        'Instagram multi-image post creates carousel children and publishes one parent container');
     reset_fixture();$GLOBALS['responses']=[response([])];
     check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='needs_review'&&count($GLOBALS['calls'])===1,'ambiguous Facebook outcome halts other platform and retry');
     reset_fixture();\RoxySocial\Store::$fail_id=true;$GLOBALS['responses']=[response(['id'=>'123'])];

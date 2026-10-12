@@ -17,9 +17,11 @@
         return table;
     }
 
-    function choose(form, button, modal, url, type, changed) {
+    function choose(form, button, modal, url, type, changed, urls) {
         form.querySelector('[name="media_url"]').value = url;
         form.querySelector('[name="media_type"]').value = type;
+        var mediaUrls = form.querySelector('[name="media_urls"]');
+        if (mediaUrls) mediaUrls.value = JSON.stringify(type === 'image' && url ? (urls || [url]) : []);
         form.querySelector('[name="media_changed"]').value = changed ? '1' : '0';
         button.textContent = 'Media selected';
         modal.remove();
@@ -30,13 +32,20 @@
             window.alert('The WordPress media library is not available. Reload and try again.');
             return;
         }
-        var frame = wp.media({title: 'Choose draft media', button: {text: 'Use this media'}, multiple: false});
+        var frame = wp.media({title: 'Choose draft images or one video', button: {text: 'Use selected media'}, multiple: true});
         frame.on('select', function () {
-            var item = frame.state().get('selection').first().toJSON();
-            var url = item.url || '';
-            var lower = url.toLowerCase();
-            var type = lower.indexOf('.mp4') >= 0 || lower.indexOf('.mov') >= 0 || lower.indexOf('.m4v') >= 0 || lower.indexOf('.webm') >= 0 ? 'video' : 'image';
-            choose(form, button, modal, url, type, true);
+            var items = frame.state().get('selection').toJSON();
+            var imageItems = items.filter(function (item) { return /\.(jpe?g|png|webp)(?:[?#]|$)/i.test(item.url || ''); }).slice(0, 10);
+            if (items.length === 1 && !imageItems.length) {
+                var url = items[0].url || '';
+                if (/\.(mp4|mov|m4v|webm|avi|mkv)(?:[?#]|$)/i.test(url)) choose(form, button, modal, url, 'video', true);
+                else window.alert('Choose image files, or one video file.');
+            } else if (imageItems.length === items.length && imageItems.length) {
+                var urls = imageItems.map(function (item) { return item.url || ''; }).filter(Boolean);
+                choose(form, button, modal, urls[0] || '', 'image', true, urls);
+            } else {
+                window.alert('Select up to 10 images, or one video. Mixed image and video selections are not supported.');
+            }
         });
         frame.open();
     }

@@ -136,13 +136,10 @@ final class Publisher {
     private static function publish_row(array $row, int $video_attempt = 0): bool {
         $id = (int) ($row['id'] ?? 0);
         $media_url = esc_url_raw((string) ($row['media_url'] ?? ''));
+        $media_urls = self::row_image_urls($row);
         $caption = trim((string) ($row['post_text'] ?? ''));
         $platform = (string) ($row['platform'] ?? 'both');
         if (!in_array($platform, ['facebook', 'instagram', 'both'], true)) return false;
-        if (!Campaigns::verified_caption_schedule($row)) {
-            self::save_result($id, 'needs_review', 'The caption schedule no longer matches the published showings. Review before retrying; recorded platform IDs have been retained.');
-            return false;
-        }
         if (($platform !== 'instagram' && empty($row['facebook_post_id']) && (Meta::page_id() === '' || Meta::page_access_token() === ''))
             || ($platform !== 'facebook' && empty($row['instagram_media_id']) && (Meta::instagram_user_id() === '' || Meta::access_token() === ''))) {
             self::save_result($id, 'failed', 'Connect the selected platform before publishing.');
@@ -150,13 +147,17 @@ final class Publisher {
         }
         if ($id <= 0 || $caption === '' || ($media_url === '' && $platform !== 'facebook')) { self::save_result($id, 'failed', 'The draft is missing public media or post text.'); return false; }
         if (!self::save_result($id, 'publishing')) return false;
-        $facebook = ($platform === 'instagram' || !empty($row['facebook_post_id'])) ? [] : self::publish_facebook($media_url, $caption, (string) ($row['media_type'] ?? 'image'));
+        $facebook = ($platform === 'instagram' || !empty($row['facebook_post_id'])) ? [] : (count($media_urls) > 1
+            ? self::publish_facebook_album($media_urls, $caption)
+            : self::publish_facebook($media_url, $caption, (string) ($row['media_type'] ?? 'image')));
         if (!empty($facebook['id'])) {
             if (!self::save_result($id,'publishing','',(string)$facebook['id'])) {self::save_result($id,'needs_review','Facebook accepted the post but its ID could not be saved. Review remote posts before any retry.');return false;}
             $row['facebook_post_id']=(string)$facebook['id'];
         }
         if (!empty($facebook['ambiguous'])) {self::save_result($id,'needs_review','Facebook: '.(string)$facebook['error']);return false;}
-        $instagram = ($platform === 'facebook' || !empty($row['instagram_media_id'])) ? [] : self::publish_instagram($media_url, $caption, (string) ($row['media_type'] ?? 'image'), $id, (string) ($row['instagram_container_id'] ?? ''));
+        $instagram = ($platform === 'facebook' || !empty($row['instagram_media_id'])) ? [] : (count($media_urls) > 1
+            ? self::publish_instagram_carousel($media_urls, $caption, $id, (string) ($row['instagram_container_id'] ?? ''))
+            : self::publish_instagram($media_url, $caption, (string) ($row['media_type'] ?? 'image'), $id, (string) ($row['instagram_container_id'] ?? '')));
         if (!empty($instagram['id'])) {
             if (!self::save_result($id,'publishing','',(string)($facebook['id']??''),(string)$instagram['id'])) {self::save_result($id,'needs_review','Instagram accepted the post but its ID could not be saved. Review remote posts before retrying.');return false;}
             $row['instagram_media_id']=(string)$instagram['id'];
@@ -193,6 +194,55 @@ final class Publisher {
         $body[$type === 'video' ? 'description' : 'message'] = $caption;
         if ($url !== '') $body[$type === 'video' ? 'file_url' : 'url'] = $url;
         return self::request($endpoint, $body);
+    }
+
+    private static function row_image_urls(array $row): array {
+        if ((string) ($row['media_type'] ?? '') !== 'image') return [];
+        $urls = json_decode((string) ($row['media_urls'] ?? ''), true);
+        if (!is_array($urls)) $urls = [];
+        if (!$urls && !empty($row['media_url'])) $urls = [(string) $row['media_url']];
+        $urls = array_values(array_filter($urls, 'is_string'));
+        return array_values(array_filter(array_unique(array_map('esc_url_raw', $urls)), static function ($url) {
+            return $url !== '' && preg_match('/^https?:\/\//i', $url);
+        }));
+    }
+
+    private static function publish_facebook_album(array $urls, string $caption): array {
+        $photo_ids = [];
+        foreach ($urls as $url) {
+            $photo = self::request('https://graph.facebook.com/' . rawurlencode(Meta::page_id()) . '/photos', [
+                'access_token' => Meta::page_access_token(), 'url' => $url, 'published' => 'false',
+            ]);
+            if (!empty($photo['error']) || empty($photo['id'])) return $photo ?: ['error' => 'Facebook did not return an uploaded photo ID.'];
+            $photo_ids[] = (string) $photo['id'];
+        }
+        $body = ['access_token' => Meta::page_access_token(), 'message' => $caption];
+        foreach ($photo_ids as $index => $photo_id) $body['attached_media[' . $index . ']'] = wp_json_encode(['media_fbid' => $photo_id]);
+        return self::request('https://graph.facebook.com/' . rawurlencode(Meta::page_id()) . '/feed', $body);
+    }
+
+    private static function publish_instagram_carousel(array $urls, string $caption, int $post_id, string $existing_container_id = ''): array {
+        if (count($urls) < 2 || count($urls) > 10) return ['error' => 'Instagram carousels require 2 to 10 images.'];
+        $user_id = Meta::instagram_user_id();
+        $base = 'https://graph.facebook.com/' . rawurlencode($user_id);
+        $container = $existing_container_id !== '' ? ['id' => $existing_container_id] : null;
+        if (!$container) {
+            $children = [];
+            foreach ($urls as $url) {
+                $child = self::request($base . '/media', [
+                    'access_token' => Meta::access_token(), 'image_url' => $url, 'is_carousel_item' => 'true',
+                ]);
+                if (!empty($child['error']) || empty($child['id'])) return $child ?: ['error' => 'Instagram did not return a carousel image ID.'];
+                $children[] = (string) $child['id'];
+            }
+            $container = self::request($base . '/media', [
+                'access_token' => Meta::access_token(), 'media_type' => 'CAROUSEL',
+                'children' => implode(',', $children), 'caption' => $caption,
+            ]);
+            if (!empty($container['error']) || empty($container['id'])) return $container ?: ['error' => 'Instagram did not return a carousel container ID.'];
+        }
+        if (!Store::set_instagram_container_id($post_id, (string) $container['id'], self::$claim)) return ['error' => 'Instagram carousel container ID could not be saved. Review before retrying.', 'ambiguous' => true];
+        return self::request($base . '/media_publish', ['creation_id' => $container['id'], 'access_token' => Meta::access_token()]);
     }
 
     private static function publish_instagram(string $url, string $caption, string $type, int $post_id, string $existing_container_id = ''): array {

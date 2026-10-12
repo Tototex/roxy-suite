@@ -37,6 +37,7 @@ final class Store {
             post_text LONGTEXT NOT NULL,
             media_type VARCHAR(24) NOT NULL DEFAULT 'image',
             media_url TEXT NULL,
+            media_urls LONGTEXT NULL,
             trailer_url TEXT NULL,
             hangar_asset_id BIGINT UNSIGNED NULL,
             hangar_filename VARCHAR(255) NULL,
@@ -431,6 +432,7 @@ final class Store {
         return self::save_draft_snapshot($expected, [
             'media_type' => sanitize_key($media_type),
             'media_url' => esc_url_raw($url),
+            'media_urls' => $media_type === 'image' ? wp_json_encode([$url]) : null,
             'hangar_asset_id' => $asset_id > 0 ? $asset_id : null,
             'hangar_filename' => $filename !== '' ? sanitize_file_name($filename) : null,
             'temporary_attachment_id' => $media_type === 'video' ? $attachment_id : null,
@@ -461,6 +463,7 @@ final class Store {
         $updated = self::save_publish_values($id, [
             'media_type' => 'image',
             'media_url' => $poster_url,
+            'media_urls' => $poster_url !== '' ? wp_json_encode([$poster_url]) : null,
             'hangar_asset_id' => null,
             'hangar_filename' => null,
             'temporary_attachment_id' => null,
@@ -501,6 +504,8 @@ final class Store {
     public static function create_manual(array $data): int {
         global $wpdb;
         $now = current_time('mysql');
+        $media_urls = self::sanitize_media_urls($data['media_urls'] ?? []);
+        $media_url = $media_urls[0] ?? esc_url_raw((string) ($data['media_url'] ?? ''));
         $wpdb->insert(self::table_name(), [
             'campaign_key' => 'manual',
             'post_key' => 'manual-' . wp_generate_uuid4(),
@@ -510,12 +515,26 @@ final class Store {
             'status' => 'draft',
             'post_text' => $data['post_text'],
             'media_type' => $data['media_type'],
-            'media_url' => $data['media_url'],
+            'media_url' => $media_url,
+            'media_urls' => $media_urls ? wp_json_encode($media_urls) : null,
             'trailer_url' => '',
             'created_at' => $now,
             'updated_at' => $now,
         ]);
         return (int) $wpdb->insert_id;
+    }
+
+    public static function sanitize_media_urls($urls): array {
+        if (!is_array($urls)) return [];
+        $images = [];
+        foreach ($urls as $url) {
+            if (!is_string($url)) continue;
+            $url = esc_url_raw(trim($url));
+            if ($url === '' || !preg_match('/^https?:\/\//i', $url) || !preg_match('/\.(jpe?g|png|webp)(?:[?#]|$)/i', $url)) continue;
+            if (!in_array($url, $images, true)) $images[] = $url;
+            if (count($images) >= 10) break;
+        }
+        return $images;
     }
 
     public static function all_recent(): array {
@@ -759,7 +778,7 @@ final class Store {
         } finally { self::release_publish_lock($claim); }
     }
 
-    public static function update_draft(int $id, string $text, string $scheduled_for, ?string $media_url = null, ?string $media_type = null, string $revision = ''): bool {
+    public static function update_draft(int $id, string $text, string $scheduled_for, ?string $media_url = null, ?string $media_type = null, string $revision = '', ?array $media_urls = null): bool {
         $expected = self::find($id);
         if (!$expected || $revision === '' || !hash_equals(self::draft_revision($expected), $revision)) return false;
         $values = [
@@ -773,6 +792,9 @@ final class Store {
         if ($media_url !== null) {
             $values['media_url'] = esc_url_raw($media_url);
             $values['media_type'] = in_array($media_type, ['image', 'video'], true) ? $media_type : 'image';
+            $urls = $values['media_type'] === 'image' ? self::sanitize_media_urls($media_urls ?? [$media_url]) : [];
+            $values['media_url'] = $urls[0] ?? $values['media_url'];
+            $values['media_urls'] = $urls ? wp_json_encode($urls) : null;
             $values['hangar_asset_id'] = null;
             $values['hangar_filename'] = null;
             $values['temporary_attachment_id'] = null;

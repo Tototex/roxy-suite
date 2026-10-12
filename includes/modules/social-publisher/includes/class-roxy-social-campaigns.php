@@ -165,10 +165,6 @@ final class Campaigns {
         if (!empty($draft['facebook_post_id']) || !empty($draft['instagram_media_id']) || !empty($draft['instagram_container_id']) || !empty($draft['last_error'])) return;
         if (empty($draft['media_url']) || empty($draft['hangar_asset_id'])) return;
         if (AI::enabled() && (string) ($draft['ai_status'] ?? 'pending') !== 'ready') return;
-        if (!self::verified_caption_schedule($draft)) {
-            Store::review_snapshot($draft, 'The caption schedule no longer matches the published showings. Review before approving.');
-            return;
-        }
         Store::approve_snapshot($draft);
     }
 
@@ -228,26 +224,44 @@ final class Campaigns {
         return $rows;
     }
 
-    /** Reject stale/extra/assumed schedule lines without changing an approved caption. */
-    public static function verified_caption_schedule(array $draft): bool {
-        if (($draft['campaign_key'] ?? '') === 'manual' && empty($draft['showing_ids'])) return true;
-        try { $rows = self::verified_showtimes($draft); }
-        catch (\RuntimeException $e) { return false; }
-        $lines = [];
+    /** Advisory only: caption schedule text must never prevent an otherwise valid post. */
+    public static function caption_schedule_warning(array $draft): string {
+        if (($draft['campaign_key'] ?? '') === 'manual' && empty($draft['showing_ids'])) return '';
+        $claims = [];
         foreach (preg_split('/\R/', (string) ($draft['post_text'] ?? '')) as $line) {
-            if (!preg_match('/\b\d{1,2}:\d{2}\s*[AP]M\b|\b\d{1,2}\s*[AP]M\b/i', $line)) continue;
-            $line = preg_replace('/^[^\p{L}\p{N}]*/u', '', $line);
-            $lines[] = trim((string) preg_replace('/^\s*(?:Tonight|Today)\s*[—-]\s*/u', '', $line));
+            $claim = self::schedule_claim_key((string) $line);
+            if ($claim !== null) $claims[] = $claim;
         }
-        if (count($lines) !== count($rows)) return false;
+        if (!$claims) return '';
+        try { $rows = self::verified_showtimes($draft); }
+        catch (\RuntimeException $e) { return 'The linked showings could not be verified. Please review the advertised dates and times.'; }
+        $expected = [];
         foreach ($rows as $row) {
-            $without_year = wp_date('D, M j \\a\\t g:i A', $row['timestamp'], wp_timezone());
-            $match = array_search($row['line'], $lines, true);
-            if ($match === false) $match = array_search($without_year, $lines, true);
-            if ($match === false) return false;
-            unset($lines[$match]);
+            $key = self::schedule_claim_key(wp_date('D, M j \\a\\t g:i A', $row['timestamp'], wp_timezone()));
+            if ($key !== null) $expected[] = $key;
         }
-        return !$lines;
+        sort($claims);
+        sort($expected);
+        return $claims === $expected ? '' : 'Caption dates or times may not match the latest published showings. Please review them.';
+    }
+
+    /** Kept as a compatibility helper for existing tests and integrations. */
+    public static function verified_caption_schedule(array $draft): bool {
+        return self::caption_schedule_warning($draft) === '';
+    }
+
+    private static function schedule_claim_key(string $line): ?string {
+        $line = trim((string) preg_replace('/^[^\p{L}\p{N}]*/u', '', $line));
+        $line = preg_replace('/^\s*(?:Tonight|Today)\s*[—-]\s*/iu', '', $line);
+        if (!preg_match('/^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:day)?\s*,?\s*)?([A-Z][a-z]{2,8})\s+(\d{1,2})(?:,?\s+\d{4})?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*([AP])\.?M\.?$/i', $line, $match)) return null;
+        $month = date_parse($match[1]);
+        if (empty($month['month']) || (int) $match[2] < 1 || (int) $match[2] > 31) return null;
+        $hour = (int) $match[3];
+        if ($hour < 1 || $hour > 12) return null;
+        $minutes = isset($match[4]) && $match[4] !== '' ? (int) $match[4] : 0;
+        if ($minutes > 59) return null;
+        $hour = ($hour % 12) + (strtoupper($match[5]) === 'P' ? 12 : 0);
+        return sprintf('%02d %02d %02d:%02d', (int) $month['month'], (int) $match[2], $hour, $minutes);
     }
 
     private static function local_timestamp(string $value): int {
