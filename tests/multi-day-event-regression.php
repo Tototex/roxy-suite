@@ -365,18 +365,18 @@ try {
   $publish_conflict = (int)$publish_conflict;
   $created[] = $publish_conflict;
   update_post_meta($publish_conflict, '_roxy_start', $blocked_start);
-  $block_demotion = static function($check, $postarr) use ($screenings) {
-    if ((int)($postarr['ID'] ?? 0) === (int)$screenings[0] && ($postarr['post_status'] ?? '') === 'draft') return false;
-    return $check;
+  $block_demotion = static function($data, $postarr) use ($screenings) {
+    if ((int)($postarr['ID'] ?? 0) === (int)$screenings[0] && ($data['post_status'] ?? '') === 'draft') $data['post_status'] = 'publish';
+    return $data;
   };
-  add_filter('pre_wp_update_post', $block_demotion, 10, 2);
+  add_filter('wp_insert_post_data', $block_demotion, 10, 2);
   $published_cache = new \ReflectionProperty(\RoxyST\Events::class, 'published_in_request');
   $published_cache->setAccessible(true);
   $published_ids = $published_cache->getValue();
   unset($published_ids[(int)$event_id]);
   $published_cache->setValue(null, $published_ids);
   wp_update_post(['ID'=>(int)$event_id,'post_status'=>'publish']);
-  remove_filter('pre_wp_update_post', $block_demotion, 10);
+  remove_filter('wp_insert_post_data', $block_demotion, 10);
   $check(get_post_status((int)$event_id) === 'draft', 'publication conflict returns the parent event to draft');
   $check(get_post_status((int)$screenings[0]) === 'publish'
     && str_contains((string)get_transient('roxy_st_event_invalid_' . get_current_user_id()), 'could not be fully returned to draft'),
@@ -387,13 +387,13 @@ try {
   delete_transient('roxy_st_event_invalid_' . get_current_user_id());
 
   wp_update_post(['ID'=>(int)$screenings[0],'post_status'=>'publish']);
-  $block_delete_cleanup = static function($check, $postarr) use ($screenings) {
-    if ((int)($postarr['ID'] ?? 0) === (int)$screenings[0] && ($postarr['post_status'] ?? '') === 'draft') return false;
-    return $check;
+  $block_delete_cleanup = static function($data, $postarr) use ($screenings) {
+    if ((int)($postarr['ID'] ?? 0) === (int)$screenings[0] && ($data['post_status'] ?? '') === 'draft') $data['post_status'] = 'publish';
+    return $data;
   };
-  add_filter('pre_wp_update_post', $block_delete_cleanup, 10, 2);
+  add_filter('wp_insert_post_data', $block_delete_cleanup, 10, 2);
   $deleted_event = wp_delete_post((int)$event_id, true);
-  remove_filter('pre_wp_update_post', $block_delete_cleanup, 10);
+  remove_filter('wp_insert_post_data', $block_delete_cleanup, 10);
   $check($deleted_event === false && get_post((int)$event_id) !== null
     && get_post_status((int)$screenings[0]) === 'publish'
     && str_contains((string)get_transient('roxy_st_event_invalid_' . get_current_user_id()), 'Event deletion was stopped'),
