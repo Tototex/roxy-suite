@@ -33,7 +33,7 @@ namespace RoxySocial {
         }
         public static function poster_cleanup_batch(int $limit = 100): ?array {
             $rows = array_values(self::$poster_queue);
-            usort($rows, static fn($a, $b) => $a['updated_order'] <=> $b['updated_order']);
+            usort($rows, static fn($a, $b) => ($a['attempts'] <=> $b['attempts']) ?: ($a['updated_order'] <=> $b['updated_order']));
             return array_slice($rows, 0, $limit);
         }
         public static function record_poster_cleanup_failure(string $path): bool {
@@ -82,7 +82,11 @@ namespace RoxySocial {
     function wp_remote_retrieve_body($response) { return (string) ($response['body'] ?? ''); }
     function wp_remote_retrieve_header($response, $name) { return $response['headers'][strtolower($name)] ?? ''; }
     function wp_remote_retrieve_cookies($response) { return !empty($response['headers']['set-cookie']) ? ['sid=fixture'] : []; }
-    function add_query_arg($args, $url) { return $url . '?' . http_build_query($args); }
+    function add_query_arg($key, $value = null, $url = null) {
+        if (is_array($key)) { $args = $key; $target = (string) $value; }
+        else { $args = [(string) $key => $value]; $target = (string) $url; }
+        return $target . (strpos($target, '?') === false ? '?' : '&') . http_build_query($args);
+    }
     function set_transient($key, $value, $expiration) { $GLOBALS['hangar_fixture']['cache'][$key] = $value; }
     function get_transient($key) { return $GLOBALS['hangar_fixture']['cache'][$key] ?? false; }
     function wp_next_scheduled($hook, $args = []) { foreach ($GLOBALS['hangar_fixture']['scheduled'] as $event) if ($event['hook'] === $hook && $event['args'] === $args) return 1; return false; }
@@ -353,7 +357,7 @@ namespace RoxySocial {
     Hangar::cleanup_video_thumbnail_queue();
     $all_attempted = count(array_filter(Store::$poster_queue, static fn($row) => $row['attempts'] > 0));
     unset($GLOBALS['hangar_fixture']['uploads_unavailable']);
-    $check($first_pass === 100 && $all_attempted === 105, 'updated cleanup timestamps rotate bounded batches so queued paths beyond the first 100 are reached');
+    $check($first_pass === 100 && $all_attempted === 105, 'attempt-count ordering rotates bounded batches so queued paths beyond the first 100 are reached');
 
     $unavailable_root_path = $upload_dir . DIRECTORY_SEPARATOR . 'uploads-unavailable-poster.png';
     file_put_contents($unavailable_root_path, $png);

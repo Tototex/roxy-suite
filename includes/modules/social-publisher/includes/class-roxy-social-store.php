@@ -70,7 +70,7 @@ final class Store {
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
             PRIMARY KEY (path_hash),
-            KEY updated_at (updated_at)
+            KEY retry_batch (attempts, updated_at, path_hash)
         ) {$charset};");
         $wpdb->last_error = '';
         $main_name = self::table_name();
@@ -112,7 +112,7 @@ final class Store {
         $limit = max(1, min(500, $limit));
         $wpdb->last_error = '';
         $rows = $wpdb->get_results($wpdb->prepare(
-            'SELECT path_hash, file_path, attempts FROM ' . self::poster_cleanup_table_name() . ' ORDER BY updated_at ASC, path_hash ASC LIMIT %d',
+            'SELECT path_hash, file_path, attempts FROM ' . self::poster_cleanup_table_name() . ' ORDER BY attempts ASC, updated_at ASC, path_hash ASC LIMIT %d',
             $limit
         ), ARRAY_A);
         return $wpdb->last_error === '' && is_array($rows) ? $rows : null;
@@ -123,6 +123,8 @@ final class Store {
         $hash = hash('sha256', $file_path);
         $table = self::poster_cleanup_table_name();
         $wpdb->last_error = '';
+        $before = $wpdb->get_row($wpdb->prepare('SELECT attempts, file_path FROM ' . $table . ' WHERE path_hash = %s', $hash), ARRAY_A);
+        if ($wpdb->last_error !== '' || !is_array($before) || (string) ($before['file_path'] ?? '') !== $file_path) return false;
         $result = $wpdb->query($wpdb->prepare(
             'UPDATE ' . $table . ' SET attempts = attempts + 1, updated_at = %s WHERE path_hash = %s AND file_path = %s',
             current_time('mysql'), $hash, $file_path
@@ -130,7 +132,9 @@ final class Store {
         if ($result === false || $wpdb->last_error !== '') return false;
         $wpdb->last_error = '';
         $saved = $wpdb->get_row($wpdb->prepare('SELECT attempts, file_path FROM ' . $table . ' WHERE path_hash = %s', $hash), ARRAY_A);
-        return $wpdb->last_error === '' && is_array($saved) && (string) ($saved['file_path'] ?? '') === $file_path;
+        return $wpdb->last_error === '' && is_array($saved)
+            && (string) ($saved['file_path'] ?? '') === $file_path
+            && (int) ($saved['attempts'] ?? 0) > (int) ($before['attempts'] ?? 0);
     }
 
     public static function remove_poster_cleanup(string $file_path): bool {
