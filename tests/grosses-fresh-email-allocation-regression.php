@@ -3,7 +3,8 @@
 namespace FreshEmailAllocationFixture {
   final class Settings {
     public static array $status = [];
-    public static function get(string $key, $default = '') { return $default; }
+    public static string $admin_alert_email = '';
+    public static function get(string $key, $default = '') { return $key === 'admin_email' ? self::$admin_alert_email : $default; }
     public static function email_list(): array { return ['fresh-email-fixture@example.invalid']; }
     public static function admin_email(): string { return ''; }
     public static function get_report_timezone(): string { return 'UTC'; }
@@ -15,7 +16,9 @@ namespace FreshEmailAllocationFixture {
   final class EmailOutbox {
     public static array $rows = [];
     public static int $next_id = 1;
+    public static bool $throw_on_claim = false;
     public static function claim(string $key, string $kind, int $source_id, ?string $report_date, array $payload, array $context): array {
+      if (self::$throw_on_claim) { self::$throw_on_claim = false; throw new \RuntimeException('fixture outbox charset claim failure'); }
       if (isset(self::$rows[$key])) return ['claimed'=>false,'id'=>self::$rows[$key]['id'],'status'=>self::$rows[$key]['status']];
       $id=self::$next_id++; self::$rows[$key]=['id'=>$id,'status'=>'sending','source_id'=>$source_id];
       return ['claimed'=>true,'id'=>$id,'status'=>'sending'];
@@ -111,6 +114,7 @@ namespace {
   $GLOBALS['fresh_email_mail_result'] = true;
   $success = $reporter::send_report('2038-05-12', 'fixture');
   $check(!empty($success['success']) && count($GLOBALS['fresh_email_mail_calls'])===1, 'fresh report sends through intercepted mail: ' . ($success['message'] ?? 'missing result'));
+  $check(($GLOBALS['fresh_email_mail_calls'][0]['to'] ?? null) === ['fresh-email-fixture@example.invalid'], 'daily Grosses report goes only to its configured Grosses recipient list');
   $attachment = $GLOBALS['fresh_email_mail_calls'][0]['attachments'][0] ?? '';
   $csv = $GLOBALS['fresh_email_mail_calls'][0]['contents'][0] ?? false;
   $check(is_string($csv) && str_contains($csv, 'Fixture Movie') && !str_contains($csv, 'Fixture Live Event') && !str_contains($csv, 'Fixture Rental'), 'intercepted attachment contains only the fresh movie row');
@@ -178,5 +182,17 @@ namespace {
   $uncertain_retry = $reporter::send_report('2038-05-14', 'scheduled');
   $check(empty($uncertain_first['success']) && $count_after_uncertain === $mail_count_before_uncertain + 1, 'ambiguous first mail result is returned without claiming delivery');
   $check(empty($uncertain_retry['success']) && str_contains($uncertain_retry['message'], 'uncertain') && count($GLOBALS['fresh_email_mail_calls']) === $count_after_uncertain, 'uncertain result blocks a scheduled retry without a second mail attempt');
+
+  // A charset/database failure at the durable claim boundary must block the report email.
+  // The separate failure alert is permitted only to the configured admin address.
+  $GLOBALS['fresh_email_fixture_rows'] = [['report_date'=>'2038-05-15','show_time'=>'19:00','theater_name'=>'Fixture Theater','film_title'=>'Fixture Movie','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'total_tickets'=>1,'gross_total'=>10.00,'concessions_total'=>0.00,'source_type'=>'square_auto']];
+  $GLOBALS['fresh_email_mail_result'] = true;
+  \FreshEmailAllocationFixture\Settings::$admin_alert_email = 'admin-alert-fixture@example.invalid';
+  \FreshEmailAllocationFixture\EmailOutbox::$throw_on_claim = true;
+  $before_claim_failure = count($GLOBALS['fresh_email_mail_calls']);
+  $claim_failure = $reporter::send_report('2038-05-15', 'scheduled-provisional');
+  $claim_failure_mail = array_slice($GLOBALS['fresh_email_mail_calls'], $before_claim_failure);
+  $check(empty($claim_failure['success']) && count($claim_failure_mail) === 1, 'outbox claim failure prevents the Grosses report send and emits only one failure alert');
+  $check(($claim_failure_mail[0]['to'] ?? '') === 'admin-alert-fixture@example.invalid', 'outbox failure alert goes only to the configured admin, never an Inventory vendor');
   echo "Passed fresh email/draft allocation orchestration checks; builders replaced only at guarded method boundaries.\n";
 }
