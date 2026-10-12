@@ -413,32 +413,34 @@ class Members_Dashboard {
      */
     private static function subscription_id_batches(array $query): \Generator {
         global $wpdb;
-        $page = 1;
-        $previous_id = PHP_INT_MAX;
-        do {
-            $paged_query = $query;
-            $paged_query['limit'] = 100;
-            $paged_query['page'] = $page++;
-            if (isset($wpdb->last_error)) $wpdb->last_error = '';
-            $ids = wcs_get_orders_with_meta_query($paged_query);
-            if (!empty($wpdb->last_error) || !is_array($ids) || count($ids) > 100) {
-                throw new \RuntimeException('Subscription identities could not be read');
-            }
+        // Capture the matching lightweight IDs in one query. Offset-paging a
+        // mutable status-filtered set can silently duplicate or omit records
+        // when a subscription changes status between pages. Hydration and the
+        // more expensive calculations remain bounded to 100 IDs at a time.
+        $snapshot_query = $query;
+        $snapshot_query['limit'] = -1;
+        $snapshot_query['page'] = 1;
+        if (isset($wpdb->last_error)) $wpdb->last_error = '';
+        $ids = wcs_get_orders_with_meta_query($snapshot_query);
+        if (!empty($wpdb->last_error) || !is_array($ids)) {
+            throw new \RuntimeException('Subscription identities could not be read');
+        }
 
-            $batch = [];
-            foreach ($ids as $raw_id) {
-                if ((!is_int($raw_id) && !is_string($raw_id)) || !preg_match('/^[1-9]\\d*$/D', (string) $raw_id)) {
-                    throw new \RuntimeException('Subscription identity page was invalid');
-                }
-                $id = (int) $raw_id;
-                if ($id <= 0 || $id >= $previous_id) {
-                    throw new \RuntimeException('Subscription identity pages changed while reading');
-                }
-                $batch[] = $id;
-                $previous_id = $id;
+        $validated = [];
+        $previous_id = PHP_INT_MAX;
+        foreach ($ids as $raw_id) {
+            if ((!is_int($raw_id) && !is_string($raw_id)) || !preg_match('/^[1-9]\\d*$/D', (string) $raw_id)) {
+                throw new \RuntimeException('Subscription identity snapshot was invalid');
             }
-            if ($batch) yield $batch;
-        } while (count($batch) === 100);
+            $id = (int) $raw_id;
+            if ($id <= 0 || $id >= $previous_id) {
+                throw new \RuntimeException('Subscription identity snapshot was invalid');
+            }
+            $validated[] = $id;
+            $previous_id = $id;
+        }
+
+        foreach (array_chunk($validated, 100) as $batch) yield $batch;
     }
 
     private static function subscription_quantity($sub): int {

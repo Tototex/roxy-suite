@@ -25,13 +25,13 @@ function add_query_arg($key, $value=null, $url=null) {
 function wcs_get_orders_with_meta_query($query) {
     if ($query['return'] !== 'ids' || $query['type'] !== 'shop_subscription' || $query['status'] !== ['wc-active','wc-pending-cancel']) throw new RuntimeException('Wrong subscription scope');
     if (isset($query['limit'], $query['page'])) {
-        if ($query['limit'] !== 100 || $query['page'] < 1) throw new RuntimeException('Subscription identity query was not bounded and paged');
-        if (($GLOBALS['identity_fail_page'] ?? 0) === $query['page']) { $GLOBALS['wpdb']->last_error='fixture identity query failure'; return false; }
+        if ($query['limit'] !== -1 || $query['page'] !== 1) throw new RuntimeException('Subscription identity snapshot was not captured in one query');
+        if (!empty($GLOBALS['identity_fail'])) { $GLOBALS['wpdb']->last_error='fixture identity query failure'; return false; }
     } else {
         // The named baseline revision uses a single legacy unlimited query.
         $query['limit']=-1;$query['page']=1;
     }
-    return wc_get_orders([
+    $ids=wc_get_orders([
         'type' => 'shop_subscription',
         'status' => array_map(static fn($status) => substr($status, 3), $query['status']),
         'limit' => $query['limit'],
@@ -40,6 +40,11 @@ function wcs_get_orders_with_meta_query($query) {
         'orderby' => 'ID',
         'order' => 'DESC',
     ]);
+    if (!empty($GLOBALS['mutate_after_identity_snapshot'])) {
+        $GLOBALS['subscription_status_overrides'][150]='active';
+        $GLOBALS['mutate_after_identity_snapshot']=false;
+    }
+    return $ids;
 }
 function wc_get_orders($query) {
     $GLOBALS['wc_get_orders_calls'] = ($GLOBALS['wc_get_orders_calls'] ?? 0) + 1;
@@ -49,7 +54,7 @@ function wc_get_orders($query) {
     $eligible_statuses = ['active', 'pending-cancel'];
     $ids = [];
     for ($id = 300; $id >= 1; $id--) {
-        $status = $id <= 257 ? ($id % 3 === 0 ? 'pending-cancel' : 'active') : ($id % 2 === 0 ? 'cancelled' : 'on-hold');
+        $status = $GLOBALS['subscription_status_overrides'][$id] ?? ($id <= 257 ? ($id % 3 === 0 ? 'pending-cancel' : 'active') : ($id % 2 === 0 ? 'cancelled' : 'on-hold'));
         if (in_array($status, $query['status'] ?? [], true) && in_array($status, $eligible_statuses, true)) $ids[] = $id;
     }
     $limit = (int) ($query['limit'] ?? -1);
@@ -72,7 +77,7 @@ class FixtureSubscription {
     function get_id(){return $this->id;}
     function get_user(){return (object)['user_email'=>'fixture'.$this->id.'@example.test','display_name'=>'Fixture'];}
     function get_billing_first_name(){return 'Fixture';} function get_billing_last_name(){return (string)$this->id;}
-    function get_status(){return $this->id%3===0 ? 'pending-cancel':'active';}
+    function get_status(){return $GLOBALS['subscription_status_overrides'][$this->id] ?? ($this->id%3===0 ? 'pending-cancel':'active');}
     function get_meta($key,$single=true){return str_contains($key,'trade')?($this->id%10===0):($this->id%2===0?$this->id:0);}
     function update_meta_data($key,$value){}function delete_meta_data($key){}function save(){return $this->id;}
     function get_date($key){return '';}
@@ -122,13 +127,21 @@ try {
     echo "PASS: large order fixture separates eligible memberships from cancelled/on-hold records.\n";
     $GLOBALS['wc_get_orders_limits']=[];
     $_GET=[];$paged_snapshot=$new->invoke(null,$filters);
-    if($paged_snapshot['total_rows']!==257 || max($GLOBALS['wc_get_orders_limits'])!==100 || in_array(-1,$GLOBALS['wc_get_orders_limits'],true) || count($GLOBALS['wc_get_orders_limits'])<3)throw new RuntimeException('Dashboard did not read all memberships through bounded identity pages');
-    echo "PASS: dashboard retrieves all eligible identities in bounded 100-ID pages, including the short terminal page.\n";
-    $GLOBALS['identity_fail_page']=2;
-    try{$new->invoke(null,$filters);throw new LogicException('Identity page query failure returned partial totals');}
+    if($paged_snapshot['total_rows']!==257 || $GLOBALS['wc_get_orders_limits']!==[-1])throw new RuntimeException('Dashboard did not capture one complete lightweight identity snapshot');
+    echo "PASS: dashboard captures the complete lightweight identity snapshot once and hydrates records in bounded batches.\n";
+    $GLOBALS['identity_fail']=true;
+    try{$new->invoke(null,$filters);throw new LogicException('Identity snapshot query failure returned partial totals');}
     catch(RuntimeException $e){if($e instanceof LogicException || !str_contains($e->getMessage(),'Subscription identities could not be read'))throw $e;}
-    unset($GLOBALS['identity_fail_page']);
-    echo "PASS: a failed later identity page is rejected instead of returning partial dashboard totals.\n";
+    unset($GLOBALS['identity_fail']);
+    echo "PASS: identity snapshot query failure is rejected instead of returning partial dashboard totals.\n";
+
+    $GLOBALS['subscription_status_overrides'][150]='on-hold';
+    $GLOBALS['wc_get_orders_limits']=[];
+    $GLOBALS['mutate_after_identity_snapshot']=true;
+    $snapshot_count=$new->invoke(null,$filters)['total_rows'];
+    if($snapshot_count!==256 || ($GLOBALS['subscription_status_overrides'][150]??'')!=='active' || $GLOBALS['wc_get_orders_limits']!==[-1])throw new RuntimeException('Status mutation changed the captured dashboard identity snapshot');
+    unset($GLOBALS['subscription_status_overrides'][150]);
+    echo "PASS: a status change after identity capture cannot shift pages, omit an existing member, or add a mid-read member.\n";
     foreach([0,-9,'bad',[]] as $invalid){$_GET=['member_page'=>$invalid];if($new->invoke(null,$filters)['page']!==1)throw new RuntimeException('Invalid page not normalized');}
     $_GET=['member_page'=>2];$snapshot=$new->invoke(null,$filters);
     $navigation=new ReflectionMethod('RoxySuite\\Members_DashboardCandidate','pagination');
