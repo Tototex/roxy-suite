@@ -12,7 +12,7 @@ foreach (['reservations.php', 'repository.php', 'availability.php', 'woo.php'] a
 }
 function roxy_fixture_eb_table_bookings() { global $wpdb; return $wpdb->prefix . 'roxy_event_bookings'; }
 function roxy_fixture_eb_table_blocks() { global $wpdb; return $wpdb->prefix . 'roxy_event_blocks'; }
-function roxy_fixture_eb_get_settings() { return ['showtime_blocks'=>[], 'sling_mode'=>'disabled', 'booking_product_id'=>987654321]; }
+function roxy_fixture_eb_get_settings() { return ['showtime_blocks'=>[], 'sling_mode'=>'disabled', 'booking_product_id'=>(int)($GLOBALS['room_fixture_product_id'] ?? 987654321)]; }
 function roxy_fixture_eb_clear_pizza_reminders($id) { $GLOBALS['room_fixture_events'][]='reminders'; }
 function roxy_fixture_eb_schedule_pizza_reminder($id) { $GLOBALS['room_fixture_events'][]='schedule'; }
 function roxy_fixture_eb_email_internal_booking_order_changed($before,$after,$reason) { $GLOBALS['room_fixture_events'][]='internal'; }
@@ -24,6 +24,7 @@ function roxy_fixture_eb_email_internal_booking_conflict($order) { $GLOBALS['roo
 function roxy_fixture_eb_refund_booking_payment($order,$booking_id,$item_id=0,$reason='') { $GLOBALS['room_fixture_events'][]='simulated_conflict_refund'; return ['refunded'=>true,'amount'=>100.0]; }
 $GLOBALS['room_fixture_events']=[];
 $GLOBALS['room_fixture_order_ids']=[];
+$GLOBALS['room_fixture_product_id']=0;
 add_filter('pre_wp_mail', static function () { $GLOBALS['room_fixture_mail_calls'] = ($GLOBALS['room_fixture_mail_calls'] ?? 0) + 1; return true; }, PHP_INT_MAX);
 global $wpdb;
 $original_prefix = $wpdb->prefix;
@@ -156,12 +157,20 @@ try {
 
     // Exercise the actual payment-complete callback with a private synthetic Woo order.
     // No gateway is invoked and all email functions above are intercepted fixture stubs.
+    $booking_product = new WC_Product_Simple();
+    $booking_product->set_name('PRIVATE SYNTHETIC BOOKING FIXTURE PRODUCT');
+    $booking_product->set_status('private');
+    $booking_product->set_catalog_visibility('hidden');
+    $booking_product->set_virtual(true);
+    $booking_product->set_regular_price('0');
+    $GLOBALS['room_fixture_product_id'] = (int) $booking_product->save();
+    if (!$GLOBALS['room_fixture_product_id']) throw new RuntimeException('Could not create private synthetic booking product.');
     $make_booking_order = static function (string $doors_open) {
         $order = wc_create_order(['status'=>'pending']);
         if (is_wp_error($order)) throw new RuntimeException('Could not create private synthetic booking order.');
         $GLOBALS['room_fixture_order_ids'][] = (int) $order->get_id();
         $item = new WC_Order_Item_Product();
-        $item->set_product_id(987654321);
+        $item->set_product_id((int) $GLOBALS['room_fixture_product_id']);
         $item->set_name('PRIVATE SYNTHETIC BOOKING FIXTURE');
         $item->set_quantity(1);
         $item->set_subtotal(100);
@@ -226,6 +235,7 @@ try {
     $peer->close();
     foreach (array_reverse($created) as $table) $wpdb->query("DROP TABLE `$table`");
     foreach ($GLOBALS['room_fixture_order_ids'] as $order_id) { $order = wc_get_order((int)$order_id); if ($order) $order->delete(true); }
+    if (!empty($GLOBALS['room_fixture_product_id'])) wp_delete_post((int) $GLOBALS['room_fixture_product_id'], true);
 }
 $check($before===$digest(),'all original booking and manual block rows unchanged');
 echo 'Only private fixture tables removed; no provider/email work.'.PHP_EOL;
