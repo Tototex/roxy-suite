@@ -295,26 +295,6 @@ class Tickets {
     return $allocated;
   }
 
-  private static function invalidate_refunded_line_items(int $order_id, array $line_items): void {
-    foreach ($line_items as $item_id => $row) {
-      $refund_qty = isset($row['qty']) ? abs((int) $row['qty']) : 0;
-      if ($refund_qty <= 0) continue;
-
-      $ticket_ids = self::tickets_for_order_item($order_id, (int) $item_id);
-      if (!$ticket_ids) continue;
-
-      $invalidated = 0;
-      foreach ($ticket_ids as $ticket_id) {
-        $state = (string) get_post_meta($ticket_id, self::META_STATE, true);
-        if (in_array($state, ['refunded', 'cancelled'], true)) continue;
-        if ((int) get_post_meta($ticket_id, self::META_CHECKED_IN, true) === 1) continue;
-        self::set_ticket_state($ticket_id, 'refunded');
-        $invalidated++;
-        if ($invalidated >= $refund_qty) break;
-      }
-    }
-  }
-
   private static function tickets_for_order_item(int $order_id, int $item_id): array {
     $q = new \WP_Query([
       'post_type' => self::POST_TYPE,
@@ -571,7 +551,7 @@ class Tickets {
   }
 
   /** Will Call group, optionally with its summary: commit every change or none. */
-  public static function apply_will_call_group(array $ticket_ids, int $quantity, bool $allow_undo = false, ?array $summary = null, ?callable $validate = null): array {
+  public static function apply_will_call_group(array $ticket_ids, int $quantity, bool $allow_undo = false, ?array $summary = null, ?callable $validate = null, int $user_id = 0): array {
     if (self::$issuance !== null || $quantity<0) throw new \RuntimeException('Invalid group admission request.');
     $identities=[];
     foreach (array_unique(array_map('intval',$ticket_ids)) as $id) {
@@ -614,7 +594,7 @@ class Tickets {
               $checked=array_values(array_diff($checked,[$id]));
             }
           } else {
-            foreach($available as $id){if(count($checked)>=$quantity)break;if(!self::apply_admission($id,get_current_user_id(),'will_call'))throw new \RuntimeException('Ticket eligibility changed. Refresh the list.');$checked[]=$id;}
+            foreach($available as $id){if(count($checked)>=$quantity)break;if(!self::apply_admission($id,$user_id>0?$user_id:get_current_user_id(),'will_call'))throw new \RuntimeException('Ticket eligibility changed. Refresh the list.');$checked[]=$id;}
           }
           if ($summary) $operation->will_call_summary((int)$summary['context_id'],(string)$summary['customer_key'],$quantity);
           return $checked;
@@ -634,49 +614,16 @@ class Tickets {
     if (!$ticket_ids) {
       return ['changed' => 0, 'checked_in' => 0, 'undone' => 0, 'current' => 0];
     }
-
-    $checked_ids = [];
-    $available_ids = [];
-
-    foreach ($ticket_ids as $ticket_id) {
-      if ((int) get_post_meta($ticket_id, self::META_CHECKED_IN, true) === 1) {
-        $checked_ids[] = (int) $ticket_id;
-      } elseif (self::can_check_in((int) $ticket_id)) {
-        $available_ids[] = (int) $ticket_id;
-      }
+    $before = array_values(array_filter($ticket_ids, static fn($id) => (int)get_post_meta($id,self::META_CHECKED_IN,true)===1));
+    try {
+      $after = self::apply_will_call_group($ticket_ids,$target_qty,true,null,null,$user_id);
+    } catch (\Throwable $e) {
+      $current = count(array_filter($ticket_ids, static fn($id) => (int)get_post_meta($id,self::META_CHECKED_IN,true)===1));
+      return ['changed'=>0,'checked_in'=>0,'undone'=>0,'current'=>$current,'error'=>$e->getMessage()];
     }
-
-    $current_qty = count($checked_ids);
-    $changed = 0;
-    $checked_count = 0;
-    $undone_count = 0;
-
-    if ($current_qty < $target_qty) {
-      $needed = min($target_qty - $current_qty, count($available_ids));
-      for ($i = 0; $i < $needed; $i++) {
-        if (self::check_in_ticket($available_ids[$i], $user_id)) {
-          $changed++;
-          $checked_count++;
-        }
-      }
-    } elseif ($current_qty > $target_qty) {
-      $to_undo = $current_qty - $target_qty;
-      $checked_ids = array_reverse($checked_ids);
-      for ($i = 0; $i < $to_undo; $i++) {
-        if (!isset($checked_ids[$i])) break;
-        if (self::undo_check_in_ticket($checked_ids[$i])) {
-          $changed++;
-          $undone_count++;
-        }
-      }
-    }
-
-    return [
-      'changed' => $changed,
-      'checked_in' => $checked_count,
-      'undone' => $undone_count,
-      'current' => max(0, min($target_qty, count($ticket_ids))),
-    ];
+    $checked = array_values(array_diff($after,$before));
+    $undone = array_values(array_diff($before,$after));
+    return ['changed'=>count($checked)+count($undone),'checked_in'=>count($checked),'undone'=>count($undone),'current'=>count($after)];
   }
 
   public static function render_order_tickets(int $order_id): void {

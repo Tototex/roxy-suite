@@ -87,6 +87,12 @@ try{
   finally{remove_filter('query',$fail_undo);$wpdb->suppress_errors($suppressed);}
   $check((int)get_post_meta($ids[0],'_roxy_checked_in',true)===1&&get_post_meta($ids[0],'_roxy_checked_in_source',true)==='ticket'&&get_post_meta($ids[0],'_roxy_ticket_state',true)==='checked_in','failed undo retains original complete admission');
   $check(\RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0]),'explicit retry successfully undoes private fixture');
+  $check(\RoxyST\IssuanceFixtureTickets::check_in_ticket($ids[0],9,'ticket')&&\RoxyST\IssuanceFixtureTickets::check_in_ticket($ids[1],9,'will_call'),'legacy quantity fixture has one QR and one Will Call admission');
+  $legacy=\RoxyST\IssuanceFixtureTickets::set_order_item_check_in_qty($order->get_id(),$item_id,1,9);
+  $check($legacy['current']===1&&$legacy['undone']===1&&(int)get_post_meta($ids[0],'_roxy_checked_in',true)===1&&!(int)get_post_meta($ids[1],'_roxy_checked_in',true),'legacy quantity helper uses atomic source-aware undo and preserves QR admission');
+  $legacy_qr_only=\RoxyST\IssuanceFixtureTickets::set_order_item_check_in_qty($order->get_id(),$item_id,0,9);
+  $check(!empty($legacy_qr_only['error'])&&$legacy_qr_only['changed']===0&&$legacy_qr_only['current']===1&&(int)get_post_meta($ids[0],'_roxy_checked_in',true)===1,'legacy quantity helper cannot undo QR admission and reports the unchanged state');
+  $check(\RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0],'ticket'),'QR fixture explicitly cleared after legacy helper checks');
   $summary=['context_id'=>1000000000+$show,'customer_key'=>'private-group-'.$order->get_id(),'baseline_used'=>0];
   $count_checked=static function($set){foreach($set as $id)wp_cache_delete($id,'post_meta');return count(array_filter($set,static fn($id)=>(int)get_post_meta($id,'_roxy_checked_in',true)===1));};
   $fail_group=static function($sql)use($wpdb,$ids){return strpos($sql,"INSERT INTO `{$wpdb->postmeta}`")===0&&str_contains($sql,'SELECT '.$ids[1].',')&&str_contains($sql,'_roxy_checked_in_by')?'INSERT INTO `roxy_missing_group_failure_target` VALUES (1)':$sql;};
