@@ -566,7 +566,12 @@ class Scheduler {
 
   private static function schedule_single(int $timestamp, string $hook, array $args = []): bool {
     try {
-      if (!self::cron_operation_succeeded(wp_schedule_single_event($timestamp, $hook, $args))) return false;
+      // Concurrent ensure_schedule() requests can race: one worker registers
+      // the event while another receives WordPress's duplicate-event result.
+      // The exact persisted event is the source of truth, not the caller's
+      // registration return value. Never accept a merely similar timestamp or
+      // different callback arguments as success.
+      wp_schedule_single_event($timestamp, $hook, $args);
       foreach (self::scheduled_events($hook) as $event) {
         if ($event['timestamp'] === $timestamp && $event['args'] === $args && empty($event['schedule'])) return true;
       }

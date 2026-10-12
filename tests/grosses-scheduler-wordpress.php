@@ -60,6 +60,28 @@ try {
   $injected = null;
   $scheduler::ensure_schedule($settings, $now);
   $check((bool) $scheduler::scheduled_time_local($hooks[0]), 'actual WP repair retries successfully after transient registration failure');
+  $duplicate_injected = false;
+  $injected = static function ($pre, $event) use ($hooks, &$duplicate_injected) {
+    if ($duplicate_injected || $event->hook !== $hooks[0]) return $pre;
+    $duplicate_injected = true;
+    // Model another request winning the race after this request inspected the
+    // cron array but before its wp_schedule_single_event() persists the event.
+    if (wp_schedule_single_event((int) $event->timestamp, $event->hook, (array) $event->args) !== true) {
+      throw new RuntimeException('Could not simulate the concurrent cron registration.');
+    }
+    return $pre;
+  };
+  add_filter('pre_schedule_event', $injected, 10, 2);
+  $settings['schedule_time'] = '20:30';
+  $scheduler::ensure_schedule($settings, $now);
+  remove_filter('pre_schedule_event', $injected, 10);
+  $injected = null;
+  $raced_event = wp_get_scheduled_event($hooks[0], ['2037-06-10']);
+  $raced_log = end($store::$logs);
+  $check($duplicate_injected && $raced_event
+    && (int) $raced_event->timestamp === $now->setTime(20, 30)->getTimestamp()
+    && $raced_log[4] === true,
+    'concurrent exact event registration is verified as success instead of a false repair failure');
   $settings['schedule_enabled'] = $settings['advertiser_schedule_enabled'] = '0';
   $scheduler::ensure_schedule($settings, $now);
   $check(!$scheduler::scheduled_time_local($hooks[0]) && !wp_next_scheduled($hooks[1]), 'actual WP disable removes only inert fixture events');

@@ -136,6 +136,14 @@ jobs:
             echo "::error title=Ticket capacity Store API fixture failed::$details"
             exit "$status"
           fi
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/grosses-scheduler-wordpress.php" "$GITHUB_WORKSPACE/includes/modules/grosses/includes/class-roxy-grosses-scheduler.php" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 50 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Grosses WordPress scheduler fixture failed::$details"
+            exit "$status"
+          fi
           if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/will-call-product-filter-woocommerce.php" "$GITHUB_WORKSPACE" >"$output" 2>&1; then
             cat "$output"
           else
