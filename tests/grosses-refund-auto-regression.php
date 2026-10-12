@@ -246,6 +246,26 @@ namespace {
   $assert(($GLOBALS['fixture_options']['roxy_grosses_refund_scan_date'] ?? '') === '2037-06-16', 'completed retry advances scan checkpoint only after success');
   $assert($GLOBALS['fixture_mail_calls'] === 0, 'refund refresh sends no email');
 
+  // The same completed refund reduces sale-day studio gross but remains a
+  // separate cash-out event on its refund day in the financial projection.
+  \RoxyGrosses\Square::$payment_refunds['payment-1_refund-1'] = [
+    'id'=>'payment-1_refund-1','payment_id'=>'payment-1','order_id'=>'return-late-1','location_id'=>'fixture-location',
+    'status'=>'COMPLETED','amount_money'=>['amount'=>1200,'currency'=>'USD'],'updated_at'=>'2037-06-10T12:00:00-07:00',
+  ];
+  $financial_snapshot = \RoxyGrosses\RefundSnapshot::from_financial_refund_feed([\RoxyGrosses\Square::$payment_refunds['payment-1_refund-1']]);
+  $financial_refunds = $financial_snapshot->completed_financial_refunds();
+  $cashflow_days = \RoxyGrosses\CashflowProjection::daily_totals([[
+    'source'=>'square','tender_id'=>'payment-1','amount_cents'=>3600,'currency'=>'USD','collection_date'=>$old_date,
+  ]], [], $financial_refunds, []);
+  $assert(count($financial_refunds) === 1 && $financial_refunds[0]['refund_date'] === '2037-06-10'
+    && $financial_refunds[0]['refund_date_basis'] === 'square_updated_at_proxy', 'completed refund is a separately dated financial event with explicit date provenance');
+  $assert(($cashflow_days[$old_date]['square_collected_cents'] ?? null) === 3600
+    && ($cashflow_days[$old_date]['square_refunded_cents'] ?? null) === 0
+    && ($cashflow_days[$old_date]['net_cents'] ?? null) === 3600, 'original sale-day financial collections are not rewritten by a later refund');
+  $assert(($cashflow_days['2037-06-10']['square_refunded_cents'] ?? null) === 1200
+    && ($cashflow_days['2037-06-10']['net_cents'] ?? null) === -1200
+    && \RoxyGrosses\Store::$movie_rows[$old_showing_id]['gross_total'] === 24.0, 'refund-day cashflow decreases on its date while original sale-day studio gross reflects two retained tickets without tax');
+
   // Re-running with the same provider data does not subtract the prior correction again.
   $repeat = $call_sync(new DateTimeImmutable('2037-06-17 12:00:00', $tz));
   $result($repeat, 'idempotent repeat scan');
