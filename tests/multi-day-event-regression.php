@@ -147,6 +147,7 @@ try {
     $product_ids_during_publication[] = (int)get_post_meta((int)$screening_id, '_roxy_pid_adult', true);
     if ($publication_html === '') $publication_html = \RoxyST\Events::render((int)$event_id);
   };
+  $_POST = $old_post;
   add_action('save_post_' . \RoxyST\CPT::POST_TYPE, $publication_probe, 21, 2);
   wp_update_post(['ID'=>(int)$event_id,'post_status'=>'publish']);
   remove_action('save_post_' . \RoxyST\CPT::POST_TYPE, $publication_probe, 21);
