@@ -144,8 +144,6 @@ try {
 if (!function_exists('roxy_suite_user_can_access_admin')) {
     function roxy_suite_user_can_access_admin(): bool { return true; }
 }
-$route_timezone = static function () { return 'America/Los_Angeles'; };
-add_filter('pre_option_timezone_string', $route_timezone);
 $route_title = $marker . ' admin-route';
 $route_source_id = wp_insert_post([
     'post_type' => \RoxyST\CPT::POST_TYPE,
@@ -251,7 +249,6 @@ register_shutdown_function(static function () use ($wpdb, $route_capture, $route
         }
         remove_action('wp_after_insert_post', $route_capture, 10);
         remove_filter('wp_redirect', $route_redirect, 10);
-        remove_filter('pre_option_timezone_string', $route_timezone);
     }
     echo 'Admin route fixture drafts removed.'.PHP_EOL;
     echo 'Passed ' . (int) $checks . " installed weekend-duplicate checks including the registered admin route.\n";
