@@ -157,7 +157,7 @@ try{
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'actual zero-dollar line refund reconciles');
   $check(count(array_filter($ids,static fn($id)=>get_post_meta($id,'_roxy_ticket_state',true)==='refunded'))===1,'one refund invalidates exactly one existing ticket');
   \RoxyST\Sales::clear_showing_cache($show);$refunded_stats=\RoxyST\Sales::get_showing_stats($show);
-  $check((int)($refunded_stats['sold_qty']??-1)===2,'a later refund removes one ticket from reportable sold quantity (actual '.wp_json_encode($refunded_stats).')');
+  $check((int)($refunded_stats['sold_qty']??-1)===3,'a later refund reduces four reportable tickets across both fixture orders to three');
   $check(\RoxyST\IssuanceFixtureTickets::count_checked_in_for_showing($show)===3&&count(array_filter($ids,static fn($id)=>(int)get_post_meta($id,'_roxy_checked_in',true)===1))===3,'a later refund preserves all three actual door check-ins separately from reportable sales');
   $order->update_status('cancelled');$check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'cancellation reconciles with original identities');
   $check(count(array_filter($ids,static fn($id)=>get_post_meta($id,'_roxy_ticket_state',true)==='valid'))===0,'cancelled fixture has no valid tickets');
