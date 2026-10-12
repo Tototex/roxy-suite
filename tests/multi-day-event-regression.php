@@ -266,7 +266,8 @@ try {
   $current_package_method = new ReflectionMethod(\RoxyST\Events::class, 'package_is_current');
   $current_package_method->setAccessible(true);
   $double_current_package = $current_package_method->invoke(null, (int)$event_id, 'double', $double_ids);
-  $double_line_diagnostics = array_map(static function($item) use ($double_bundle, $double_signature, $double_ids, $event_id) {
+  $double_cart_items = WC()->cart->get_cart();
+  $double_line_diagnostics = array_map(static function($item, $index) use ($double_bundle, $double_signature, $double_ids, $event_id, $double_prices) {
     $pid = (int)($item['product_id'] ?? 0);
     $sid = (int)get_post_meta($pid, ROXY_ST_META_SHOWING_ID, true);
     return [
@@ -277,16 +278,38 @@ try {
       'expected_product' => (int)get_post_meta($sid, '_roxy_pid_adult', true),
       'sales_open' => \RoxyST\Eligibility::showing_sales_open($sid),
       'unit_price' => $item['roxy_event_unit_price'] ?? null,
+      'expected_unit_price' => $double_prices[$index] ?? null,
+      'quantity' => (int)($item['quantity'] ?? 0),
       'bundle_id_matches' => ($item['roxy_event_bundle_id'] ?? '') === $double_bundle,
       'event_id_matches' => (int)($item['roxy_event_id'] ?? 0) === (int)$event_id,
       'bundle_ids_match' => array_values(array_map('intval', (array)($item['roxy_event_bundle_showing_ids'] ?? []))) === $double_ids,
       'signature_matches' => hash_equals($double_signature, (string)($item['roxy_event_bundle_signature'] ?? '')),
     ];
-  }, WC()->cart->get_cart());
+  }, array_values($double_cart_items), array_keys(array_values($double_cart_items)));
+  $double_line_showings = array_column($double_line_diagnostics, 'showing_id');
+  $double_sorted_ids = $double_ids;
+  sort($double_sorted_ids);
+  $double_line_sorted = $double_line_showings;
+  sort($double_line_sorted);
+  $double_quantities = array_column($double_line_diagnostics, 'quantity');
+  $double_event_meta = reset($double_cart_items) ?: [];
+  $double_runtime_signature = wp_hash(wp_json_encode([
+    (int)($double_event_meta['roxy_event_id'] ?? 0),
+    (string)($double_event_meta['roxy_event_bundle_kind'] ?? ''),
+    array_values(array_map('intval', (array)($double_event_meta['roxy_event_bundle_showing_ids'] ?? []))),
+    (string)($double_event_meta['roxy_event_ticket_type'] ?? ''),
+    $double_prices,
+    $double_bundle,
+  ]), 'auth');
   $check($double_total===20.0 && !$double_notices,
     'valid $20 double-feature pass accepts integer-allocated line prices (total=' . $double_total
       . ', prices=' . wp_json_encode($double_prices)
       . ', package_is_current=' . (int)$double_current_package
+      . ', event_type=' . get_post_type((int)$event_id) . ', event_status=' . get_post_status((int)$event_id)
+      . ', sorted_lines_match=' . (int)($double_line_sorted === $double_sorted_ids)
+      . ', unique_lines=' . count(array_unique($double_line_showings)) . '/' . count($double_ids)
+      . ', uniform_positive_quantity=' . (int)(count(array_unique($double_quantities)) === 1 && ($double_quantities[0] ?? 0) > 0)
+      . ', runtime_signature_matches=' . (int)hash_equals($double_runtime_signature, $double_signature)
       . ', lines=' . wp_json_encode($double_line_diagnostics)
       . ', errors=' . wp_json_encode($double_notices) . ')');
 
