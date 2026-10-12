@@ -329,7 +329,15 @@ try {
   wc_clear_notices();
 
   wp_update_post(['ID'=>(int)$event_id,'post_status'=>'draft']);
-  if (get_post_status((int)$event_id) !== 'draft') throw new RuntimeException('The event could not be returned to draft for publication-conflict test.');
+  $publication_cache = new \ReflectionProperty(\RoxyST\Events::class, 'published_in_request');
+  $publication_cache->setAccessible(true);
+  $cached_published_events = $publication_cache->getValue();
+  $check(get_post_status((int)$event_id) === 'draft'
+    && count(array_filter($screenings,static fn($id)=>get_post_status($id)==='publish'))===0
+    && !isset($cached_published_events[(int)$event_id]),
+    'drafting event clears same-request publication state (event=' . get_post_status((int)$event_id)
+      . ', screenings=' . wp_json_encode(array_map(static fn($id)=>get_post_status((int)$id), $screenings))
+      . ', cached=' . (int)isset($cached_published_events[(int)$event_id]) . ')');
 
   $blocked_publication_hook_called = false;
   $block_publication = static function($check, $postarr) use ($screenings, &$blocked_publication_hook_called) {
