@@ -199,10 +199,9 @@ try {
     $saved_booking = roxy_fixture_eb_repo_get_booking_by_order((int) $successful_order->get_id());
     $payment_notes = wc_get_order_notes(['order_id'=>(int)$successful_order->get_id()]);
     $reloaded_payment_order = wc_get_order((int)$successful_order->get_id());
-    $reloaded_payment_items = $reloaded_payment_order ? $reloaded_payment_order->get_items() : [];
     $payment_items = $successful_order->get_items();
     $payment_item_ids = array_map(static function($item){return (int)$item->get_product_id();},(array)$payment_items);
-    $payment_diagnostic = wp_json_encode(['events'=>array_slice($GLOBALS['room_fixture_events'],$payment_events_before),'notes'=>array_map(static function($note){return (string)($note->content??'');},(array)$payment_notes),'db_error'=>(string)$wpdb->last_error,'item_product_ids'=>$payment_item_ids,'reloaded_item_product_ids'=>array_map(static function($item){return (int)$item->get_product_id();},(array)$reloaded_payment_items),'booking_meta'=>$payment_items ? current($payment_items)->get_meta('_roxy_eb_booking',true) : null,'expected_product_id'=>(int)$GLOBALS['room_fixture_product_id'],'settings_product_id'=>roxy_fixture_eb_get_settings()['booking_product_id'],'reloaded_order'=>(bool)$reloaded_payment_order]);
+    $payment_diagnostic = wp_json_encode(['events'=>array_slice($GLOBALS['room_fixture_events'],$payment_events_before),'notes'=>array_map(static function($note){return (string)($note->content??'');},(array)$payment_notes),'db_error'=>(string)$wpdb->last_error,'item_product_ids'=>$payment_item_ids,'booking_meta'=>$payment_items ? current($payment_items)->get_meta('_roxy_eb_booking',true) : null,'expected_product_id'=>(int)$GLOBALS['room_fixture_product_id'],'settings_product_id'=>roxy_fixture_eb_get_settings()['booking_product_id'],'reloaded_order'=>(bool)$reloaded_payment_order]);
     $check(is_array($saved_booking) && $saved_booking['status']==='confirmed','actual payment-complete callback creates a booking after final locked availability check: '.$payment_diagnostic);
     $success_events = array_slice($GLOBALS['room_fixture_events'],$payment_events_before);
     $check(in_array('booking_confirmed',$success_events,true) && in_array('customer_confirmed',$success_events,true),'successful callback reaches expected confirmation boundaries');
