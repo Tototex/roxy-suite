@@ -38,8 +38,9 @@ final class AllocationDatabase {
     }
     public function get_row(string $query, $format = null): array {
         $this->last_error = '';
-        if (!str_starts_with($query, 'SHOW TABLE STATUS WHERE Name = ')) throw new RuntimeException('Unexpected table status query.');
-        return ['Engine' => $this->engine];
+        if (str_starts_with($query, 'SHOW TABLE STATUS WHERE Name = ')) return ['Engine' => $this->engine];
+        if ($query === "SHOW SESSION STATUS LIKE 'In_transaction'") return ['Variable_name' => 'In_transaction', 'Value' => $this->transaction ? '1' : '0'];
+        throw new RuntimeException('Unexpected table status query.');
     }
     public function query(string $query) {
         $this->queries[] = $query;

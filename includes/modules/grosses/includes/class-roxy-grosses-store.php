@@ -683,8 +683,8 @@ class Store {
         throw new \RuntimeException('Concessions allocation requires verified InnoDB report tables; no rows were changed.');
       }
     }
-    $in_transaction = $owner_db->get_var('SELECT @@in_transaction');
-    if ($owner_db->last_error !== '' || !in_array((string) $in_transaction, ['0', '1'], true) || (string) $in_transaction !== '0') {
+    $in_transaction = self::concession_allocation_transaction_state($owner_db);
+    if ($in_transaction === null || $in_transaction !== '0') {
       $state = $owner_db->last_error !== '' ? 'query failed: ' . $owner_db->last_error : var_export($in_transaction, true);
       throw new \RuntimeException('The database transaction state is unavailable or already active (' . $state . '); no concessions rows were changed.');
     }
@@ -693,13 +693,13 @@ class Store {
     $started = true;
     try {
       self::assert_concession_allocation_owner();
-      if ((string) $owner_db->get_var('SELECT @@in_transaction') !== '1' || $owner_db->last_error !== '') throw new \RuntimeException('The concessions transaction could not be verified.');
+      if (self::concession_allocation_transaction_state($owner_db) !== '1') throw new \RuntimeException('The concessions transaction could not be verified.');
       $result = $operation();
       self::assert_concession_allocation_owner();
       if ($owner_db->query('COMMIT') === false) throw new \RuntimeException('The concessions allocation commit could not be confirmed.');
       $started = false;
       self::assert_concession_allocation_owner();
-      if ((string) $owner_db->get_var('SELECT @@in_transaction') !== '0' || $owner_db->last_error !== '') throw new \RuntimeException('The concessions allocation commit state could not be verified.');
+      if (self::concession_allocation_transaction_state($owner_db) !== '0') throw new \RuntimeException('The concessions allocation commit state could not be verified.');
       return $result;
     } catch (\Throwable $error) {
       if ($started && (int) $owner_db->get_var('SELECT CONNECTION_ID()') === $owner) {
@@ -708,6 +708,13 @@ class Store {
       }
       throw $error;
     }
+  }
+
+  private static function concession_allocation_transaction_state($db): ?string {
+    $status = $db->get_row("SHOW SESSION STATUS LIKE 'In_transaction'", ARRAY_A);
+    if ($db->last_error !== '' || !is_array($status) || !isset($status['Value'])) return null;
+    $state = (string) $status['Value'];
+    return in_array($state, ['0', '1'], true) ? $state : null;
   }
 
   private static function assert_concession_allocation_owner(): void {
