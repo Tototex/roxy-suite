@@ -316,12 +316,13 @@ namespace RoxySocial {
     file_put_contents($retry_path, $png);
     $GLOBALS['hangar_fixture']['meta'][511]['_roxy_social_video_poster_file'] = $retry_path;
     $GLOBALS['hangar_fixture']['reject_schedule'] = true;
+    $retry_schedule_count = count($GLOBALS['hangar_fixture']['scheduled']);
     Hangar::preserve_video_thumbnail_before_delete(null, (object) ['ID' => 511, 'post_type' => 'attachment'], true);
     unset($GLOBALS['hangar_fixture']['meta'][511]);
     $GLOBALS['hangar_fixture']['uploads_unavailable'] = true;
     Hangar::retry_video_thumbnail_cleanup($retry_path, 5);
     $check(is_file($retry_path) && isset(Store::$poster_queue[hash('sha256', $retry_path)])
-        && $GLOBALS['hangar_fixture']['scheduled'] === [], 'cron rejection and exhausted bounded retries retain the durable poster cleanup row');
+        && count($GLOBALS['hangar_fixture']['scheduled']) === $retry_schedule_count, 'cron rejection and exhausted bounded retries retain the durable poster cleanup row');
     unset($GLOBALS['hangar_fixture']['uploads_unavailable'], $GLOBALS['hangar_fixture']['reject_schedule']);
     Hangar::cleanup_video_thumbnail_queue();
     $check(!file_exists($retry_path) && !isset(Store::$poster_queue[hash('sha256', $retry_path)]), 'daily cleanup recovers a durable poster after cron rejection and retry exhaustion');
