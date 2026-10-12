@@ -13,6 +13,16 @@ namespace RoxyRS {
         public static function sponsor_amount_cents(): int { return 5000; }
         public static function sponsor_ticket_qty(): int { return 2; }
     }
+    final class ConversionClaims {
+        public static function lease(string $scope): \RoxyST\Issuance { return new \RoxyST\Issuance(); }
+    }
+}
+
+namespace RoxyST {
+    final class Issuance {
+        public function assert_owner(): void {}
+        public function release_lease(): void {}
+    }
 }
 
 namespace {
@@ -72,6 +82,7 @@ namespace {
         $GLOBALS['funding_fixture']['options'][$key] = $value; return true;
     }
     function get_post_meta(int $id, string $key, bool $single = false) { return $GLOBALS['funding_fixture']['meta'][$id][$key] ?? ''; }
+    function wp_cache_delete($id, string $group): bool { return true; }
     function update_post_meta(int $id, string $key, $value): bool { $GLOBALS['funding_fixture']['updates'][] = [$id,$key,$value]; $GLOBALS['funding_fixture']['meta'][$id][$key] = $value; return true; }
     function get_posts(array $args = []): array {
         global $wpdb;
