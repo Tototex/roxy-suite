@@ -61,12 +61,19 @@ try {
   $logical_key = 'grosses:daily:2039-04-05';
   $payload = [
     'to' => ['manager@example.invalid'],
-    'subject' => 'Fixture report ' . "\u{2014}" . ' manager ' . "\u{2019}",
-    'body' => 'Provisional ' . "\u{2014}" . ' “review”',
+    'subject' => 'Fixture report ' . "\u{2014}" . ' manager ' . "\u{2019}" . ' 🍿',
+    'body' => 'Provisional ' . "\u{2014}" . ' “review” — 🎟️',
     'attachment' => ['name' => 'report.csv'],
   ];
   $context = ['trigger' => 'scheduled', 'fixture' => true];
+
+  // Reproduce WordPress rejecting a prepared write when its cached connection
+  // charset cannot represent raw Unicode. The production outbox stores JSON
+  // with Unicode escaped, so the resulting claim query remains ASCII-only.
+  $fixture_charset = $fixture_db->charset;
+  $fixture_db->charset = 'ascii';
   $first = $outbox::claim($logical_key, 'daily_report', 41, '2039-04-05', $payload, $context);
+  $fixture_db->charset = $fixture_charset;
   $check($first['claimed'] === true && $first['id'] > 0 && $first['status'] === 'sending', 'first atomic claim persists sending before any caller-side mail action');
 
   // A second independent MySQL connection attempts the exact same logical send.
