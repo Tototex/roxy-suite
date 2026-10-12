@@ -118,6 +118,10 @@ try {
   $old_order->save();
 
   require_once $root . '/includes/modules/will-call/roxy-will-call.php';
+  $ordinary_query = (object) ['query_vars' => []];
+  $check(roxy_will_call_legacy_ticket_order_where(' WHERE 1=1', $ordinary_query) === ' WHERE 1=1', 'global SQL filter leaves unrelated WordPress queries unchanged');
+  $empty_candidate_query = (object) ['query_vars' => ['roxy_will_call_ticket_product_ids' => []]];
+  $check(strpos(roxy_will_call_legacy_ticket_order_where(' WHERE 1=1', $empty_candidate_query), 'AND 1=0') !== false, 'explicit empty Will Call candidate list fails closed');
   $ticket_ids = [$simple->get_id(), $variation->get_id()];
   $labels = [$simple->get_id() => 'General', $variation->get_id() => 'Variation'];
   $cache_key = roxy_will_call_cache_key($ticket_ids, $labels);

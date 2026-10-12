@@ -892,9 +892,12 @@ if (function_exists('add_filter')) {
 /** Add a bounded canonical line-item predicate to WooCommerce's normal paged CPT order query. */
 function roxy_will_call_legacy_ticket_order_where(string $where, $wp_query): string {
   $var = 'roxy_will_call_ticket_product_ids';
-  if (!is_object($wp_query) || !method_exists($wp_query, 'get') || $wp_query->get($var) === null) return $where;
+  // WP_Query::get() returns an empty string for an absent variable. Require
+  // the private key to be explicitly present so this global filter leaves all
+  // unrelated queries (including ticket lookups in other modules) untouched.
+  if (!is_object($wp_query) || !isset($wp_query->query_vars) || !array_key_exists($var, $wp_query->query_vars)) return $where;
 
-  $product_ids = array_values(array_unique(array_filter(array_map('intval', (array) $wp_query->get($var)), static function ($id) {
+  $product_ids = array_values(array_unique(array_filter(array_map('intval', (array) $wp_query->query_vars[$var]), static function ($id) {
     return $id > 0;
   })));
   if (!$product_ids) return $where . ' AND 1=0';
