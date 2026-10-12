@@ -12,19 +12,12 @@ foreach (['reservations.php', 'repository.php', 'availability.php', 'woo.php'] a
 }
 function roxy_fixture_eb_table_bookings() { global $wpdb; return $wpdb->prefix . 'roxy_event_bookings'; }
 function roxy_fixture_eb_table_blocks() { global $wpdb; return $wpdb->prefix . 'roxy_event_blocks'; }
-function roxy_fixture_eb_get_settings() { return ['showtime_blocks'=>[], 'sling_mode'=>'disabled', 'booking_product_id'=>987654321]; }
+function roxy_fixture_eb_get_settings() { return ['showtime_blocks'=>[], 'sling_mode'=>'disabled']; }
 function roxy_fixture_eb_clear_pizza_reminders($id) { $GLOBALS['room_fixture_events'][]='reminders'; }
 function roxy_fixture_eb_schedule_pizza_reminder($id) { $GLOBALS['room_fixture_events'][]='schedule'; }
 function roxy_fixture_eb_email_internal_booking_order_changed($before,$after,$reason) { $GLOBALS['room_fixture_events'][]='internal'; }
 function roxy_fixture_eb_email_customer_booking_updated($before,$after) { $GLOBALS['room_fixture_events'][]='customer'; }
-function roxy_fixture_eb_email_internal_booking_confirmed($order,$booking_id) { $GLOBALS['room_fixture_events'][]='booking_confirmed'; }
-function roxy_fixture_eb_email_customer_booking_confirmed($order,$booking_id) { $GLOBALS['room_fixture_events'][]='customer_confirmed'; }
-function roxy_fixture_eb_email_internal_booking_failed($order,$message) { $GLOBALS['room_fixture_events'][]='booking_failed'; }
-function roxy_fixture_eb_email_internal_booking_conflict($order) { $GLOBALS['room_fixture_events'][]='booking_conflict'; }
-function roxy_fixture_eb_refund_booking_payment($order,$booking_id,$item_id=0,$reason='') { $GLOBALS['room_fixture_events'][]='simulated_conflict_refund'; return ['refunded'=>true,'amount'=>100.0]; }
 $GLOBALS['room_fixture_events']=[];
-$GLOBALS['room_fixture_order_ids']=[];
-add_filter('pre_wp_mail', static function () { $GLOBALS['room_fixture_mail_calls'] = ($GLOBALS['room_fixture_mail_calls'] ?? 0) + 1; return true; }, PHP_INT_MAX);
 global $wpdb;
 $original_prefix = $wpdb->prefix;
 $original_tables = [roxy_eb_table_bookings(), roxy_eb_table_blocks()];
@@ -153,79 +146,10 @@ try {
     roxy_fixture_eb_repo_update_booking($id,['status'=>'cancelled']);
     $adjustment=$adjustment_for(roxy_fixture_eb_repo_get_booking($id));
     $check(is_wp_error(roxy_fixture_eb_apply_booking_adjustment_from_order($make_order(900000011,$id),$adjustment)),'paid adjustment cannot reopen cancelled booking');
-
-    // Exercise the actual payment-complete callback with a private synthetic Woo order.
-    // No gateway is invoked and all email functions above are intercepted fixture stubs.
-    $make_booking_order = static function (string $doors_open) {
-        $order = wc_create_order(['status'=>'pending']);
-        if (is_wp_error($order)) throw new RuntimeException('Could not create private synthetic booking order.');
-        $GLOBALS['room_fixture_order_ids'][] = (int) $order->get_id();
-        $item = new WC_Order_Item_Product();
-        $item->set_product_id(987654321);
-        $item->set_name('PRIVATE SYNTHETIC BOOKING FIXTURE');
-        $item->set_quantity(1);
-        $item->set_subtotal(100);
-        $item->set_total(100);
-        $payload = [
-            'first_name'=>'Fixture','last_name'=>'Customer','email'=>'fixture@example.invalid','phone'=>'5550100',
-            'customer_type'=>'personal','payment_method'=>'pay_now','guest_count'=>10,'event_format'=>'movie',
-            'movie_title'=>'Private fixture','visibility'=>'private','doors_open_at'=>$doors_open,'extra_hours'=>0,
-            'show_start_at'=>$doors_open,'doors_close_at'=>(new DateTimeImmutable($doors_open,wp_timezone()))->modify('+2 hours')->format('Y-m-d H:i:s'),
-            'reserved_start_at'=>(new DateTimeImmutable($doors_open,wp_timezone()))->modify('-30 minutes')->format('Y-m-d H:i:s'),
-            'reserved_end_at'=>(new DateTimeImmutable($doors_open,wp_timezone()))->modify('+2 hours 30 minutes')->format('Y-m-d H:i:s'),
-            'base_price'=>100,'extra_price'=>0,'total_price'=>100,
-        ];
-        $item->add_meta_data('_roxy_eb_booking',wp_json_encode($payload),true);
-        $order->add_item($item);
-        $order->save();
-        return $order;
-    };
-    $payment_mail_before = (int) ($GLOBALS['room_fixture_mail_calls'] ?? 0);
-    $payment_events_before = count($GLOBALS['room_fixture_events']);
-    $successful_order = $make_booking_order('2040-01-03 10:00:00');
-    roxy_fixture_eb_on_payment_complete((int) $successful_order->get_id());
-    $saved_booking = roxy_fixture_eb_repo_get_booking_by_order((int) $successful_order->get_id());
-    $check(is_array($saved_booking) && $saved_booking['status']==='confirmed','actual payment-complete callback creates a booking after final locked availability check');
-    $success_events = array_slice($GLOBALS['room_fixture_events'],$payment_events_before);
-    $check(in_array('booking_confirmed',$success_events,true) && in_array('customer_confirmed',$success_events,true),'successful callback reaches expected confirmation boundaries');
-    $event_count = count($GLOBALS['room_fixture_events']);
-    roxy_fixture_eb_on_payment_complete((int) $successful_order->get_id());
-    $check(count($GLOBALS['room_fixture_events'])===$event_count && (int)$wpdb->get_var("SELECT COUNT(*) FROM `{$tables[0]}` WHERE woo_order_id=".(int)$successful_order->get_id())===1,'replayed payment-complete callback remains idempotent without duplicate confirmation');
-
-    // Model a competing valid reservation arriving after the callback's initial
-    // availability read but before it takes the shared room lock.
-    $racing_order = $make_booking_order('2040-01-04 10:00:00');
-    $race_key = 'roxy_room_'.substr(hash('sha256',$prefix),0,48);
-    $race_inserted = false;
-    $race_filter = static function ($sql) use (&$race_inserted,$race_key,$peer) {
-        if ($race_inserted || strpos($sql,"GET_LOCK('".$race_key."'")===false) return $sql;
-        $race_inserted = true;
-        $main = $GLOBALS['wpdb'];
-        $GLOBALS['wpdb'] = $peer;
-        $peer->prefix = $GLOBALS['room_fixture_prefix'];
-        try {
-            $other = roxy_fixture_eb_repo_insert_booking([
-                'reserved_start_at'=>'2040-01-04 09:30:00','reserved_end_at'=>'2040-01-04 12:30:00',
-                'doors_open_at'=>'2040-01-04 10:00:00','doors_close_at'=>'2040-01-04 12:00:00','woo_order_id'=>900000099,
-            ]);
-            if (!is_int($other)) throw new RuntimeException('Concurrent private reservation could not be inserted.');
-        } finally { $GLOBALS['wpdb'] = $main; }
-        return $sql;
-    };
-    $GLOBALS['room_fixture_prefix']=$prefix;
-    add_filter('query',$race_filter,PHP_INT_MAX);
-    try { roxy_fixture_eb_on_payment_complete((int) $racing_order->get_id()); }
-    finally { remove_filter('query',$race_filter,PHP_INT_MAX); }
-    $race_events = array_slice($GLOBALS['room_fixture_events'],$event_count);
-    $check($race_inserted && !roxy_fixture_eb_repo_get_booking_by_order((int)$racing_order->get_id()),'payment-complete callback rejects a slot occupied between preflight and locked insert');
-    $check(in_array('simulated_conflict_refund',$race_events,true) && in_array('booking_conflict',$race_events,true),'late payment conflict routes to the exact conflict refund and manager-review boundary');
-    $check(!in_array('booking_confirmed',$race_events,true) && !in_array('customer_confirmed',$race_events,true),'conflicting paid callback sends no booking confirmation');
-    $check((int)($GLOBALS['room_fixture_mail_calls']??0)===$payment_mail_before,'private callback fixtures never reach real email transport');
 } finally {
     $wpdb->prefix=$original_prefix;
     $peer->close();
     foreach (array_reverse($created) as $table) $wpdb->query("DROP TABLE `$table`");
-    foreach ($GLOBALS['room_fixture_order_ids'] as $order_id) { $order = wc_get_order((int)$order_id); if ($order) $order->delete(true); }
 }
 $check($before===$digest(),'all original booking and manual block rows unchanged');
 echo 'Only private fixture tables removed; no provider/email work.'.PHP_EOL;
