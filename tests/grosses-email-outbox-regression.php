@@ -59,7 +59,12 @@ try {
   $check($outbox::ensure_schema(true), 'schema creation is repeatable');
 
   $logical_key = 'grosses:daily:2039-04-05';
-  $payload = ['to' => ['manager@example.invalid'], 'subject' => 'Fixture report', 'attachment' => ['name' => 'report.csv']];
+  $payload = [
+    'to' => ['manager@example.invalid'],
+    'subject' => 'Fixture report ' . "\u{2014}" . ' manager ' . "\u{2019}",
+    'body' => 'Provisional ' . "\u{2014}" . ' “review”',
+    'attachment' => ['name' => 'report.csv'],
+  ];
   $context = ['trigger' => 'scheduled', 'fixture' => true];
   $first = $outbox::claim($logical_key, 'daily_report', 41, '2039-04-05', $payload, $context);
   $check($first['claimed'] === true && $first['id'] > 0 && $first['status'] === 'sending', 'first atomic claim persists sending before any caller-side mail action');
@@ -72,7 +77,7 @@ try {
   $wpdb = $fixture_db;
 
   $before_duplicate = $outbox::find($logical_key);
-  $check(($before_duplicate['payload_json'] ?? '') === json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)
+  $check(($before_duplicate['payload_json'] ?? '') === json_encode($payload, JSON_UNESCAPED_SLASHES)
     && ($before_duplicate['context_json'] ?? '') === json_encode($context, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)
     && ($before_duplicate['kind'] ?? '') === 'daily_report' && (int) ($before_duplicate['source_id'] ?? -1) === 41
     && ($before_duplicate['report_date'] ?? '') === '2039-04-05' && ($before_duplicate['status'] ?? '') === 'sending',

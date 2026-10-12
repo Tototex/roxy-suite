@@ -49,7 +49,11 @@ final class EmailOutbox {
 
   private static function encode_json(array $value, string $field): string {
     try {
-      $json = json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR, 32);
+      // Keep persisted JSON ASCII-safe. WordPress validates prepared queries
+      // against the active database charset before execution; raw Unicode in
+      // the provisional grosses subject/body can otherwise make the outbox
+      // claim fail closed even when the target table is utf8mb4.
+      $json = json_encode($value, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR, 32);
     } catch (\JsonException $error) {
       throw new \InvalidArgumentException('Grosses email outbox ' . $field . ' must be JSON-encodable.', 0, $error);
     }
