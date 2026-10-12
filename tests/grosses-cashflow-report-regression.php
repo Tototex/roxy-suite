@@ -24,12 +24,18 @@ namespace RoxyGrosses {
   }
   final class Square {
     public static array $orders = [];
+    public static array $daily_orders = [];
     public static array $payments = [];
     public static array $refunds = [];
     public static array $refunds_by_id = [];
     public static array $refund_retrieve_calls = [];
     public static array $calls = [];
-    public static function fetch_orders_for_date(string $date): array { self::$calls[] = ['orders', $date]; return self::$orders; }
+    public static bool $fail_daily_order_read = false;
+    public static function fetch_orders_for_date(string $date): array {
+      self::$calls[] = ['daily_orders', $date];
+      if (self::$fail_daily_order_read) throw new \RuntimeException('Injected Square order read failure.');
+      return self::$daily_orders;
+    }
     public static function list_payments_created_between(string $start, string $end, ?float $deadline = null): array { self::$calls[] = ['payments', $start, $end]; return self::$payments; }
     public static function list_payment_refunds_updated_between(string $start, string $end, ?float $deadline = null): array { self::$calls[] = ['refunds', $start, $end]; return self::$refunds; }
     public static function retrieve_payment_refund(string $id, ?float $deadline = null): array {
@@ -77,6 +83,7 @@ namespace {
   $GLOBALS['wc_queries'] = [];
   function wc_get_orders(array $args) {
     $GLOBALS['wc_queries'][] = $args;
+    if (!empty($GLOBALS['wc_query_fail'])) return false;
     $page = (int) ($args['page'] ?? 1);
     $type = (string) ($args['type'] ?? '');
     $rows = $GLOBALS['wc_pages'][$type][$page] ?? [];
@@ -102,11 +109,19 @@ namespace {
     'shop_order_refund' => [1 => [
       new \RoxyGrosses\FakeRefund(22, 21, '5.00', new \DateTimeImmutable('2026-10-03T04:00:00Z')),
       new \RoxyGrosses\FakeRefund(23, 99, '10.00', new \DateTimeImmutable('2026-10-03T05:00:00Z')),
+      new \RoxyGrosses\FakeRefund(24, 21, '7.50', new \DateTimeImmutable('2026-10-03T06:00:00Z'), false),
+      new \RoxyGrosses\FakeRefund(25, 100, '9.00', new \DateTimeImmutable('2026-10-03T06:30:00Z'), false),
     ]],
   ];
+  \RoxyGrosses\Square::$daily_orders = [[
+    'id' => 'sq-exchange', 'state' => 'COMPLETED', 'closed_at' => '2026-10-03T06:30:00Z',
+    'returns' => [['uid' => 'return-1']],
+    'tenders' => [['amount_money' => ['amount' => 1250, 'currency' => 'USD']]],
+  ]];
   $GLOBALS['wc_parent_orders'] = [
     21 => new \RoxyGrosses\FakeOrder(21, 'stripe', '30.00', 'stripe-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
     99 => new \RoxyGrosses\FakeOrder(99, 'paypal', '20.00', 'paypal-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
+    100 => new \RoxyGrosses\FakeOrder(100, 'cash', '9.00', 'cash-ref', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
   ];
   $GLOBALS['wc_page_counts'] = ['shop_order' => 1, 'shop_order_refund' => 1];
   $report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
@@ -114,8 +129,55 @@ namespace {
   $assert($report['totals']['square_refunded_cents'] === 200 && $report['totals']['woocommerce_refunded_cents'] === 500 && $report['totals']['net_cents'] === 3800, 'daily cashflow subtracts approved-gateway provider refunds on their refund date and omits unapproved-gateway refunds');
   $assert($report['counts'] === ['square_collections'=>1,'woocommerce_collections'=>1,'square_refunds'=>1,'woocommerce_refunds'=>1], 'daily report counts only provider events attributed to selected local date');
   $assert($report['refund_date_bases']['square'] === ['square_updated_at_proxy'] && $report['refund_date_bases']['woocommerce'] === ['woocommerce_refund_creation_proxy'], 'daily report retains explicit refund-date provenance');
+  $assert(count($report['review_exceptions']['woocommerce_manual_refunds']) === 1
+    && $report['review_exceptions']['woocommerce_manual_refunds'][0]['refund_id'] === 24
+    && $report['review_exceptions']['woocommerce_manual_refunds'][0]['amount_cents'] === 750,
+    'manual WooCommerce refund is visible as a read-only review exception');
+  $assert(!in_array(25, array_column($report['review_exceptions']['woocommerce_manual_refunds'], 'refund_id'), true),
+    'manual refund from a gateway outside the configured allow-list is not included in review exceptions');
+  $assert(count($report['review_exceptions']['square_returns_and_exchanges']) === 1
+    && $report['review_exceptions']['square_returns_and_exchanges'][0]['order_id'] === 'sq-exchange'
+    && $report['review_exceptions']['square_returns_and_exchanges'][0]['tender_cents'] === 1250,
+    'completed Square return/exchange is visible with its tender amount for review');
+  \RoxyGrosses\Square::$daily_orders = [[
+    'id' => 'sq-return-no-tenders', 'state' => 'COMPLETED', 'closed_at' => '2026-10-03T06:30:00Z',
+    'returns' => [['uid' => 'return-no-tenders']],
+  ]];
+  $no_tender_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $assert(count($no_tender_report['review_exceptions']['square_returns_and_exchanges']) === 1
+    && $no_tender_report['review_exceptions']['square_returns_and_exchanges'][0]['tender_cents'] === null,
+    'Square completed return without tender data remains visible with amount unavailable');
+  \RoxyGrosses\Square::$daily_orders = [[
+    'id' => 'sq-exchange', 'state' => 'COMPLETED', 'closed_at' => '2026-10-03T06:30:00Z',
+    'returns' => [['uid' => 'return-1']],
+    'tenders' => [['amount_money' => ['amount' => 1250, 'currency' => 'USD']]],
+  ]];
+  $assert($report['totals']['woocommerce_refunded_cents'] === 500 && $report['totals']['net_cents'] === 3800,
+    'manual Woo refund and Square exchange tender remain excluded from cashflow totals');
   $assert($GLOBALS['wc_queries'][0]['date_paid'] === '1790924400...1791010799' && $GLOBALS['wc_queries'][1]['date_created'] === '1790924400...1791010799', 'WooCommerce queries use exact UTC bounds for the report timezone day');
   $assert(\RoxyGrosses\Square::$calls[0] === ['payments', '2026-10-02T07:00:00Z', '2026-10-03T07:00:00Z'], 'Square payment read uses exact UTC boundaries for the selected report-timezone day');
+
+  \RoxyGrosses\Square::$fail_daily_order_read = true;
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'Square order review read failure fails the report closed');
+  \RoxyGrosses\Square::$fail_daily_order_read = false;
+  \RoxyGrosses\Square::$daily_orders = [['id'=>'bad-exchange','state'=>'COMPLETED','closed_at'=>'not-a-date','returns'=>[['uid'=>'r']]]];
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'malformed Square return review data fails closed');
+  \RoxyGrosses\Square::$daily_orders = [[
+    'id'=>'bad-exchange','state'=>'COMPLETED','closed_at'=>'2026-10-03T06:30:00Z','returns'=>['malformed'],
+    'tenders'=>[],
+  ]];
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'malformed itemized Square return fails closed');
+  \RoxyGrosses\Square::$daily_orders = [[
+    'id' => 'sq-exchange', 'state' => 'COMPLETED', 'closed_at' => '2026-10-03T06:30:00Z',
+    'returns' => [['uid' => 'return-1']], 'tenders' => [['amount_money' => ['amount' => 1250, 'currency' => 'USD']]],
+  ]];
+
+  $GLOBALS['wc_query_fail'] = true;
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'WooCommerce refund/order read failure fails the report closed');
+  $GLOBALS['wc_query_fail'] = false;
+  $GLOBALS['wc_pages']['shop_order_refund'][1][2] = new \RoxyGrosses\FakeRefund(24, 21, 'bad', new \DateTimeImmutable('2026-10-03T06:00:00Z'), false);
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'malformed manual Woo refund fails closed instead of being silently omitted');
+  $GLOBALS['wc_pages']['shop_order_refund'][1][2] = new \RoxyGrosses\FakeRefund(24, 21, '7.50', new \DateTimeImmutable('2026-10-03T06:00:00Z'), false);
 
   \RoxyGrosses\Store::$completion_event = ['event_id' => 'refund-event-1', 'event_created_at' => '2026-10-03 03:15:00'];
   $event_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');

@@ -316,6 +316,23 @@ class Settings {
     echo '<tr><th>Combined</th><td>'.esc_html($money((int) $totals['total_collected_cents'])).'</td><td>'.esc_html($money((int) $totals['total_refunded_cents'])).'</td><td><strong>'.esc_html($money((int) $totals['net_cents'])).'</strong></td><td>—</td></tr></tbody></table>';
     echo '<p><strong>Date and amount basis:</strong> Square collections use completed payment creation time and Square payment amount (excluding tips); WooCommerce uses paid time and order paid total. Refunds use a matched Square refund.updated timestamp when available, otherwise its update time; WooCommerce uses refund-record creation time. These refund dates are not bank-posting dates or settlement statements.</p>';
     echo '<p>This live snapshot is not saved or emailed. Manual/offline WooCommerce gateways are excluded; only the explicitly configured online gateway IDs are included.</p>';
+    $exceptions = $report['review_exceptions'] ?? [];
+    $manual_refunds = $exceptions['woocommerce_manual_refunds'] ?? [];
+    $square_returns = $exceptions['square_returns_and_exchanges'] ?? [];
+    echo '<h3>Excluded items for review</h3><p>These records are shown for reconciliation only and are not included in collected, refunded, or net totals.</p>';
+    if (!$manual_refunds && !$square_returns) {
+      echo '<p>No manual WooCommerce refunds or completed Square returns/exchanges were found for this date.</p>';
+    } else {
+      echo '<table class="widefat striped" style="max-width:900px"><thead><tr><th>Source</th><th>Record</th><th>Related order</th><th>Excluded amount</th><th>Review note</th></tr></thead><tbody>';
+      foreach ($manual_refunds as $event) {
+        echo '<tr><td>WooCommerce manual refund</td><td>#'.esc_html((string) $event['refund_id']).'</td><td>#'.esc_html((string) $event['order_id']).'</td><td>'.esc_html($money((int) $event['amount_cents'])).'</td><td>'.esc_html((string) $event['review']).'</td></tr>';
+      }
+      foreach ($square_returns as $event) {
+        $tender_label = is_int($event['tender_cents'] ?? null) ? $money($event['tender_cents']).' in tenders' : 'Amount unavailable';
+        echo '<tr><td>Square return / exchange</td><td>'.esc_html((string) $event['order_id']).'</td><td>—</td><td>'.esc_html($tender_label).'</td><td>'.esc_html((string) $event['review']).'</td></tr>';
+      }
+      echo '</tbody></table>';
+    }
   }
 
   private static function render_database_tab(string $default_date): void {

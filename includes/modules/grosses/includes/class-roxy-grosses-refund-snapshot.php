@@ -352,6 +352,120 @@ final class WooRefundEvents {
     usort($events, static fn(array $a, array $b): int => [$a['refund_created_at'], $a['refund_id']] <=> [$b['refund_created_at'], $b['refund_id']]);
     return $events;
   }
+
+  /** Read-only manual refund records for operator review; never financial events. */
+  public static function manual_review_exceptions(array $refunds, array $allowed_gateways): array {
+    if (!self::is_list($refunds)) throw new \RuntimeException('WooCommerce returned an invalid refund list for manual-refund review.');
+    if (!self::is_list($allowed_gateways) || !$allowed_gateways || !function_exists('wc_get_order')) throw new \RuntimeException('WooCommerce manual-refund gateway verification is unavailable.');
+    $allowed = [];
+    foreach ($allowed_gateways as $gateway) {
+      if (!is_string($gateway) || !preg_match('/^[a-z0-9_-]{1,80}$/D', $gateway) || stripos($gateway, 'square') !== false) throw new \RuntimeException('WooCommerce refund gateway allow-list is invalid or overlaps Square collections.');
+      $allowed[$gateway] = true;
+    }
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $exceptions = [];
+    $seen = [];
+    $parent_gateway_cache = [];
+    foreach ($refunds as $refund) {
+      if (!is_object($refund)
+        || !method_exists($refund, 'get_id') || !method_exists($refund, 'get_parent_id')
+        || !method_exists($refund, 'get_refunded_payment') || !method_exists($refund, 'get_currency')
+        || !method_exists($refund, 'get_amount') || !method_exists($refund, 'get_date_created')) {
+        throw new \RuntimeException('WooCommerce returned a refund without the required manual-review fields.');
+      }
+      $id = $refund->get_id();
+      $order_id = $refund->get_parent_id();
+      if (!is_int($id) || $id <= 0 || isset($seen[$id]) || !is_int($order_id) || $order_id <= 0) {
+        throw new \RuntimeException('WooCommerce returned a duplicate or invalid manual-refund identity.');
+      }
+      $seen[$id] = true;
+      $processed = $refund->get_refunded_payment();
+      if (!is_bool($processed)) throw new \RuntimeException('WooCommerce returned an invalid payment-processing flag for a refund.');
+      if ($processed) continue;
+      if (!array_key_exists($order_id, $parent_gateway_cache)) {
+        $parent = wc_get_order($order_id);
+        if (!is_object($parent) || !method_exists($parent, 'get_payment_method')) throw new \RuntimeException('WooCommerce could not verify the payment gateway for a manual refund.');
+        $parent_gateway_cache[$order_id] = $parent->get_payment_method();
+      }
+      $gateway = $parent_gateway_cache[$order_id];
+      if (!is_string($gateway) || $gateway === '') throw new \RuntimeException('WooCommerce manual-refund parent has an invalid payment gateway.');
+      if (!isset($allowed[$gateway])) continue;
+      if ($refund->get_currency() !== 'USD') throw new \RuntimeException('WooCommerce manual refund uses an unsupported currency.');
+      $amount_cents = abs(self::amount_cents($refund->get_amount()));
+      $created = $refund->get_date_created();
+      if (!$created instanceof \DateTimeInterface) throw new \RuntimeException('WooCommerce manual refund has no valid creation timestamp.');
+      $timestamp = \DateTimeImmutable::createFromInterface($created)->setTimezone(new \DateTimeZone('UTC'));
+      $exceptions[] = [
+        'source' => 'woocommerce', 'type' => 'manual_refund', 'refund_id' => $id,
+        'order_id' => $order_id, 'amount_cents' => $amount_cents, 'currency' => 'USD',
+        'created_at' => $timestamp->format('Y-m-d H:i:s'),
+        'date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
+        'review' => 'Manual refund record; excluded from cashflow totals.',
+      ];
+    }
+    usort($exceptions, static fn(array $a, array $b): int => [$a['created_at'], $a['refund_id']] <=> [$b['created_at'], $b['refund_id']]);
+    return $exceptions;
+  }
+}
+
+/** Completed Square returns/exchanges surfaced for review, never cashflow events. */
+final class SquareReturnReviewExceptions {
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
+
+  public static function from_orders(array $orders): array {
+    if (!self::is_list($orders)) throw new \RuntimeException('Square returned an invalid order list for return review.');
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $exceptions = []; $seen = [];
+    foreach ($orders as $order) {
+      if (!is_array($order) || !is_string($order['id'] ?? null) || $order['id'] === ''
+        || !is_string($order['state'] ?? null)) throw new \RuntimeException('Square returned a malformed order for return review.');
+      if (isset($seen[$order['id']])) throw new \RuntimeException('Square returned a duplicate order for return review.');
+      $seen[$order['id']] = true;
+      if ($order['state'] !== 'COMPLETED' || !array_key_exists('returns', $order)) continue;
+      if (!is_array($order['returns']) || !self::is_list($order['returns'])) throw new \RuntimeException('Square returned a malformed completed return/exchange record.');
+      if (!$order['returns']) continue;
+      foreach ($order['returns'] as $return) {
+        if (!is_array($return) || !is_string($return['uid'] ?? null) || $return['uid'] === '') {
+          throw new \RuntimeException('Square completed return/exchange has a malformed itemized return.');
+        }
+      }
+      $closed_at = $order['closed_at'] ?? null;
+      if (!is_string($closed_at) || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/D', $closed_at)) {
+        throw new \RuntimeException('Square completed return/exchange has no valid close timestamp.');
+      }
+      try { $timestamp = new \DateTimeImmutable($closed_at); }
+      catch (\Throwable $error) { throw new \RuntimeException('Square completed return/exchange has an invalid close timestamp.'); }
+      $errors = \DateTimeImmutable::getLastErrors();
+      if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('Square completed return/exchange has an invalid calendar date.');
+      $tender_cents = null;
+      $tenders = $order['tenders'] ?? null;
+      if ($tenders !== null && (!is_array($tenders) || !self::is_list($tenders))) throw new \RuntimeException('Square completed return/exchange has a malformed tender list.');
+      if (is_array($tenders)) {
+        $tender_cents = 0;
+        foreach ($tenders as $tender) {
+        $money = is_array($tender) ? ($tender['amount_money'] ?? null) : null;
+        if (!is_array($money) || !is_int($money['amount'] ?? null) || $money['amount'] < 0 || ($money['currency'] ?? null) !== 'USD') {
+          throw new \RuntimeException('Square completed return/exchange has an invalid tender amount.');
+        }
+        if ($money['amount'] > PHP_INT_MAX - $tender_cents) throw new \RuntimeException('Square completed return/exchange tender total exceeds the supported range.');
+        $tender_cents += $money['amount'];
+        }
+      }
+      $exceptions[] = [
+        'source' => 'square', 'type' => 'completed_return_or_exchange', 'order_id' => $order['id'],
+        'created_at' => $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
+        'date' => $timestamp->setTimezone($timezone)->format('Y-m-d'),
+        'tender_cents' => $tender_cents, 'currency' => 'USD',
+        'review' => 'Completed return/exchange; excluded from cashflow totals pending reconciliation.',
+      ];
+    }
+    usort($exceptions, static fn(array $a, array $b): int => [$a['created_at'], $a['order_id']] <=> [$b['created_at'], $b['order_id']]);
+    return $exceptions;
+  }
 }
 
 /** Read-only WooCommerce collection events for explicitly approved online gateways. */

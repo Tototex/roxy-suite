@@ -141,6 +141,19 @@ final class CashflowReport {
     $woo_refund_rows = self::woo_objects('shop_order_refund', 'date_created', $start_timestamp, $end_timestamp);
     $woo_collections = WooCollectionEvents::from_orders($woo_orders, $gateways);
     $woo_refunds = WooRefundEvents::from_order_refunds($woo_refund_rows, $gateways);
+    if (!method_exists(Square::class, 'fetch_orders_for_date')) throw new \RuntimeException('Square order review is unavailable.');
+    $square_orders = Square::fetch_orders_for_date($report_date);
+    if (!is_array($square_orders) || !self::is_list($square_orders)) throw new \RuntimeException('Square returned an incomplete order review list.');
+    $review_exceptions = [
+      'woocommerce_manual_refunds' => array_values(array_filter(
+        WooRefundEvents::manual_review_exceptions($woo_refund_rows, $gateways),
+        static fn(array $event): bool => ($event['date'] ?? '') === $report_date
+      )),
+      'square_returns_and_exchanges' => array_values(array_filter(
+        SquareReturnReviewExceptions::from_orders($square_orders),
+        static fn(array $event): bool => ($event['date'] ?? '') === $report_date
+      )),
+    ];
 
     $days = CashflowProjection::daily_totals($square_collections, $woo_collections, $square_refunds, $woo_refunds);
     $totals = $days[$report_date] ?? [
@@ -162,6 +175,7 @@ final class CashflowReport {
         'square' => array_values(array_unique(array_column($square_refunds, 'refund_date_basis'))),
         'woocommerce' => array_values(array_unique(array_column($woo_refunds, 'refund_date_basis'))),
       ],
+      'review_exceptions' => $review_exceptions,
       'collection_date_bases' => ['square' => 'square_payment_created_at', 'woocommerce' => 'woocommerce_paid_at'],
     ];
   }
