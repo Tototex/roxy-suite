@@ -160,8 +160,13 @@ final class Hangar {
         $upload_root = !empty($uploads['basedir']) ? realpath($uploads['basedir']) : false;
         $poster_realpath = realpath($file);
         $upload_prefix = $upload_root !== false ? rtrim($upload_root, '/\\') . DIRECTORY_SEPARATOR : '';
-        if ($upload_root === false || $poster_realpath === false || !is_file($poster_realpath)
-            || strpos($poster_realpath, $upload_prefix) !== 0
+        // A missing/unresolvable uploads root is not proof that the file is
+        // gone or safe to forget. Preserve the path so a bounded retry can
+        // try again when WordPress can resolve uploads normally.
+        if ($upload_root === false) return false;
+        if ($poster_realpath === false) return !file_exists($file);
+        if (!is_file($poster_realpath)) return true;
+        if (strpos($poster_realpath, $upload_prefix) !== 0
             || !preg_match('/-poster(?:-[0-9]+)?\.[A-Za-z0-9]+$/', basename($poster_realpath))) return true;
         return @unlink($poster_realpath) || !file_exists($poster_realpath);
     }

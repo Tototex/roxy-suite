@@ -36,7 +36,10 @@ namespace RoxySocial {
     }
     function get_post_meta($id, $key, $single = false) { return $GLOBALS['hangar_fixture']['meta'][$id][$key] ?? ''; }
     function delete_post_meta($id, $key) { unset($GLOBALS['hangar_fixture']['meta'][$id][$key]); return true; }
-    function wp_upload_dir() { return ['path' => $GLOBALS['hangar_fixture']['upload_dir'], 'basedir' => $GLOBALS['hangar_fixture']['upload_dir'], 'url' => 'https://fixture.invalid/uploads']; }
+    function wp_upload_dir() {
+        if (!empty($GLOBALS['hangar_fixture']['uploads_unavailable'])) return ['error' => 'fixture unavailable'];
+        return ['path' => $GLOBALS['hangar_fixture']['upload_dir'], 'basedir' => $GLOBALS['hangar_fixture']['upload_dir'], 'url' => 'https://fixture.invalid/uploads'];
+    }
     function wp_mkdir_p($path) { return is_dir($path) || mkdir($path, 0777, true); }
     function wp_unique_filename($dir, $filename) { return $filename; }
     function trailingslashit($path) { return rtrim($path, '/\\') . '/'; }
@@ -222,6 +225,21 @@ namespace RoxySocial {
         'failed poster unlink preserves the file path in a bounded retry event after attachment metadata is removed');
     Hangar::retry_video_thumbnail_cleanup($retry_path, 1);
     $check(!file_exists($retry_path), 'poster cleanup retry removes the owned file once directory permissions recover');
+
+    $unavailable_root_path = $upload_dir . DIRECTORY_SEPARATOR . 'uploads-unavailable-poster.png';
+    file_put_contents($unavailable_root_path, $png);
+    $GLOBALS['hangar_fixture']['meta'][513] = ['_roxy_social_video_poster_file' => $unavailable_root_path];
+    $GLOBALS['hangar_fixture']['uploads_unavailable'] = true;
+    Hangar::delete_video_thumbnail(513);
+    unset($GLOBALS['hangar_fixture']['uploads_unavailable']);
+    $unavailable_root_event = end($GLOBALS['hangar_fixture']['scheduled']);
+    $check(is_file($unavailable_root_path)
+        && !isset($GLOBALS['hangar_fixture']['meta'][513]['_roxy_social_video_poster_file'])
+        && ($unavailable_root_event['hook'] ?? '') === 'roxy_social_cleanup_video_poster'
+        && ($unavailable_root_event['args'][0] ?? '') === $unavailable_root_path,
+        'unavailable uploads root preserves owned poster path in bounded retry instead of dropping cleanup');
+    Hangar::retry_video_thumbnail_cleanup($unavailable_root_path, 1);
+    $check(!file_exists($unavailable_root_path), 'deferred poster cleanup succeeds when uploads root becomes available');
 
     $GLOBALS['hangar_fixture']['response'] = ['response' => ['code' => 200], 'headers' => ['content-type' => 'image/png'], 'body' => $png];
     $GLOBALS['hangar_fixture']['search_body'] = json_encode([
