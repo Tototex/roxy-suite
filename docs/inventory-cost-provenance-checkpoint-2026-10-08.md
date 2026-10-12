@@ -16,3 +16,11 @@
 - Eleven focused schema/data migration checks cover column-add verification and failure, preserving numeric cost and unrelated rules, retaining zero as Unknown, migration-marker idempotence, and retry behavior after data/marker failures.
 - Inventory order-integrity tests cover Unknown rejection, Free zero-cost acceptance under a zero vendor minimum, saved provenance, and forwarded email inclusion of supplier SKU and quote source/date.
 - This is a GitHub audit-branch change only. No production migration or live UI was run; database behavior against WordPress/MySQL and live UI rendering still require a protected test deployment. No vendor order/email was sent.
+
+## Follow-up: real MySQL schema audit
+
+- The first disposable MySQL run showed `dbDelta()` SQL errors because several column/index definitions shared lines. Explicit column checks had recovered the columns, masking noisy schema installation and possible index omissions.
+- DDL was reformatted to WordPress's one column/index definition per line convention.
+- Hosted run [38227532038](https://github.com/Tototex/roxy-suite/actions/runs/38227532038), commit `47b0b5391216817a815b2135e290f844e8eaa3da`, passes all 9 real WordPress/MySQL Inventory migration checks: added columns, required indexes and uniqueness, cost-data migration, preservation of other product fields, table creation, and zero captured database query errors.
+- The same run passes PHP 8.0–8.4 syntax, the full PHP 8.3 isolated suite, and private WordPress/Woo and Social lifecycle fixtures.
+- Still branch-only. Production schema/UI behavior and source/quote accuracy have not been verified; no live tables or vendor messages were touched.
