@@ -312,6 +312,7 @@ namespace {
     'line_items' => [['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1001,'currency'=>'USD']]],
   ]];
   \RoxyGrosses\Store::$updates = [];
+  \RoxyGrosses\Store::$allocation_batches = [];
   \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$large_date]));
   $allocated_cents = array_sum(array_map(static fn(array $row): int => (int) round((float) ($row['concessions_total'] ?? 0) * 100), \RoxyGrosses\Store::$movie[$large_date]));
   $check(count(\RoxyGrosses\Store::$updates) === 1001 && count(\RoxyGrosses\Store::$allocation_batches) === 6 && $allocated_cents === 1001, 'rebalance conserves every row beyond the former 1,000-row cap using six bounded write batches');
