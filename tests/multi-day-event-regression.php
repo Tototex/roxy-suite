@@ -365,8 +365,12 @@ try {
   $publish_conflict = (int)$publish_conflict;
   $created[] = $publish_conflict;
   update_post_meta($publish_conflict, '_roxy_start', $blocked_start);
-  $block_demotion = static function($data, $postarr) use ($screenings) {
-    if ((int)($postarr['ID'] ?? 0) === (int)$screenings[0] && ($data['post_status'] ?? '') === 'draft') $data['post_status'] = 'publish';
+  $blocked_demotion_hook_called = false;
+  $block_demotion = static function($data, $postarr) use ($screenings, &$blocked_demotion_hook_called) {
+    if ((int)($postarr['ID'] ?? 0) === (int)$screenings[0] && ($data['post_status'] ?? '') === 'draft') {
+      $blocked_demotion_hook_called = true;
+      $data['post_status'] = 'publish';
+    }
     return $data;
   };
   add_filter('wp_insert_post_data', $block_demotion, 10, 2);
@@ -380,7 +384,9 @@ try {
   $check(get_post_status((int)$event_id) === 'draft', 'publication conflict returns the parent event to draft');
   $check(get_post_status((int)$screenings[0]) === 'publish'
     && str_contains((string)get_transient('roxy_st_event_invalid_' . get_current_user_id()), 'could not be fully returned to draft'),
-    'failed screening demotion is detected and reported instead of claiming complete cleanup');
+    'failed screening demotion is detected and reported instead of claiming complete cleanup (hook=' . (int)$blocked_demotion_hook_called
+      . ', event=' . get_post_status((int)$event_id) . ', screening=' . get_post_status((int)$screenings[0])
+      . ', notice=' . (string)get_transient('roxy_st_event_invalid_' . get_current_user_id()) . ')');
   wp_update_post(['ID'=>(int)$screenings[0],'post_status'=>'draft']);
   $check(count(array_filter($screenings,static fn($id)=>get_post_status($id)==='publish'))===0,
     'after the injected cleanup failure, all fixture screenings can be manually returned to draft');
