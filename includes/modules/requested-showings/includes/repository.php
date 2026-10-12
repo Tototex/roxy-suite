@@ -68,6 +68,16 @@ function roxy_rs_repo_insert_backing(array $data) {
         $name = 'roxy_scope_' . substr(hash('sha256', $wpdb->prefix . ':requested-conversion:request:' . $request_id), 0, 48);
         $lease->assert_owner();
         $guard = $wpdb->prepare('CONNECTION_ID()=%s AND IS_USED_LOCK(%s)=CONNECTION_ID()', $connection, $name);
+        // Sponsor eligibility is a request-wide singleton. The frontend's
+        // initial totals are only a display-time snapshot; recheck under the
+        // same request lease used for every backing insert so two stale sponsor
+        // submissions cannot both be accepted.
+        if ((string) ($data['backing_type'] ?? '') === 'sponsor') {
+            $totals = roxy_rs_repo_backing_totals($request_id);
+            if (!empty($totals['has_sponsor'])) {
+                return new WP_Error('sponsor_already_claimed', 'This request already has a sponsor. You can still back tickets or reserve subscriber seats.');
+            }
+        }
         $result = roxy_rs_repo_insert_backing_owned($data, $guard);
         $lease->assert_owner();
         return $result;

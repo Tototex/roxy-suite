@@ -52,9 +52,12 @@ $guard = static function ($sql) use ($wpdb, $table, $lock_name, &$drop_lease_at_
 $mail = static function () { throw new RuntimeException('Unexpected mail.'); };
 $http = static function () { throw new RuntimeException('Unexpected provider call.'); };
 $created = false;
+$secondary = null;
+$primary_db = $wpdb;
 $previous = $wpdb->suppress_errors(true);
 try {
-    if ($wpdb->query('CREATE TEMPORARY TABLE ' . $table . ' LIKE ' . $production) === false) throw new RuntimeException('Private schema failed.');
+    if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table))) === $table) throw new RuntimeException('Private fixture table collision.');
+    if ($wpdb->query('CREATE TABLE ' . $table . ' LIKE ' . $production) === false) throw new RuntimeException('Private schema failed.');
     $created = true;
     add_filter('query', $guard, PHP_INT_MAX);
     add_filter('pre_wp_mail', $mail, PHP_INT_MAX);
@@ -81,10 +84,33 @@ try {
     $drop_request_lease = true;
     $assert(is_wp_error($insert(['request_id'=>503,'user_id'=>77,'general_qty'=>1,'support_qty'=>1,'charge_total'=>1200])) && (int)$wpdb->get_var('SELECT COUNT(*) FROM ' . $table) === $paid_count, 'request lease loss at paid INSERT rejects reconnect-safe write');
     $assert(is_wp_error($insert(['request_id' => 504, 'user_id' => 77, 'general_qty' => '1.5'])), 'fractional persisted quantity rejected');
+    // Two customers can both prepare the sponsor form from the same stale
+    // no-sponsor snapshot. The first insert wins; a separate connection then
+    // enters the request lease and must see the winner before writing.
+    $stale_sponsor = ['request_id'=>505,'user_id'=>88,'backing_type'=>'sponsor','sponsor_amount'=>30000,'charge_total'=>30000,'sponsor_ticket_qty'=>2];
+    $initial_sponsor_totals = $namespace . '\\roxy_rs_repo_backing_totals';
+    $assert(empty($initial_sponsor_totals(505)['has_sponsor']), 'both sponsor form submissions may begin from an unsponsored snapshot');
+    $sponsor_first = $insert($stale_sponsor);
+    $assert(is_int($sponsor_first) && $sponsor_first > 0, 'first sponsor backing is accepted under the request lease');
+    $secondary = new wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
+    $secondary->prefix = $wpdb->prefix;
+    $secondary->suppress_errors(true);
+    $primary = $wpdb;
+    $wpdb = $secondary;
+    $sponsor_second = $insert($stale_sponsor);
+    $wpdb = $primary;
+    $assert(is_wp_error($sponsor_second) && $sponsor_second->get_error_code() === 'sponsor_already_claimed'
+        && (int)$wpdb->get_var('SELECT COUNT(*) FROM ' . $table . ' WHERE request_id=505 AND sponsor_amount>0') === 1,
+        'second connection cannot insert a duplicate sponsor after its stale frontend check');
+    $backer_after_sponsor = $insert(['request_id'=>505,'user_id'=>89,'general_qty'=>1,'support_qty'=>1,'charge_total'=>1200]);
+    $assert(is_int($backer_after_sponsor) && $backer_after_sponsor > 0,
+        'existing sponsor does not block ordinary ticket backing');
     $assert($before === hash('sha256', serialize($wpdb->get_results('SELECT * FROM ' . $production . ' ORDER BY id', ARRAY_A))), 'all production backing rows unchanged');
     echo 'Passed ' . $checks . ' actual private SQL assertions; no real order/payment created.' . PHP_EOL;
 } finally {
-    if ($created && $wpdb->query('DROP TEMPORARY TABLE ' . $table) === false) throw new RuntimeException('Private schema cleanup failed.');
+    $wpdb = $primary_db;
+    if ($secondary instanceof wpdb) $secondary->close();
+    if ($created && $wpdb->query('DROP TABLE IF EXISTS ' . $table) === false) throw new RuntimeException('Private schema cleanup failed.');
     remove_filter('query', $guard, PHP_INT_MAX);
     remove_filter('pre_wp_mail', $mail, PHP_INT_MAX);
     remove_filter('pre_http_request', $http, PHP_INT_MAX);
