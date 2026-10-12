@@ -144,13 +144,13 @@ try {
   add_filter('woocommerce_order_data_store_cpt_get_orders_query', 'roxy_will_call_filter_legacy_ticket_order_query', PHP_INT_MAX, 2);
 
   $candidate_sql_count = 0;
+  $candidate_sql_samples = [];
   $candidate_pages = 0;
   $wpdb_ref = $GLOBALS['wpdb'];
-  $candidate_query_observer = static function ($sql) use (&$candidate_sql_count, $wpdb_ref) {
-    if (strpos($sql, $wpdb_ref->prefix . 'woocommerce_order_items') !== false
-      && strpos($sql, $wpdb_ref->prefix . 'woocommerce_order_itemmeta') !== false
-      && stripos($sql, 'EXISTS') !== false) {
-      $candidate_sql_count++;
+  $candidate_query_observer = static function ($sql) use (&$candidate_sql_count, &$candidate_sql_samples, $wpdb_ref) {
+    if (strpos($sql, $wpdb_ref->prefix . 'woocommerce_order_items') !== false) {
+      $candidate_sql_samples[] = substr($sql, 0, 1800);
+      if (strpos($sql, $wpdb_ref->prefix . 'woocommerce_order_itemmeta') !== false && stripos($sql, 'EXISTS') !== false) $candidate_sql_count++;
     }
     return $sql;
   };
@@ -184,6 +184,7 @@ try {
     }
     echo 'Candidate query diagnostic: candidate pages=' . $candidate_pages
       . '; bounded EXISTS SQL count=' . $candidate_sql_count
+      . '; SQL=' . wp_json_encode($candidate_sql_samples)
       . '; active guards=' . implode(',', $active_guards) . PHP_EOL;
   }
   $check(count($optimized['rows']) === 201 && $candidate_pages === 2, 'real candidate filtering traverses both pages for 201 matching legacy orders');
