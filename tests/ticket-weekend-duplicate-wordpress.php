@@ -137,3 +137,121 @@ try {
     if ($cleanup_failed) throw new RuntimeException('Owned fixture cleanup incomplete: '.implode(',',$cleanup_failed));
     echo 'Owned private draft fixture posts removed.'.PHP_EOL;
 }
+
+// Exercise the registered admin action itself. The handler intentionally exits
+// after redirecting, so shutdown performs the assertions and removes only the
+// private fixture-owned drafts created by this route request.
+if (!function_exists('roxy_suite_user_can_access_admin')) {
+    function roxy_suite_user_can_access_admin(): bool { return true; }
+}
+$route_title = $marker . ' admin-route';
+$route_source_id = wp_insert_post([
+    'post_type' => \RoxyST\CPT::POST_TYPE,
+    'post_status' => 'draft',
+    'post_title' => $route_title,
+    'post_content' => 'Private admin-route fixture only.',
+    'post_date' => current_time('mysql'),
+    'post_date_gmt' => current_time('mysql', true),
+], true);
+if (is_wp_error($route_source_id) || !$route_source_id) throw new RuntimeException('Could not create private admin-route source showing.');
+$route_source_id = (int) $route_source_id;
+$created_ids[$route_source_id] = true;
+$route_created_ids = [$route_source_id => true];
+update_post_meta($route_source_id, '_roxy_test_fixture_owner', $owner);
+update_post_meta($route_source_id, '_roxy_start', '2026-10-16T23:30');
+update_post_meta($route_source_id, '_roxy_pid_adult', '910001');
+update_post_meta($route_source_id, '_roxy_pid_discount', '910002');
+update_post_meta($route_source_id, '_roxy_pid_matinee', '910003');
+update_post_meta($route_source_id, '_roxy_pid_live1', '910004');
+update_post_meta($route_source_id, '_roxy_pid_live2', '910005');
+update_post_meta($route_source_id, '_roxy_pid_subscriber', '910006');
+update_post_meta($route_source_id, '_roxy_legacy_product_ids', "910001\n910002\n910099");
+
+$strict_datetime = new ReflectionMethod('RoxyST\\CPT', 'validated_local_datetime');
+$strict_datetime->setAccessible(true);
+$check($strict_datetime->invoke(null, '2026-10-16T23:30') === '2026-10-16T23:30', 'admin duplicate accepts a valid site-local Friday showtime');
+$check($strict_datetime->invoke(null, '2026-02-30T19:30') === null, 'admin duplicate rejects an impossible calendar date');
+$check($strict_datetime->invoke(null, '2026-03-08T02:30') === null, 'admin duplicate rejects a nonexistent Los Angeles DST-gap time');
+
+\RoxyST\CPT::init();
+$registered_admin_route = false;
+foreach ((array) $GLOBALS['wp_filter']['admin_action_roxy_duplicate_weekend']->callbacks as $callbacks) {
+    foreach ($callbacks as $callback) {
+        if (($callback['function'] ?? null) === ['RoxyST\\CPT', 'handle_duplicate_weekend']) $registered_admin_route = true;
+    }
+}
+$check($registered_admin_route, 'duplicate action is registered on the real WordPress admin route');
+$valid_actions = \RoxyST\CPT::row_actions([], get_post($route_source_id));
+$check(isset($valid_actions['roxy_duplicate_weekend']) && strpos($valid_actions['roxy_duplicate_weekend'], 'action=roxy_duplicate_weekend') !== false, 'valid showing exposes the nonce-protected admin duplicate link');
+update_post_meta($route_source_id, '_roxy_start', '2026-03-08T02:30');
+$invalid_actions = \RoxyST\CPT::row_actions([], get_post($route_source_id));
+$check(!isset($invalid_actions['roxy_duplicate_weekend']), 'invalid site-local showtime does not expose the admin duplicate link');
+update_post_meta($route_source_id, '_roxy_start', '2026-10-16T23:30');
+date_default_timezone_set('Asia/Tokyo');
+
+$route_capture = static function ($post_id, $post) use (&$route_created_ids, $route_title): void {
+    if ($post instanceof WP_Post && $post->post_type === \RoxyST\CPT::POST_TYPE && strpos((string) $post->post_title, $route_title) === 0) {
+        $route_created_ids[(int) $post_id] = true;
+        $GLOBALS['ticket_weekend_route_created_ids'][(int) $post_id] = true;
+    }
+};
+$route_redirect = static function ($location) { $GLOBALS['ticket_weekend_route_redirect'] = (string) $location; return $location; };
+add_action('wp_after_insert_post', $route_capture, 10, 4);
+add_filter('wp_redirect', $route_redirect, 10, 2);
+\RoxyST\CPT::register();
+$_GET['post_id'] = $route_source_id;
+$_REQUEST['post_id'] = $route_source_id;
+$_REQUEST['_wpnonce'] = wp_create_nonce('roxy_duplicate_weekend_' . $route_source_id);
+$GLOBALS['ticket_weekend_route_owner'] = $owner;
+$GLOBALS['ticket_weekend_route_title'] = $route_title;
+$GLOBALS['ticket_weekend_route_source_id'] = $route_source_id;
+$GLOBALS['ticket_weekend_route_created_ids'] = $route_created_ids;
+$GLOBALS['ticket_weekend_route_checks'] = &$checks;
+$GLOBALS['ticket_weekend_route_mail_calls'] = &$mail_calls;
+$GLOBALS['ticket_weekend_route_http_calls'] = &$http_calls;
+register_shutdown_function(static function () use ($wpdb, $route_capture, $route_redirect): void {
+    $title = (string) $GLOBALS['ticket_weekend_route_title'];
+    $source_id = (int) $GLOBALS['ticket_weekend_route_source_id'];
+    $created_ids = $GLOBALS['ticket_weekend_route_created_ids'];
+    $checks = &$GLOBALS['ticket_weekend_route_checks'];
+    $check = static function (bool $ok, string $message) use (&$checks): void {
+        if (!$ok) throw new RuntimeException('FAIL: ' . $message);
+        ++$checks;
+        echo 'PASS: ' . $message . "\n";
+    };
+    try {
+        $redirect = (string) ($GLOBALS['ticket_weekend_route_redirect'] ?? '');
+        $check(strpos($redirect, 'roxy_dup_weekend=success') !== false && strpos($redirect, 'roxy_dup_weekend_created=1') !== false, 'real admin route duplicates one showing and redirects with success');
+        $rows = $wpdb->get_results($wpdb->prepare("SELECT ID,post_type,post_status FROM {$wpdb->posts} WHERE post_title=%s", $title));
+        $children = array_values(array_filter((array) $rows, static function ($row) use ($source_id): bool { return (int) $row->ID !== $source_id; }));
+        $check(count($children) === 1, 'real admin route creates exactly one child showing');
+        $child_id = (int) $children[0]->ID;
+        $created_ids[$child_id] = true;
+        $check($children[0]->post_type === \RoxyST\CPT::POST_TYPE && $children[0]->post_status === 'draft', 'route-created showing remains a private draft');
+        $check(get_post_meta($child_id, '_roxy_start', true) === '2026-10-23T23:30', 'real admin route preserves the site-local late-night showtime when duplicating');
+        $check(date_default_timezone_get() === 'Asia/Tokyo', 'real admin route ran with a process timezone different from the WordPress site timezone');
+        $check(get_post_meta($child_id, '_roxy_legacy_product_ids', true) === '', 'real admin route does not copy legacy product mappings');
+        foreach (['_roxy_pid_adult','_roxy_pid_discount','_roxy_pid_matinee','_roxy_pid_live1','_roxy_pid_live2','_roxy_pid_subscriber'] as $key) {
+            $check(!in_array((string) get_post_meta($child_id, $key, true), ['910001','910002','910003','910004','910005','910006'], true), 'real admin route does not copy source ticket product mapping ' . $key);
+        }
+        $check((int) $GLOBALS['ticket_weekend_route_mail_calls'] === 0 && (int) $GLOBALS['ticket_weekend_route_http_calls'] === 0, 'real admin route invoked no mail or external HTTP');
+    } finally {
+        foreach (array_keys($created_ids) as $id) {
+            $post = get_post((int) $id);
+            if (!$post) continue;
+            if ($post->post_type !== \RoxyST\CPT::POST_TYPE || $post->post_status !== 'draft'
+                || strpos((string) $post->post_title, (string) $GLOBALS['ticket_weekend_route_title']) !== 0) {
+                error_log('Admin duplicate fixture refused cleanup for unverified post ID ' . (int) $id);
+                continue;
+            }
+            wp_delete_post((int) $id, true);
+            if (get_post((int) $id)) throw new RuntimeException('Admin duplicate fixture cleanup failed for owned post ' . (int) $id);
+        }
+        remove_action('wp_after_insert_post', $route_capture, 10);
+        remove_filter('wp_redirect', $route_redirect, 10);
+    }
+    echo 'Admin route fixture drafts removed.'.PHP_EOL;
+    echo 'Passed ' . (int) $checks . " installed weekend-duplicate checks including the registered admin route.\n";
+});
+do_action('admin_action_roxy_duplicate_weekend');
+throw new RuntimeException('Registered admin duplicate route returned without completing its redirect.');
