@@ -302,6 +302,10 @@ class Conversion {
         if (!class_exists('\\WooCommerce') || !class_exists('\\RoxyST\\Products') || !class_exists('\\RoxyST\\Tickets')) {
             return new \WP_Error('dependencies_missing', 'WooCommerce and Show Tickets must be active before approval.');
         }
+        if (!class_exists('\\RoxySuite\\Compatibility')
+            || (\RoxySuite\Compatibility::order_storage_status()['status'] ?? '') !== 'pass') {
+            return new \WP_Error('order_storage_unsupported', 'WooCommerce order storage is unsupported or could not be verified. No showing or order was created. Restore verified post-based storage before retrying.');
+        }
 
         $target_at = (string) get_post_meta($request_id, CPT::META_TARGET_AT, true);
         if ($target_at === '') {

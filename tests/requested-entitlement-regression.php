@@ -28,6 +28,13 @@ namespace RoxyST {
     }
 }
 
+namespace Automattic\WooCommerce\Utilities {
+    final class OrderUtil {
+        public static bool $enabled = false;
+        public static function custom_orders_table_usage_is_enabled(): bool { return self::$enabled; }
+    }
+}
+
 namespace RoxyRS {
     final class PledgeAttempts {
         public static array $pending = []; public static array $receipts = [];
@@ -203,6 +210,7 @@ namespace {
     require $root . '/includes/modules/show-tickets/includes/class-roxy-st-capacity.php';
     require $root . '/includes/modules/requested-showings/includes/class-roxy-rs-conversion.php';
     require $root . '/includes/modules/requested-showings/includes/class-roxy-rs-frontend.php';
+    require $root . '/includes/class-roxy-suite-compatibility.php';
 
     $wpdb = new FixtureWpdb();
     $GLOBALS['wpdb'] = $wpdb;
@@ -280,6 +288,7 @@ namespace {
         $wpdb = new FixtureWpdb(); $GLOBALS['wpdb'] = $wpdb;
         \RoxyST\Reservations::$used = 0; \RoxyST\Holds::$allow = true; \RoxyST\Holds::$calls = 0;
         \RoxyST\Tickets::$sync_result = true;
+        \Automattic\WooCommerce\Utilities\OrderUtil::$enabled = false;
         \RoxyST\Issuance::$busy = false; \RoxyST\Issuance::$lost = false; \RoxyST\Issuance::$released = 0;
         \RoxyRS\ConversionClaims::$started = [];
         \RoxyRS\PledgeAttempts::$pending = []; \RoxyRS\PledgeAttempts::$receipts = [];
@@ -453,6 +462,15 @@ namespace {
     check_fixture(is_wp_error(\RoxyRS\Conversion::approve_request(501)) && $GLOBALS['fixture_order']->completed === 0, 'partial approval returns review rather than successful confirmation');
     check_fixture($GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'conversion_review'
         && $GLOBALS['fixture_mails'] === [['to'=>'admin@example.invalid','subject'=>'Requested showing approval needs attention: Fixture request']], 'partial approval closes pledging and sends only manager review notice');
+
+    reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing();
+    $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_TARGET_AT] = '2026-10-30 19:00';
+    \Automattic\WooCommerce\Utilities\OrderUtil::$enabled = true;
+    $hpos_approval = \RoxyRS\Conversion::approve_request(501);
+    check_fixture(is_wp_error($hpos_approval) && $hpos_approval->get_error_code() === 'order_storage_unsupported'
+        && \RoxyRS\ConversionClaims::$started === [] && $GLOBALS['fixture_order_creates'] === 0
+        && $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'active',
+        'HPOS blocks conversion before request closure, showing creation, or order creation');
 
     $approval_write_faults = [
         'failed status write' => 'fixture_approval_status_write_error',
