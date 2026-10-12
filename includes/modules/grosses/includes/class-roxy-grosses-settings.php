@@ -6,6 +6,7 @@ class Settings {
   public const OPTION_KEY='roxy_grosses_settings';
   public const STATUS_KEY='roxy_grosses_last_report';
   private const WORKBOOK_TEMPLATE_UPLOAD_KEY='workbook_template_upload';
+  private const CASHFLOW_GATEWAYS_CONFIGURED_KEY='_cashflow_woo_gateways_configured';
   private const ENCRYPTION_PREFIX='gcm:';
   private const ENCRYPTION_PREFIX_V2='gcm:v2:';
 
@@ -77,6 +78,12 @@ class Settings {
   public static function get_all(): array {
     $saved=get_option(self::OPTION_KEY,[]); if(!is_array($saved)) $saved=[];
     $all = wp_parse_args($saved,self::defaults());
+    // The former blank default meant "not configured yet." Migrate that legacy
+    // state to the manager-approved active gateways, while a blank saved through
+    // this settings form remains an explicit opt-out.
+    if (trim((string) ($saved['cashflow_woo_gateways'] ?? '')) === '' && empty($saved[self::CASHFLOW_GATEWAYS_CONFIGURED_KEY])) {
+      $all['cashflow_woo_gateways'] = self::defaults()['cashflow_woo_gateways'];
+    }
     $all['square_access_token'] = self::decrypt_secret((string) ($saved['square_access_token'] ?? $all['square_access_token']));
     $all['square_webhook_signature_key'] = self::decrypt_secret((string) ($saved['square_webhook_signature_key'] ?? ''));
     return $all;
@@ -149,6 +156,7 @@ class Settings {
       'square_webhook_signature_key'=>$webhook_key,
       'square_location_ids'=>self::sanitize_line_list((string) ($input['square_location_ids']??$d['square_location_ids'])),
       'cashflow_woo_gateways'=>self::sanitize_line_list((string) ($input['cashflow_woo_gateways']??($existing['cashflow_woo_gateways']??$d['cashflow_woo_gateways']))),
+      self::CASHFLOW_GATEWAYS_CONFIGURED_KEY=>(array_key_exists('cashflow_woo_gateways',$input) || !empty($existing[self::CASHFLOW_GATEWAYS_CONFIGURED_KEY]))?'1':'',
       'report_timezone'=>self::sanitize_timezone((string) ($input['report_timezone']??$d['report_timezone'])),
       'ticket_keywords'=>self::sanitize_line_list((string) ($input['ticket_keywords']??$d['ticket_keywords'])),
       'exclude_keywords'=>self::sanitize_line_list((string) ($input['exclude_keywords']??$d['exclude_keywords'])),
