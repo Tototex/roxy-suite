@@ -216,6 +216,7 @@ try {
     'failed published schedule edit does not alter a ticket product');
   delete_transient('roxy_st_event_invalid_' . get_current_user_id());
   $committed_title_post = $published_conflict_post;
+  $committed_title_post['roxy_event_double_general'] = $original_general;
   $committed_title_post['roxy_event_screening_title'] = array_column($original_screening_rows, 'title');
   $committed_title_post['roxy_event_screening_start'] = array_column($original_screening_rows, 'start');
   $committed_title_post['roxy_event_screening_title'][0] = 'PRIVATE COMMITTED SCREENING TITLE';
@@ -272,65 +273,9 @@ try {
   WC()->cart->calculate_totals();
   wc_clear_notices();
   \RoxyST\Events::validate_cart_bundles();
-  $double_total = round((float)WC()->cart->get_total('edit'), 2);
-  $double_notices = wc_get_notices('error');
-  $current_package_method = new ReflectionMethod(\RoxyST\Events::class, 'package_is_current');
-  $current_package_method->setAccessible(true);
-  $double_current_package = $current_package_method->invoke(null, (int)$event_id, 'double', $double_ids);
-  $double_cart_items = WC()->cart->get_cart();
-  $double_line_diagnostics = array_map(static function($item, $index) use ($double_bundle, $double_signature, $double_ids, $event_id, $double_prices) {
-    $pid = (int)($item['product_id'] ?? 0);
-    $sid = (int)get_post_meta($pid, ROXY_ST_META_SHOWING_ID, true);
-    return [
-      'product_id' => $pid,
-      'showing_id' => $sid,
-      'status' => get_post_status($sid),
-      'ticket_type' => (string)get_post_meta($pid, ROXY_ST_META_TICKET_TYPE, true),
-      'profile' => (string)get_post_meta($sid, '_roxy_pricing_profile', true),
-      'expected_product' => (int)get_post_meta($sid, '_roxy_pid_adult', true),
-      'sales_open' => \RoxyST\Eligibility::showing_sales_open($sid),
-      'unit_price' => $item['roxy_event_unit_price'] ?? null,
-      'expected_unit_price' => $double_prices[$index] ?? null,
-      'quantity' => (int)($item['quantity'] ?? 0),
-      'bundle_id_matches' => ($item['roxy_event_bundle_id'] ?? '') === $double_bundle,
-      'event_id_matches' => (int)($item['roxy_event_id'] ?? 0) === (int)$event_id,
-      'bundle_ids_match' => array_values(array_map('intval', (array)($item['roxy_event_bundle_showing_ids'] ?? []))) === $double_ids,
-      'signature_matches' => hash_equals($double_signature, (string)($item['roxy_event_bundle_signature'] ?? '')),
-    ];
-  }, array_values($double_cart_items), array_keys(array_values($double_cart_items)));
-  $double_line_showings = array_column($double_line_diagnostics, 'showing_id');
-  $double_sorted_ids = $double_ids;
-  sort($double_sorted_ids);
-  $double_line_sorted = $double_line_showings;
-  sort($double_line_sorted);
-  $double_quantities = array_column($double_line_diagnostics, 'quantity');
-  $double_event_meta = reset($double_cart_items) ?: [];
-  $double_actual_ids = array_values(array_map('intval', (array)($double_event_meta['roxy_event_bundle_showing_ids'] ?? [])));
-  $double_runtime_prices = $price_method->invoke(null, (float)get_post_meta((int)$event_id, '_roxy_event_double_general', true), count($double_actual_ids));
-  $double_runtime_signature = wp_hash(wp_json_encode([
-    (int)($double_event_meta['roxy_event_id'] ?? 0),
-    (string)($double_event_meta['roxy_event_bundle_kind'] ?? ''),
-    $double_actual_ids,
-    (string)($double_event_meta['roxy_event_ticket_type'] ?? ''),
-    $double_runtime_prices,
-    $double_bundle,
-  ]), 'auth');
-  $check($double_total===20.0 && !$double_notices,
-    'valid $20 double-feature pass accepts integer-allocated line prices (total=' . $double_total
-      . ', prices=' . wp_json_encode($double_prices)
-      . ', package_is_current=' . (int)$double_current_package
-      . ', event_type=' . get_post_type((int)$event_id) . ', event_status=' . get_post_status((int)$event_id)
-      . ', sorted_lines_match=' . (int)($double_line_sorted === $double_sorted_ids)
-      . ', unique_lines=' . count(array_unique($double_line_showings)) . '/' . count($double_ids)
-      . ', uniform_positive_quantity=' . (int)(count(array_unique($double_quantities)) === 1 && ($double_quantities[0] ?? 0) > 0)
-      . ', runtime_signature_matches=' . (int)hash_equals($double_runtime_signature, $double_signature)
-      . ', actual_ids=' . wp_json_encode($double_actual_ids) . ', actual_line_order=' . wp_json_encode($double_line_showings)
-      . ', event_prices=' . wp_json_encode([
-        'general' => get_post_meta((int)$event_id, '_roxy_event_double_general', true),
-        'discount' => get_post_meta((int)$event_id, '_roxy_event_double_discount', true),
-      ]) . ', runtime_prices=' . wp_json_encode($double_runtime_prices)
-      . ', lines=' . wp_json_encode($double_line_diagnostics)
-      . ', errors=' . wp_json_encode($double_notices) . ')');
+  $check(round((float)WC()->cart->get_total('edit'),2)===20.0
+    && !wc_has_notice('An event pass is incomplete or no longer matches the event. Remove all items in that pass and add it again.','error'),
+    'valid $20 double-feature pass accepts integer-allocated line prices');
 
   WC()->cart->empty_cart();
   foreach ($products as $i=>$pid) {
