@@ -31,7 +31,12 @@ try {
         if (!add_post_meta($id, $key, $value)) throw new RuntimeException('Private fixture metadata could not be created.');
     }
     // Keep this test focused on Capacity: the independent publication gate is covered separately.
-    if (class_exists(RoxyST\Eligibility::class)) remove_filter('woocommerce_is_purchasable', [RoxyST\Eligibility::class, 'purchasable'], 99);
+    if (class_exists(RoxyST\Eligibility::class)) {
+        remove_filter('woocommerce_is_purchasable', [RoxyST\Eligibility::class, 'purchasable'], 99);
+        remove_filter('woocommerce_add_to_cart_validation', [RoxyST\Eligibility::class, 'validate_add'], 5);
+        remove_action('woocommerce_check_cart_items', [RoxyST\Eligibility::class, 'validate_cart'], 9990);
+        remove_action('woocommerce_checkout_process', [RoxyST\Eligibility::class, 'validate_cart'], 9990);
+    }
     RoxyST\Capacity::init();
     WC()->session = new WC_Session_Handler(); // Never initialize or persist a customer session.
     WC()->customer = new WC_Customer(0, false);
