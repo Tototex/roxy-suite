@@ -861,6 +861,20 @@ function roxy_will_call_filter_legacy_ticket_order_query(array $query, array $qu
   $var = 'roxy_will_call_ticket_product_ids';
   if (!array_key_exists($var, $query_vars)) return $query;
 
+  if (roxy_will_call_has_variable_order_item_semantics()) return $query;
+
+  $product_ids = roxy_will_call_normalize_candidate_product_ids($query_vars[$var]);
+  // Avoid replacing an otherwise complete scan with an unusually large SQL
+  // predicate if an installation has an exceptionally broad ticket catalog.
+  if (!$product_ids || count($product_ids) > 500) return $query;
+  // The SQL clause below intersects with the CPT query instead of replacing
+  // an extension's existing post__in or materializing an unbounded ID list.
+  $query[$var] = $product_ids;
+  return $query;
+}
+
+/** Keep the SQL hook aligned with the same extension-safety gate as the query filter. */
+function roxy_will_call_has_variable_order_item_semantics(): bool {
   $variable_order_item_filters = [
     'woocommerce_order_item_get_product_id',
     'woocommerce_order_item_get_variation_id',
@@ -869,19 +883,17 @@ function roxy_will_call_filter_legacy_ticket_order_query(array $query, array $qu
     'get_order_item_metadata',
   ];
   foreach ($variable_order_item_filters as $filter) {
-    if (function_exists('has_filter') && has_filter($filter)) return $query;
+    if (function_exists('has_filter') && has_filter($filter)) return true;
   }
 
-  $product_ids = array_values(array_unique(array_filter(array_map('intval', (array) $query_vars[$var]), static function ($id) {
+  return false;
+}
+
+/** Normalize the private query argument once before it can reach a SQL predicate. */
+function roxy_will_call_normalize_candidate_product_ids($value): array {
+  return array_values(array_unique(array_filter(array_map('intval', (array) $value), static function ($id) {
     return $id > 0;
   })));
-  // Avoid replacing an otherwise complete scan with an unusually large SQL
-  // predicate if an installation has an exceptionally broad ticket catalog.
-  if (!$product_ids || count($product_ids) > 500) return $query;
-  // The SQL clause below intersects with the CPT query instead of replacing
-  // an extension's existing post__in or materializing an unbounded ID list.
-  $query[$var] = $product_ids;
-  return $query;
 }
 
 if (function_exists('add_filter')) {
@@ -897,10 +909,12 @@ function roxy_will_call_legacy_ticket_order_where(string $where, $wp_query): str
   // unrelated queries (including ticket lookups in other modules) untouched.
   if (!is_object($wp_query) || !isset($wp_query->query_vars) || !array_key_exists($var, $wp_query->query_vars)) return $where;
 
-  $product_ids = array_values(array_unique(array_filter(array_map('intval', (array) $wp_query->query_vars[$var]), static function ($id) {
-    return $id > 0;
-  })));
+  $product_ids = roxy_will_call_normalize_candidate_product_ids($wp_query->query_vars[$var]);
   if (!$product_ids) return $where . ' AND 1=0';
+  // The query-args filter may intentionally decline narrowing because item
+  // getters are extended or the catalog exceeds the bound. Do not let this
+  // independent SQL hook reintroduce the predicate in that fallback case.
+  if (roxy_will_call_has_variable_order_item_semantics() || count($product_ids) > 500) return $where;
 
   global $wpdb;
   if (!isset($wpdb->prefix, $wpdb->posts) || !is_string($wpdb->prefix) || $wpdb->prefix === ''

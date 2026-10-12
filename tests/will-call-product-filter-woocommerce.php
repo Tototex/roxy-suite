@@ -122,6 +122,22 @@ try {
   $check(roxy_will_call_legacy_ticket_order_where(' WHERE 1=1', $ordinary_query) === ' WHERE 1=1', 'global SQL filter leaves unrelated WordPress queries unchanged');
   $empty_candidate_query = (object) ['query_vars' => ['roxy_will_call_ticket_product_ids' => []]];
   $check(strpos(roxy_will_call_legacy_ticket_order_where(' WHERE 1=1', $empty_candidate_query), 'AND 1=0') !== false, 'explicit empty Will Call candidate list fails closed');
+  $wide_candidate_query = (object) ['query_vars' => ['roxy_will_call_ticket_product_ids' => range(1, 501)]];
+  $check(roxy_will_call_legacy_ticket_order_where(' WHERE 1=1', $wide_candidate_query) === ' WHERE 1=1', '501-product fallback does not reintroduce an oversized SQL predicate');
+  add_filter('woocommerce_order_item_get_product_id', '__return_false', 10, 1);
+  try {
+    $guarded_order_args = ['post__in' => [999]];
+    $guarded_order_args_before = $guarded_order_args;
+    $guarded_order_args = roxy_will_call_filter_legacy_ticket_order_query(
+      $guarded_order_args,
+      ['roxy_will_call_ticket_product_ids' => [101, 102]]
+    );
+    $check($guarded_order_args === $guarded_order_args_before, 'item-getter extension keeps the original complete order query');
+    $guarded_candidate_query = (object) ['query_vars' => ['roxy_will_call_ticket_product_ids' => [101, 102]]];
+    $check(roxy_will_call_legacy_ticket_order_where(' WHERE 1=1', $guarded_candidate_query) === ' WHERE 1=1', 'item-getter extension fallback does not reintroduce SQL narrowing');
+  } finally {
+    remove_filter('woocommerce_order_item_get_product_id', '__return_false', 10);
+  }
   $ticket_ids = [$simple->get_id(), $variation->get_id()];
   $labels = [$simple->get_id() => 'General', $variation->get_id() => 'Variation'];
   $cache_key = roxy_will_call_cache_key($ticket_ids, $labels);
