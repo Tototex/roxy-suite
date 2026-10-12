@@ -456,6 +456,8 @@ final class Store {
             $poster_id = get_post_thumbnail_id((int) reset($showing_ids));
             if ($poster_id) $poster_url = wp_get_attachment_url($poster_id) ?: '';
         }
+        $temporary_attachment_id = (int) ($row['temporary_attachment_id'] ?? 0);
+        if ($temporary_attachment_id > 0 && !self::queue_detached_media($temporary_attachment_id, $id)) return null;
         $updated = self::save_publish_values($id, [
             'media_type' => 'image',
             'media_url' => $poster_url,

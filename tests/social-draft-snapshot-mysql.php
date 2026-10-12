@@ -83,7 +83,10 @@ try {
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::update_imported_media(1,8888,'video','2099-01-01 00:00:00',123,'replacement.mp4',$row)&&(int)\RoxySocial\DraftFixtureStore::find(1)['temporary_attachment_id']===8888&&(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `$queue_table` WHERE attachment_id = %d",2147483004))===1,'replacing imported video queues old attachment and tracks the new one');
     $wpdb->delete($queue_table,['attachment_id'=>2147483005]);
     $row=roxy_snapshot_row(['media_type'=>'video','temporary_attachment_id'=>2147483005,'cleanup_after'=>'2026-10-01 00:00:00']);
-    roxy_snapshot_check(\RoxySocial\DraftFixtureStore::clear_media(1)===0&&\RoxySocial\DraftFixtureStore::find(1)['temporary_attachment_id']===null&&(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `$queue_table` WHERE attachment_id = %d",2147483005))===1,'manual clear removes media from draft while retaining cleanup tracking');
+    $minimum_clear_deadline=current_datetime()->modify('+71 hours 59 minutes')->format('Y-m-d H:i:s');
+    roxy_snapshot_check(\RoxySocial\DraftFixtureStore::clear_media(1)===0&&\RoxySocial\DraftFixtureStore::find(1)['temporary_attachment_id']===null,'manual clear detaches temporary video media from the draft');
+    $cleared_video=$wpdb->get_row($wpdb->prepare("SELECT social_post_id, cleanup_after FROM `$queue_table` WHERE attachment_id = %d",2147483005),ARRAY_A);
+    roxy_snapshot_check(is_array($cleared_video)&&(int)$cleared_video['social_post_id']===1&&(string)$cleared_video['cleanup_after']>=$minimum_clear_deadline,'manual clear queues its detached video with a fresh 72-hour cleanup grace period');
     $row=roxy_snapshot_row(['media_type'=>'video','temporary_attachment_id'=>2147483006,'cleanup_after'=>'2026-10-01 00:00:00']);
     $wpdb->query("DROP TEMPORARY TABLE `$queue_table`");
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::clear_media(1)===null&&(int)\RoxySocial\DraftFixtureStore::find(1)['temporary_attachment_id']===2147483006,'cleanup queue failure preserves media on a draft when manually clearing it');
