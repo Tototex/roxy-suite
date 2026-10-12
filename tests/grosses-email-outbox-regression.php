@@ -72,6 +72,13 @@ try {
   // with Unicode escaped, so the resulting claim query remains ASCII-only.
   $fixture_charset = $fixture_db->charset;
   $fixture_db->charset = 'ascii';
+  $legacy_json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+  $legacy_write = $fixture_db->query($fixture_db->prepare(
+    "UPDATE `{$table}` SET payload_json = %s WHERE id = 0",
+    $legacy_json
+  ));
+  $check($legacy_write === false && strpos((string) $fixture_db->last_error, 'contains invalid data') !== false,
+    'pre-fix raw Unicode write reproduces the WordPress charset rejection');
   $first = $outbox::claim($logical_key, 'daily_report', 41, '2039-04-05', $payload, $context);
   $fixture_db->charset = $fixture_charset;
   $check($first['claimed'] === true && $first['id'] > 0 && $first['status'] === 'sending', 'first atomic claim persists sending before any caller-side mail action');
