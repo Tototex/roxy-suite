@@ -197,9 +197,7 @@ try {
     $successful_order = $make_booking_order('2040-01-03 10:00:00');
     roxy_fixture_eb_on_payment_complete((int) $successful_order->get_id());
     $saved_booking = roxy_fixture_eb_repo_get_booking_by_order((int) $successful_order->get_id());
-    $payment_notes = wc_get_order_notes(['order_id'=>(int)$successful_order->get_id()]);
-    $payment_diagnostic = wp_json_encode(['events'=>array_slice($GLOBALS['room_fixture_events'],$payment_events_before),'notes'=>array_map(static function($note){return (string)($note->content??'');},(array)$payment_notes),'db_error'=>(string)$wpdb->last_error,'item_count'=>count($successful_order->get_items())]);
-    $check(is_array($saved_booking) && $saved_booking['status']==='confirmed','actual payment-complete callback creates a booking after final locked availability check: '.$payment_diagnostic);
+    $check(is_array($saved_booking) && $saved_booking['status']==='confirmed','actual payment-complete callback creates a booking after final locked availability check');
     $success_events = array_slice($GLOBALS['room_fixture_events'],$payment_events_before);
     $check(in_array('booking_confirmed',$success_events,true) && in_array('customer_confirmed',$success_events,true),'successful callback reaches expected confirmation boundaries');
     $event_count = count($GLOBALS['room_fixture_events']);
