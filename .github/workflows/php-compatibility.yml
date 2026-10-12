@@ -373,6 +373,7 @@ jobs:
             grosses-closed-day-store-regression.php
             grosses-concessions-by-date-store-regression.php
             grosses-cashflow-report-regression.php
+            grosses-settings-cashflow-gateway-defaults-regression.php
             grosses-export-regression.php
             grosses-fresh-email-allocation-regression.php
             grosses-list-compatibility-regression.php
