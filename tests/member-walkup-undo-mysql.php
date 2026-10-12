@@ -8,6 +8,7 @@ $scan=$wpdb->prefix.'roxy_member_scans';
 $items=$wpdb->prefix.'woocommerce_order_items';
 $itemmeta=$wpdb->prefix.'woocommerce_order_itemmeta';
 $created=[];
+$triggers=[];
 $check=static function($ok,$label){if(!$ok)throw new RuntimeException($label);echo 'PASS: '.$label.PHP_EOL;};
 try {
   foreach([$scan,$items,$itemmeta] as $table) {
@@ -55,7 +56,34 @@ try {
   $reserved=false;try{$undo($wrong_source,712345,812345);}catch(Throwable $error){$reserved=true;}
   $reserved_row=$wpdb->get_row($wpdb->prepare("SELECT * FROM `$scan` WHERE id=%d",$wrong_source),ARRAY_A);
   $check($reserved && (int)$reserved_row['is_active']===1,'reserved admissions cannot use the walk-up Undo endpoint');
+
+  $trigger_suffix=substr(hash('sha256',wp_generate_uuid4()),0,12);
+  $fail_insert=static function(string $name,string $condition)use($wpdb,$scan,&$triggers):void {
+    $sql="CREATE TRIGGER `$name` BEFORE INSERT ON `$scan` FOR EACH ROW BEGIN IF $condition THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Injected private walk-up fixture failure'; END IF; END";
+    if($wpdb->query($sql)===false)throw new RuntimeException('Could not create private walk-up fault trigger: '.$wpdb->last_error);
+    $triggers[]=$name;
+  };
+  $failing_replacement=$insert(712347,812345,3);
+  $before=wp_json_encode($wpdb->get_results("SELECT * FROM `$scan` ORDER BY id",ARRAY_A));
+  $replacement_trigger='roxy_walkup_fail_replacement_'.$trigger_suffix;
+  $fail_insert($replacement_trigger,"NEW.source='manual_admit_walkup'");
+  $replacement_failed=false;try{$undo($failing_replacement,712347,812345);}catch(Throwable $error){$replacement_failed=true;}
+  $after=wp_json_encode($wpdb->get_results("SELECT * FROM `$scan` ORDER BY id",ARRAY_A));
+  $check($replacement_failed && $before===$after,'replacement-row insert failure rolls back the original visit deactivation');
+  if($wpdb->query("DROP TRIGGER `$replacement_trigger`")===false)throw new RuntimeException('Could not remove private replacement fault trigger');
+  array_pop($triggers);
+
+  $failing_audit=$insert(712348,812345,3);
+  $before=wp_json_encode($wpdb->get_results("SELECT * FROM `$scan` ORDER BY id",ARRAY_A));
+  $audit_trigger='roxy_walkup_fail_audit_'.$trigger_suffix;
+  $fail_insert($audit_trigger,"NEW.source='manual_undo_walkup'");
+  $audit_failed=false;try{$undo($failing_audit,712348,812345);}catch(Throwable $error){$audit_failed=true;}
+  $after=wp_json_encode($wpdb->get_results("SELECT * FROM `$scan` ORDER BY id",ARRAY_A));
+  $check($audit_failed && $before===$after,'audit-row insert failure rolls back both deactivation and replacement');
+  if($wpdb->query("DROP TRIGGER `$audit_trigger`")===false)throw new RuntimeException('Could not remove private audit fault trigger');
+  array_pop($triggers);
   echo 'MEMBER_WALKUP_UNDO_MYSQL_OK'.PHP_EOL;
 } finally {
+  foreach(array_reverse($triggers) as $trigger)$wpdb->query("DROP TRIGGER IF EXISTS `$trigger`");
   foreach(array_reverse($created) as $table)$wpdb->query("DROP TABLE IF EXISTS `$table`");
 }
