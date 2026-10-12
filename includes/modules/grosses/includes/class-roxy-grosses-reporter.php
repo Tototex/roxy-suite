@@ -2748,6 +2748,16 @@ class Reporter {
   }
 
   private static function log_sync_anomalies(string $report_date, string $mode, array $movie_rows, array $live_rows): void {
+    // Automatic movie refreshes can include same-title lookback dates so
+    // refunds can correct their original sale day. Anomaly checks below are
+    // date-specific, matching Square's one-day total; never mix those rows.
+    $movie_rows = array_values(array_filter($movie_rows, static function (array $row) use ($report_date): bool {
+      return (string) ($row['report_date'] ?? '') === $report_date;
+    }));
+    $live_rows = array_values(array_filter($live_rows, static function (array $row) use ($report_date): bool {
+      return (string) ($row['report_date'] ?? '') === $report_date;
+    }));
+
     $movie_zero_rows = array_values(array_filter($movie_rows, static function (array $row): bool {
       return (int) ($row['total_tickets'] ?? 0) === 0 && abs((float) ($row['concessions_total'] ?? 0)) < 0.01;
     }));

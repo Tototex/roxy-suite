@@ -42,6 +42,7 @@ namespace RoxyGrosses {
     public static array $live = [];
     public static array $rental = [];
     public static array $updates = [];
+    public static array $logs = [];
     public static array $unmatched_concessions = [];
     public static bool $fail_unmatched_write = false;
     public static bool $fail_update = false;
@@ -56,7 +57,7 @@ namespace RoxyGrosses {
     public static function upsert_entries(array $rows, string $mode): array { self::$entry_calls[] = $rows; return ['created'=>count($rows),'updated'=>0,'skipped'=>0]; }
     public static function upsert_live_entries(array $rows, string $mode): array { return ['created'=>count($rows),'updated'=>0,'skipped'=>0]; }
     public static function upsert_history_rows(...$args): array { return []; }
-    public static function insert_log(...$args): int { return 1; }
+    public static function insert_log(...$args): int { self::$logs[] = $args; return 1; }
     public static function create_report(...$args): int { return self::$report_id; }
     public static function list_entries(array $filters = [], int $limit = 1000, int $offset = 0): array { return self::$movie[$filters['day'] ?? ''] ?? []; }
     public static function list_live_entries(array $filters = [], int $limit = 1000, int $offset = 0): array { return self::$live[$filters['day'] ?? ''] ?? []; }
@@ -167,6 +168,35 @@ namespace {
   $range_by_date = [];
   foreach ($range_rows as $row) $range_by_date[$row['date']] = $row['square_total'];
   $check(($range_by_date['2038-05-01'] ?? null) === 10.01 && ($range_by_date['2038-05-02'] ?? null) === 5.55, 'range orders group by report-timezone close date and preserve exact cents');
+
+  // Automatic refresh may carry same-title lookback rows. Diagnostics must
+  // compare only the requested day to that day's Square total, never add the
+  // previous day's concessions into the current-day comparison.
+  $target_date = '2038-05-11';
+  $prior_date = '2038-05-10';
+  \RoxyGrosses\Square::$orders = [
+    $prior_date => [['line_items'=>[['catalog_object_id'=>'snack','total_money'=>['amount'=>27865,'currency'=>'USD']]]]],
+    $target_date => [['line_items'=>[['catalog_object_id'=>'snack','total_money'=>['amount'=>21759,'currency'=>'USD']]]]],
+  ];
+  \RoxyGrosses\Store::$logs = [];
+  \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('log_sync_anomalies', [$target_date, 'closed-day-refresh', [
+    ['report_date'=>$prior_date,'film_title'=>'Same Movie','show_time'=>'7:00 PM','total_tickets'=>25,'concessions_total'=>278.65],
+    ['report_date'=>$target_date,'film_title'=>'Same Movie','show_time'=>'7:00 PM','total_tickets'=>27,'concessions_total'=>217.59],
+  ], []]));
+  $mismatch_logs = array_values(array_filter(\RoxyGrosses\Store::$logs, static fn(array $log): bool => ($log[0] ?? '') === 'anomaly' && (($log[6]['anomaly_type'] ?? '') === 'concessions_mismatch')));
+  $check($mismatch_logs === [], 'same-title prior-day concessions do not create a false current-day mismatch');
+
+  \RoxyGrosses\Store::$logs = [];
+  \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('log_sync_anomalies', [$target_date, 'closed-day-refresh', [
+    ['report_date'=>$prior_date,'film_title'=>'Same Movie','show_time'=>'7:00 PM','total_tickets'=>25,'concessions_total'=>278.65],
+    ['report_date'=>$target_date,'film_title'=>'Same Movie','show_time'=>'7:00 PM','total_tickets'=>27,'concessions_total'=>200.00],
+  ], []]));
+  $mismatch_logs = array_values(array_filter(\RoxyGrosses\Store::$logs, static fn(array $log): bool => ($log[0] ?? '') === 'anomaly' && (($log[6]['anomaly_type'] ?? '') === 'concessions_mismatch')));
+  $check(count($mismatch_logs) === 1 && ($mismatch_logs[0][6]['square_total'] ?? null) === 217.59
+    && ($mismatch_logs[0][6]['assigned_total'] ?? null) === 200.0
+    && ($mismatch_logs[0][6]['difference'] ?? null) === 17.59,
+    'real current-day mismatch reports only current-day assigned cents despite lookback rows');
+
   foreach (['tomorrow', '2038-05-01T25:61:00Z', '2038-04-30T18:00:00-07:00'] as $bad_closed_at) {
     \RoxyGrosses\Square::$orders = ['2038-05-01' => [['id'=>'bad-range','closed_at'=>$bad_closed_at,'line_items'=>[]]]];
     $failed_closed = false;
