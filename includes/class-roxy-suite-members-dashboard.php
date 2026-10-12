@@ -426,9 +426,8 @@ class Members_Dashboard {
             throw new \RuntimeException('Subscription identities could not be read');
         }
 
-        $validated = [];
         $previous_id = PHP_INT_MAX;
-        foreach ($ids as $raw_id) {
+        foreach ($ids as $key => $raw_id) {
             if ((!is_int($raw_id) && !is_string($raw_id)) || !preg_match('/^[1-9]\\d*$/D', (string) $raw_id)) {
                 throw new \RuntimeException('Subscription identity snapshot was invalid');
             }
@@ -436,11 +435,16 @@ class Members_Dashboard {
             if ($id <= 0 || $id >= $previous_id) {
                 throw new \RuntimeException('Subscription identity snapshot was invalid');
             }
-            $validated[] = $id;
+            $ids[$key] = $id;
             $previous_id = $id;
         }
 
-        foreach (array_chunk($validated, 100) as $batch) yield $batch;
+        $total = count($ids);
+        for ($offset = 0; $offset < $total; $offset += 100) {
+            $batch = array_slice($ids, $offset, 100);
+            yield $batch;
+            foreach (array_keys($batch) as $index) unset($ids[$offset + $index]);
+        }
     }
 
     private static function subscription_quantity($sub): int {
