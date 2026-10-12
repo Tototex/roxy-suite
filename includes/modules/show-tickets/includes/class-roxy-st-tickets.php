@@ -565,7 +565,7 @@ class Tickets {
       throw new \RuntimeException('No eligible tickets.');
     }
     try {
-      $checked=(new Issuance(array_values($identities),$scope))->run(static function(Issuance $operation)use($identities,$quantity,$allow_undo,$summary,$validate):array {
+      $checked=(new Issuance(array_values($identities),$scope))->run(static function(Issuance $operation)use($identities,$quantity,$allow_undo,$summary,$validate,$user_id):array {
         self::$issuance=$operation;
         try {
           foreach(array_unique($identities) as $order_id){clean_post_cache($order_id);wp_cache_delete('order-items-'.$order_id,'orders');}

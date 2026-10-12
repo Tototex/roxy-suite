@@ -98,6 +98,11 @@ try{
   $check(\RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0],'ticket'),'QR fixture explicitly cleared after legacy helper checks');
   $summary=['context_id'=>1000000000+$show,'customer_key'=>'private-group-'.$order->get_id(),'baseline_used'=>0];
   $count_checked=static function($set){foreach($set as $id)wp_cache_delete($id,'post_meta');return count(array_filter($set,static fn($id)=>(int)get_post_meta($id,'_roxy_checked_in',true)===1));};
+  \RoxyST\IssuanceFixtureTickets::apply_will_call_group($ids,3,false,$summary,null,9);
+  $check($count_checked($ids)===3&&count(array_filter($ids,static fn($id)=>(int)get_post_meta($id,'_roxy_checked_in_by',true)===9))===3,'Will Call group records the explicitly supplied staff actor for every ticket');
+  $summary['baseline_used']=3;
+  \RoxyST\IssuanceFixtureTickets::apply_will_call_group($ids,0,true,$summary,null,9);
+  $summary['baseline_used']=0;
   $fail_group=static function($sql)use($wpdb,$ids){return strpos($sql,"INSERT INTO `{$wpdb->postmeta}`")===0&&str_contains($sql,'SELECT '.$ids[1].',')&&str_contains($sql,'_roxy_checked_in_by')?'INSERT INTO `roxy_missing_group_failure_target` VALUES (1)':$sql;};
   add_filter('query',$fail_group);$suppressed=$wpdb->suppress_errors(true);$rejected=false;
   try {try {\RoxyST\IssuanceFixtureTickets::apply_will_call_group($ids,3,false,$summary);}catch(RuntimeException $e){$rejected=true;}}
