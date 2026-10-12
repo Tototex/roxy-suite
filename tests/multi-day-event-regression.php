@@ -150,8 +150,11 @@ try {
   add_action('save_post_' . \RoxyST\CPT::POST_TYPE, $publication_probe, 21, 2);
   wp_update_post(['ID'=>(int)$event_id,'post_status'=>'publish']);
   remove_action('save_post_' . \RoxyST\CPT::POST_TYPE, $publication_probe, 21);
-  $check(count($product_ids_during_publication)===6 && count(array_filter($product_ids_during_publication))===0,
-    'ticket products are not synchronized from screening hooks before the publication transaction commits');
+  $check(count($product_ids_during_publication)===6,
+    'publication transaction updates all six screening posts (observed ' . count($product_ids_during_publication) . '; parent=' . get_post_status((int)$event_id) . '; notice=' . (string)get_transient('roxy_st_event_invalid_' . get_current_user_id()) . ')');
+  $products_created_before_commit = array_values(array_filter($product_ids_during_publication));
+  $check(!$products_created_before_commit,
+    'ticket products are not synchronized from screening hooks before the publication transaction commits (observed IDs: ' . implode(',', $products_created_before_commit) . ')');
   $check(str_contains($publication_html, 'Sold out or sales ended') && preg_match('/<button type="submit" disabled/', $publication_html) === 1,
     'event ticket buttons remain disabled until committed screenings have published ticket products');
   $check(count(array_filter($screenings,static fn($id)=>get_post_status($id)==='publish'))===6,'publishing event publishes all six linked showings');
