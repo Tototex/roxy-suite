@@ -11,6 +11,7 @@ remove_action('woocommerce_refund_created',[\RoxyST\Tickets::class,'on_refund_cr
 remove_action('woocommerce_refund_deleted',[\RoxyST\Tickets::class,'on_refund_deleted'],30);
 remove_action('woocommerce_order_status_changed',[\RoxyST\Sales::class,'on_order_changed'],20);
 $created=[];$order=null;$refund=null;$group_order=null;$group_ids=[];$marathon_order=null;$marathon_ids=[];$summary=null;
+$wp_cli_path=(string)(getenv('ROXY_WP_CLI')?:'/usr/local/bin/wp');
 $check=static function($ok,$label){if(!$ok)throw new RuntimeException($label);echo 'PASS: '.$label.PHP_EOL;};
 try{
   $show=wp_insert_post(['post_type'=>'roxy_showing','post_status'=>'draft','post_title'=>'PRIVATE ISSUANCE FIXTURE 2026-10-05'],true);if(is_wp_error($show))throw new RuntimeException('Cannot create fixture');$created[]=$show;
@@ -47,7 +48,7 @@ try{
   $workers=[];
   try{
     foreach([[9,'will_call'],[10,'ticket']] as [$actor,$source]){
-      $pipes=[];$process=proc_open([PHP_BINARY,'/usr/local/bin/wp','--path='.ABSPATH,'eval-file',__DIR__.'/ticket-admission-worker.php',$root,(string)$order->get_id(),(string)$ids[0],(string)$actor,$source],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);
+      $pipes=[];$process=proc_open([PHP_BINARY,$wp_cli_path,'--path='.ABSPATH,'eval-file',__DIR__.'/ticket-admission-worker.php',$root,(string)$order->get_id(),(string)$ids[0],(string)$actor,$source],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);
       if(!is_resource($process))throw new RuntimeException('Cannot start private worker');
       fclose($pipes[0]);stream_set_blocking($pipes[1],false);stream_set_blocking($pipes[2],false);
       $workers[]=['process'=>$process,'pipes'=>$pipes,'out'=>'','error'=>'','exit'=>null];
@@ -107,7 +108,7 @@ try{
   $check($rejected&&$count_checked($ids)===0,'summary persistence failure rolls back every ticket admission');
   $workers=[];$deadline=microtime(true)+40;
   try {
-    foreach([1,2] as $worker_id){$pipes=[];$process=proc_open([PHP_BINARY,'/usr/local/bin/wp','--path='.ABSPATH,'eval-file',__DIR__.'/ticket-group-worker.php',$root,(string)$order->get_id(),(string)$summary['context_id'],$summary['customer_key']],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);if(!is_resource($process))throw new RuntimeException('Cannot start private group worker');fclose($pipes[0]);stream_set_blocking($pipes[1],false);stream_set_blocking($pipes[2],false);$workers[]=['process'=>$process,'pipes'=>$pipes,'out'=>'','exit'=>null];}
+    foreach([1,2] as $worker_id){$pipes=[];$process=proc_open([PHP_BINARY,$wp_cli_path,'--path='.ABSPATH,'eval-file',__DIR__.'/ticket-group-worker.php',$root,(string)$order->get_id(),(string)$summary['context_id'],$summary['customer_key']],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);if(!is_resource($process))throw new RuntimeException('Cannot start private group worker');fclose($pipes[0]);stream_set_blocking($pipes[1],false);stream_set_blocking($pipes[2],false);$workers[]=['process'=>$process,'pipes'=>$pipes,'out'=>'','exit'=>null];}
     do {$running=false;foreach($workers as &$worker){$worker['out'].=stream_get_contents($worker['pipes'][1]);stream_get_contents($worker['pipes'][2]);$status=proc_get_status($worker['process']);if($status['running'])$running=true;elseif($worker['exit']===null)$worker['exit']=$status['exitcode'];}unset($worker);if($running){if(microtime(true)>$deadline)throw new RuntimeException('Group workers timed out');usleep(100000);}}while($running);
     $results=[];foreach($workers as $worker){if($worker['exit']!==0||!preg_match('/GROUP_RESULT=([01])/',$worker['out'],$match))throw new RuntimeException('Group worker failed');$results[]=(int)$match[1];}
     $check(array_sum($results)===1&&$count_checked($ids)===3,'two independent group saves allow exactly one original-baseline transition');
