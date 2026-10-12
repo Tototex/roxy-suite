@@ -54,6 +54,13 @@ try {
     if ($wpdb->query('CREATE TABLE `' . $fixture_table . '` LIKE `' . $wpdb->prefix . $production_name . '`') === false) throw new RuntimeException('Could not create private schema copy.');
     $owned_tables[] = $fixture_table;
   }
+  // The live/rental lock columns are added by the normal schema upgrade path,
+  // not by CREATE TABLE on fresh installs. Mirror that upgrade privately.
+  foreach ([$wpdb->prefix . $maps['roxy_grosses_live_entries'], $wpdb->prefix . $maps['roxy_grosses_rental_entries']] as $fixture_table) {
+    $has_lock = $wpdb->get_var("SHOW COLUMNS FROM `{$fixture_table}` LIKE 'is_locked'");
+    if ($wpdb->last_error !== '') throw new RuntimeException('Could not inspect private lock-column schema.');
+    if (!$has_lock && $wpdb->query("ALTER TABLE `{$fixture_table}` ADD is_locked TINYINT(1) NOT NULL DEFAULT 0") === false) throw new RuntimeException('Could not prepare private lock-column schema.');
+  }
 
   $store_source = file_get_contents($store_path);
   if (!is_string($store_source) || strpos($store_source, 'namespace RoxyGrosses;') === false) throw new RuntimeException('Unexpected Store source.');
