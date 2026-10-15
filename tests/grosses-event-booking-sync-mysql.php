@@ -116,6 +116,20 @@ try {
       && $summary['concessions'] === 123.45 && $summary['average_invoice'] === 0.0,
     'rental totals retain cancelled rows and Square concessions but exclude cancelled invoices from average');
 
+  $wpdb->insert($bookings, [
+    'id' => 900003, 'visibility' => 'private', 'status' => 'confirmed', 'invoice_status' => 'paid',
+    'reserved_start_at' => '2026-05-10 16:00:00', 'reserved_end_at' => '2026-05-10 20:00:00',
+    'doors_open_at' => '2026-05-10 16:30:00', 'business_name' => 'Earlier Fixture Rental', 'total_price' => '250.00',
+  ]);
+  $may_sync = $store::sync_event_bookings_to_rentals('2026-05-01', '2026-05-31');
+  $earlier = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $store::rental_entries_table_name() . ' WHERE source_ref = %s', 'booking:900003'), ARRAY_A);
+  $wpdb->update($bookings, ['status' => 'cancelled', 'invoice_status' => 'void'], ['id' => 900003]);
+  $later_sync = $store::sync_event_bookings_to_rentals('2026-06-01', '2026-06-30');
+  $earlier_after = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $store::rental_entries_table_name() . ' WHERE source_ref = %s', 'booking:900003'), ARRAY_A);
+  $check($may_sync['created'] === 1 && $later_sync['updated'] === 1 && $earlier_after['status'] === 'Cancelled'
+      && (float) $earlier_after['invoice_amount'] === 0.0,
+    'nightly sync notices a later cancellation for an already-synced rental outside its report-date window');
+
   $wpdb->update($store::rental_entries_table_name(), ['is_locked' => 1], ['id' => (int) $row['id']]);
   $wpdb->update($bookings, ['status' => 'confirmed', 'reserved_end_at' => '2026-06-10 22:00:00', 'total_price' => '500.00'], ['id' => 900001]);
   $locked = $store::sync_event_bookings_to_rentals('2026-06-01', '2026-06-30');

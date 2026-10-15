@@ -604,16 +604,18 @@ class Store {
 
     $range_start = $date_from . ' 00:00:00';
     $range_end = (new \DateTimeImmutable($date_to . ' 00:00:00', wp_timezone()))->modify('+1 day')->format('Y-m-d H:i:s');
+    $table = self::rental_entries_table_name();
     $bookings = $wpdb->get_results($wpdb->prepare(
-      "SELECT * FROM `{$source}` WHERE visibility = %s AND reserved_start_at >= %s AND reserved_start_at < %s ORDER BY reserved_start_at ASC, id ASC",
-      'private', $range_start, $range_end
+      "SELECT booking.* FROM `{$source}` AS booking WHERE booking.visibility = %s AND ((booking.reserved_start_at >= %s AND booking.reserved_start_at < %s) OR (LOWER(TRIM(booking.status)) IN (%s, %s) AND EXISTS (SELECT 1 FROM `{$table}` AS rental WHERE rental.source_type = %s AND rental.source_ref = CONCAT('booking:', booking.id))) ORDER BY booking.reserved_start_at ASC, booking.id ASC",
+      'private', $range_start, $range_end, 'cancelled', 'canceled', 'event_booking'
     ), ARRAY_A);
     if ($wpdb->last_error !== '' || !is_array($bookings)) throw new \RuntimeException('Could not read private event bookings for the rental synchronization.');
 
     $created = 0; $updated = 0; $skipped = 0; $dates = [];
-    $table = self::rental_entries_table_name();
     foreach ($bookings as $booking) {
       $booking_id = (int) ($booking['id'] ?? 0);
+      $booking_status = sanitize_text_field((string) ($booking['status'] ?? ''));
+      $is_cancelled = in_array(strtolower(trim($booking_status)), ['cancelled', 'canceled'], true);
       $start = (string) ($booking['reserved_start_at'] ?? '');
       $end = (string) ($booking['reserved_end_at'] ?? '');
       $start_dt = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $start, wp_timezone());
@@ -622,7 +624,7 @@ class Store {
         throw new \RuntimeException('A private event booking has an invalid reservation window; no rental row was synchronized.');
       }
       $report_date = $start_dt->format('Y-m-d');
-      if ($report_date < $date_from || $report_date > $date_to) continue;
+      if (($report_date < $date_from || $report_date > $date_to) && !$is_cancelled) continue;
       $company = trim((string) ($booking['business_name'] ?? ''));
       $event_title = trim((string) (($booking['event_format'] ?? '') === 'movie' ? ($booking['movie_title'] ?? '') : ($booking['live_description'] ?? '')));
       $title_context = $company !== '' ? $company : ($event_title !== '' ? $event_title : trim((string) ($booking['customer_first_name'] ?? '') . ' ' . (string) ($booking['customer_last_name'] ?? '')));
@@ -630,9 +632,7 @@ class Store {
       $rental_title = sanitize_text_field('Private Rental - ' . $title_context);
       $rental_title = function_exists('mb_substr') ? mb_substr($rental_title, 0, 190) : substr($rental_title, 0, 190);
       $customer_name = sanitize_text_field(trim((string) ($booking['customer_first_name'] ?? '') . ' ' . (string) ($booking['customer_last_name'] ?? '')));
-      $booking_status = sanitize_text_field((string) ($booking['status'] ?? ''));
       $invoice_status = sanitize_text_field((string) ($booking['invoice_status'] ?? ''));
-      $is_cancelled = in_array(strtolower(trim($booking_status)), ['cancelled', 'canceled'], true);
       $doors_raw = (string) ($booking['doors_open_at'] ?? '');
       $doors_dt = $doors_raw !== '' ? \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $doors_raw, wp_timezone()) : false;
       $display_status = $is_cancelled ? 'Cancelled' : ($invoice_status !== '' && $invoice_status !== 'not_needed'
