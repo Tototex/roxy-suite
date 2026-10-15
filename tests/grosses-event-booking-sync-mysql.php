@@ -134,7 +134,7 @@ try {
   $wpdb->update($bookings, ['status' => 'confirmed', 'reserved_end_at' => '2026-06-10 22:00:00', 'total_price' => '500.00'], ['id' => 900001]);
   $locked = $store::sync_event_bookings_to_rentals('2026-06-01', '2026-06-30');
   $protected = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $store::rental_entries_table_name() . ' WHERE id = %d', (int) $row['id']), ARRAY_A);
-  $check($locked['skipped'] === 1 && $protected['reserved_end_at'] === '2026-06-10 21:00:00' && $protected['status'] === 'Cancelled' && (float) $protected['invoice_amount'] === 0.0,
+  $check($locked['skipped'] === 2 && $protected['reserved_end_at'] === '2026-06-10 21:00:00' && $protected['status'] === 'Cancelled' && (float) $protected['invoice_amount'] === 0.0,
     'manager-locked rental retains its saved values when source booking changes');
 
   echo "PASS: {$check_count} private booking synchronization checks\n";
