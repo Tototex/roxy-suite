@@ -15,7 +15,7 @@ only when its version, order/request/backing/customer identities, amount, and
 currency match the specific Woo order; mismatched or incomplete receipts are
 not displayed as verified.
 
-The isolated fixture now contains 22 render/security assertions, including
+The isolated fixture now contains 26 render/security assertions, including
 order-ID mismatch, request/backing/customer/amount/currency mismatches, per-order
 capability checks, and approval email-link identity checks. PHP 8.0–8.4 syntax,
 the complete PHP 8.3 cross-module suite, the Requested Showings private
