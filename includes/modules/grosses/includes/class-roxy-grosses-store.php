@@ -618,8 +618,8 @@ class Store {
       $current_date = $start_dt->setTimezone($report_timezone)->format('Y-m-d');
       $existing_date = (string) ($row['existing_report_date'] ?? '');
       $cancelled = in_array(strtolower(trim((string) ($row['status'] ?? ''))), ['cancelled', 'canceled'], true);
-      if (!$cancelled && empty($row['existing_is_locked']) && $existing_date !== '' && $existing_date !== $current_date) {
-        $dates[$existing_date] = true;
+      if (!$cancelled && empty($row['existing_is_locked'])) {
+        if ($existing_date !== '' && $existing_date !== $current_date) $dates[$existing_date] = true;
         $dates[$current_date] = true;
       }
     }

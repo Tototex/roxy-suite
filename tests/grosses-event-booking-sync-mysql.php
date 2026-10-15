@@ -87,6 +87,8 @@ try {
   ]);
   if ($wpdb->last_error !== '') throw new RuntimeException('Could not seed private Event Booking rows.');
 
+  $initial_preview = $store::event_booking_sync_preview_dates('2026-06-01', '2026-06-30');
+  $check(in_array('2026-06-10', $initial_preview, true), 'pre-sync preview includes sale dates for new rentals so Square data can be loaded before source writes');
   $first = $store::sync_event_bookings_to_rentals('2026-06-01', '2026-06-30');
   $rows = $wpdb->get_results('SELECT * FROM ' . $store::rental_entries_table_name() . ' ORDER BY id ASC', ARRAY_A);
   $check($first['created'] === 1 && count($rows) === 1, 'imports only the private booking in the requested date range');
@@ -180,7 +182,7 @@ try {
   $timezone_preview = $store::event_booking_sync_preview_dates('2026-06-11', '2026-06-11');
   $timezone_sync = $store::sync_event_bookings_to_rentals('2026-06-11', '2026-06-11');
   $timezone_row = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $store::rental_entries_table_name() . ' WHERE source_ref = %s', 'booking:900005'), ARRAY_A);
-  $check($timezone_preview === [] && $timezone_sync['created'] === 1 && in_array('2026-06-11', $timezone_sync['dates'], true)
+  $check($timezone_preview === ['2026-06-11'] && $timezone_sync['created'] === 1 && in_array('2026-06-11', $timezone_sync['dates'], true)
       && $timezone_row['report_date'] === '2026-06-11' && $timezone_row['show_time'] === '6:45 AM'
       && $timezone_row['reserved_start_at'] === '2026-06-10 23:30:00',
     'site-local booking wall times convert to the Grosses report timezone before report-date selection');
