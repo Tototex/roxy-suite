@@ -128,7 +128,7 @@ $set_order(new WC_Order($identity_meta + [
     '_roxy_rs_payment_result' => (string) json_encode($valid_result),
 ], 'roxy_requested_showings', true));
 $html = $render();
-$check(str_contains($html, 'Payment may need manual reconciliation') && str_contains($html, 'Attempt marker: missing or unreadable')
+$check(str_contains($html, 'Payment may need manual reconciliation') && str_contains($html, 'Attempt marker:</strong> missing or unreadable')
     && !str_contains($html, 'Payment attempt details are shown for audit'), 'missing attempt marker never produces a reassuring audit headline');
 $set_order(new WC_Order([], 'checkout'));
 $check($render() === '', 'unrelated WooCommerce orders reveal no Requested Showings panel');
