@@ -121,14 +121,18 @@ class Conversion {
         $order_id = is_object($post) && isset($post->ID) ? (int) $post->ID : 0;
         if ($order_id <= 0 || !current_user_can('edit_shop_order', $order_id) || !function_exists('wc_get_order')) return;
         $order = wc_get_order($order_id);
-        if (!$order instanceof \WC_Order || $order->get_created_via() !== 'roxy_requested_showings') return;
+        if (!$order instanceof \WC_Order || (int) $order->get_id() !== $order_id
+            || $order->get_created_via() !== 'roxy_requested_showings') return;
 
         $attempt_raw = $order->get_meta('_roxy_rs_payment_attempt', true);
         $result_raw = $order->get_meta('_roxy_rs_payment_result', true);
         $review = (string) $order->get_meta('_roxy_seat_review', true) === '1';
         if (!$review && $attempt_raw === '' && $result_raw === '') return;
 
-        if ($review || !$order->is_paid()) {
+        $attempt = self::decode_review_metadata($attempt_raw);
+        $attempt_matches_order = $attempt && self::payment_review_attempt_matches_order($attempt, $order);
+
+        if ($review || !$order->is_paid() || ($attempt && !$attempt_matches_order)) {
             echo '<p><strong>Payment may need manual reconciliation.</strong></p>';
             echo '<p>This panel is read-only. Do not retry conversion or manually mark this order paid. Verify the PaymentIntent in Stripe using the order ID, amount, currency, and customer before taking any action.</p>';
         } else {
@@ -139,19 +143,21 @@ class Conversion {
         echo '<strong>Currency:</strong> ' . esc_html(strtoupper((string) $order->get_currency())) . '<br>';
         echo '<strong>Order status:</strong> ' . esc_html(wc_get_order_status_name($order->get_status())) . '</p>';
 
-        $attempt = self::decode_review_metadata($attempt_raw);
-        if ($attempt) {
+        if ($attempt_matches_order) {
             echo '<p><strong>Attempt started (UTC):</strong> ' . esc_html((string) ($attempt['started_at'] ?? 'Unknown')) . '<br>';
             echo '<strong>Request / backing:</strong> ' . esc_html((string) ($attempt['request_id'] ?? 'Unknown')) . ' / ' . esc_html((string) ($attempt['backing_id'] ?? 'Unknown')) . '</p>';
+        } elseif ($attempt) {
+            echo '<p><strong>Saved attempt identity:</strong> does not match this Woo order. Its receipt is not verified.</p>';
         } else {
             echo '<p><strong>Attempt marker:</strong> missing or unreadable; investigate before any payment action.</p>';
         }
 
         $result = self::decode_review_metadata($result_raw);
         $result_statuses = ['succeeded', 'processing', 'requires_capture', 'requires_action', 'requires_payment_method', 'requires_confirmation', 'canceled'];
-        $result_matches_attempt = $attempt
+        $result_matches_attempt = $attempt_matches_order
             && is_string($attempt['key'] ?? null) && is_string($attempt['hash'] ?? null)
             && is_string($result['key'] ?? null) && is_string($result['hash'] ?? null)
+            && preg_match('/^[a-f0-9]{64}$/D', $attempt['hash'])
             && hash_equals($attempt['key'], $result['key']) && hash_equals($attempt['hash'], $result['hash']);
         if ($result_matches_attempt && in_array((string) ($result['status'] ?? ''), $result_statuses, true)
             && preg_match('/^pi_[A-Za-z0-9]+$/D', (string) ($result['intent_id'] ?? ''))) {
@@ -168,6 +174,53 @@ class Conversion {
         $data = json_decode($value, true);
         if (!is_array($data)) return [];
         return $data;
+    }
+
+    /** A saved attempt receipt is trusted only when its full identity matches this Woo order. */
+    private static function payment_review_attempt_matches_order(array $attempt, \WC_Order $order): bool {
+        foreach (['get_id', 'get_customer_id', 'get_total', 'get_currency', 'get_meta'] as $method) {
+            if (!method_exists($order, $method)) return false;
+        }
+        foreach (['order_id', 'request_id', 'backing_id', 'customer_id', 'amount'] as $field) {
+            if (!isset($attempt[$field]) || !is_int($attempt[$field]) || $attempt[$field] <= 0) return false;
+        }
+        if (($attempt['version'] ?? null) !== 1
+            || !is_string($attempt['currency'] ?? null)
+            || !is_string($attempt['key'] ?? null) || $attempt['key'] === ''
+            || !is_string($attempt['hash'] ?? null) || !preg_match('/^[a-f0-9]{64}$/D', $attempt['hash'])) {
+            return false;
+        }
+
+        $total = $order->get_total();
+        $currency = $order->get_currency();
+        if (!is_numeric($total) || !is_string($currency)) return false;
+        $total = (float) $total;
+        if (!is_finite($total) || $total <= 0 || $total > 21474836.47) return false;
+
+        return $attempt['order_id'] === (int) $order->get_id()
+            && $attempt['customer_id'] === (int) $order->get_customer_id()
+            && $attempt['request_id'] === (int) $order->get_meta('_roxy_rs_request_id', true)
+            && $attempt['backing_id'] === (int) $order->get_meta('_roxy_rs_backing_id', true)
+            && $attempt['amount'] === (int) round($total * 100)
+            && strtolower($attempt['currency']) === strtolower($currency);
+    }
+
+    /** Return a manager order URL only when Woo order ownership matches this backing. */
+    private static function verified_review_order_admin_url($order, int $expected_order_id, int $request_id, array $backing): string {
+        $backing_id = (int) ($backing['id'] ?? 0);
+        $customer_id = (int) ($backing['user_id'] ?? 0);
+        if (!$order instanceof \WC_Order || $expected_order_id <= 0 || $request_id <= 0 || $backing_id <= 0 || $customer_id <= 0
+            || !method_exists($order, 'get_id') || !method_exists($order, 'get_customer_id')
+            || !method_exists($order, 'get_created_via') || !method_exists($order, 'get_meta')
+            || (int) $order->get_id() !== $expected_order_id
+            || $order->get_created_via() !== 'roxy_requested_showings'
+            || (int) $order->get_customer_id() !== $customer_id
+            || (int) $order->get_meta('_roxy_rs_request_id', true) !== $request_id
+            || (int) $order->get_meta('_roxy_rs_backing_id', true) !== $backing_id) {
+            return '';
+        }
+
+        return admin_url('post.php?post=' . $expected_order_id . '&action=edit');
     }
 
     public static function actions_markup(int $request_id): string {
@@ -405,10 +458,9 @@ class Conversion {
                 $review_order_id = (int) ($review_backing['woo_order_id'] ?? 0);
                 $review_order = $review_order_id > 0 && function_exists('wc_get_order') ? wc_get_order($review_order_id) : false;
                 $order_review_line = '';
-                if ($review_order instanceof \WC_Order
-                    && (int) $review_order->get_meta('_roxy_rs_request_id', true) === $request_id
-                    && (int) $review_order->get_meta('_roxy_rs_backing_id', true) === $backing_id) {
-                    $order_review_line = "\nWoo order ID: " . $review_order_id . "\nReview order: " . admin_url('post.php?post=' . $review_order_id . '&action=edit');
+                $order_review_url = self::verified_review_order_admin_url($review_order, $review_order_id, $request_id, $review_backing ?? []);
+                if ($order_review_url !== '') {
+                    $order_review_line = "\nWoo order ID: " . $review_order_id . "\nReview order: " . $order_review_url;
                 }
                 self::email_admin(
                     sprintf('Requested showing approval needs attention: %s', get_the_title($request_id)),
