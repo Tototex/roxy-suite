@@ -17,6 +17,28 @@ class Reporter {
     add_action('admin_post_roxy_grosses_update_row', [__CLASS__, 'handle_update_row']);
     add_action('admin_post_roxy_grosses_run_now', [__CLASS__, 'handle_run_now']);
     add_action('admin_post_roxy_grosses_send_live_email', [__CLASS__, 'handle_send_live_email']);
+    add_action('admin_post_roxy_grosses_sync_private_bookings', [__CLASS__, 'handle_sync_private_bookings']);
+  }
+
+  public static function handle_sync_private_bookings(): void {
+    if (!roxy_suite_user_can_access_admin()) wp_die('You do not have permission to synchronize private bookings.');
+    check_admin_referer('roxy_grosses_sync_private_bookings');
+    $date_from = isset($_POST['date_from']) ? sanitize_text_field(wp_unslash((string) $_POST['date_from'])) : '';
+    $date_to = isset($_POST['date_to']) ? sanitize_text_field(wp_unslash((string) $_POST['date_to'])) : '';
+    foreach ([$date_from, $date_to] as $date) {
+      $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date, new \DateTimeZone(Settings::get_report_timezone()));
+      if (!$parsed || $parsed->format('Y-m-d') !== $date) self::redirect_with_notice('error', 'Choose valid booking dates in YYYY-MM-DD format.', 'rentals');
+    }
+    if ($date_from > $date_to) self::redirect_with_notice('error', 'The booking start date must be on or before the end date.', 'rentals');
+    $result = self::backfill_private_event_bookings($date_from, $date_to);
+    Store::insert_log('sync_private_bookings', 'manual-booking-sync', null, $date_to, !empty($result['success']), (string) ($result['message'] ?? 'Private booking sync finished.'), [
+      'date_from' => $date_from,
+      'date_to' => $date_to,
+      'created' => (int) ($result['bookings']['created'] ?? 0),
+      'updated' => (int) ($result['bookings']['updated'] ?? 0),
+      'dates_rebalanced' => (int) ($result['dates_rebalanced'] ?? 0),
+    ]);
+    self::redirect_with_notice(!empty($result['success']) ? 'success' : 'error', (string) ($result['message'] ?? 'Private booking synchronization failed.'), 'rentals');
   }
 
   public static function handle_pull_database(): void {
@@ -568,6 +590,29 @@ class Reporter {
     return Square::with_sale_snapshot(static fn() => self::sync_automatic_tables_snapshot($report_date, $mode, $now));
   }
 
+  /** Import active private bookings and attribute each day's Square sales to their exact reserved window. */
+  public static function backfill_private_event_bookings(string $date_from, string $date_to): array {
+    try {
+      return Square::with_sale_snapshot(static function () use ($date_from, $date_to): array {
+        $orders_by_date = self::square_orders_grouped_by_local_date(Square::fetch_orders_for_range($date_from, $date_to), $date_from, $date_to);
+        $sync = Store::sync_event_bookings_to_rentals($date_from, $date_to);
+        $failures = []; $rebalanced = 0;
+        foreach ($sync['dates'] as $date) {
+          try { self::rebalance_concessions_for_date((string) $date, $orders_by_date[(string) $date] ?? []); $rebalanced++; }
+          catch (\Throwable $error) { $failures[(string) $date] = $error->getMessage(); }
+        }
+        $success = !$failures;
+        return ['success' => $success, 'message' => sprintf(
+          'Synchronized private bookings for %s through %s: %d created, %d updated, %d protected/unchanged; one Square range snapshot was used and %d of %d booking date(s) were rebalanced%s.',
+          $date_from, $date_to, $sync['created'], $sync['updated'], $sync['skipped'], $rebalanced, count($sync['dates']),
+          $failures ? ' (' . implode('; ', array_map(static fn(string $date, string $message): string => $date . ': ' . $message, array_keys($failures), array_values($failures))) . ')' : ''
+        ), 'bookings' => $sync, 'dates_rebalanced' => $rebalanced, 'failures' => $failures];
+      });
+    } catch (\Throwable $error) {
+      return ['success' => false, 'message' => $error->getMessage(), 'bookings' => ['created' => 0, 'updated' => 0, 'skipped' => 0, 'dates' => []], 'dates_rebalanced' => 0, 'failures' => []];
+    }
+  }
+
   /** Refresh a closed sale day and flag changed emailed snapshots; never sends a report. */
   public static function refresh_closed_day(string $report_date): array {
     return self::sync_automatic_tables($report_date, 'closed-day-refresh');
@@ -582,6 +627,7 @@ class Reporter {
       if (!$claimed) throw new \RuntimeException('A Grosses refund refresh is already running or its lock is unavailable.');
       $timezone = new \DateTimeZone(Settings::get_report_timezone());
       $cutoff = ($now ?? new \DateTimeImmutable('now', $timezone))->setTimezone($timezone);
+      $booking_sync = Store::sync_event_bookings_to_rentals($report_date, $report_date);
       $related = self::related_showings_by_date($report_date);
       $dates = array_keys($related);
       sort($dates);
@@ -683,6 +729,9 @@ class Reporter {
         'live_updated' => (int) ($live_result['updated'] ?? 0),
         'refund_movie_rows_updated' => $refund_updated,
         'refund_movie_rows_protected' => $refund_protected,
+        'private_bookings_created' => (int) ($booking_sync['created'] ?? 0),
+        'private_bookings_updated' => (int) ($booking_sync['updated'] ?? 0),
+        'private_bookings_skipped' => (int) ($booking_sync['skipped'] ?? 0),
         'closed_day_reports_flagged' => count($closed_day_reports_flagged),
         'pending_refund_source_days' => count($pending_dates),
       ]);
@@ -698,6 +747,7 @@ class Reporter {
         'live_result' => $live_result,
         'refund_movie_rows_updated' => $refund_updated,
         'refund_movie_rows_protected' => $refund_protected,
+        'private_bookings' => $booking_sync,
         'closed_day_reports_flagged' => count($closed_day_reports_flagged),
       ];
     } catch (\Throwable $e) {
@@ -1621,6 +1671,32 @@ class Reporter {
     }
   }
 
+  /** Validate and group one complete Square range snapshot by the report timezone's sale date. */
+  private static function square_orders_grouped_by_local_date(array $orders, string $date_from, string $date_to): array {
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $start = \DateTimeImmutable::createFromFormat('!Y-m-d', $date_from, $timezone);
+    $end = \DateTimeImmutable::createFromFormat('!Y-m-d', $date_to, $timezone);
+    if (!$start || !$end || $start->format('Y-m-d') !== $date_from || $end->format('Y-m-d') !== $date_to || $date_from > $date_to) {
+      throw new \RuntimeException('Choose a valid chronological date range for the Square booking refresh.');
+    }
+    $end = $end->modify('+1 day');
+    $grouped = [];
+    foreach ($orders as $order) {
+      if (!is_array($order)) throw new \RuntimeException('Square returned a malformed order; no partial rental allocation was performed.');
+      $raw = $order['closed_at'] ?? null;
+      if (!is_string($raw) || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/', $raw)) {
+        throw new \RuntimeException('Square returned an order without a valid close timestamp; no partial rental allocation was performed.');
+      }
+      try { $closed = new \DateTimeImmutable($raw); }
+      catch (\Throwable $error) { throw new \RuntimeException('Square returned an invalid order timestamp; no partial rental allocation was performed.', 0, $error); }
+      $date_errors = \DateTimeImmutable::getLastErrors();
+      if ($date_errors && ($date_errors['warning_count'] || $date_errors['error_count'])) throw new \RuntimeException('Square returned an invalid order timestamp; no partial rental allocation was performed.');
+      if ($closed < $start || $closed >= $end) throw new \RuntimeException('Square returned an order outside the requested rental refresh range.');
+      $grouped[$closed->setTimezone($timezone)->format('Y-m-d')][] = $order;
+    }
+    return $grouped;
+  }
+
   private static function matching_showing_id_for_order_time(\DateTimeImmutable $order_closed_at, array $showings): int {
     $best_id = 0;
     $best_distance = null;
@@ -1754,14 +1830,14 @@ class Reporter {
     foreach ($dates as $date) self::rebalance_concessions_for_date($date);
   }
 
-  private static function rebalance_concessions_for_date(string $report_date): array {
+  private static function rebalance_concessions_for_date(string $report_date, ?array $orders_override = null): array {
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $report_date)) {
       return ['rows' => 0, 'updated' => 0, 'concessions_total' => 0.0];
     }
-    return Store::with_concession_allocation_lock($report_date, static fn(): array => self::rebalance_concessions_for_date_locked($report_date));
+    return Store::with_concession_allocation_lock($report_date, static fn(): array => self::rebalance_concessions_for_date_locked($report_date, $orders_override));
   }
 
-  private static function rebalance_concessions_for_date_locked(string $report_date): array {
+  private static function rebalance_concessions_for_date_locked(string $report_date, ?array $orders_override = null): array {
     $reports = [];
     foreach (Store::list_all_entries_for_rebalance('movie', $report_date) as $row) {
       $entry_id = (int) ($row['id'] ?? 0);
@@ -1811,13 +1887,15 @@ class Reporter {
         '_entry_kind' => 'rental',
         '_entry_id' => $entry_id,
         '_start_at' => self::start_at_for_entry_row($report_date, (string) ($row['show_time'] ?? '')),
+        '_window_start' => self::rental_window_datetime((string) ($row['reserved_start_at'] ?? '')),
+        '_window_end' => self::rental_window_datetime((string) ($row['reserved_end_at'] ?? '')),
         'show_time' => (string) ($row['show_time'] ?? ''),
         'concessions_total' => !empty($row['is_locked']) ? round((float) ($row['concessions_total'] ?? 0), 2) : 0.0,
         '_is_locked' => !empty($row['is_locked']),
       ];
     }
 
-    self::apply_concessions_to_reports($reports, $report_date, self::showings_for_date($report_date, 'live'));
+    self::apply_concessions_to_reports($reports, $report_date, self::showings_for_date($report_date, 'live'), null, false, $orders_override);
 
     return Store::with_concession_allocation_transaction(static function () use ($reports, $report_date): array {
       $updated = 0;
@@ -1851,8 +1929,8 @@ class Reporter {
     });
   }
 
-  private static function apply_concessions_to_reports(array &$reports, string $report_date, array $showings = [], ?array $allocation_reports = null, bool $defer_missing_cross_type_row = false): void {
-    $orders = Square::fetch_orders_for_date($report_date);
+  private static function apply_concessions_to_reports(array &$reports, string $report_date, array $showings = [], ?array $allocation_reports = null, bool $defer_missing_cross_type_row = false, ?array $orders_override = null): void {
+    $orders = $orders_override ?? Square::fetch_orders_for_date($report_date);
     $matching_showings = self::concession_matching_showings($report_date, $showings, $reports);
     $target_reports = $allocation_reports !== null ? $reports : null;
     if ($allocation_reports !== null) $reports = $allocation_reports;
@@ -2238,6 +2316,10 @@ class Reporter {
         $candidate['_entry_kind'] = $kind;
         $candidate['_entry_id'] = $entry_id;
         $candidate['showing_id'] = $showing_id;
+        if ($kind === 'rental') {
+          $candidate['_window_start'] = self::rental_window_datetime((string) ($row['reserved_start_at'] ?? ''));
+          $candidate['_window_end'] = self::rental_window_datetime((string) ($row['reserved_end_at'] ?? ''));
+        }
         if (!$has_current_start) {
           $candidate['_start_at'] = self::start_at_for_entry_row($report_date, $show_time);
           $candidate['show_time'] = $show_time;
@@ -2267,13 +2349,40 @@ class Reporter {
     return self::matching_entry_ids_for_order_time($order_closed_at, $candidates, false) !== [];
   }
 
+  private static function rental_window_datetime(string $value): ?\DateTimeImmutable {
+    if ($value === '') return null;
+    $timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $value, $timezone);
+    return $parsed && $parsed->format('Y-m-d H:i:s') === $value ? $parsed : null;
+  }
+
   private static function matching_entry_ids_for_order_time(\DateTimeImmutable $order_closed_at, array $reports, bool $allow_single_row_fallback = false): array {
     $matches = [];
     $best_distance = null;
+    $window_matches = [];
+    $best_window_distance = null;
 
     foreach ($reports as $entry_id => $report) {
       $start_at = $report['_start_at'] ?? null;
       if (!$start_at instanceof \DateTimeImmutable) {
+        continue;
+      }
+
+      $window_start = $report['_window_start'] ?? null;
+      $window_end = $report['_window_end'] ?? null;
+      if ($window_start instanceof \DateTimeImmutable && $window_end instanceof \DateTimeImmutable && $window_end > $window_start) {
+        $order_local = $order_closed_at->setTimezone($window_start->getTimezone());
+        if ($order_local >= $window_start && $order_local < $window_end) {
+          // When an exact private-event reservation window contains the sale,
+          // it is stronger evidence than a nearby movie/live showtime window.
+          $distance = abs($order_local->getTimestamp() - (int) (($window_start->getTimestamp() + $window_end->getTimestamp()) / 2));
+          if ($best_window_distance === null || $distance < $best_window_distance) {
+            $best_window_distance = $distance;
+            $window_matches = [(int) $entry_id];
+          } elseif ($distance === $best_window_distance) {
+            $window_matches[] = (int) $entry_id;
+          }
+        }
         continue;
       }
 
@@ -2292,6 +2401,8 @@ class Reporter {
         $matches[] = (int) $entry_id;
       }
     }
+
+    if ($window_matches) return array_values(array_unique($window_matches));
 
     if ($matches) {
       return array_values(array_unique($matches));

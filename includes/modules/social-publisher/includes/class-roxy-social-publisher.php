@@ -18,6 +18,9 @@ final class Publisher {
         return self::$claim !== null && Store::owns_publish_lock(self::$claim);
     }
 
+    public static function owns_worker_lock(): bool { return self::owns_lock(); }
+    public static function worker_claim(): ?array { return self::$claim; }
+
     private static function save_result(int $id, string $status, string $error = '', string $facebook_id = '', string $instagram_id = ''): bool {
         return self::owns_lock() && Store::update_publish_result($id, $status, $error, $facebook_id, $instagram_id, self::$claim);
     }
@@ -120,13 +123,31 @@ final class Publisher {
     private static function remove_row(int $id): bool {
         $row = Store::find($id);
         if (!$row || !in_array((string) $row['status'], ['posted', 'failed', 'needs_review'], true)) return false;
-        if (empty($row['facebook_post_id']) && empty($row['instagram_media_id'])) {self::save_result($id,(string)$row['status'],'No published IDs are recorded; verify the remote accounts manually before marking removed.');return false;}
+        $story_state = json_decode((string) ($row['facebook_story_state'] ?? ''), true);
+        $story_ids = is_array($story_state) ? array_filter(array_map('strval', $story_state['ids'] ?? [])) : [];
+        if (is_array($story_state) && !empty($story_state['pending_id'])) $story_ids[] = (string) $story_state['pending_id'];
+        if (empty($row['facebook_post_id']) && empty($row['instagram_media_id']) && !$story_ids) {self::save_result($id,(string)$row['status'],'No published IDs are recorded; verify the remote accounts manually before marking removed.');return false;}
         $facebook = empty($row['facebook_post_id']) ? [] : self::delete_remote((string) $row['facebook_post_id'], Meta::page_access_token());
         if (!empty($facebook['success']) && !Store::clear_publish_id($id, 'facebook', self::$claim)) $facebook=['error'=>'Remote removal succeeded but its local record could not be saved. Review before retrying.'];
+        $story_errors = [];
+        foreach (array_unique($story_ids) as $story_id) {
+            $removed = self::delete_remote((string) $story_id, Meta::page_access_token());
+            if (empty($removed['success'])) {
+                $story_errors[] = (string) ($removed['error'] ?? 'Facebook did not confirm Story removal.');
+                continue;
+            }
+            if (is_array($story_state)) {
+                $story_state['ids'] = array_values(array_filter((array) ($story_state['ids'] ?? []), static function ($id) use ($story_id) { return (string) $id !== (string) $story_id; }));
+                if ((string) ($story_state['pending_id'] ?? '') === (string) $story_id) $story_state['pending_id'] = '';
+                if (!Store::set_facebook_story_state($id, wp_json_encode($story_state), self::$claim)) $story_errors[] = 'A removed Facebook Story ID could not be cleared locally; review before retrying.';
+            }
+        }
+        if (!$story_errors && is_array($story_state) && !Store::clear_facebook_story_state($id, self::$claim)) $story_errors[] = 'Facebook Stories were removed but their local IDs could not be cleared.';
         $instagram = empty($row['instagram_media_id']) ? [] : self::delete_remote((string) $row['instagram_media_id'], Meta::access_token());
         if (!empty($instagram['success']) && !Store::clear_publish_id($id, 'instagram', self::$claim)) $instagram=['error'=>'Remote removal succeeded but its local record could not be saved. Review before retrying.'];
         $errors = array_filter([
             !empty($facebook['error']) ? 'Facebook: ' . $facebook['error'] : '',
+            $story_errors ? 'Facebook Story: ' . implode(' ', $story_errors) : '',
             !empty($instagram['error']) ? 'Instagram: ' . $instagram['error'] : '',
         ]);
         if ($errors) { self::save_result($id, (string) $row['status'], implode(' ', $errors)); return false; }
@@ -155,6 +176,31 @@ final class Publisher {
             $row['facebook_post_id']=(string)$facebook['id'];
         }
         if (!empty($facebook['ambiguous'])) {self::save_result($id,'needs_review','Facebook: '.(string)$facebook['error']);return false;}
+        $story = [];
+        $story_error = '';
+        $story_ambiguous = false;
+        if ($platform !== 'instagram' && !empty($row['publish_facebook_story']) && (string) ($row['media_type'] ?? '') === 'video' && empty($row['facebook_story_state'])) {
+            $initialized = wp_json_encode(['version' => 1, 'expected' => 0, 'ids' => [], 'pending_id' => '']);
+            if (!Store::set_facebook_story_state($id, $initialized, self::$claim)) {
+                self::save_result($id, 'needs_review', 'Facebook accepted the post, but Story processing could not be initialized. Review the Page before retrying.');
+                return false;
+            }
+            $row['facebook_story_state'] = $initialized;
+        }
+        if ($platform !== 'instagram' && !empty($row['publish_facebook_story']) && (string) ($row['media_type'] ?? '') === 'video') {
+            $story_state = (string) ($row['facebook_story_state'] ?? '');
+            $story = FacebookStories::publish($row, $story_state);
+            if (!empty($story['state']) && !Store::set_facebook_story_state($id, (string) $story['state'], self::$claim)) {
+                self::save_result($id, 'needs_review', 'Facebook Stories were published, but their IDs could not be saved. Review the Page before retrying.');
+                return false;
+            }
+            if (!empty($story['error'])) {
+                // Facebook Stories are an independent destination. A Story
+                // processing failure must not prevent the Instagram post.
+                $story_error = 'Facebook Story: ' . (string) $story['error'];
+                $story_ambiguous = !empty($story['ambiguous']);
+            }
+        }
         $instagram = ($platform === 'facebook' || !empty($row['instagram_media_id'])) ? [] : (count($media_urls) > 1
             ? self::publish_instagram_carousel($media_urls, $caption, $id, (string) ($row['instagram_container_id'] ?? ''))
             : self::publish_instagram($media_url, $caption, (string) ($row['media_type'] ?? 'image'), $id, (string) ($row['instagram_container_id'] ?? '')));
@@ -175,10 +221,16 @@ final class Publisher {
         }
         $errors = array_filter([
             !empty($facebook['error']) ? 'Facebook: ' . $facebook['error'] : '',
+            $story_error,
             !empty($instagram['error']) ? 'Instagram: ' . $instagram['error'] : '',
         ]);
         if ($errors) {
-            self::save_result($id, !empty($instagram['ambiguous']) ? 'needs_review' : 'failed', implode(' ', $errors), (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? ''));
+            $needs_review = $story_ambiguous || !empty($instagram['ambiguous']);
+            if (!empty($instagram['id']) && !Store::clear_instagram_container_id($id, self::$claim)) {
+                $errors[] = 'Instagram was published, but its completed container could not be cleared locally. Review before retrying.';
+                $needs_review = true;
+            }
+            self::save_result($id, $needs_review ? 'needs_review' : 'failed', implode(' ', $errors), (string) ($facebook['id'] ?? ''), (string) ($instagram['id'] ?? ''));
             return false;
         }
         if (($platform!=='instagram' && empty($row['facebook_post_id']) && empty($facebook['id'])) || ($platform!=='facebook' && empty($row['instagram_media_id']) && empty($instagram['id']))) {self::save_result($id,'needs_review','A platform returned no published ID. Review remote posts before retrying.');return false;}
@@ -242,6 +294,17 @@ final class Publisher {
             if (!empty($container['error']) || empty($container['id'])) return $container ?: ['error' => 'Instagram did not return a carousel container ID.'];
         }
         if (!Store::set_instagram_container_id($post_id, (string) $container['id'], self::$claim)) return ['error' => 'Instagram carousel container ID could not be saved. Review before retrying.', 'ambiguous' => true];
+        $status = self::get('https://graph.facebook.com/' . rawurlencode((string) $container['id']), ['fields' => 'status_code,status', 'access_token' => Meta::access_token()]);
+        if (!empty($status['error'])) return ['error' => 'Instagram carousel readiness could not be verified. Review the container before retrying.', 'ambiguous' => true];
+        $status_code = (string) ($status['status_code'] ?? '');
+        if ($status_code === 'PUBLISHED') return ['error' => 'Instagram reports this carousel is already published but no media ID is recorded. Review the account before retrying.', 'ambiguous' => true];
+        if ($status_code === 'ERROR' || $status_code === 'EXPIRED') {
+            if (!Store::clear_instagram_container_id($post_id, self::$claim)) return ['error' => 'Instagram carousel container reached terminal status but its identity could not be cleared. Review before retrying.', 'ambiguous' => true];
+            return ['error' => $status_code === 'ERROR'
+                ? 'Instagram carousel processing failed. Review the draft before creating a fresh container.'
+                : 'Instagram carousel container expired before publication. Review the draft before creating a fresh container.'];
+        }
+        if ($status_code !== 'FINISHED') return ['error' => 'Instagram carousel is not ready to publish. Its container is retained; review its status before retrying.', 'ambiguous' => true];
         return self::request($base . '/media_publish', ['creation_id' => $container['id'], 'access_token' => Meta::access_token()]);
     }
 

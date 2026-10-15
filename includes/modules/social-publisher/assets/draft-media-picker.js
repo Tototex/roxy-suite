@@ -12,6 +12,7 @@
             var cell=document.createElement('td'),use=document.createElement('button');
             use.type='button';use.className='button';use.textContent='Use';
             use.dataset.id=String(id);use.dataset.name=String(asset.filename||'');
+            use.dataset.errorId='roxy-hangar-import-error-'+id;
             cell.appendChild(use);row.appendChild(cell);body.appendChild(row);
         });
         return table;
@@ -56,6 +57,8 @@
             use.onclick = function () {
                 use.disabled = true;
                 use.textContent = 'Importing...';
+                var oldError = document.getElementById(use.dataset.errorId);
+                if (oldError) oldError.remove();
                 var data = new URLSearchParams({
                     action: 'roxy_social_hangar_assign',
                     nonce: window.roxySocialPicker.assignNonce,
@@ -67,10 +70,15 @@
                 fetch(window.roxySocialPicker.ajaxurl, {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: data})
                     .then(function (response) { return response.json(); })
                     .then(function (result) {
-                        if (!result.success || !result.data || !result.data.url) { use.disabled = false; use.textContent = 'Try again'; return; }
+                        if (!result.success || !result.data || !result.data.url) {
+                            use.disabled = false; use.textContent = 'Try again';
+                            var detail = result.data && result.data.message ? result.data.message : (typeof result.data === 'string' ? result.data : 'The media import failed. Retry, or check the site error log.');
+                            var error = document.createElement('p'); error.id = use.dataset.errorId; error.className = 'notice notice-error'; error.setAttribute('role', 'alert'); error.textContent = detail;
+                            use.parentNode.appendChild(error); return;
+                        }
                         form.querySelector('[name="draft_revision"]').value = result.data.draft_revision;
                         choose(form, button, modal, result.data.url, result.data.media_type, false);
-                    }).catch(function(){use.disabled=false;use.textContent='Try again';});
+                    }).catch(function(){use.disabled=false;use.textContent='Try again';var error=document.createElement('p');error.id=use.dataset.errorId;error.className='notice notice-error';error.setAttribute('role','alert');error.textContent='Could not reach the site while importing. Check your connection and retry.';use.parentNode.appendChild(error);});
             };
         });
     }

@@ -44,6 +44,8 @@ final class Store {
             temporary_attachment_id BIGINT UNSIGNED NULL,
             cleanup_after DATETIME NULL,
             facebook_post_id VARCHAR(190) NULL,
+            publish_facebook_story TINYINT(1) NOT NULL DEFAULT 0,
+            facebook_story_state LONGTEXT NULL,
             instagram_media_id VARCHAR(190) NULL,
             instagram_container_id VARCHAR(190) NULL,
             last_error TEXT NULL,
@@ -84,7 +86,11 @@ final class Store {
         $wpdb->last_error = '';
         $poster_cleanup_name = self::poster_cleanup_table_name();
         $poster_cleanup_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($poster_cleanup_name))) === $poster_cleanup_name;
-        return $main_exists && $cleanup_exists && $poster_cleanup_exists && $main_error === '' && $cleanup_error === '' && $wpdb->last_error === '';
+        $poster_cleanup_error = $wpdb->last_error;
+        $wpdb->last_error = '';
+        $story_column = $wpdb->get_var($wpdb->prepare('SHOW COLUMNS FROM ' . $main_name . ' LIKE %s', 'publish_facebook_story'));
+        return $main_exists && $cleanup_exists && $poster_cleanup_exists && $story_column === 'publish_facebook_story'
+            && $main_error === '' && $cleanup_error === '' && $poster_cleanup_error === '' && $wpdb->last_error === '';
     }
 
     /** Persist a plugin-owned poster path before its attachment metadata is removed. */
@@ -415,7 +421,7 @@ final class Store {
     }
 
     public static function update_imported_media(int $id, int $attachment_id, string $media_type, ?string $cleanup_after, int $asset_id = 0, string $filename = '', ?array $expected = null): bool {
-        if (!$expected || (int) ($expected['id'] ?? 0) !== $id || ($expected['status'] ?? '') !== 'draft') return false;
+        if (!$expected || (int) ($expected['id'] ?? 0) !== $id || !in_array((string) ($expected['status'] ?? ''), ['draft', 'needs_review', 'approved', 'failed'], true)) return false;
         $current = self::find($id);
         // Caption generation and media download may finish in either order.
         // Only rebase a completed AI caption, never a manager edit/approval.
@@ -431,6 +437,7 @@ final class Store {
         if ($url === '') return false;
         return self::save_draft_snapshot($expected, [
             'media_type' => sanitize_key($media_type),
+            'publish_facebook_story' => $media_type === 'video' && !empty($expected['publish_facebook_story']) ? 1 : 0,
             'media_url' => esc_url_raw($url),
             'media_urls' => $media_type === 'image' ? wp_json_encode([$url]) : null,
             'hangar_asset_id' => $asset_id > 0 ? $asset_id : null,
@@ -438,7 +445,7 @@ final class Store {
             'temporary_attachment_id' => $media_type === 'video' ? $attachment_id : null,
             'cleanup_after' => $media_type === 'video' ? $cleanup_after : null,
             'updated_at' => current_time('mysql'),
-        ]);
+        ], true);
     }
 
     public static function clear_media(int $id): ?int {
@@ -462,6 +469,7 @@ final class Store {
         if ($temporary_attachment_id > 0 && !self::queue_detached_media($temporary_attachment_id, $id)) return null;
         $updated = self::save_publish_values($id, [
             'media_type' => 'image',
+            'publish_facebook_story' => 0,
             'media_url' => $poster_url,
             'media_urls' => $poster_url !== '' ? wp_json_encode([$poster_url]) : null,
             'hangar_asset_id' => null,
@@ -517,6 +525,7 @@ final class Store {
             'media_type' => $data['media_type'],
             'media_url' => $media_url,
             'media_urls' => $media_urls ? wp_json_encode($media_urls) : null,
+            'publish_facebook_story' => ($data['media_type'] ?? '') === 'video' && !empty($data['publish_facebook_story']) && in_array($data['platform'] ?? '', ['both', 'facebook'], true) ? 1 : 0,
             'trailer_url' => '',
             'created_at' => $now,
             'updated_at' => $now,
@@ -723,6 +732,14 @@ final class Store {
         return self::save_publish_values($id, [$column => null, 'updated_at' => current_time('mysql')], $claim);
     }
 
+    public static function set_facebook_story_state(int $id, string $state, ?array $claim = null): bool {
+        return self::save_publish_values($id, ['facebook_story_state' => $state, 'updated_at' => current_time('mysql')], $claim);
+    }
+
+    public static function clear_facebook_story_state(int $id, ?array $claim = null): bool {
+        return self::save_publish_values($id, ['facebook_story_state' => null, 'updated_at' => current_time('mysql')], $claim);
+    }
+
     public static function set_instagram_container_id(int $id, string $container_id, ?array $claim = null): bool {
         global $wpdb;
         return self::save_publish_values($id, ['instagram_container_id' => sanitize_text_field($container_id), 'updated_at' => current_time('mysql')], $claim);
@@ -778,7 +795,7 @@ final class Store {
         } finally { self::release_publish_lock($claim); }
     }
 
-    public static function update_draft(int $id, string $text, string $scheduled_for, ?string $media_url = null, ?string $media_type = null, string $revision = '', ?array $media_urls = null): bool {
+    public static function update_draft(int $id, string $text, string $scheduled_for, ?string $media_url = null, ?string $media_type = null, string $revision = '', ?array $media_urls = null, bool $publish_facebook_story = false): bool {
         $expected = self::find($id);
         if (!$expected || $revision === '' || !hash_equals(self::draft_revision($expected), $revision)) return false;
         $values = [
@@ -788,6 +805,9 @@ final class Store {
             'status' => 'draft',
             'ai_status' => 'manual',
             'last_error' => null,
+            'publish_facebook_story' => $publish_facebook_story
+                && ($media_type ?? (string) ($expected['media_type'] ?? '')) === 'video'
+                && in_array((string) ($expected['platform'] ?? 'both'), ['both', 'facebook'], true) ? 1 : 0,
         ];
         if ($media_url !== null) {
             $values['media_url'] = esc_url_raw($media_url);

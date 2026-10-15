@@ -23,7 +23,7 @@ namespace RoxySocial {
     final class Store {
         public static array $poster_queue = [];
         private static int $queue_clock = 0;
-        public static function find(int $id): array { return ['id' => $id, 'status' => 'draft']; }
+        public static function find(int $id): array { return ['id' => $id, 'status' => $GLOBALS['hangar_fixture']['draft_status'] ?? 'draft']; }
         public static function update_imported_media(...$args): bool { return true; }
         public static function queue_poster_cleanup(string $path): bool {
             if (!empty($GLOBALS['hangar_fixture']['fail_poster_queue'])) return false;
@@ -117,6 +117,7 @@ namespace RoxySocial {
     function status_header($code) { $GLOBALS['hangar_fixture']['status'] = $code; }
     function sanitize_text_field($value) { return trim(strip_tags((string) $value)); }
     function sanitize_textarea_field($value) { return sanitize_text_field($value); }
+    function wp_json_encode($value, $flags = 0) { return json_encode($value, $flags); }
     function esc_url_raw($value) { return (string) $value; }
 
     $candidate = $argv[1] ?? dirname(__DIR__) . '/includes/modules/social-publisher/includes/class-roxy-social-hangar.php';
@@ -198,21 +199,42 @@ namespace RoxySocial {
     $check($write_download->invoke(null, $upload_dir, $png) === false && is_dir($upload_dir), 'failed temp write does not remove a non-file path');
 
     foreach ([
-        ['social-http', static fn() => Hangar::import_social_asset(901, 'asset.mp4', 11, 21), 'thrown HTTP hook cleans the social-asset download temp'],
-        ['social-sideload', static fn() => Hangar::import_social_asset(902, 'asset.mp4', 11, 22), 'thrown sideload hook cleans the social-asset download temp'],
+        ['social-http', static function () { $failure = null; $id = Hangar::import_social_asset(901, 'asset.mp4', 11, 21, $failure); return [$id, $failure]; }, 'download', 'HTTP hook failure is reported and cleans the download temp'],
+        ['social-sideload', static function () { $failure = null; $id = Hangar::import_social_asset(902, 'asset.mp4', 11, 22, $failure); return [$id, $failure]; }, 'wordpress_import', 'sideload hook failure is reported and cleans the download temp'],
         ['featured-http', static fn() => Hangar::import_featured_image(903, 'featured.png', 31), 'featured-image HTTP exception creates no temp file'],
         ['featured-sideload', static fn() => Hangar::import_featured_image(904, 'featured.png', 32), 'thrown sideload hook cleans the featured-image temp'],
-    ] as [$mode, $call, $label]) {
+    ] as $fixture) {
+        [$mode, $call] = $fixture;
         $before_temps = count($GLOBALS['hangar_fixture']['temp_files']);
         $GLOBALS['hangar_fixture']['throw_http'] = str_ends_with($mode, 'http');
         $GLOBALS['hangar_fixture']['throw_sideload'] = str_ends_with($mode, 'sideload');
         $thrown = false;
-        try { $call(); } catch (\RuntimeException $error) { $thrown = true; }
+        $result = null;
+        try { $result = $call(); } catch (\RuntimeException $error) { $thrown = true; }
         $GLOBALS['hangar_fixture']['throw_http'] = false;
         $GLOBALS['hangar_fixture']['throw_sideload'] = false;
         $new_temps = array_slice($GLOBALS['hangar_fixture']['temp_files'], $before_temps);
-        $check($thrown && (!$new_temps || count(array_filter($new_temps, 'is_file')) === 0), $label);
+        if (count($fixture) === 4) {
+            $check(!$thrown && $result[0] === 0 && ($result[1]['code'] ?? '') === $fixture[2] && (!$new_temps || count(array_filter($new_temps, 'is_file')) === 0), $fixture[3]);
+        } else {
+            $check($thrown && (!$new_temps || count(array_filter($new_temps, 'is_file')) === 0), $fixture[2]);
+        }
     }
+    $GLOBALS['hangar_fixture']['draft_status'] = 'approved';
+    $GLOBALS['hangar_fixture']['throw_sideload'] = true;
+    $before_downloads = count($GLOBALS['hangar_fixture']['get']);
+    $before_approved_temps = count($GLOBALS['hangar_fixture']['temp_files']);
+    $failure = null;
+    $imported = Hangar::import_social_asset(905, 'scheduled-trailer.mp4', 11, 25, $failure);
+    $GLOBALS['hangar_fixture']['throw_sideload'] = false;
+    $approved_temps = array_slice($GLOBALS['hangar_fixture']['temp_files'], $before_approved_temps);
+    $check($imported === 0 && ($failure['code'] ?? '') === 'wordpress_import' && count($GLOBALS['hangar_fixture']['get']) > $before_downloads && (!$approved_temps || count(array_filter($approved_temps, 'is_file')) === 0), 'approved unpublished post can import media and cleans its temp after WordPress failure');
+    $GLOBALS['hangar_fixture']['draft_status'] = 'publishing';
+    $before_downloads = count($GLOBALS['hangar_fixture']['get']);
+    $failure = null;
+    $imported = Hangar::import_social_asset(906, 'scheduled-trailer.mp4', 11, 26, $failure);
+    $check($imported === 0 && ($failure['code'] ?? '') === 'draft_not_editable' && count($GLOBALS['hangar_fixture']['get']) === $before_downloads, 'publishing post rejects media import before downloading');
+    $GLOBALS['hangar_fixture']['draft_status'] = 'draft';
     $GLOBALS['hangar_fixture']['cache']['roxy_social_hangar_thumb_31'] = '/posters/source.png';
     $GLOBALS['hangar_fixture']['response'] = ['response' => ['code' => 200], 'headers' => ['content-type' => 'image/png'], 'body' => $png];
     $save_poster->invoke(null, 501, 31, 'movie.mp4');

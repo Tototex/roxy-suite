@@ -13,7 +13,8 @@ $eval = 'namespace ' . $namespace . ';
   }
   final class Square {
     public static array $orders = [];
-    public static function fetch_orders_for_date(string $date): array { return self::$orders[$date] ?? []; }
+    public static int $date_fetches = 0;
+    public static function fetch_orders_for_date(string $date): array { self::$date_fetches++; return self::$orders[$date] ?? []; }
     public static function concession_reporting_categories(array $ids): array { return ["snack" => true]; }
     public static function is_in_store_purchase_item(string $id, array $map = []): bool { return $id === "snack"; }
   }
@@ -152,6 +153,45 @@ try {
 
   $apply = new ReflectionMethod($reporter, 'apply_concessions_to_reports');
   $apply->setAccessible(true);
+$group_orders = new ReflectionMethod($reporter, 'square_orders_grouped_by_local_date');
+$group_orders->setAccessible(true);
+$local_date_groups = $group_orders->invoke(null, [
+  ['id' => 'range-boundary', 'closed_at' => '2039-01-22T08:30:00Z'],
+  ['id' => 'same-local-day', 'closed_at' => '2039-01-22T20:00:00-08:00'],
+], '2039-01-22', '2039-01-22');
+$check(count($local_date_groups['2039-01-22'] ?? []) === 2,
+  'range snapshot groups UTC and offset timestamps by the configured Pacific sale date');
+$bad_range_rejected = false;
+try { $group_orders->invoke(null, [['id' => 'bad-time', 'closed_at' => '2039-01-22 19:00:00']], '2039-01-22', '2039-01-22'); }
+catch (Throwable $error) { $bad_range_rejected = true; }
+$check($bad_range_rejected, 'range grouping fails closed on timestamps without an explicit timezone');
+$precise_rental_date = '2039-01-22';
+$precise_rental_start = new DateTimeImmutable($precise_rental_date . ' 16:30:00', new DateTimeZone('America/Los_Angeles'));
+$precise_rental_end = new DateTimeImmutable($precise_rental_date . ' 19:30:00', new DateTimeZone('America/Los_Angeles'));
+$square::$orders[$precise_rental_date] = [[
+  'id' => 'private-booking-exact-window-' . $token,
+  'closed_at' => $precise_rental_date . 'T19:02:00-08:00',
+  'line_items' => array_map(static fn(int $index): array => [
+    'uid' => 'private-booking-line-' . $index . '-' . $token, 'item_type' => 'ITEM', 'catalog_object_id' => 'snack',
+    'name' => 'Snack', 'quantity' => '1', 'total_money' => ['amount' => $index === 0 ? 749 : 746, 'currency' => 'USD'],
+  ], range(0, 18)),
+]];
+$precise_rental_rows = [
+  100 => ['_entry_kind' => 'movie', '_entry_id' => 100, 'showing_id' => 0, 'show_time' => '7:30 PM',
+    '_start_at' => new DateTimeImmutable($precise_rental_date . ' 19:30:00', new DateTimeZone('America/Los_Angeles')), 'concessions_total' => 0.0],
+  200000300 => ['_entry_kind' => 'rental', '_entry_id' => 300, 'showing_id' => 0, 'show_time' => '4:30 PM',
+    '_start_at' => $precise_rental_start, '_window_start' => $precise_rental_start, '_window_end' => $precise_rental_end, 'concessions_total' => 0.0],
+];
+$apply->invokeArgs(null, [&$precise_rental_rows, $precise_rental_date]);
+$check((float) $precise_rental_rows[200000300]['concessions_total'] === 141.77
+    && (float) $precise_rental_rows[100]['concessions_total'] === 0.0,
+  'all 19 Square concession lines at 7:02 PM are attributed to the 4:30–7:30 PM private booking, not the nearby 7:30 PM show');
+$date_fetches_before_override = $square::$date_fetches;
+$override_rows = [200000300 => $precise_rental_rows[200000300]];
+$apply->invokeArgs(null, [&$override_rows, $precise_rental_date, [], null, false, $square::$orders[$precise_rental_date]]);
+$check((float) $override_rows[200000300]['concessions_total'] === 141.77 && $square::$date_fetches === $date_fetches_before_override,
+  'provided range snapshot is reused for allocation without another per-day Square request');
+
   $legacy_date = '2039-01-18';
   $legacy_start = new DateTimeImmutable($legacy_date . ' 14:00:00', new DateTimeZone('America/Los_Angeles'));
   $square::$orders[$legacy_date] = [[

@@ -32,6 +32,14 @@ try {
     if(false===$wpdb->query("CREATE TEMPORARY TABLE `$table` LIKE `$real_table`")||false===$wpdb->query("CREATE TEMPORARY TABLE `$queue_table` (attachment_id BIGINT UNSIGNED NOT NULL, social_post_id BIGINT UNSIGNED NOT NULL, cleanup_after DATETIME NOT NULL, created_at DATETIME NOT NULL, PRIMARY KEY (attachment_id), KEY cleanup_after (cleanup_after), KEY social_post_id (social_post_id))"))throw new RuntimeException('Temporary schema clone failed');
     $wpdb->prefix=$fixture_prefix;
     $row=roxy_snapshot_row();
+    roxy_snapshot_check((int)$row['publish_facebook_story']===0,'new drafts default to no Facebook Story cross-publish');
+    $row=roxy_snapshot_row(['media_type'=>'video']);
+    roxy_snapshot_check(\RoxySocial\DraftFixtureStore::update_draft(1,'Intentional Story','2026-10-06 10:00:00',null,null,\RoxySocial\DraftFixtureStore::draft_revision($row),null,true)
+        &&(int)\RoxySocial\DraftFixtureStore::find(1)['publish_facebook_story']===1,'explicit video Story preference persists with the draft');
+    $row=\RoxySocial\DraftFixtureStore::find(1);
+    roxy_snapshot_check(\RoxySocial\DraftFixtureStore::update_draft(1,'Feed only after media change','2026-10-06 10:00:00','https://fixture.test/poster.jpg','image',\RoxySocial\DraftFixtureStore::draft_revision($row),null,true)
+        &&(int)\RoxySocial\DraftFixtureStore::find(1)['publish_facebook_story']===0,'changing a video draft to an image clears its Story preference');
+    $row=roxy_snapshot_row();
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::save_ai_result($row,'Generated fixture caption')&&\RoxySocial\DraftFixtureStore::find(1)['ai_status']==='ready','unchanged pending draft accepts AI text and readiness together');
     $row=roxy_snapshot_row(['ai_status'=>'ready']);
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::replace_generated_caption($row,'Reviewed generated caption')&&\RoxySocial\DraftFixtureStore::find(1)['hangar_asset_id']===$row['hangar_asset_id']&&\RoxySocial\DraftFixtureStore::find(1)['status']==='draft','reviewed AI replacement preserves media and stays unapproved');
@@ -68,6 +76,10 @@ try {
     roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::update_imported_media(1,999,'image',null,123,'fixture.jpg',$row),'manual media replacement rejects stale download');
     $row=roxy_snapshot_row();
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::update_imported_media(1,999,'image',null,123,'fixture.jpg',$row)&&\RoxySocial\DraftFixtureStore::find(1)['media_url']==='https://fixture.test/999.jpg','unchanged draft still accepts imported media');
+    $row=roxy_snapshot_row(['status'=>'approved']);
+    roxy_snapshot_check(\RoxySocial\DraftFixtureStore::update_imported_media(1,998,'video',null,124,'scheduled.mp4',$row)&&\RoxySocial\DraftFixtureStore::find(1)['status']==='approved'&&\RoxySocial\DraftFixtureStore::find(1)['media_url']==='https://fixture.test/998.jpg','approved unpublished post accepts a revision-matched media import without losing approval');
+    $row=roxy_snapshot_row(['status'=>'approved','facebook_post_id'=>'remote-123']);
+    roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::update_imported_media(1,997,'video',null,125,'scheduled.mp4',$row),'approved post with a remote platform ID remains frozen');
     $row=roxy_snapshot_row(['media_type'=>'video','temporary_attachment_id'=>2147483001,'cleanup_after'=>'2026-10-01 00:00:00']);
     $minimum_deadline=current_datetime()->modify('+71 hours 59 minutes')->format('Y-m-d H:i:s');
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::update_draft(1,'Manager caption','2026-10-06 10:00:00','https://fixture.test/replacement.jpg','image',\RoxySocial\DraftFixtureStore::draft_revision($row))&&\RoxySocial\DraftFixtureStore::find(1)['temporary_attachment_id']===null,'manual media replacement detaches imported video pointer');

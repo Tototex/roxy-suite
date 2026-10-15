@@ -56,14 +56,26 @@ final class Hangar {
         return $results;
     }
 
-    public static function import_social_asset(int $asset_id, string $filename, int $post_id, int $draft_id): int {
+    public static function import_social_asset(int $asset_id, string $filename, int $post_id, int $draft_id, ?array &$failure = null): int {
+        $failure = null;
+        $fail = static function (string $code, string $message, array $context = []) use (&$failure, $asset_id, $draft_id): int {
+            $failure = ['code' => $code, 'message' => $message];
+            error_log('[Roxy Social Hangar] import failed ' . wp_json_encode([
+                'stage' => $code,
+                'asset_id' => $asset_id,
+                'draft_id' => $draft_id,
+            ] + $context));
+            return 0;
+        };
         $extension = strtolower((string) pathinfo($filename, PATHINFO_EXTENSION));
         $allowed = ['jpg', 'jpeg', 'png', 'webp', 'mp4', 'mov', 'm4v'];
-        if ($asset_id <= 0 || $draft_id <= 0 || !in_array($extension, $allowed, true) || !self::has_credentials()) return 0;
+        if ($asset_id <= 0 || $draft_id <= 0 || !in_array($extension, $allowed, true)) return $fail('invalid_asset', 'This Hangar file is not a supported media type.');
+        if (!self::has_credentials()) return $fail('missing_credentials', 'Hangar is not connected. Reconnect it in Social Posts settings and retry.');
         $draft = Store::find($draft_id);
-        if (!$draft || (string) $draft['status'] !== 'draft' || !empty($draft['facebook_post_id']) || !empty($draft['instagram_media_id']) || !empty($draft['instagram_container_id'])) return 0;
+        if (!$draft || !in_array((string) $draft['status'], ['draft', 'needs_review', 'approved', 'failed'], true) || !empty($draft['facebook_post_id']) || !empty($draft['instagram_media_id']) || !empty($draft['instagram_container_id'])) return $fail('draft_not_editable', 'This post can no longer be edited because publishing has started or a platform post already exists.');
         $tmp = wp_tempnam($filename);
-        if (!$tmp) return 0;
+        if (!$tmp) return $fail('temp_file', 'The server could not prepare a temporary file. Check available disk space and permissions.');
+        $stage = 'download';
         try {
             $response = wp_remote_get(self::download_url($asset_id), [
                 'timeout' => 300,
@@ -73,26 +85,36 @@ final class Hangar {
                 'filename' => $tmp,
                 'limit_response_size' => self::MAX_VIDEO_BYTES,
             ]);
-            if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) >= 400) return 0;
+            if (is_wp_error($response)) return $fail('download', 'Hangar could not download this file. Retry, or check the Hangar connection.', ['error_code' => sanitize_key((string) $response->get_error_code())]);
+            $http_status = (int) wp_remote_retrieve_response_code($response);
+            if ($http_status < 200 || $http_status >= 300) return $fail('download', 'Hangar returned an error while downloading this file. Retry, or check the Hangar connection.', ['http_status' => $http_status]);
             $size = filesize($tmp);
-            if ($size === false || $size <= 0 || $size >= self::MAX_VIDEO_BYTES) return 0;
+            if ($size === false || $size <= 0) return $fail('empty_download', 'Hangar returned an empty file. Retry or choose the asset again.', ['bytes' => 0]);
+            if ($size >= self::MAX_VIDEO_BYTES) return $fail('file_too_large', 'This file exceeds the 500 MB import limit.', ['bytes' => $size]);
             require_once ABSPATH . 'wp-admin/includes/file.php';
             require_once ABSPATH . 'wp-admin/includes/media.php';
             require_once ABSPATH . 'wp-admin/includes/image.php';
+            $stage = 'wordpress_import';
             $attachment_id = media_handle_sideload(['name' => sanitize_file_name($filename), 'tmp_name' => $tmp], $post_id);
-            if (is_wp_error($attachment_id)) return 0;
+            if (is_wp_error($attachment_id)) return $fail('wordpress_import', 'WordPress could not add this file to Media Library. Check upload limits and permissions, then retry.', ['error_code' => sanitize_key((string) $attachment_id->get_error_code())]);
             $attachment_id = (int) $attachment_id;
-            if ($attachment_id <= 0) return 0;
+            if ($attachment_id <= 0) return $fail('wordpress_import', 'WordPress did not return a valid Media Library item. Retry the import.');
             $is_video = in_array($extension, ['mp4', 'mov', 'm4v'], true);
+            $stage = 'draft_update';
             if (!self::tag_imported_attachment($attachment_id, $asset_id, $is_video)
                 || !Store::update_imported_media($draft_id, $attachment_id, $is_video ? 'video' : 'image', self::cleanup_time($draft), $asset_id, $filename, $draft)) {
                 // This new upload was never assigned. Do not touch the previously
                 // selected media or any approved publication on a stale response.
                 wp_delete_attachment($attachment_id, true);
-                return 0;
+                return $fail('draft_update', 'The file imported, but the draft could not be updated. Reload the draft and retry.', ['attachment_id' => $attachment_id]);
             }
-            if ($is_video) self::save_video_thumbnail($attachment_id, $asset_id, $filename);
+            if ($is_video) {
+                try { self::save_video_thumbnail($attachment_id, $asset_id, $filename); }
+                catch (\Throwable $error) { error_log('[Roxy Social Hangar] poster thumbnail failed ' . wp_json_encode(['asset_id' => $asset_id, 'attachment_id' => $attachment_id])); }
+            }
             return $attachment_id;
+        } catch (\Throwable $error) {
+            return $fail($stage, 'The server hit an unexpected error while importing this file. Retry; if it continues, check the site error log.', ['exception' => get_class($error)]);
         } finally {
             // WordPress normally moves the sideload source; exceptions from HTTP
             // or media hooks must not strand the request-owned temp file.

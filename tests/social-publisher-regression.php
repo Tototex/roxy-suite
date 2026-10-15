@@ -10,6 +10,11 @@ namespace RoxySocial {
         public static function instagram_user_id(){return self::$instagram ? '22' : '';}
         public static function access_token(){return self::$instagram ? 'fixture-user' : '';}
     }
+    final class FacebookStories {
+        public static $result = [];
+        public static $calls = 0;
+        public static function publish($row, $state = '') { self::$calls++; return self::$result; }
+    }
     final class Store {
         public static $row;
         public static $fail_id = false;
@@ -29,6 +34,8 @@ namespace RoxySocial {
             return true;
         }
         public static function clear_publish_id($id,$platform){self::$row[$platform==='facebook'?'facebook_post_id':'instagram_media_id']=null;return true;}
+        public static function set_facebook_story_state($id,$state,$claim=null){self::$row['facebook_story_state']=$state;return true;}
+        public static function clear_facebook_story_state($id,$claim=null){self::$row['facebook_story_state']=null;return true;}
         public static function set_instagram_container_id($id,$value){self::$row['instagram_container_id']=$value;return true;}
         public static function clear_instagram_container_id($id){self::$row['instagram_container_id']=null;return true;}
     }
@@ -64,8 +71,9 @@ namespace {
     function add_query_arg($query,$url){return $url.'?'.http_build_query($query);}
     function response($data,$status=200){return ['status'=>$status,'body'=>json_encode($data)];}
     function reset_fixture($platform='both',$status='approved'){
-        \RoxySocial\Store::$row=['id'=>1,'status'=>$status,'platform'=>$platform,'post_text'=>'Fixture caption','media_type'=>'image','media_url'=>'https://fixture.test/poster.jpg','facebook_post_id'=>null,'instagram_media_id'=>null,'instagram_container_id'=>null,'updated_at'=>'2020-01-01 00:00:00'];
+        \RoxySocial\Store::$row=['id'=>1,'status'=>$status,'platform'=>$platform,'post_text'=>'Fixture caption','media_type'=>'image','media_url'=>'https://fixture.test/poster.jpg','publish_facebook_story'=>0,'facebook_post_id'=>null,'instagram_media_id'=>null,'instagram_container_id'=>null,'facebook_story_state'=>null,'updated_at'=>'2020-01-01 00:00:00'];
         \RoxySocial\Store::$fail_id=false;\RoxySocial\Store::$locked=false;\RoxySocial\Store::$deny_lock=false;\RoxySocial\Meta::$facebook=true;\RoxySocial\Meta::$instagram=true;
+        \RoxySocial\FacebookStories::$result=[];\RoxySocial\FacebookStories::$calls=0;
         \RoxySocial\Campaigns::$verified=true;
         $GLOBALS['calls']=[];$GLOBALS['responses']=[];$GLOBALS['scheduled_events']=[];
         $GLOBALS['lose_lock']=false;$GLOBALS['schedule_ok']=true;$GLOBALS['schedule_state']=null;
@@ -74,6 +82,27 @@ namespace {
     require ($argv[1]??dirname(__DIR__)).'/includes/modules/social-publisher/includes/class-roxy-social-publisher.php';
     reset_fixture();\RoxySocial\Campaigns::$verified=false;$GLOBALS['responses']=[response(['id'=>'123']),response(['id'=>'234']),response(['id'=>'345'])];
     check(\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='posted'&&count($GLOBALS['calls'])===3,'caption schedule warning does not block publication to selected accounts');
+    reset_fixture();\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['instagram_container_id']='234';
+    $GLOBALS['responses']=[response(['id'=>'123']),response(['status_code'=>'FINISHED']),response(['id'=>'456'])];
+    check(\RoxySocial\Publisher::publish_now(1)
+        &&\RoxySocial\Store::$row['facebook_post_id']==='123'
+        &&\RoxySocial\Store::$row['instagram_media_id']==='456'
+        &&\RoxySocial\Store::$row['status']==='posted'
+        &&\RoxySocial\FacebookStories::$calls===0
+        &&count($GLOBALS['calls'])===3,
+        'normal video feed post does not automatically publish as a Facebook Story');
+    reset_fixture();\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['publish_facebook_story']=1;\RoxySocial\Store::$row['instagram_container_id']='234';
+    \RoxySocial\FacebookStories::$result=['error'=>'Facebook Story video support is unavailable: the private FFmpeg binary was not found.'];
+    $GLOBALS['responses']=[response(['id'=>'123']),response(['status_code'=>'FINISHED']),response(['id'=>'456'])];
+    check(!\RoxySocial\Publisher::publish_now(1)
+        &&\RoxySocial\Store::$row['facebook_post_id']==='123'
+        &&\RoxySocial\Store::$row['instagram_media_id']==='456'
+        &&\RoxySocial\Store::$row['status']==='failed'
+        &&str_contains((string) \RoxySocial\Store::$row['last_error'],'Facebook Story:')
+        &&\RoxySocial\FacebookStories::$calls===1
+        &&count($GLOBALS['calls'])===3
+        &&str_ends_with($GLOBALS['calls'][2][0],'/media_publish'),
+        'Facebook Story processing failure does not block Instagram Reel publication and retains per-platform results');
     reset_fixture('both','failed');\RoxySocial\Store::$row['facebook_post_id']='123';\RoxySocial\Campaigns::$verified=false;$GLOBALS['responses']=[response(['id'=>'234']),response(['id'=>'345'])];
     check(\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['facebook_post_id']==='123'&&\RoxySocial\Store::$row['status']==='posted'&&count($GLOBALS['calls'])===2,'schedule wording does not block safe retry to only the missing account');
     $decode=new \ReflectionMethod(\RoxySocial\Publisher::class,'decode_response');$decode->setAccessible(true);
@@ -87,16 +116,23 @@ namespace {
     check($GLOBALS['calls'][1][2]['facebook_post_id']==='123','Facebook ID durable before Instagram call');
     check($GLOBALS['calls'][2][2]['instagram_container_id']==='234'&&\RoxySocial\Store::$row['instagram_container_id']===null,'container retained until publication ID saved');
     reset_fixture();\RoxySocial\Store::$row['media_urls']=json_encode(['https://fixture.test/one.jpg','https://fixture.test/two.png','https://fixture.test/three.webp']);
-    $GLOBALS['responses']=[response(['id'=>'101']),response(['id'=>'102']),response(['id'=>'103']),response(['id'=>'104']),response(['id'=>'201']),response(['id'=>'202']),response(['id'=>'203']),response(['id'=>'204']),response(['id'=>'205'])];
-    check(\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='posted'&&count($GLOBALS['calls'])===9,'three-image post publishes successfully to both platforms');
+    $GLOBALS['responses']=[response(['id'=>'101']),response(['id'=>'102']),response(['id'=>'103']),response(['id'=>'104']),response(['id'=>'201']),response(['id'=>'202']),response(['id'=>'203']),response(['id'=>'204']),response(['status_code'=>'FINISHED','status'=>'Finished']),response(['id'=>'205'])];
+    check(\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='posted'&&count($GLOBALS['calls'])===10,'three-image post publishes successfully to both platforms');
     check(str_ends_with($GLOBALS['calls'][0][0],'/11/photos')&&($GLOBALS['calls'][0][1]['body']['published']??'')==='false'
         &&str_ends_with($GLOBALS['calls'][3][0],'/11/feed')&&isset($GLOBALS['calls'][3][1]['body']['attached_media[2]']),
         'Facebook multi-image post uploads unpublished photos then creates one album feed post');
     check(($GLOBALS['calls'][4][1]['body']['is_carousel_item']??'')==='true'
         &&($GLOBALS['calls'][7][1]['body']['media_type']??'')==='CAROUSEL'
         &&($GLOBALS['calls'][7][1]['body']['children']??'')==='201,202,203'
-        &&str_ends_with($GLOBALS['calls'][8][0],'/media_publish'),
-        'Instagram multi-image post creates carousel children and publishes one parent container');
+        &&str_contains($GLOBALS['calls'][8][0], 'fields=status_code%2Cstatus')
+        &&str_ends_with($GLOBALS['calls'][9][0],'/media_publish'),
+        'Instagram multi-image post waits for a ready carousel container before publishing one parent');
+    reset_fixture();\RoxySocial\Store::$row['media_urls']=json_encode(['https://fixture.test/one.jpg','https://fixture.test/two.png','https://fixture.test/three.webp']);
+    $GLOBALS['responses']=[response(['id'=>'101']),response(['id'=>'102']),response(['id'=>'103']),response(['id'=>'104']),response(['id'=>'201']),response(['id'=>'202']),response(['id'=>'203']),response(['id'=>'204']),response(['status_code'=>'IN_PROGRESS','status'=>'In progress'])];
+    check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='needs_review'
+        &&\RoxySocial\Store::$row['instagram_container_id']==='204'
+        &&count(array_filter($GLOBALS['calls'],static fn($call)=>str_ends_with($call[0],'/media_publish')) )===0,
+        'Instagram carousel that is still processing is retained for review without a publish attempt');
     reset_fixture();$GLOBALS['responses']=[response([])];
     check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='needs_review'&&count($GLOBALS['calls'])===1,'ambiguous Facebook outcome halts other platform and retry');
     reset_fixture();\RoxySocial\Store::$fail_id=true;$GLOBALS['responses']=[response(['id'=>'123'])];
@@ -120,6 +156,10 @@ namespace {
     check(!\RoxySocial\Publisher::remove_published(1)&&\RoxySocial\Store::$row['facebook_post_id']===null&&\RoxySocial\Store::$row['instagram_media_id']==='345','partial removal clears only confirmed ID and preserves failed status');
     $GLOBALS['calls']=[];$GLOBALS['responses']=[response(['success'=>true])];
     check(\RoxySocial\Publisher::remove_published(1)&&count($GLOBALS['calls'])===1&&str_ends_with($GLOBALS['calls'][0][0],'/345'),'retry removes only remaining platform');
+    reset_fixture('facebook','failed');\RoxySocial\Store::$row['facebook_post_id']='123';\RoxySocial\Store::$row['facebook_story_state']=json_encode(['expected'=>2,'ids'=>['456','789'],'pending_id'=>'']);$GLOBALS['responses']=[response(['success'=>true]),response(['success'=>true]),response(['success'=>false])];
+    check(!\RoxySocial\Publisher::remove_published(1)&&\RoxySocial\Store::$row['facebook_post_id']===null&&json_decode(\RoxySocial\Store::$row['facebook_story_state'],true)['ids']===['789'],'partial Story removal clears each confirmed segment and retains only the failed ID');
+    $GLOBALS['calls']=[];$GLOBALS['responses']=[response(['success'=>true])];
+    check(\RoxySocial\Publisher::remove_published(1)&&\RoxySocial\Store::$row['facebook_story_state']===null&&count($GLOBALS['calls'])===1&&str_ends_with($GLOBALS['calls'][0][0],'/789'),'retry removes only the remaining Story segment');
     reset_fixture('both','posted');
     check(!\RoxySocial\Publisher::remove_published(1)&&!$GLOBALS['calls']&&\RoxySocial\Store::$row['status']==='posted','missing recorded IDs cannot report removed');
     reset_fixture('facebook','posted');\RoxySocial\Store::$row['facebook_post_id']='123';$GLOBALS['responses']=[response(['success'=>false])];

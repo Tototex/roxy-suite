@@ -192,6 +192,14 @@ jobs:
             echo "::error title=Grosses allocation private-MySQL fixture failed::$details"
             exit "$status"
           fi
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/grosses-event-booking-sync-mysql.php" "$GITHUB_WORKSPACE/includes/modules/grosses/includes/class-roxy-grosses-store.php" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 50 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Grosses private-booking synchronization fixture failed::$details"
+            exit "$status"
+          fi
           if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/grosses-mixed-show-matching-wordpress.php" "$GITHUB_WORKSPACE/includes/modules/grosses/includes/class-roxy-grosses-reporter.php" >"$output" 2>&1; then
             cat "$output"
           else
@@ -452,6 +460,7 @@ jobs:
             social-ai-retry-regression.php
             social-ai-snapshot-regression.php
             social-bulk-editor-regression.php
+            social-facebook-stories-regression.php
             social-film-context-regression.php
             social-hangar-auth-cache-regression.php
             social-hangar-featured-image-regression.php
@@ -461,6 +470,7 @@ jobs:
             social-secrets-regression.php
             social-showtime-regression.php
             show-ticket-log-private-dir-regression.php
+            show-ticket-sling-shift-publish-regression.php
             stability-regression.php
             showing-room-lock-regression.php
             ticket-cart-pricing-regression.php

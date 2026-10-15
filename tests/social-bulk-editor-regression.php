@@ -60,6 +60,11 @@ namespace {
     $check($result['success']===true);
     $check(\RoxySocial\Store::$saved[1]==="We're ready");
     $check(\RoxySocial\Store::$saved[3]===null);
+    $check(\RoxySocial\Store::$saved[7]===false);
+    $_POST['publish_facebook_story']='1';
+    try { \RoxySocial\Admin::update_draft(); } catch (\RuntimeException $e) { $result=json_decode($e->getMessage(),true); }
+    $check($result['success']===true&&\RoxySocial\Store::$saved[7]===true);
+    unset($_POST['publish_facebook_story']);
     $_POST['draft_revision']='stale';
     try { \RoxySocial\Admin::update_draft(); } catch (\RuntimeException $e) { $result=json_decode($e->getMessage(),true); }
     $check($result['success']===false);

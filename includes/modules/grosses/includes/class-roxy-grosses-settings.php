@@ -560,8 +560,20 @@ class Settings {
     $summary = Store::rental_entries_summary($filters);
     $years = Store::distinct_rental_years();
     $edit_id = self::editing_row_id('rentals');
+    $report_timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $today = wp_date('Y-m-d', null, $report_timezone);
+    $year_start = wp_date('Y-01-01', null, $report_timezone);
 
     echo '<h2>Rentals</h2><p>This tab stores private rentals, field trips, reward days, and other invoice-backed special bookings separately from movies and public live shows.</p>';
+    echo '<div style="margin:16px 0; padding:16px; background:#fff; border:1px solid #dcdcde;">';
+    echo '<h3 style="margin-top:0;">Sync private bookings</h3><p>Import private bookings from Roxy Event Booking and refresh their Square concessions for the selected dates. This does not send any email or change orders.</p>';
+    echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
+    echo '<input type="hidden" name="action" value="roxy_grosses_sync_private_bookings">';
+    wp_nonce_field('roxy_grosses_sync_private_bookings');
+    echo '<label style="margin-right:12px;">From <input type="date" name="date_from" required value="'.esc_attr($year_start).'" max="'.esc_attr($today).'"></label>';
+    echo '<label style="margin-right:12px;">Through <input type="date" name="date_to" required value="'.esc_attr($today).'" max="'.esc_attr($today).'"></label>';
+    submit_button('Sync Private Bookings', 'secondary', 'submit', false);
+    echo '</form></div>';
     echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px;">';
     echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="rentals">';
     echo '<div><label><strong>Search</strong></label><br><input type="text" class="regular-text" name="rental_search" value="'.esc_attr($search).'" placeholder="Rental title or customer"></div>';
@@ -944,7 +956,7 @@ class Settings {
     echo '<li>Free tickets are tracked in the database, included in advertiser attendance, and excluded from daily grosses totals.</li>';
     echo '<li>Movie and live-show concessions use Square <code>In Store Purchase</code> values.</li>';
     echo '<li>Live Shows combine online tickets from Show Tickets with door tickets from Square. Square prepaid lines are not counted as door sales.</li>';
-    echo '<li>Rentals stay manual for now and can be imported periodically until that workflow is automated.</li>';
+    echo '<li>Private Event Booking reservations sync into Rentals nightly and can be backfilled for a selected date range from the Rentals tab; Square concessions are attributed to the reserved time window.</li>';
     echo '</ul>';
     echo '</div>';
     echo '</div>';

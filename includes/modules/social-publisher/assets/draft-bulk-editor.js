@@ -3,13 +3,17 @@
     var buttons = Array.from(document.querySelectorAll('.roxy-social-save-all'));
     if (!buttons.length) return;
     var forms = Array.from(document.querySelectorAll('form[id^="roxy-social-draft-"]'));
-    var fields = ['post_text', 'scheduled_for', 'media_url', 'media_type', 'media_changed'];
+    var fields = ['post_text', 'scheduled_for', 'media_url', 'media_type', 'media_changed', 'publish_facebook_story'];
     var baseline = new Map();
     var busy = false;
     var allowLeave = false;
     function values(form) {
         var data = new FormData(form);
-        return JSON.stringify(fields.map(function (key) { return data.get(key); }));
+        return JSON.stringify(fields.map(function (key) {
+            if (key !== 'publish_facebook_story') return data.get(key);
+            var storyControl = form.elements.namedItem(key);
+            return !!(storyControl && storyControl.checked);
+        }));
     }
     function editable(form) { return !form.querySelector('button[type="submit"]').disabled; }
     function changed(form) { return editable(form) && baseline.get(form) !== values(form); }
