@@ -8,6 +8,8 @@ if (!is_file($store_path)) throw new RuntimeException('Pass the candidate Grosse
 $source = file_get_contents($store_path);
 if (!is_string($source) || strpos($source, 'namespace RoxyGrosses;') === false) throw new RuntimeException('Unexpected candidate Grosses Store source.');
 $source = preg_replace('/^<\?php\s*/', '', $source, 1);
+$settings_path = dirname($store_path) . '/class-roxy-grosses-settings.php';
+if (!class_exists('\\RoxyGrosses\\Settings', false) && is_file($settings_path)) require_once $settings_path;
 $suffix = bin2hex(random_bytes(4));
 $namespace = 'RoxyGrossesBookingSyncFixture' . $suffix;
 $tables = [
