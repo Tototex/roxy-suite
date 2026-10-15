@@ -591,7 +591,7 @@ class Store {
   /** Read the sale dates that must be available before a booking sync can change source rows. */
   public static function event_booking_sync_preview_dates(string $date_from, string $date_to): array {
     global $wpdb;
-    $report_timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $report_timezone = new \DateTimeZone(\RoxyGrosses\Settings::get_report_timezone());
     foreach ([$date_from, $date_to] as $date) {
       $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date, $report_timezone);
       if (!$parsed || $parsed->format('Y-m-d') !== $date) throw new \InvalidArgumentException('Choose a valid rental synchronization date range.');
@@ -631,7 +631,7 @@ class Store {
   /** Copy private event bookings into the Grosses rental ledger without touching manual rows. */
   public static function sync_event_bookings_to_rentals(string $date_from, string $date_to): array {
     global $wpdb;
-    $report_timezone = new \DateTimeZone(Settings::get_report_timezone());
+    $report_timezone = new \DateTimeZone(\RoxyGrosses\Settings::get_report_timezone());
     foreach ([$date_from, $date_to] as $date) {
       $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date, $report_timezone);
       if (!$parsed || $parsed->format('Y-m-d') !== $date) throw new \InvalidArgumentException('Choose a valid rental synchronization date range.');
