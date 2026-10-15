@@ -588,11 +588,52 @@ class Store {
     return true;
   }
 
+  /** Read the sale dates that must be available before a booking sync can change source rows. */
+  public static function event_booking_sync_preview_dates(string $date_from, string $date_to): array {
+    global $wpdb;
+    $report_timezone = new \DateTimeZone(Settings::get_report_timezone());
+    foreach ([$date_from, $date_to] as $date) {
+      $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date, $report_timezone);
+      if (!$parsed || $parsed->format('Y-m-d') !== $date) throw new \InvalidArgumentException('Choose a valid rental synchronization date range.');
+    }
+    if ($date_from > $date_to) throw new \InvalidArgumentException('Rental synchronization dates must be in order.');
+    $source = $wpdb->prefix . 'roxy_event_bookings';
+    $found = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($source)));
+    if ($wpdb->last_error !== '') throw new \RuntimeException('Could not check the Roxy Event Booking source table.');
+    if ((string) $found !== $source) return [];
+    $site_timezone = wp_timezone();
+    $range_start = (new \DateTimeImmutable($date_from . ' 00:00:00', $report_timezone))->setTimezone($site_timezone)->format('Y-m-d H:i:s');
+    $range_end = (new \DateTimeImmutable($date_to . ' 00:00:00', $report_timezone))->modify('+1 day')->setTimezone($site_timezone)->format('Y-m-d H:i:s');
+    $table = self::rental_entries_table_name();
+    $rows = $wpdb->get_results($wpdb->prepare(
+      "SELECT b.id,b.status,b.reserved_start_at,r.report_date AS existing_report_date,r.is_locked AS existing_is_locked FROM `{$source}` AS b LEFT JOIN `{$table}` AS r ON r.source_type = %s AND r.source_ref = CONCAT('booking:', b.id) WHERE b.visibility = %s AND ((b.reserved_start_at >= %s AND b.reserved_start_at < %s) OR (r.report_date >= %s AND r.report_date <= %s) OR (LOWER(TRIM(b.status)) IN (%s, %s) AND r.id IS NOT NULL)) ORDER BY b.id ASC",
+      'event_booking', 'private', $range_start, $range_end, $date_from, $date_to, 'cancelled', 'canceled'
+    ), ARRAY_A);
+    if ($wpdb->last_error !== '' || !is_array($rows)) throw new \RuntimeException('Could not preview private booking dates for rental synchronization.');
+    $dates = [];
+    foreach ($rows as $row) {
+      $start = (string) ($row['reserved_start_at'] ?? '');
+      $start_dt = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $start, $site_timezone);
+      if (!$start_dt || $start_dt->format('Y-m-d H:i:s') !== $start) throw new \RuntimeException('A private event booking has an invalid reservation start; no rental row was synchronized.');
+      $current_date = $start_dt->setTimezone($report_timezone)->format('Y-m-d');
+      $existing_date = (string) ($row['existing_report_date'] ?? '');
+      $cancelled = in_array(strtolower(trim((string) ($row['status'] ?? ''))), ['cancelled', 'canceled'], true);
+      if (!$cancelled && empty($row['existing_is_locked']) && $existing_date !== '' && $existing_date !== $current_date) {
+        $dates[$existing_date] = true;
+        $dates[$current_date] = true;
+      }
+    }
+    $dates = array_keys($dates);
+    sort($dates, SORT_STRING);
+    return $dates;
+  }
+
   /** Copy private event bookings into the Grosses rental ledger without touching manual rows. */
   public static function sync_event_bookings_to_rentals(string $date_from, string $date_to): array {
     global $wpdb;
+    $report_timezone = new \DateTimeZone(Settings::get_report_timezone());
     foreach ([$date_from, $date_to] as $date) {
-      $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date, wp_timezone());
+      $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date, $report_timezone);
       if (!$parsed || $parsed->format('Y-m-d') !== $date) throw new \InvalidArgumentException('Choose a valid rental synchronization date range.');
     }
     if ($date_from > $date_to) throw new \InvalidArgumentException('Rental synchronization dates must be in order.');
@@ -602,12 +643,13 @@ class Store {
     if ($wpdb->last_error !== '') throw new \RuntimeException('Could not check the Roxy Event Booking source table.');
     if ((string) $found !== $source) return ['created' => 0, 'updated' => 0, 'skipped' => 0, 'dates' => []];
 
-    $range_start = $date_from . ' 00:00:00';
-    $range_end = (new \DateTimeImmutable($date_to . ' 00:00:00', wp_timezone()))->modify('+1 day')->format('Y-m-d H:i:s');
+    $site_timezone = wp_timezone();
+    $range_start = (new \DateTimeImmutable($date_from . ' 00:00:00', $report_timezone))->setTimezone($site_timezone)->format('Y-m-d H:i:s');
+    $range_end = (new \DateTimeImmutable($date_to . ' 00:00:00', $report_timezone))->modify('+1 day')->setTimezone($site_timezone)->format('Y-m-d H:i:s');
     $table = self::rental_entries_table_name();
     $bookings = $wpdb->get_results($wpdb->prepare(
-      "SELECT b.* FROM `{$source}` AS b WHERE b.visibility = %s AND ((b.reserved_start_at >= %s AND b.reserved_start_at < %s) OR (LOWER(TRIM(b.status)) IN (%s, %s) AND EXISTS (SELECT 1 FROM `{$table}` AS r WHERE r.source_type = %s AND r.source_ref = CONCAT('booking:', b.id)))) ORDER BY b.reserved_start_at ASC, b.id ASC",
-      'private', $range_start, $range_end, 'cancelled', 'canceled', 'event_booking'
+      "SELECT b.* FROM `{$source}` AS b WHERE b.visibility = %s AND ((b.reserved_start_at >= %s AND b.reserved_start_at < %s) OR EXISTS (SELECT 1 FROM `{$table}` AS r WHERE r.source_type = %s AND r.source_ref = CONCAT('booking:', b.id) AND (r.report_date >= %s AND r.report_date <= %s OR LOWER(TRIM(b.status)) IN (%s, %s)))) ORDER BY b.reserved_start_at ASC, b.id ASC",
+      'private', $range_start, $range_end, 'event_booking', $date_from, $date_to, 'cancelled', 'canceled'
     ), ARRAY_A);
     if ($wpdb->last_error !== '' || !is_array($bookings)) {
       $detail = $wpdb->last_error !== '' ? ' Database error: ' . sanitize_text_field((string) $wpdb->last_error) : '';
@@ -626,9 +668,8 @@ class Store {
       if ($booking_id <= 0 || !$start_dt || !$end_dt || $end_dt <= $start_dt || $start_dt->format('Y-m-d H:i:s') !== $start || $end_dt->format('Y-m-d H:i:s') !== $end) {
         throw new \RuntimeException('A private event booking has an invalid reservation window; no rental row was synchronized.');
       }
-      $report_date = $start_dt->format('Y-m-d');
+      $report_date = $start_dt->setTimezone($report_timezone)->format('Y-m-d');
       $within_requested_range = $report_date >= $date_from && $report_date <= $date_to;
-      if (!$within_requested_range && !$is_cancelled) continue;
       $company = trim((string) ($booking['business_name'] ?? ''));
       $event_title = trim((string) (($booking['event_format'] ?? '') === 'movie' ? ($booking['movie_title'] ?? '') : ($booking['live_description'] ?? '')));
       $title_context = $company !== '' ? $company : ($event_title !== '' ? $event_title : trim((string) ($booking['customer_first_name'] ?? '') . ' ' . (string) ($booking['customer_last_name'] ?? '')));
@@ -648,7 +689,9 @@ class Store {
         'rental_title' => $rental_title,
         'normalized_title' => self::normalize_title($rental_title),
         'rental_type' => 'Private Rental',
-        'show_time' => $doors_dt && $doors_dt->format('Y-m-d H:i:s') === $doors_raw ? $doors_dt->format('g:i A') : $start_dt->format('g:i A'),
+        'show_time' => $doors_dt && $doors_dt->format('Y-m-d H:i:s') === $doors_raw
+          ? $doors_dt->setTimezone($report_timezone)->format('g:i A')
+          : $start_dt->setTimezone($report_timezone)->format('g:i A'),
         'reserved_start_at' => $start,
         'reserved_end_at' => $end,
         'customer_name' => $customer_name,
@@ -663,6 +706,9 @@ class Store {
         'event_booking', $payload['source_ref']
       ), ARRAY_A);
       if ($wpdb->last_error !== '') throw new \RuntimeException('Could not check the existing Grosses rental booking.');
+      $existing_report_date = (string) ($existing['report_date'] ?? '');
+      $was_in_requested_range = $existing_report_date >= $date_from && $existing_report_date <= $date_to;
+      if (!$within_requested_range && !$was_in_requested_range && !$is_cancelled) continue;
       if ($existing) {
         if (!empty($existing['is_locked'])) { $skipped++; continue; }
         $same = true;
@@ -675,9 +721,10 @@ class Store {
           }
           if ((string) ($old_value ?? '') !== (string) ($value ?? '')) { $same = false; break; }
         }
-        if ($same) { $skipped++; if ($within_requested_range) $dates[$report_date] = true; continue; }
+        if ($same) { $skipped++; if ($within_requested_range || $was_in_requested_range) $dates[$report_date] = true; continue; }
         if (!self::update_protected_row($table, $payload, (int) $existing['id'])) throw new \RuntimeException('Could not refresh a synchronized Grosses rental booking.');
         $updated++;
+        if (!$is_cancelled && $existing_report_date !== '' && $existing_report_date !== $report_date) $dates[$existing_report_date] = true;
       } else {
         // If this reservation was already entered manually, preserve it and only
         // attach the exact interval/source identity needed for safe attribution.
@@ -698,7 +745,8 @@ class Store {
           $created++;
         }
       }
-      if ($within_requested_range) $dates[$report_date] = true;
+      if ($within_requested_range || $was_in_requested_range) $dates[$report_date] = true;
+      if (!$is_cancelled && $existing && $existing_report_date !== '' && $existing_report_date !== $report_date) $dates[$report_date] = true;
     }
     return ['created' => $created, 'updated' => $updated, 'skipped' => $skipped, 'dates' => array_keys($dates)];
   }

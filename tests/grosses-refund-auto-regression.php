@@ -13,10 +13,11 @@ namespace RoxyGrosses {
     public static array $payment_refunds = [];
     public static array $source_orders = [];
     public static array $date_orders = [];
+    public static array $date_fetch_calls = [];
     public static array $search_windows = [];
     public static int $payment_lookups = 0;
     public static function reset(): void {
-      self::$updated_orders = self::$payment_refunds = self::$source_orders = self::$date_orders = self::$search_windows = [];
+      self::$updated_orders = self::$payment_refunds = self::$source_orders = self::$date_orders = self::$search_windows = self::$date_fetch_calls = [];
       self::$payment_lookups = 0;
     }
     public static function fetch_orders_updated_between(string $start, string $end, ?float $deadline = null, bool $returns_only = false): array {
@@ -43,7 +44,7 @@ namespace RoxyGrosses {
       }
       return $orders;
     }
-    public static function fetch_orders_for_date(string $date): array { return self::$date_orders[$date] ?? []; }
+    public static function fetch_orders_for_date(string $date): array { self::$date_fetch_calls[] = $date; return self::$date_orders[$date] ?? []; }
     public static function concession_reporting_categories(array $ids): array { return []; }
   }
 
@@ -52,17 +53,24 @@ namespace RoxyGrosses {
     public static array $refund_updates = [];
     public static array $upserted_movie_rows = [];
     public static array $logs = [];
+    public static array $booking_preview_dates = [];
+    public static array $booking_sync_dates = [];
+    public static array $allocation_dates = [];
     public static bool $throw_refund_update = false;
-    public static function with_concession_allocation_lock(string $date, callable $operation) { return $operation(); }
+    public static function with_concession_allocation_lock(string $date, callable $operation) { self::$allocation_dates[] = $date; return $operation(); }
     public static function with_concession_allocation_transaction(callable $operation) { return $operation(); }
     public static function reset(): void {
-      self::$movie_rows = self::$refund_updates = self::$upserted_movie_rows = self::$logs = [];
+      self::$movie_rows = self::$refund_updates = self::$upserted_movie_rows = self::$logs = self::$booking_preview_dates = self::$booking_sync_dates = self::$allocation_dates = [];
       self::$throw_refund_update = false;
     }
     public static function entries_table_name(): string { return 'wp_roxy_fixture_grosses_entries'; }
     public static function sync_event_bookings_to_rentals(string $date_from, string $date_to): array {
-      return ['created' => 0, 'updated' => 0, 'skipped' => 0, 'dates' => []];
+      if (isset($GLOBALS['fixture_expected_preloaded_rental_date'])) {
+        $GLOBALS['fixture_rental_date_loaded_before_sync'] = in_array($GLOBALS['fixture_expected_preloaded_rental_date'], Square::$date_fetch_calls, true);
+      }
+      return ['created' => 0, 'updated' => 0, 'skipped' => 0, 'dates' => self::$booking_sync_dates];
     }
+    public static function event_booking_sync_preview_dates(string $date_from, string $date_to): array { return self::$booking_preview_dates; }
     public static function nominal_ticket_prices_for_showing(string $date, int $id, array $fallback, bool $strict = false): array {
       $row = self::$movie_rows[$id] ?? null;
       if ($strict && $row && $row['general_qty'] > 0) return array_replace($fallback, ['general' => $row['gross_total'] / $row['general_qty']]);
@@ -333,6 +341,18 @@ namespace {
   $assert(($protected['refund_movie_rows_protected'] ?? null) === 1 && ($protected['refund_movie_rows_updated'] ?? null) === 0, 'sync result reports protected historical row count');
   $assert(\RoxyGrosses\Store::$movie_rows[$old_showing_id]['general_qty'] === 3 && \RoxyGrosses\Store::$movie_rows[$old_showing_id]['concessions_total'] === 17.25, 'protected historical row remains unchanged');
   $assert($GLOBALS['fixture_mail_calls'] === 0, 'all sync fixtures avoid sending mail');
+
+  // A booking moved across report dates preloads the prior Square day before source sync,
+  // then explicitly rebalances that old day as well as the current day.
+  $seed('FAILED');
+  \RoxyGrosses\Store::$booking_preview_dates = [$old_date];
+  \RoxyGrosses\Store::$booking_sync_dates = [$old_date, $current_date];
+  $GLOBALS['fixture_expected_preloaded_rental_date'] = $old_date;
+  $date_move = $call_sync($now);
+  $result($date_move, 'cross-date private rental refresh');
+  $assert(!empty($GLOBALS['fixture_rental_date_loaded_before_sync']), 'old Square sale date is fetched before booking source rows are updated');
+  $assert(in_array($old_date, \RoxyGrosses\Store::$allocation_dates, true), 'nightly Grosses refresh rebalances the prior day after a rental moves');
+  unset($GLOBALS['fixture_expected_preloaded_rental_date'], $GLOBALS['fixture_rental_date_loaded_before_sync']);
 
   if ($failures) {
     foreach ($failures as $failure) fwrite(STDERR, "FAIL: {$failure}\n");

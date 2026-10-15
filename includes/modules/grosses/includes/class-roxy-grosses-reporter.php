@@ -594,17 +594,26 @@ class Reporter {
   public static function backfill_private_event_bookings(string $date_from, string $date_to): array {
     try {
       return Square::with_sale_snapshot(static function () use ($date_from, $date_to): array {
+        $preview_dates = Store::event_booking_sync_preview_dates($date_from, $date_to);
         $orders_by_date = self::square_orders_grouped_by_local_date(Square::fetch_orders_for_range($date_from, $date_to), $date_from, $date_to);
+        foreach ($preview_dates as $date) {
+          if ($date < $date_from || $date > $date_to) $orders_by_date[$date] = Square::fetch_orders_for_date($date);
+        }
         $sync = Store::sync_event_bookings_to_rentals($date_from, $date_to);
+        $reallocation_dates = array_values(array_unique(array_merge($preview_dates, $sync['dates'])));
+        foreach ($reallocation_dates as $date) {
+          $date = (string) $date;
+          if (!array_key_exists($date, $orders_by_date)) $orders_by_date[$date] = Square::fetch_orders_for_date($date);
+        }
         $failures = []; $rebalanced = 0;
-        foreach ($sync['dates'] as $date) {
+        foreach ($reallocation_dates as $date) {
           try { self::rebalance_concessions_for_date((string) $date, $orders_by_date[(string) $date] ?? []); $rebalanced++; }
           catch (\Throwable $error) { $failures[(string) $date] = $error->getMessage(); }
         }
         $success = !$failures;
         return ['success' => $success, 'message' => sprintf(
-          'Synchronized private bookings for %s through %s: %d created, %d updated, %d protected/unchanged; one Square range snapshot was used and %d of %d booking date(s) were rebalanced%s.',
-          $date_from, $date_to, $sync['created'], $sync['updated'], $sync['skipped'], $rebalanced, count($sync['dates']),
+          'Synchronized private bookings for %s through %s: %d created, %d updated, %d protected/unchanged; Square sales were loaded for affected dates and %d of %d booking date(s) were rebalanced%s.',
+          $date_from, $date_to, $sync['created'], $sync['updated'], $sync['skipped'], $rebalanced, count($reallocation_dates),
           $failures ? ' (' . implode('; ', array_map(static fn(string $date, string $message): string => $date . ': ' . $message, array_keys($failures), array_values($failures))) . ')' : ''
         ), 'bookings' => $sync, 'dates_rebalanced' => $rebalanced, 'failures' => $failures];
       });
@@ -627,7 +636,12 @@ class Reporter {
       if (!$claimed) throw new \RuntimeException('A Grosses refund refresh is already running or its lock is unavailable.');
       $timezone = new \DateTimeZone(Settings::get_report_timezone());
       $cutoff = ($now ?? new \DateTimeImmutable('now', $timezone))->setTimezone($timezone);
+      $booking_rebalance_preview = Store::event_booking_sync_preview_dates($report_date, $report_date);
+      foreach ($booking_rebalance_preview as $booking_date) {
+        if ((string) $booking_date !== $report_date) Square::fetch_orders_for_date((string) $booking_date);
+      }
       $booking_sync = Store::sync_event_bookings_to_rentals($report_date, $report_date);
+      $booking_rebalance_dates = array_values(array_unique(array_merge($booking_rebalance_preview, $booking_sync['dates'] ?? [])));
       $related = self::related_showings_by_date($report_date);
       $dates = array_keys($related);
       sort($dates);
@@ -689,6 +703,10 @@ class Reporter {
         $live_result = Store::upsert_live_entries($live_rows, 'update');
       }
       self::rebalance_concessions_for_report_dates($movie_rows, $report_date);
+      foreach ($booking_rebalance_dates as $booking_date) {
+        $booking_date = (string) $booking_date;
+        if ($booking_date !== $report_date) self::rebalance_concessions_for_date($booking_date);
+      }
       if ((int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', $lock)) !== 1) throw new \RuntimeException('Grosses refund refresh lost its database lock.');
       $closed_day_reports_flagged = $mode === 'closed-day-refresh'
         ? Store::with_refund_review_lock(static fn() => Store::flag_emailed_closed_day_changes($report_date, Store::closed_day_report_rows($report_date)))
@@ -2351,9 +2369,11 @@ class Reporter {
 
   private static function rental_window_datetime(string $value): ?\DateTimeImmutable {
     if ($value === '') return null;
-    $timezone = new \DateTimeZone(Settings::get_report_timezone());
-    $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $value, $timezone);
-    return $parsed && $parsed->format('Y-m-d H:i:s') === $value ? $parsed : null;
+    $site_timezone = wp_timezone();
+    $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $value, $site_timezone);
+    return $parsed && $parsed->format('Y-m-d H:i:s') === $value
+      ? $parsed->setTimezone(new \DateTimeZone(Settings::get_report_timezone()))
+      : null;
   }
 
   private static function matching_entry_ids_for_order_time(\DateTimeImmutable $order_closed_at, array $reports, bool $allow_single_row_fallback = false): array {

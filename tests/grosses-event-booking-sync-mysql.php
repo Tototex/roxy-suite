@@ -43,6 +43,9 @@ $check = static function (bool $ok, string $message) use (&$check_count): void {
   echo "PASS: {$message}\n";
 };
 $old_suppress = $wpdb->suppress_errors(true);
+$original_timezone_string = get_option('timezone_string', null);
+$original_gmt_offset = get_option('gmt_offset', null);
+$original_grosses_settings = get_option('roxy_grosses_settings', null);
 $created_tables = [];
 try {
   if (!$store::install_schema() || !$store::ensure_row_lock_columns()) throw new RuntimeException('Could not install private Grosses fixture tables.');
@@ -150,9 +153,48 @@ try {
   $check($locked['skipped'] === 2 && $protected['reserved_end_at'] === '2026-06-10 21:00:00' && $protected['status'] === 'Cancelled' && (float) $protected['invoice_amount'] === 0.0,
     'manager-locked rental retains its saved values when source booking changes');
 
+  $wpdb->insert($bookings, [
+    'id' => 900004, 'visibility' => 'private', 'status' => 'confirmed', 'invoice_status' => 'paid',
+    'reserved_start_at' => '2026-06-10 16:00:00', 'reserved_end_at' => '2026-06-10 20:00:00',
+    'doors_open_at' => '2026-06-10 16:30:00', 'business_name' => 'Rescheduled Fixture', 'total_price' => '125.00',
+  ]);
+  $store::sync_event_bookings_to_rentals('2026-06-01', '2026-06-30');
+  $wpdb->update($bookings, ['reserved_start_at' => '2026-06-11 16:00:00', 'reserved_end_at' => '2026-06-11 20:00:00'], ['id' => 900004]);
+  $move_preview = $store::event_booking_sync_preview_dates('2026-06-11', '2026-06-11');
+  $moved = $store::sync_event_bookings_to_rentals('2026-06-11', '2026-06-11');
+  $moved_row = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $store::rental_entries_table_name() . ' WHERE source_ref = %s', 'booking:900004'), ARRAY_A);
+  $check(in_array('2026-06-10', $move_preview, true) && in_array('2026-06-11', $move_preview, true)
+      && in_array('2026-06-10', $moved['dates'], true) && in_array('2026-06-11', $moved['dates'], true)
+      && $moved_row['report_date'] === '2026-06-11',
+    'rescheduling a linked booking across report dates previews and rebalances both the old and new dates');
+
+  update_option('timezone_string', 'America/Los_Angeles');
+  update_option('roxy_grosses_settings', ['report_timezone' => 'UTC']);
+  $wpdb->insert($bookings, [
+    'id' => 900005, 'visibility' => 'private', 'status' => 'confirmed', 'invoice_status' => 'paid',
+    'reserved_start_at' => '2026-06-10 23:30:00', 'reserved_end_at' => '2026-06-11 00:30:00',
+    'doors_open_at' => '2026-06-10 23:45:00', 'business_name' => 'Timezone Fixture', 'total_price' => '75.00',
+  ]);
+  $timezone_preview = $store::event_booking_sync_preview_dates('2026-06-11', '2026-06-11');
+  $timezone_sync = $store::sync_event_bookings_to_rentals('2026-06-11', '2026-06-11');
+  $timezone_row = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $store::rental_entries_table_name() . ' WHERE source_ref = %s', 'booking:900005'), ARRAY_A);
+  $check($timezone_preview === [] && $timezone_sync['created'] === 1 && in_array('2026-06-11', $timezone_sync['dates'], true)
+      && $timezone_row['report_date'] === '2026-06-11' && $timezone_row['show_time'] === '6:45 AM'
+      && $timezone_row['reserved_start_at'] === '2026-06-10 23:30:00',
+    'site-local booking wall times convert to the Grosses report timezone before report-date selection');
+  if (!class_exists('\\RoxyGrosses\\Reporter', false)) require_once dirname($store_path) . '/class-roxy-grosses-reporter.php';
+  $window_parser = new ReflectionMethod('\\RoxyGrosses\\Reporter', 'rental_window_datetime');
+  $window_parser->setAccessible(true);
+  $report_window_start = $window_parser->invoke(null, '2026-06-10 23:30:00');
+  $check($report_window_start instanceof DateTimeImmutable && $report_window_start->format('Y-m-d H:i:s e') === '2026-06-11 06:30:00 UTC',
+    'rental attribution parses persisted wall time in the WordPress timezone before converting to report timezone');
+
   echo "PASS: {$check_count} private booking synchronization checks\n";
 } finally {
   foreach ($created_tables as $table) $wpdb->query("DROP TABLE IF EXISTS `{$table}`");
   foreach ($options as $option) delete_option($option);
+  if ($original_timezone_string === null) delete_option('timezone_string'); else update_option('timezone_string', $original_timezone_string);
+  if ($original_gmt_offset === null) delete_option('gmt_offset'); else update_option('gmt_offset', $original_gmt_offset);
+  if ($original_grosses_settings === null) delete_option('roxy_grosses_settings'); else update_option('roxy_grosses_settings', $original_grosses_settings);
   $wpdb->suppress_errors($old_suppress);
 }
