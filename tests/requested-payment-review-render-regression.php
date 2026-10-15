@@ -79,7 +79,8 @@ $set_order(new WC_Order($identity_meta + [
 $html = $render();
 $check(str_contains($html, 'Payment may need manual reconciliation'), 'uncertain attempt is visibly marked for manager review');
 $check(str_contains($html, '9001') && str_contains($html, 'ID 9001') && str_contains($html, '$18.00') && str_contains($html, '55 / 77'), 'order, amount, request and backing identifiers are shown');
-$check(str_contains($html, 'Do not retry conversion') && str_contains($html, 'read-only'), 'panel warns against an unsafe retry and has no action controls');
+$check(str_contains($html, 'Do not retry conversion') && str_contains($html, 'read-only')
+    && !str_contains($html, '<button') && !str_contains($html, '<form') && !str_contains($html, 'name="decision"'), 'panel warns against an unsafe retry and renders no action controls');
 $check(!str_contains($html, 'customer_id') && !str_contains($html, 'payment_method') && !str_contains($html, 'token'), 'private card/token fields are not rendered');
 
 $GLOBALS['requested_payment_review_can_edit_ids'] = [];
@@ -120,7 +121,15 @@ $set_order(new WC_Order($identity_meta + [
 ], 'roxy_requested_showings', true));
 $html = $render();
 $check(!str_contains($html, 'pi_abc123') && str_contains($html, 'none verified'), 'provider result from a different attempt is not presented as verified');
+$check(str_contains($html, 'Payment may need manual reconciliation'), 'malformed/mismatched attempt marker always triggers the reconciliation warning');
 $check(!str_contains($html, '<script>'), 'receipt data is escaped before rendering');
+$set_order(new WC_Order($identity_meta + [
+    '_roxy_rs_payment_attempt' => '',
+    '_roxy_rs_payment_result' => (string) json_encode($valid_result),
+], 'roxy_requested_showings', true));
+$html = $render();
+$check(str_contains($html, 'Payment may need manual reconciliation') && str_contains($html, 'Attempt marker: missing or unreadable')
+    && !str_contains($html, 'Payment attempt details are shown for audit'), 'missing attempt marker never produces a reassuring audit headline');
 $set_order(new WC_Order([], 'checkout'));
 $check($render() === '', 'unrelated WooCommerce orders reveal no Requested Showings panel');
 

@@ -132,7 +132,7 @@ class Conversion {
         $attempt = self::decode_review_metadata($attempt_raw);
         $attempt_matches_order = $attempt && self::payment_review_attempt_matches_order($attempt, $order);
 
-        if ($review || !$order->is_paid() || ($attempt && !$attempt_matches_order)) {
+        if ($review || !$order->is_paid() || !$attempt_matches_order) {
             echo '<p><strong>Payment may need manual reconciliation.</strong></p>';
             echo '<p>This panel is read-only. Do not retry conversion or manually mark this order paid. Verify the PaymentIntent in Stripe using the order ID, amount, currency, and customer before taking any action.</p>';
         } else {
