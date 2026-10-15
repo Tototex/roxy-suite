@@ -111,6 +111,10 @@ try {
     'cancelled source booking remains visible and its invoice amount is excluded');
   $check((float) $after_cancel['concessions_total'] === 123.45,
     'cancellation sync preserves actual Square concession sales');
+  $summary = $store::rental_entries_summary(['date_from' => '2026-06-01', 'date_to' => '2026-06-30']);
+  $check($summary['row_count'] === 1 && $summary['invoice_row_count'] === 0 && $summary['invoice_total'] === 0.0
+      && $summary['concessions'] === 123.45 && $summary['average_invoice'] === 0.0,
+    'rental totals retain cancelled rows and Square concessions but exclude cancelled invoices from average');
 
   $wpdb->update($store::rental_entries_table_name(), ['is_locked' => 1], ['id' => (int) $row['id']]);
   $wpdb->update($bookings, ['status' => 'confirmed', 'reserved_end_at' => '2026-06-10 22:00:00', 'total_price' => '500.00'], ['id' => 900001]);

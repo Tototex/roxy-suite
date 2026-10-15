@@ -2417,19 +2417,22 @@ class Store {
   public static function rental_entries_summary(array $filters = []): array {
     global $wpdb;
     [$where, $params] = self::rental_entry_where_sql($filters);
-    $sql = 'SELECT COUNT(*) AS row_count,
+    $sql = "SELECT COUNT(*) AS row_count,
+                   SUM(CASE WHEN LOWER(TRIM(status)) NOT IN ('cancelled', 'canceled') THEN 1 ELSE 0 END) AS invoice_row_count,
                    COALESCE(SUM(invoice_amount),0) AS invoice_total,
                    COALESCE(SUM(concessions_total),0) AS concessions
-            FROM ' . self::rental_entries_table_name() . ' ' . $where;
+            FROM " . self::rental_entries_table_name() . ' ' . $where;
     $row = $wpdb->get_row(self::prepare_query($sql, $params), ARRAY_A);
     $row_count = (int) ($row['row_count'] ?? 0);
+    $invoice_row_count = (int) ($row['invoice_row_count'] ?? 0);
     $invoice_total = round((float) ($row['invoice_total'] ?? 0), 2);
     $concessions = round((float) ($row['concessions'] ?? 0), 2);
     return [
       'row_count' => $row_count,
+      'invoice_row_count' => $invoice_row_count,
       'invoice_total' => $invoice_total,
       'concessions' => $concessions,
-      'average_invoice' => $row_count > 0 ? round($invoice_total / $row_count, 2) : 0.0,
+      'average_invoice' => $invoice_row_count > 0 ? round($invoice_total / $invoice_row_count, 2) : 0.0,
       'average_concessions' => $row_count > 0 ? round($concessions / $row_count, 2) : 0.0,
     ];
   }
