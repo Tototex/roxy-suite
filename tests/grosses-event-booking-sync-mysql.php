@@ -112,7 +112,7 @@ try {
   $check((float) $after_cancel['concessions_total'] === 123.45,
     'cancellation sync preserves actual Square concession sales');
   $wpdb->insert($store::rental_entries_table_name(), [
-    'report_date' => '2026-06-11', 'rental_title' => 'Legacy canceled fixture', 'normalized_title' => 'legacy canceled fixture',
+    'report_date' => '2026-06-11', 'rental_title' => 'Private Rental - Fixture Company', 'normalized_title' => 'private rental - fixture company',
     'rental_type' => 'Private Rental', 'show_time' => '1:00 PM', 'status' => 'canceled', 'invoice_amount' => '99.00',
     'concessions_total' => '0.00', 'created_at' => current_time('mysql'), 'updated_at' => current_time('mysql'),
   ]);
@@ -121,6 +121,13 @@ try {
   $check($summary['row_count'] === 2 && $summary['invoice_row_count'] === 0 && $summary['invoice_total'] === 0.0
       && $summary['concessions'] === 123.45 && $summary['average_invoice'] === 0.0,
     'rental totals exclude cancelled invoices even if a legacy row retained an amount, while preserving cancelled rows and Square concessions');
+  $top_rentals = $store::top_rentals(['date_from' => '2026-06-01', 'date_to' => '2026-06-30'], 5, 'invoice');
+  $fixture_top_rental = array_values(array_filter($top_rentals, static function ($rental) {
+    return ($rental['rental_title'] ?? '') === 'Private Rental - Fixture Company';
+  }));
+  $check(count($fixture_top_rental) === 1 && (int) $fixture_top_rental[0]['row_count'] === 2
+      && (float) $fixture_top_rental[0]['invoice_total'] === 0.0 && (float) $fixture_top_rental[0]['concessions'] === 123.45,
+    'top-rentals aggregation excludes stale cancelled invoices while retaining rental row count and concessions');
 
   $wpdb->insert($bookings, [
     'id' => 900003, 'visibility' => 'private', 'status' => 'confirmed', 'invoice_status' => 'paid',

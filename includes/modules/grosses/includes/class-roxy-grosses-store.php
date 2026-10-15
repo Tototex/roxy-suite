@@ -2876,7 +2876,7 @@ class Store {
       : 'concessions DESC, invoice_total DESC, row_count DESC';
     $sql = 'SELECT rental_title,
                    COUNT(*) AS row_count,
-                   COALESCE(SUM(invoice_amount),0) AS invoice_total,
+                   COALESCE(SUM(CASE WHEN LOWER(TRIM(status)) NOT IN ('cancelled', 'canceled') THEN invoice_amount ELSE 0 END),0) AS invoice_total,
                    COALESCE(SUM(concessions_total),0) AS concessions
             FROM ' . self::rental_entries_table_name() . ' ' . $where . '
             GROUP BY normalized_title, rental_title
