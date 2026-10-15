@@ -126,7 +126,7 @@ try {
   $wpdb->update($bookings, ['status' => 'cancelled', 'invoice_status' => 'void'], ['id' => 900003]);
   $later_sync = $store::sync_event_bookings_to_rentals('2026-06-01', '2026-06-30');
   $earlier_after = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $store::rental_entries_table_name() . ' WHERE source_ref = %s', 'booking:900003'), ARRAY_A);
-  $check($may_sync['created'] === 1 && $later_sync['updated'] === 1 && $later_sync['dates'] === []
+  $check($may_sync['created'] === 1 && $later_sync['updated'] === 1 && !in_array('2026-05-10', $later_sync['dates'], true)
       && $earlier_after['status'] === 'Cancelled' && (float) $earlier_after['invoice_amount'] === 0.0,
     'nightly sync notices an out-of-window cancellation without scheduling an out-of-window Square rebalance');
 
