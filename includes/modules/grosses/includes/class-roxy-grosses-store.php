@@ -606,7 +606,7 @@ class Store {
     $range_end = (new \DateTimeImmutable($date_to . ' 00:00:00', wp_timezone()))->modify('+1 day')->format('Y-m-d H:i:s');
     $table = self::rental_entries_table_name();
     $bookings = $wpdb->get_results($wpdb->prepare(
-      "SELECT booking.* FROM `{$source}` AS booking WHERE booking.visibility = %s AND ((booking.reserved_start_at >= %s AND booking.reserved_start_at < %s) OR (LOWER(TRIM(booking.status)) IN (%s, %s) AND EXISTS (SELECT 1 FROM `{$table}` AS rental WHERE rental.source_type = %s AND rental.source_ref = CONCAT('booking:', booking.id))) ORDER BY booking.reserved_start_at ASC, booking.id ASC",
+      "SELECT b.* FROM `{$source}` AS b WHERE b.visibility = %s AND ((b.reserved_start_at >= %s AND b.reserved_start_at < %s) OR (LOWER(TRIM(b.status)) IN (%s, %s) AND EXISTS (SELECT 1 FROM `{$table}` AS r WHERE r.source_type = %s AND r.source_ref = CONCAT('booking:', b.id))) ORDER BY b.reserved_start_at ASC, b.id ASC",
       'private', $range_start, $range_end, 'cancelled', 'canceled', 'event_booking'
     ), ARRAY_A);
     if ($wpdb->last_error !== '' || !is_array($bookings)) throw new \RuntimeException('Could not read private event bookings for the rental synchronization.');
