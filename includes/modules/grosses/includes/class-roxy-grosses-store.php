@@ -624,7 +624,8 @@ class Store {
         throw new \RuntimeException('A private event booking has an invalid reservation window; no rental row was synchronized.');
       }
       $report_date = $start_dt->format('Y-m-d');
-      if (($report_date < $date_from || $report_date > $date_to) && !$is_cancelled) continue;
+      $within_requested_range = $report_date >= $date_from && $report_date <= $date_to;
+      if (!$within_requested_range && !$is_cancelled) continue;
       $company = trim((string) ($booking['business_name'] ?? ''));
       $event_title = trim((string) (($booking['event_format'] ?? '') === 'movie' ? ($booking['movie_title'] ?? '') : ($booking['live_description'] ?? '')));
       $title_context = $company !== '' ? $company : ($event_title !== '' ? $event_title : trim((string) ($booking['customer_first_name'] ?? '') . ' ' . (string) ($booking['customer_last_name'] ?? '')));
@@ -671,7 +672,7 @@ class Store {
           }
           if ((string) ($old_value ?? '') !== (string) ($value ?? '')) { $same = false; break; }
         }
-        if ($same) { $skipped++; $dates[$report_date] = true; continue; }
+        if ($same) { $skipped++; if ($within_requested_range) $dates[$report_date] = true; continue; }
         if (!self::update_protected_row($table, $payload, (int) $existing['id'])) throw new \RuntimeException('Could not refresh a synchronized Grosses rental booking.');
         $updated++;
       } else {
@@ -694,7 +695,7 @@ class Store {
           $created++;
         }
       }
-      $dates[$report_date] = true;
+      if ($within_requested_range) $dates[$report_date] = true;
     }
     return ['created' => $created, 'updated' => $updated, 'skipped' => $skipped, 'dates' => array_keys($dates)];
   }
