@@ -461,7 +461,7 @@ class Store {
       self::history_table_name() => ['id', 'report_date', 'showing_id'],
       self::entries_table_name() => ['id', 'report_date', 'normalized_title'],
       self::live_entries_table_name() => ['id', 'report_date', 'presale_qty'],
-      self::rental_entries_table_name() => ['id', 'report_date', 'rental_title'],
+      self::rental_entries_table_name() => ['id', 'report_date', 'rental_title', 'reserved_start_at', 'reserved_end_at'],
       self::legacy_weekly_table_name() => ['id', 'week_start_date'],
       self::import_batch_table_name() => ['id', 'created_at', 'status'],
       self::import_file_table_name() => ['id', 'batch_id', 'status'],

@@ -14,6 +14,7 @@ function dbDelta($sql) {
   if ($wpdb->fail_table === $table) { unset($wpdb->tables[$table]); return []; }
   preg_match_all('/^\s*([a-z][a-z0-9_]*)\s+(?:BIGINT|INT|TINYINT|DATETIME|DATE|CHAR|VARCHAR|DECIMAL|LONGTEXT|TEXT)/im', $sql, $columns);
   $wpdb->tables[$table] = array_fill_keys($columns[1], true);
+  if ($wpdb->omit_column !== '') unset($wpdb->tables[$table][$wpdb->omit_column]);
   if (preg_match('/UNIQUE KEY\s+event_id\s*\(event_id\)/i', $sql)) $wpdb->tables[$table]['event_id_unique'] = true;
   if (preg_match('/UNIQUE KEY\s+fingerprint\s*\(fingerprint\)/i', $sql)) $wpdb->tables[$table]['fingerprint_unique'] = true;
   return [];
@@ -23,6 +24,7 @@ class FixtureWpdb {
   public string $prefix = 'wp_';
   public string $last_error = '';
   public string $fail_table = '';
+  public string $omit_column = '';
   public array $tables = [];
   public function get_charset_collate(): string { return ''; }
   public function prepare(string $sql, ...$args): string { return vsprintf(str_replace('%s', "'%s'", $sql), $args); }
@@ -55,6 +57,12 @@ $wpdb->fail_table = '';
 $check(\RoxyGrosses\Store::install_schema(), 'schema retry succeeds after database recovers');
 $check(get_option(\RoxyGrosses\Store::SCHEMA_OPTION) === \RoxyGrosses\Store::SCHEMA_VERSION, 'schema version is stamped only after required tables and columns verify');
 $check(isset($wpdb->tables['wp_roxy_grosses_unmatched_concessions']['fingerprint_unique']), 'unmatched concession queue schema includes unique line identity');
+$options[\RoxyGrosses\Store::SCHEMA_OPTION] = '';
+$wpdb->omit_column = 'reserved_end_at';
+$check(!\RoxyGrosses\Store::install_schema(), 'missing rental reservation-window column blocks schema verification');
+$check(get_option(\RoxyGrosses\Store::SCHEMA_OPTION, '') === '', 'missing rental column leaves schema upgrade retryable');
+$wpdb->omit_column = '';
+$check(\RoxyGrosses\Store::install_schema(), 'rental reservation-window schema retry succeeds after column is available');
 $options[\RoxyGrosses\Store::SCHEMA_OPTION] = '';
 $wpdb->fail_table = 'wp_roxy_grosses_unmatched_concessions';
 $check(!\RoxyGrosses\Store::install_schema(), 'missing unmatched queue table prevents schema version confirmation');

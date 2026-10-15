@@ -335,6 +335,9 @@ jobs:
       - name: Run Grosses schema bootstrap regression
         run: php tests/grosses-schema-bootstrap-regression.php
 
+      - name: Run Social schema verification regression
+        run: php tests/social-schema-verification-regression.php
+
       - name: Run Grosses backfill date-read regression
         run: php tests/grosses-backfill-date-read-regression.php
 

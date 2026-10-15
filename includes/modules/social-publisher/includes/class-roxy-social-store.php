@@ -91,10 +91,11 @@ final class Store {
         $poster_cleanup_error = $wpdb->last_error;
         $wpdb->last_error = '';
         $story_column = $wpdb->get_var($wpdb->prepare('SHOW COLUMNS FROM ' . $main_name . ' LIKE %s', 'publish_facebook_story'));
+        $story_state_column = $wpdb->get_var($wpdb->prepare('SHOW COLUMNS FROM ' . $main_name . ' LIKE %s', 'facebook_story_state'));
         $attempt_column = $wpdb->get_var($wpdb->prepare('SHOW COLUMNS FROM ' . $main_name . ' LIKE %s', 'publish_attempt_token'));
         $worker_column = $wpdb->get_var($wpdb->prepare('SHOW COLUMNS FROM ' . $main_name . ' LIKE %s', 'publish_worker_token'));
         return $main_exists && $cleanup_exists && $poster_cleanup_exists && $story_column === 'publish_facebook_story'
-            && $attempt_column === 'publish_attempt_token' && $worker_column === 'publish_worker_token'
+            && $story_state_column === 'facebook_story_state' && $attempt_column === 'publish_attempt_token' && $worker_column === 'publish_worker_token'
             && $main_error === '' && $cleanup_error === '' && $poster_cleanup_error === '' && $wpdb->last_error === '';
     }
 
