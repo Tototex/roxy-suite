@@ -85,7 +85,7 @@ $check(!str_contains($html, 'customer_id') && !str_contains($html, 'payment_meth
 $GLOBALS['requested_payment_review_can_edit_ids'] = [];
 $check($render() === '', 'users without order-edit capability see no payment metadata');
 $GLOBALS['requested_payment_review_can_edit_ids'] = [9001];
-$set_order(new WC_Order($identity_meta, 'roxy_requested_showings', false, 9002));
+$GLOBALS['requested_payment_review_orders'][9001] = new WC_Order($identity_meta, 'roxy_requested_showings', false, 9002);
 $check($render(9001) === '', 'a Woo lookup returning a different order ID fails closed');
 
 $valid_marker_json = static function (array $attempt): string { return (string) json_encode($attempt); };
