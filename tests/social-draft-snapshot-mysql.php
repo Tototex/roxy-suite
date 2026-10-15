@@ -105,21 +105,21 @@ try {
     roxy_snapshot_check(in_array(9601,$GLOBALS['snapshot_deleted_attachments']??[],true),'confirmed-unreferenced imported attachment is deleted');
     roxy_snapshot_row();
     $fail_reference_read=static function($query) use ($table) {
-        if (strpos($query,'SELECT id, media_url, media_urls, temporary_attachment_id FROM '.$table.' WHERE id = 1 OR temporary_attachment_id = 9602')===0)
+        if (strpos($query,'SELECT id, media_url, media_urls, temporary_attachment_id FROM '.$table)===0)
             return str_replace($table,'roxy_missing_social_reference_fixture',$query);
         return $query;
     };
     add_filter('query',$fail_reference_read);$cleanup->invoke(null,1,9602);remove_filter('query',$fail_reference_read);
     roxy_snapshot_check(!in_array(9602,$GLOBALS['snapshot_deleted_attachments']??[],true),'reference query failure preserves imported attachment');
     $malform_reference_read=static function($query) use ($table) {
-        if (strpos($query,'SELECT id, media_url, media_urls, temporary_attachment_id FROM '.$table.' WHERE id = 1 OR temporary_attachment_id = 9603')===0)
+        if (strpos($query,'SELECT id, media_url, media_urls, temporary_attachment_id FROM '.$table)===0)
             return str_replace('SELECT id, media_url, media_urls, temporary_attachment_id','SELECT id',$query);
         return $query;
     };
     add_filter('query',$malform_reference_read);$cleanup->invoke(null,1,9603);remove_filter('query',$malform_reference_read);
     roxy_snapshot_check(!in_array(9603,$GLOBALS['snapshot_deleted_attachments']??[],true),'malformed reference row preserves imported attachment');
-    $row=roxy_snapshot_row(['media_url'=>'https://fixture.test/another.jpg','media_urls'=>'["https://fixture.test/another.jpg"]']);
-    $other=$row;$other['id']=2;$other['post_key']='another-fixture-post';$other['media_url']='https://fixture.test/shared.jpg';$other['media_urls']='["https://fixture.test/shared.jpg"]';$other['temporary_attachment_id']=9604;
+    $row=roxy_snapshot_row(['media_url'=>'https://fixture.test/another.jpg','media_urls'=>wp_json_encode(['https://fixture.test/another.jpg'])]);
+    $other=$row;$other['id']=2;$other['post_key']='another-fixture-post';$other['media_url']='https://fixture.test/another.jpg';$other['media_urls']=wp_json_encode(['https://fixture.test/another.jpg','https://fixture.test/shared.jpg']);$other['temporary_attachment_id']=null;
     if(!$wpdb->insert($table,$other))throw new RuntimeException('Could not insert second-draft attachment-reference fixture');
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::imported_media_is_referenced(1,9604,'https://fixture.test/shared.jpg')===true,'attachment referenced by a different draft is retained');
     $cleanup->invoke(null,1,9604);

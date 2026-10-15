@@ -462,14 +462,13 @@ final class Store {
         global $wpdb;
         if ($draft_id <= 0 || $attachment_id <= 0 || $url === '') return null;
         $wpdb->last_error = '';
-        $rows = $wpdb->get_results($wpdb->prepare(
-            'SELECT id, media_url, media_urls, temporary_attachment_id FROM ' . self::table_name()
-                . ' WHERE id = %d OR temporary_attachment_id = %d OR media_url = %s OR media_urls LIKE %s',
-            $draft_id,
-            $attachment_id,
-            $url,
-            '%' . $wpdb->esc_like($url) . '%'
-        ), ARRAY_A);
+        // This is only called after an import failure, so scan the small Social
+        // draft table instead of relying on a LIKE filter that can miss JSON's
+        // escaped slashes or secondary-media references in another draft.
+        $rows = $wpdb->get_results(
+            'SELECT id, media_url, media_urls, temporary_attachment_id FROM ' . self::table_name(),
+            ARRAY_A
+        );
         if ($wpdb->last_error !== '' || !is_array($rows)) return null;
         foreach ($rows as $row) {
             if (!is_array($row)
