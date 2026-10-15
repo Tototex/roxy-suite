@@ -60,6 +60,9 @@ namespace RoxyGrosses {
       self::$throw_refund_update = false;
     }
     public static function entries_table_name(): string { return 'wp_roxy_fixture_grosses_entries'; }
+    public static function sync_event_bookings_to_rentals(string $date_from, string $date_to): array {
+      return ['created' => 0, 'updated' => 0, 'skipped' => 0, 'dates' => []];
+    }
     public static function nominal_ticket_prices_for_showing(string $date, int $id, array $fallback, bool $strict = false): array {
       $row = self::$movie_rows[$id] ?? null;
       if ($strict && $row && $row['general_qty'] > 0) return array_replace($fallback, ['general' => $row['gross_total'] / $row['general_qty']]);
