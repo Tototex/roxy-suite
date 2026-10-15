@@ -7,6 +7,7 @@ class Reporter {
   private static array $refund_review_dates = [];
   private const REFUND_SCAN_DATE = 'roxy_grosses_refund_scan_date';
   private const REFUND_PENDING_FROM = 'roxy_grosses_refund_pending_from';
+  private const BOOKING_REBALANCE_PENDING_DATES = 'roxy_grosses_booking_rebalance_pending_dates';
   public static function init(): void {
     add_action('admin_post_roxy_grosses_send_manual', [__CLASS__, 'handle_manual_send']);
     add_action('admin_post_roxy_grosses_pull_database', [__CLASS__, 'handle_pull_database']);
@@ -595,19 +596,26 @@ class Reporter {
     try {
       return Square::with_sale_snapshot(static function () use ($date_from, $date_to): array {
         $preview_dates = Store::event_booking_sync_preview_dates($date_from, $date_to);
+        $pending_dates = self::pending_booking_rebalance_dates();
         $orders_by_date = self::square_orders_grouped_by_local_date(Square::fetch_orders_for_range($date_from, $date_to), $date_from, $date_to);
-        foreach ($preview_dates as $date) {
+        foreach (array_unique(array_merge($preview_dates, $pending_dates)) as $date) {
           if ($date < $date_from || $date > $date_to) $orders_by_date[$date] = Square::fetch_orders_for_date($date);
         }
+        self::save_pending_booking_rebalance_dates(array_merge($pending_dates, $preview_dates));
         $sync = Store::sync_event_bookings_to_rentals($date_from, $date_to);
-        $reallocation_dates = array_values(array_unique(array_merge($preview_dates, $sync['dates'])));
+        $reallocation_dates = array_values(array_unique(array_merge($pending_dates, $preview_dates, $sync['dates'])));
+        self::save_pending_booking_rebalance_dates($reallocation_dates);
         foreach ($reallocation_dates as $date) {
           $date = (string) $date;
           if (!array_key_exists($date, $orders_by_date)) $orders_by_date[$date] = Square::fetch_orders_for_date($date);
         }
         $failures = []; $rebalanced = 0;
         foreach ($reallocation_dates as $date) {
-          try { self::rebalance_concessions_for_date((string) $date, $orders_by_date[(string) $date] ?? []); $rebalanced++; }
+          try {
+            self::rebalance_concessions_for_date((string) $date, $orders_by_date[(string) $date] ?? []);
+            self::remove_pending_booking_rebalance_date((string) $date);
+            $rebalanced++;
+          }
           catch (\Throwable $error) { $failures[(string) $date] = $error->getMessage(); }
         }
         $success = !$failures;
@@ -620,6 +628,42 @@ class Reporter {
     } catch (\Throwable $error) {
       return ['success' => false, 'message' => $error->getMessage(), 'bookings' => ['created' => 0, 'updated' => 0, 'skipped' => 0, 'dates' => []], 'dates_rebalanced' => 0, 'failures' => []];
     }
+  }
+
+  /** Keep cross-date concession work retryable if a report write fails after a booking moves. */
+  private static function pending_booking_rebalance_dates(): array {
+    $dates = get_option(self::BOOKING_REBALANCE_PENDING_DATES, []);
+    if (!is_array($dates)) throw new \RuntimeException('The pending rental-rebalance checkpoint needs review.');
+    $validated = [];
+    foreach ($dates as $date) {
+      $date = (string) $date;
+      $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date, new \DateTimeZone(Settings::get_report_timezone()));
+      if (!$parsed || $parsed->format('Y-m-d') !== $date) throw new \RuntimeException('The pending rental-rebalance checkpoint contains an invalid date.');
+      $validated[$date] = true;
+    }
+    $validated = array_keys($validated);
+    sort($validated, SORT_STRING);
+    return $validated;
+  }
+
+  private static function save_pending_booking_rebalance_dates(array $dates): void {
+    $pending = array_fill_keys(self::pending_booking_rebalance_dates(), true);
+    foreach ($dates as $date) {
+      $date = (string) $date;
+      $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date, new \DateTimeZone(Settings::get_report_timezone()));
+      if (!$parsed || $parsed->format('Y-m-d') !== $date) throw new \RuntimeException('Cannot queue an invalid rental-rebalance date.');
+      $pending[$date] = true;
+    }
+    $saved = array_keys($pending);
+    sort($saved, SORT_STRING);
+    update_option(self::BOOKING_REBALANCE_PENDING_DATES, $saved, false);
+    if (self::pending_booking_rebalance_dates() !== $saved) throw new \RuntimeException('Could not save pending rental-rebalance dates for retry.');
+  }
+
+  private static function remove_pending_booking_rebalance_date(string $date): void {
+    $remaining = array_values(array_filter(self::pending_booking_rebalance_dates(), static fn(string $pending): bool => $pending !== $date));
+    update_option(self::BOOKING_REBALANCE_PENDING_DATES, $remaining, false);
+    if (self::pending_booking_rebalance_dates() !== $remaining) throw new \RuntimeException('Could not clear a completed rental-rebalance date from its retry queue.');
   }
 
   /** Refresh a closed sale day and flag changed emailed snapshots; never sends a report. */
@@ -637,11 +681,14 @@ class Reporter {
       $timezone = new \DateTimeZone(Settings::get_report_timezone());
       $cutoff = ($now ?? new \DateTimeImmutable('now', $timezone))->setTimezone($timezone);
       $booking_rebalance_preview = Store::event_booking_sync_preview_dates($report_date, $report_date);
-      foreach ($booking_rebalance_preview as $booking_date) {
+      $pending_booking_dates = self::pending_booking_rebalance_dates();
+      foreach (array_unique(array_merge($booking_rebalance_preview, $pending_booking_dates)) as $booking_date) {
         if ((string) $booking_date !== $report_date) Square::fetch_orders_for_date((string) $booking_date);
       }
+      self::save_pending_booking_rebalance_dates(array_merge($pending_booking_dates, $booking_rebalance_preview));
       $booking_sync = Store::sync_event_bookings_to_rentals($report_date, $report_date);
-      $booking_rebalance_dates = array_values(array_unique(array_merge($booking_rebalance_preview, $booking_sync['dates'] ?? [])));
+      $booking_rebalance_dates = array_values(array_unique(array_merge($pending_booking_dates, $booking_rebalance_preview, $booking_sync['dates'] ?? [])));
+      self::save_pending_booking_rebalance_dates($booking_rebalance_dates);
       $related = self::related_showings_by_date($report_date);
       $dates = array_keys($related);
       sort($dates);
@@ -706,6 +753,7 @@ class Reporter {
       foreach ($booking_rebalance_dates as $booking_date) {
         $booking_date = (string) $booking_date;
         if ($booking_date !== $report_date) self::rebalance_concessions_for_date($booking_date);
+        self::remove_pending_booking_rebalance_date($booking_date);
       }
       if ((int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', $lock)) !== 1) throw new \RuntimeException('Grosses refund refresh lost its database lock.');
       $closed_day_reports_flagged = $mode === 'closed-day-refresh'

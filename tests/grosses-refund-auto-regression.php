@@ -56,11 +56,17 @@ namespace RoxyGrosses {
     public static array $booking_preview_dates = [];
     public static array $booking_sync_dates = [];
     public static array $allocation_dates = [];
+    public static string $fail_allocation_date = '';
     public static bool $throw_refund_update = false;
-    public static function with_concession_allocation_lock(string $date, callable $operation) { self::$allocation_dates[] = $date; return $operation(); }
+    public static function with_concession_allocation_lock(string $date, callable $operation) {
+      self::$allocation_dates[] = $date;
+      if (self::$fail_allocation_date === $date) throw new \RuntimeException('Injected allocation failure.');
+      return $operation();
+    }
     public static function with_concession_allocation_transaction(callable $operation) { return $operation(); }
     public static function reset(): void {
       self::$movie_rows = self::$refund_updates = self::$upserted_movie_rows = self::$logs = self::$booking_preview_dates = self::$booking_sync_dates = self::$allocation_dates = [];
+      self::$fail_allocation_date = '';
       self::$throw_refund_update = false;
     }
     public static function entries_table_name(): string { return 'wp_roxy_fixture_grosses_entries'; }
@@ -352,6 +358,19 @@ namespace {
   $result($date_move, 'cross-date private rental refresh');
   $assert(!empty($GLOBALS['fixture_rental_date_loaded_before_sync']), 'old Square sale date is fetched before booking source rows are updated');
   $assert(in_array($old_date, \RoxyGrosses\Store::$allocation_dates, true), 'nightly Grosses refresh rebalances the prior day after a rental moves');
+  $seed('FAILED');
+  \RoxyGrosses\Store::$booking_preview_dates = [$old_date];
+  \RoxyGrosses\Store::$booking_sync_dates = [$old_date, $current_date];
+  \RoxyGrosses\Store::$fail_allocation_date = $old_date;
+  $failed_rebalance = $call_sync($now);
+  $assert(empty($failed_rebalance['success']) && in_array($old_date, $GLOBALS['fixture_options']['roxy_grosses_booking_rebalance_pending_dates'] ?? [], true), 'failed cross-date allocation remains queued for retry after its booking source moved');
+  \RoxyGrosses\Store::$fail_allocation_date = '';
+  \RoxyGrosses\Store::$booking_preview_dates = [];
+  \RoxyGrosses\Store::$booking_sync_dates = [];
+  \RoxyGrosses\Store::$allocation_dates = [];
+  $retried_rebalance = $call_sync($now);
+  $result($retried_rebalance, 'queued cross-date rental allocation retry');
+  $assert(in_array($old_date, \RoxyGrosses\Store::$allocation_dates, true) && !in_array($old_date, $GLOBALS['fixture_options']['roxy_grosses_booking_rebalance_pending_dates'] ?? [], true), 'next automatic refresh retries and clears a successful queued rental allocation');
   unset($GLOBALS['fixture_expected_preloaded_rental_date'], $GLOBALS['fixture_rental_date_loaded_before_sync']);
 
   if ($failures) {
