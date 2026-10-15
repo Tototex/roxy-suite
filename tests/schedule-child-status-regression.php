@@ -51,7 +51,14 @@ namespace {
   function set_transient($key, $value, $expiration) { $GLOBALS['schedule_transients'][$key] = $value; return true; }
   function esc_url_raw($value) { return (string)$value; }
   function esc_html($value) { return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8'); }
-  function date_i18n($format, $timestamp) { return (new DateTimeImmutable('@'.$timestamp))->setTimezone(wp_timezone())->format($format); }
+  function date_i18n($format, $timestamp) {
+    // WordPress's legacy date_i18n() can use a stale GMT offset that disagrees
+    // with the site timezone; zero reproduces the admin's observed UTC display.
+    return gmdate($format, $timestamp);
+  }
+  function wp_date($format, $timestamp = null, $timezone = null) {
+    return (new DateTimeImmutable('@'.$timestamp))->setTimezone($timezone ?: wp_timezone())->format($format);
+  }
   function get_post_meta($post_id, $key = null, $single = true) {
     if ($key === null) {
       $all=[];
@@ -175,7 +182,7 @@ namespace {
     check_schedule($invalid==='&mdash;','invalid legacy date renders as unavailable instead of a normalized date');
     $GLOBALS['schedule_meta'][992]=['_roxy_start'=>'2028-02-29T19:30'];
     ob_start(); \RoxyST\CPT::render_admin_column('roxy_start',992); $valid=ob_get_clean();
-    check_schedule(str_contains($valid,'Feb 29, 2028'),'valid local leap-day date remains visible in admin');
+    check_schedule(str_contains($valid,'Feb 29, 2028 7:30pm'),'admin column shows the exact site-local wall time, not an offset-shifted time');
   });
 
   schedule_test('one invalid schedule row rejects the entire schedule batch', function() {
