@@ -111,10 +111,16 @@ try {
     'cancelled source booking remains visible and its invoice amount is excluded');
   $check((float) $after_cancel['concessions_total'] === 123.45,
     'cancellation sync preserves actual Square concession sales');
+  $wpdb->insert($store::rental_entries_table_name(), [
+    'report_date' => '2026-06-11', 'rental_title' => 'Legacy canceled fixture', 'normalized_title' => 'legacy canceled fixture',
+    'rental_type' => 'Private Rental', 'show_time' => '1:00 PM', 'status' => 'canceled', 'invoice_amount' => '99.00',
+    'concessions_total' => '0.00', 'created_at' => current_time('mysql'), 'updated_at' => current_time('mysql'),
+  ]);
+  if ($wpdb->last_error !== '') throw new RuntimeException('Could not seed legacy canceled invoice fixture.');
   $summary = $store::rental_entries_summary(['date_from' => '2026-06-01', 'date_to' => '2026-06-30']);
-  $check($summary['row_count'] === 1 && $summary['invoice_row_count'] === 0 && $summary['invoice_total'] === 0.0
+  $check($summary['row_count'] === 2 && $summary['invoice_row_count'] === 0 && $summary['invoice_total'] === 0.0
       && $summary['concessions'] === 123.45 && $summary['average_invoice'] === 0.0,
-    'rental totals retain cancelled rows and Square concessions but exclude cancelled invoices from average');
+    'rental totals exclude cancelled invoices even if a legacy row retained an amount, while preserving cancelled rows and Square concessions');
 
   $wpdb->insert($bookings, [
     'id' => 900003, 'visibility' => 'private', 'status' => 'confirmed', 'invoice_status' => 'paid',

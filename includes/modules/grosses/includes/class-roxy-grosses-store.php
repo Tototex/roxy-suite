@@ -2434,7 +2434,7 @@ class Store {
     [$where, $params] = self::rental_entry_where_sql($filters);
     $sql = "SELECT COUNT(*) AS row_count,
                    SUM(CASE WHEN LOWER(TRIM(status)) NOT IN ('cancelled', 'canceled') THEN 1 ELSE 0 END) AS invoice_row_count,
-                   COALESCE(SUM(invoice_amount),0) AS invoice_total,
+                   COALESCE(SUM(CASE WHEN LOWER(TRIM(status)) NOT IN ('cancelled', 'canceled') THEN invoice_amount ELSE 0 END),0) AS invoice_total,
                    COALESCE(SUM(concessions_total),0) AS concessions
             FROM " . self::rental_entries_table_name() . ' ' . $where;
     $row = $wpdb->get_row(self::prepare_query($sql, $params), ARRAY_A);
