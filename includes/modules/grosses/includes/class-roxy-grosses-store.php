@@ -605,8 +605,8 @@ class Store {
     $range_start = $date_from . ' 00:00:00';
     $range_end = (new \DateTimeImmutable($date_to . ' 00:00:00', wp_timezone()))->modify('+1 day')->format('Y-m-d H:i:s');
     $bookings = $wpdb->get_results($wpdb->prepare(
-      "SELECT * FROM `{$source}` WHERE visibility = %s AND status NOT IN (%s, %s) AND reserved_start_at >= %s AND reserved_start_at < %s ORDER BY reserved_start_at ASC, id ASC",
-      'private', 'cancelled', 'canceled', $range_start, $range_end
+      "SELECT * FROM `{$source}` WHERE visibility = %s AND reserved_start_at >= %s AND reserved_start_at < %s ORDER BY reserved_start_at ASC, id ASC",
+      'private', $range_start, $range_end
     ), ARRAY_A);
     if ($wpdb->last_error !== '' || !is_array($bookings)) throw new \RuntimeException('Could not read private event bookings for the rental synchronization.');
 
@@ -632,11 +632,12 @@ class Store {
       $customer_name = sanitize_text_field(trim((string) ($booking['customer_first_name'] ?? '') . ' ' . (string) ($booking['customer_last_name'] ?? '')));
       $booking_status = sanitize_text_field((string) ($booking['status'] ?? ''));
       $invoice_status = sanitize_text_field((string) ($booking['invoice_status'] ?? ''));
+      $is_cancelled = in_array(strtolower(trim($booking_status)), ['cancelled', 'canceled'], true);
       $doors_raw = (string) ($booking['doors_open_at'] ?? '');
       $doors_dt = $doors_raw !== '' ? \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $doors_raw, wp_timezone()) : false;
-      $display_status = $invoice_status !== '' && $invoice_status !== 'not_needed'
+      $display_status = $is_cancelled ? 'Cancelled' : ($invoice_status !== '' && $invoice_status !== 'not_needed'
         ? ucfirst(str_replace('_', ' ', $invoice_status))
-        : ucfirst(str_replace('_', ' ', $booking_status));
+        : ucfirst(str_replace('_', ' ', $booking_status)));
       $payload = [
         'updated_at' => current_time('mysql'),
         'report_date' => $report_date,
@@ -648,7 +649,7 @@ class Store {
         'reserved_end_at' => $end,
         'customer_name' => $customer_name,
         'status' => $display_status,
-        'invoice_amount' => round(max(0, (float) ($booking['total_price'] ?? 0)), 2),
+        'invoice_amount' => $is_cancelled ? 0.0 : round(max(0, (float) ($booking['total_price'] ?? 0)), 2),
         'source_type' => 'event_booking',
         'source_ref' => 'booking:' . $booking_id,
         'notes' => 'Synced from Roxy Event Booking #' . $booking_id . ($invoice_status !== '' ? ' (' . $display_status . ')' : ''),
