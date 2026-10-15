@@ -609,7 +609,10 @@ class Store {
       "SELECT b.* FROM `{$source}` AS b WHERE b.visibility = %s AND ((b.reserved_start_at >= %s AND b.reserved_start_at < %s) OR (LOWER(TRIM(b.status)) IN (%s, %s) AND EXISTS (SELECT 1 FROM `{$table}` AS r WHERE r.source_type = %s AND r.source_ref = CONCAT('booking:', b.id))) ORDER BY b.reserved_start_at ASC, b.id ASC",
       'private', $range_start, $range_end, 'cancelled', 'canceled', 'event_booking'
     ), ARRAY_A);
-    if ($wpdb->last_error !== '' || !is_array($bookings)) throw new \RuntimeException('Could not read private event bookings for the rental synchronization.');
+    if ($wpdb->last_error !== '' || !is_array($bookings)) {
+      $detail = $wpdb->last_error !== '' ? ' Database error: ' . sanitize_text_field((string) $wpdb->last_error) : '';
+      throw new \RuntimeException('Could not read private event bookings for the rental synchronization.' . $detail);
+    }
 
     $created = 0; $updated = 0; $skipped = 0; $dates = [];
     foreach ($bookings as $booking) {
