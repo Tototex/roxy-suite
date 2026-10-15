@@ -158,7 +158,7 @@ final class FacebookStories {
             $detail = (string) ($data['error']['message'] ?? '');
             if ($detail === '' && isset($data['error']) && is_scalar($data['error'])) $detail = (string) $data['error'];
             if ($detail === '') $detail = substr((string) wp_remote_retrieve_body($response), 0, 240);
-            return ['error' => 'Meta returned HTTP ' . $status . ': ' . sanitize_text_field($detail !== '' ? $detail : 'No success was recorded.'), 'ambiguous' => $status >= 500 || $status === 0];
+            return ['error' => 'Meta returned HTTP ' . $status . ': ' . sanitize_text_field($detail !== '' ? $detail : 'No success was recorded.'), 'ambiguous' => $status === 408 || $status >= 500 || $status === 0];
         }
         if (!is_array($data)) return ['error' => 'Meta returned an unreadable response.', 'ambiguous' => true];
         if (isset($data['error'])) return ['error' => sanitize_text_field((string) ($data['error']['message'] ?? 'Meta reported an error.'))];

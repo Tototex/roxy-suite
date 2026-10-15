@@ -67,8 +67,8 @@ namespace {
     $GLOBALS['story_fixture_ffmpeg'] = $root . DIRECTORY_SEPARATOR . 'ffmpeg';
     $ffprobe = $root . DIRECTORY_SEPARATOR . 'ffprobe';
     file_put_contents($GLOBALS['story_fixture_source'], 'fixture source video');
-    file_put_contents($GLOBALS['story_fixture_ffmpeg'], "#!/bin/sh\nfor arg in \"\$@\"; do case \"\$arg\" in *segment-%03d.mp4) output=\"\$arg\";; esac; done\n[ -n \"\$output\" ] || exit 2\noutput=\$(printf '%s' \"\$output\" | sed 's/%03d/000/')\nprintf segment > \"\$output\"\n");
-    file_put_contents($ffprobe, "#!/bin/sh\nprintf '10.0\\n'\n");
+    file_put_contents($GLOBALS['story_fixture_ffmpeg'], "#!/bin/sh\ninput=''\noutput=''\nnext_input=0\nfor arg in \"\$@\"; do case \"\$arg\" in -i) next_input=1;; *segment-%03d.mp4) output=\"\$arg\";; *) if [ \"\$next_input\" = 1 ]; then input=\"\$arg\"; next_input=0; fi;; esac; done\n[ -n \"\$output\" ] && [ -n \"\$input\" ] || exit 2\ncount=1\ngrep -q multi-segment \"\$input\" && count=2\ni=0\nwhile [ \"\$i\" -lt \"\$count\" ]; do index=\$(printf '%03d' \"\$i\"); target=\$(printf '%s' \"\$output\" | sed \"s/%03d/\$index/\"); printf segment > \"\$target\" || exit 3; i=\$((i + 1)); done\n");
+    file_put_contents($ffprobe, "#!/bin/sh\nfor arg in \"\$@\"; do source=\"\$arg\"; done\ncase \"\$source\" in *source.mp4) if grep -q multi-segment \"\$source\"; then printf '70.0\\n'; else printf '10.0\\n'; fi;; *segment-000.mp4) printf '58.0\\n';; *segment-001.mp4) printf '12.0\\n';; *) exit 2;; esac\n");
     chmod($GLOBALS['story_fixture_ffmpeg'], 0700);
     chmod($ffprobe, 0700);
     $assert(\RoxySocial\FacebookStories::tools_available(), 'configured FFmpeg path is considered ready only with executable companion ffprobe');
@@ -101,6 +101,47 @@ namespace {
             'definitive provider rejection clears the pending upload guard for a safe retry');
 
         \RoxySocial\Store::$state = '';
+        $GLOBALS['story_fixture_http'] = [
+            ['response' => ['code' => 200], 'body' => json_encode(['video_id' => 'timeout-story-id', 'upload_url' => 'https://rupload.facebook.com/video/upload'])],
+            ['response' => ['code' => 408], 'body' => json_encode(['error' => ['message' => 'upload timed out']])],
+        ];
+        $timeout = \RoxySocial\FacebookStories::publish($row, $initial);
+        $saved = json_decode(\RoxySocial\Store::$state, true);
+        $assert(!empty($timeout['ambiguous']) && ($saved['pending_id'] ?? '') === 'timeout-story-id',
+            'HTTP 408 retains the pending Story ID because upload completion is uncertain');
+        $requests_before_timeout_retry = $GLOBALS['story_fixture_requests'];
+        $timeout_retry = \RoxySocial\FacebookStories::publish($row, \RoxySocial\Store::$state);
+        $assert(!empty($timeout_retry['ambiguous']) && $GLOBALS['story_fixture_requests'] === $requests_before_timeout_retry,
+            'retry after HTTP 408 sends no duplicate Meta upload request');
+
+        \RoxySocial\Store::$state = '';
+        file_put_contents($GLOBALS['story_fixture_source'], 'multi-segment fixture video');
+        $GLOBALS['story_fixture_http'] = [
+            ['response' => ['code' => 200], 'body' => json_encode(['video_id' => 'segment-0-id', 'upload_url' => 'https://rupload.facebook.com/video/upload'])],
+            ['response' => ['code' => 200], 'body' => json_encode(['success' => true])],
+            ['response' => ['code' => 200], 'body' => json_encode(['success' => true])],
+            ['response' => ['code' => 200], 'body' => json_encode(['video_id' => 'segment-1-rejected-id', 'upload_url' => 'https://rupload.facebook.com/video/upload'])],
+            ['response' => ['code' => 400], 'body' => json_encode(['error' => ['message' => 'invalid segment']])],
+        ];
+        $partial = \RoxySocial\FacebookStories::publish($row, $initial);
+        $partial_state = \RoxySocial\Store::$state;
+        $saved = json_decode($partial_state, true);
+        $assert(empty($partial['ambiguous']) && ($saved['ids'][0] ?? '') === 'segment-0-id' && ($saved['pending_id'] ?? 'not-empty') === '',
+            'two-segment Story records first successful segment before second-segment rejection');
+        $GLOBALS['story_fixture_http'] = [
+            ['response' => ['code' => 200], 'body' => json_encode(['video_id' => 'segment-1-retry-id', 'upload_url' => 'https://rupload.facebook.com/video/upload'])],
+            ['response' => ['code' => 200], 'body' => json_encode(['success' => true])],
+            ['response' => ['code' => 200], 'body' => json_encode(['success' => true])],
+        ];
+        $requests_before_resume = $GLOBALS['story_fixture_requests'];
+        $resumed = \RoxySocial\FacebookStories::publish($row, $partial_state);
+        $saved = json_decode((string) ($resumed['state'] ?? ''), true);
+        $assert(empty($resumed['error']) && ($saved['ids'][0] ?? '') === 'segment-0-id' && ($saved['ids'][1] ?? '') === 'segment-1-retry-id'
+            && $GLOBALS['story_fixture_requests'] === $requests_before_resume + 3,
+            'resume publishes only the unfinished second segment and preserves the first remote Story ID');
+
+        \RoxySocial\Store::$state = '';
+        file_put_contents($GLOBALS['story_fixture_source'], 'fixture source video');
         $GLOBALS['story_fixture_http'] = [new StoryFixtureError('start response lost')];
         $start_ambiguous = \RoxySocial\FacebookStories::publish($row, $initial);
         $assert(!empty($start_ambiguous['ambiguous']),
