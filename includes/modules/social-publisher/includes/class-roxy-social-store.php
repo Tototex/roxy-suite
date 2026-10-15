@@ -454,6 +454,51 @@ final class Store {
         ], true);
     }
 
+    /**
+     * Check whether a draft references an imported attachment. Null means the
+     * lookup was unavailable or malformed; callers must preserve the file.
+     */
+    public static function imported_media_is_referenced(int $draft_id, int $attachment_id, string $url): ?bool {
+        global $wpdb;
+        if ($draft_id <= 0 || $attachment_id <= 0 || $url === '') return null;
+        $wpdb->last_error = '';
+        $rows = $wpdb->get_results($wpdb->prepare(
+            'SELECT id, media_url, media_urls, temporary_attachment_id FROM ' . self::table_name()
+                . ' WHERE id = %d OR temporary_attachment_id = %d OR media_url = %s OR media_urls LIKE %s',
+            $draft_id,
+            $attachment_id,
+            $url,
+            '%' . $wpdb->esc_like($url) . '%'
+        ), ARRAY_A);
+        if ($wpdb->last_error !== '' || !is_array($rows)) return null;
+        foreach ($rows as $row) {
+            if (!is_array($row)
+                || !array_key_exists('id', $row)
+                || !array_key_exists('media_url', $row)
+                || !array_key_exists('media_urls', $row)
+                || !array_key_exists('temporary_attachment_id', $row)) return null;
+
+            $temporary_id = $row['temporary_attachment_id'];
+            if ($temporary_id !== null && (!is_scalar($temporary_id) || !is_numeric($temporary_id))) return null;
+            if ((int) ($temporary_id ?? 0) === $attachment_id) return true;
+
+            $media_url = $row['media_url'];
+            if ($media_url !== null && !is_string($media_url)) return null;
+            if (is_string($media_url) && $media_url === $url) return true;
+
+            $media_urls = $row['media_urls'];
+            if ($media_urls === null) continue;
+            if (!is_string($media_urls) || $media_urls === '') return null;
+            $decoded = json_decode($media_urls);
+            if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) return null;
+            foreach ($decoded as $candidate_url) {
+                if (!is_string($candidate_url)) return null;
+                if ($candidate_url === $url) return true;
+            }
+        }
+        return false;
+    }
+
     public static function clear_media(int $id): ?int {
         $claim = self::acquire_publish_lock($id);
         if (!$claim) return null;

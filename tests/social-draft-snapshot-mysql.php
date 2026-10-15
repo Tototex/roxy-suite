@@ -8,7 +8,11 @@ eval(substr($source,5));
 $campaign=file_get_contents($root.'/includes/modules/social-publisher/includes/class-roxy-social-campaigns.php');
 $campaign=str_replace(['final class Campaigns {','Store::',"get_option('roxy_social_auto_approve', false)",'AI::enabled()','self::verified_caption_schedule($draft)'],['final class SnapshotFixtureCampaigns {','DraftFixtureStore::','\\roxy_snapshot_auto_approve()','\\roxy_snapshot_ai_enabled()','\\roxy_snapshot_schedule_verified()'],$campaign);
 eval(substr($campaign,5));
+$hangar=file_get_contents($root.'/includes/modules/social-publisher/includes/class-roxy-social-hangar.php');
+$hangar=str_replace(['final class Hangar {','Store::','wp_get_attachment_url(','wp_delete_attachment('],['final class SnapshotFixtureHangar {','DraftFixtureStore::','\\roxy_snapshot_attachment_url(','\\roxy_snapshot_delete_attachment('],$hangar);
+eval(substr($hangar,5));
 function roxy_snapshot_attachment_url($id){return 'https://fixture.test/'.$id.'.jpg';}
+function roxy_snapshot_delete_attachment($id,$force){$GLOBALS['snapshot_deleted_attachments'][]=(int)$id;return true;}
 function roxy_snapshot_auto_approve(){return true;}
 function roxy_snapshot_ai_enabled(){return $GLOBALS['snapshot_ai_enabled']??true;}
 function roxy_snapshot_schedule_verified(){return $GLOBALS['snapshot_schedule_verified']??true;}
@@ -76,6 +80,50 @@ try {
     roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::update_imported_media(1,999,'image',null,123,'fixture.jpg',$row),'manual media replacement rejects stale download');
     $row=roxy_snapshot_row();
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::update_imported_media(1,999,'image',null,123,'fixture.jpg',$row)&&\RoxySocial\DraftFixtureStore::find(1)['media_url']==='https://fixture.test/999.jpg','unchanged draft still accepts imported media');
+    // Reproduce a committed UPDATE whose Store read-back fails. Hangar must
+    // preserve the newly uploaded attachment after its confirming lookup sees it.
+    $row=roxy_snapshot_row();$did_update=false;$failed_readback=false;
+    $fail_committed_readback=static function($query) use (&$did_update,&$failed_readback,$table) {
+        if (strpos($query,'UPDATE `'.$table.'`')===0) $did_update=true;
+        if ($did_update && strpos($query,'SELECT * FROM '.$table.' WHERE id = 1')===0) {
+            $failed_readback=true;
+            return str_replace($table,'roxy_missing_social_readback_fixture',$query);
+        }
+        return $query;
+    };
+    add_filter('query',$fail_committed_readback);
+    $committed_result=\RoxySocial\DraftFixtureStore::update_imported_media(1,9600,'image',null,960,'committed.jpg',$row);
+    remove_filter('query',$fail_committed_readback);
+    roxy_snapshot_check(!$committed_result&&$failed_readback&&\RoxySocial\DraftFixtureStore::find(1)['media_url']==='https://fixture.test/9600.jpg','import assignment commits even though Store read-back reports failure');
+    $cleanup=new ReflectionMethod(\RoxySocial\SnapshotFixtureHangar::class,'cleanup_failed_import');$cleanup->setAccessible(true);
+    $cleanup->invoke(null,1,9600);
+    roxy_snapshot_check(!in_array(9600,$GLOBALS['snapshot_deleted_attachments']??[],true),'uncertain committed media assignment is retained after read-back failure');
+
+    // Verified absence permits cleanup; query errors and malformed rows do not.
+    roxy_snapshot_row();
+    $cleanup->invoke(null,1,9601);
+    roxy_snapshot_check(in_array(9601,$GLOBALS['snapshot_deleted_attachments']??[],true),'confirmed-unreferenced imported attachment is deleted');
+    roxy_snapshot_row();
+    $fail_reference_read=static function($query) use ($table) {
+        if (strpos($query,'SELECT id, media_url, media_urls, temporary_attachment_id FROM '.$table.' WHERE id = 1 OR temporary_attachment_id = 9602')===0)
+            return str_replace($table,'roxy_missing_social_reference_fixture',$query);
+        return $query;
+    };
+    add_filter('query',$fail_reference_read);$cleanup->invoke(null,1,9602);remove_filter('query',$fail_reference_read);
+    roxy_snapshot_check(!in_array(9602,$GLOBALS['snapshot_deleted_attachments']??[],true),'reference query failure preserves imported attachment');
+    $malform_reference_read=static function($query) use ($table) {
+        if (strpos($query,'SELECT id, media_url, media_urls, temporary_attachment_id FROM '.$table.' WHERE id = 1 OR temporary_attachment_id = 9603')===0)
+            return str_replace('SELECT id, media_url, media_urls, temporary_attachment_id','SELECT id',$query);
+        return $query;
+    };
+    add_filter('query',$malform_reference_read);$cleanup->invoke(null,1,9603);remove_filter('query',$malform_reference_read);
+    roxy_snapshot_check(!in_array(9603,$GLOBALS['snapshot_deleted_attachments']??[],true),'malformed reference row preserves imported attachment');
+    $row=roxy_snapshot_row(['media_url'=>'https://fixture.test/another.jpg','media_urls'=>'["https://fixture.test/another.jpg"]']);
+    $other=$row;$other['id']=2;$other['post_key']='another-fixture-post';$other['media_url']='https://fixture.test/shared.jpg';$other['media_urls']='["https://fixture.test/shared.jpg"]';$other['temporary_attachment_id']=9604;
+    if(!$wpdb->insert($table,$other))throw new RuntimeException('Could not insert second-draft attachment-reference fixture');
+    roxy_snapshot_check(\RoxySocial\DraftFixtureStore::imported_media_is_referenced(1,9604,'https://fixture.test/shared.jpg')===true,'attachment referenced by a different draft is retained');
+    $cleanup->invoke(null,1,9604);
+    roxy_snapshot_check(!in_array(9604,$GLOBALS['snapshot_deleted_attachments']??[],true),'cleanup does not delete an attachment referenced by another draft');
     $row=roxy_snapshot_row(['status'=>'approved']);
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::update_imported_media(1,998,'video',null,124,'scheduled.mp4',$row)&&\RoxySocial\DraftFixtureStore::find(1)['status']==='approved'&&\RoxySocial\DraftFixtureStore::find(1)['media_url']==='https://fixture.test/998.jpg','approved unpublished post accepts a revision-matched media import without losing approval');
     $row=roxy_snapshot_row(['status'=>'approved','facebook_post_id'=>'remote-123']);

@@ -101,11 +101,17 @@ final class Hangar {
             if ($attachment_id <= 0) return $fail('wordpress_import', 'WordPress did not return a valid Media Library item. Retry the import.');
             $is_video = in_array($extension, ['mp4', 'mov', 'm4v'], true);
             $stage = 'draft_update';
-            if (!self::tag_imported_attachment($attachment_id, $asset_id, $is_video)
-                || !Store::update_imported_media($draft_id, $attachment_id, $is_video ? 'video' : 'image', self::cleanup_time($draft), $asset_id, $filename, $draft)) {
-                // This new upload was never assigned. Do not touch the previously
-                // selected media or any approved publication on a stale response.
+            if (!self::tag_imported_attachment($attachment_id, $asset_id, $is_video)) {
+                // Tagging happens before assignment, so this upload cannot yet
+                // be referenced by the draft.
                 wp_delete_attachment($attachment_id, true);
+                return $fail('draft_update', 'The file imported, but the draft could not be updated. Reload the draft and retry.', ['attachment_id' => $attachment_id]);
+            }
+            if (!Store::update_imported_media($draft_id, $attachment_id, $is_video ? 'video' : 'image', self::cleanup_time($draft), $asset_id, $filename, $draft)) {
+                // A failed write/read-back is ambiguous: the database update may
+                // have committed. Delete only after a successful read proves
+                // that this draft does not reference the new attachment.
+                self::cleanup_failed_import($draft_id, $attachment_id);
                 return $fail('draft_update', 'The file imported, but the draft could not be updated. Reload the draft and retry.', ['attachment_id' => $attachment_id]);
             }
             if ($is_video) {
@@ -119,6 +125,15 @@ final class Hangar {
             // WordPress normally moves the sideload source; exceptions from HTTP
             // or media hooks must not strand the request-owned temp file.
             if (is_file($tmp)) @unlink($tmp);
+        }
+    }
+
+    private static function cleanup_failed_import(int $draft_id, int $attachment_id): void {
+        if ($draft_id <= 0 || $attachment_id <= 0) return;
+        $url = wp_get_attachment_url($attachment_id);
+        if (!is_string($url) || $url === '') return;
+        if (Store::imported_media_is_referenced($draft_id, $attachment_id, $url) === false) {
+            wp_delete_attachment($attachment_id, true);
         }
     }
 
