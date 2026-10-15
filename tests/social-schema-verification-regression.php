@@ -1,6 +1,6 @@
 <?php
 /** Ensure Social schema verification includes every newly required Story/worker column. */
-define('ABSPATH', __DIR__ . '/');
+define('ABSPATH', __DIR__ . '/fixtures/wordpress/');
 
 function dbDelta($sql) {
     global $wpdb;
