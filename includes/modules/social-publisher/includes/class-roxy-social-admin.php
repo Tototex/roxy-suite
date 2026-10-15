@@ -9,6 +9,7 @@ final class Admin {
         add_filter('wp_prepare_attachment_for_js', [__CLASS__, 'prepare_attachment_for_js'], 10, 3);
         add_action('admin_post_roxy_social_status', [__CLASS__, 'handle_status']);
         add_action('admin_post_roxy_social_hangar_settings', [__CLASS__, 'save_hangar_settings']);
+        add_action('admin_post_roxy_social_video_settings', [__CLASS__, 'save_video_settings']);
         add_action('admin_post_roxy_social_meta_settings', ['\\RoxySocial\\Meta', 'save_settings']);
         add_action('admin_post_roxy_social_meta_callback', ['\\RoxySocial\\Meta', 'handle_callback']);
         add_action('admin_post_roxy_social_meta_verify', ['\\RoxySocial\\Meta', 'verify_connection']);
@@ -57,8 +58,10 @@ final class Admin {
         echo '<a class="nav-tab' . ($tab === 'drafts' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts')) . '">Drafts</a>';
         echo '<a class="nav-tab' . ($tab === 'hangar' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts&tab=hangar')) . '">Hangar Assets</a>';
         echo '<a class="nav-tab' . ($tab === 'ai' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts&tab=ai')) . '">AI Content</a>';
-        echo '<a class="nav-tab' . ($tab === 'meta' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts&tab=meta')) . '">Meta Connection</a></nav>';
+        echo '<a class="nav-tab' . ($tab === 'meta' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts&tab=meta')) . '">Meta Connection</a>';
+        echo '<a class="nav-tab' . ($tab === 'video' ? ' nav-tab-active' : '') . '" href="' . esc_url(admin_url('admin.php?page=roxy-social-posts&tab=video')) . '">Video Tools</a></nav>';
         if ($tab === 'meta') { self::render_meta_page(); echo '</div>'; return; }
+        if ($tab === 'video') { self::render_video_page(); echo '</div>'; return; }
         if ($tab === 'hangar') { self::render_hangar_page(); echo '</div>'; return; }
         if ($tab === 'ai') { self::render_ai_page(); echo '</div>'; return; }
         $auto_approve = (bool) get_option('roxy_social_auto_approve', false);
@@ -352,6 +355,33 @@ final class Admin {
         echo '</tbody></table></div>';
         submit_button('Save AI Settings');
         echo '</form><form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:12px"><input type="hidden" name="action" value="roxy_social_ai_test">' . wp_nonce_field('roxy_social_ai_test', '_wpnonce', true, false) . '<button type="submit" class="button">Test Ollama connection</button></form>';
+    }
+
+    private static function render_video_page(): void {
+        $path = (string) get_option('roxy_social_ffmpeg_path', '');
+        $ready = FacebookStories::tools_available();
+        echo '<h2>Video Tools</h2><p>Facebook video Stories require server-side FFmpeg and its companion ffprobe. This setting lets you point the publisher to their installed locations. It does not affect regular Facebook posts, Instagram Reels, or Meta’s automatic photo-to-Story behavior.</p>';
+        if (isset($_GET['video_saved'])) echo '<div class="notice notice-success"><p>Video tool settings saved.</p></div>';
+        if (isset($_GET['video_error'])) echo '<div class="notice notice-error"><p>The path was not saved. Enter an absolute executable FFmpeg path with an executable ffprobe beside it, or leave it blank to use automatic discovery.</p></div>';
+        echo '<p><strong>Status:</strong> ' . ($ready ? 'Ready — FFmpeg and ffprobe are executable.' : 'Not verified — Facebook video Story publishing will report unavailable until the tools are found.') . '</p>';
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="max-width:760px"><input type="hidden" name="action" value="roxy_social_video_settings">';
+        wp_nonce_field('roxy_social_video_settings');
+        echo '<table class="form-table"><tr><th><label for="roxy-social-ffmpeg">FFmpeg absolute path</label></th><td><input class="regular-text code" id="roxy-social-ffmpeg" name="ffmpeg_path" value="' . esc_attr($path) . '" placeholder="/path/to/bin/ffmpeg"><p class="description">ffprobe must be executable in the same directory. Leave blank to use automatic discovery.</p></td></tr></table>';
+        submit_button('Save Video Tool Settings');
+        echo '</form>';
+    }
+
+    public static function save_video_settings(): void {
+        if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
+        check_admin_referer('roxy_social_video_settings');
+        $path = trim((string) wp_unslash($_POST['ffmpeg_path'] ?? ''));
+        if ($path !== '' && (!str_starts_with($path, '/') || !is_executable($path) || !is_executable(dirname($path) . '/ffprobe'))) {
+            wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&tab=video&video_error=1'));
+            exit;
+        }
+        update_option('roxy_social_ffmpeg_path', $path, false);
+        wp_safe_redirect(admin_url('admin.php?page=roxy-social-posts&tab=video&video_saved=1'));
+        exit;
     }
 
     private static function render_meta_page(): void {

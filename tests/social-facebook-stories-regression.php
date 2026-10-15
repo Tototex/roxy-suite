@@ -71,6 +71,7 @@ namespace {
     file_put_contents($ffprobe, "#!/bin/sh\nprintf '10.0\\n'\n");
     chmod($GLOBALS['story_fixture_ffmpeg'], 0700);
     chmod($ffprobe, 0700);
+    $assert(\RoxySocial\FacebookStories::tools_available(), 'configured FFmpeg path is considered ready only with executable companion ffprobe');
     $row = ['id' => 8001, 'temporary_attachment_id' => 501];
     $initial = json_encode(['version' => 1, 'expected' => 0, 'ids' => [], 'pending_id' => '']);
 

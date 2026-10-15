@@ -6,6 +6,11 @@ if (!defined('ABSPATH')) exit;
 final class FacebookStories {
     private const SEGMENT_SECONDS = 58;
 
+    public static function tools_available(): bool {
+        $ffmpeg = self::ffmpeg_path();
+        return $ffmpeg !== '' && is_executable(dirname($ffmpeg) . '/ffprobe');
+    }
+
     public static function publish(array $row, string $state_json = ''): array {
         @set_time_limit(0);
         $id = (int) ($row['id'] ?? 0);

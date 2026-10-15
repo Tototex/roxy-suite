@@ -107,6 +107,16 @@ try {
     if ($wpdb->insert($table, $row) !== 1) throw new RuntimeException('Could not seed private fixture row.');
   }
 
+  $rental_table = $store::rental_entries_table_name();
+  $overnight = ['report_date'=>'2038-05-04','rental_title'=>'Overnight Fixture Rental','normalized_title'=>'overnight fixture rental',
+    'show_time'=>'11:00 PM','reserved_start_at'=>'2038-05-04 11:00:00','reserved_end_at'=>'2038-05-05 00:30:00',
+    'invoice_amount'=>80,'concessions_total'=>0,'created_at'=>$now,'updated_at'=>$now];
+  if ($wpdb->insert($rental_table, $overnight) !== 1) throw new RuntimeException('Could not seed private overnight rental fixture.');
+  $overlapping_rentals = $store::list_all_entries_for_rebalance('rental', '2038-05-05');
+  $overnight_found = false;
+  foreach ($overlapping_rentals as $rental) if ((string) ($rental['rental_title'] ?? '') === 'Overnight Fixture Rental') $overnight_found = true;
+  $check($overnight_found, 'rental allocation lookup on May 5 includes prior-day booking windows crossing midnight');
+
   $method = new ReflectionMethod($reporter, 'rebalance_concessions_for_report_dates');
   $method->setAccessible(true);
   $result = $namespace . '\\Square';
@@ -128,6 +138,17 @@ try {
   $check($result::$calls === $dates, 'unique sorted target/lookback dates served the actual allocation');
   $method = new ReflectionMethod($reporter, 'rebalance_concessions_for_date');
   $method->setAccessible(true);
+
+  $overnight_date = '2038-05-05';
+  $result::$order_fixtures[$overnight_date] = [[
+    'closed_at'=>$overnight_date.'T00:10:00-07:00','line_items'=>[['item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>2514,'currency'=>'USD']]],
+  ]];
+  $result::with_sale_snapshot(static fn() => $method->invoke(null, $overnight_date));
+  $overnight_cents = (int) round((float) $wpdb->get_var($wpdb->prepare(
+    "SELECT concessions_total FROM `{$rental_table}` WHERE rental_title=%s", 'Overnight Fixture Rental'
+  )) * 100);
+  $check($overnight_cents === 2514, '12:10 AM Square concessions are attributed to prior-night rental ending at 12:30 AM');
+  unset($result::$order_fixtures[$overnight_date]);
 
   // Exercise the real Store and Reporter with more than 1,000 editable rows.
   // The allocator should persist these with bounded multi-row updates rather

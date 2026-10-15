@@ -1829,7 +1829,13 @@ class Store {
     $errors = \DateTimeImmutable::getLastErrors();
     if (!$date || $date->format('Y-m-d') !== $report_date || ($errors && ($errors['warning_count'] || $errors['error_count']))) throw new \InvalidArgumentException('Invalid calendar date for concessions allocation.');
     $table = $tables[$dataset];
-    $maximum = $wpdb->get_var("SELECT MAX(id) FROM $table WHERE report_date = " . $wpdb->prepare('%s', $report_date));
+    $day_start = $report_date . ' 00:00:00';
+    $next_date = $date->modify('+1 day')->format('Y-m-d');
+    $day_end = $next_date . ' 00:00:00';
+    $where = $dataset === 'rental'
+      ? $wpdb->prepare('(report_date = %s OR (reserved_start_at < %s AND reserved_end_at >= %s))', $report_date, $day_end, $day_start)
+      : $wpdb->prepare('report_date = %s', $report_date);
+    $maximum = $wpdb->get_var("SELECT MAX(id) FROM $table WHERE $where");
     if ($wpdb->last_error !== '') throw new \RuntimeException('Could not establish the concessions allocation read boundary.');
     if ($maximum === null) return [];
     if (!is_numeric($maximum) || (int) $maximum <= 0) throw new \RuntimeException('Concessions allocation read boundary is invalid.');
@@ -1840,8 +1846,7 @@ class Store {
     for ($page = 0; $cursor < $maximum; $page++) {
       if ($page >= 200) throw new \RuntimeException('Concessions allocation exceeded its per-day row safety limit.');
       $batch = $wpdb->get_results($wpdb->prepare(
-        "SELECT * FROM $table WHERE report_date = %s AND id > %d AND id <= %d ORDER BY id ASC LIMIT 500",
-        $report_date,
+        "SELECT * FROM $table WHERE $where AND id > %d AND id <= %d ORDER BY id ASC LIMIT 500",
         $cursor,
         $maximum
       ), ARRAY_A);
@@ -1849,7 +1854,13 @@ class Store {
       if (!$batch) break;
       foreach ($batch as $row) {
         $id = is_array($row) ? (int) ($row['id'] ?? 0) : 0;
-        if ($id <= $cursor || $id > $maximum || isset($seen[$id]) || (string) ($row['report_date'] ?? '') !== $report_date) throw new \RuntimeException('Concessions allocation page contained an invalid or repeated row.');
+        $belongs_to_day = (string) ($row['report_date'] ?? '') === $report_date;
+        if ($dataset === 'rental') {
+          $start = (string) ($row['reserved_start_at'] ?? '');
+          $end = (string) ($row['reserved_end_at'] ?? '');
+          $belongs_to_day = $belongs_to_day || ($start !== '' && $end !== '' && $start < $day_end && $end >= $day_start);
+        }
+        if ($id <= $cursor || $id > $maximum || isset($seen[$id]) || !$belongs_to_day) throw new \RuntimeException('Concessions allocation page contained an invalid or repeated row.');
         $seen[$id] = true;
         $rows[] = $row;
       }
