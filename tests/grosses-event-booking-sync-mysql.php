@@ -7,6 +7,7 @@ $store_path = $args[0] ?? '';
 if (!is_file($store_path)) throw new RuntimeException('Pass the candidate Grosses Store path.');
 $source = file_get_contents($store_path);
 if (!is_string($source) || strpos($source, 'namespace RoxyGrosses;') === false) throw new RuntimeException('Unexpected candidate Grosses Store source.');
+$source = preg_replace('/^<\?php\s*/', '', $source, 1);
 $suffix = bin2hex(random_bytes(4));
 $namespace = 'RoxyGrossesBookingSyncFixture' . $suffix;
 $tables = [

@@ -17,12 +17,12 @@ require_once __DIR__ . '/includes/class-roxy-social-ai.php';
 add_action('admin_init',['\\RoxySocial\\Secrets','migrate_legacy_options'],1);
 
 add_action('plugins_loaded', function () {
-    if (get_option('roxy_social_schema_version') !== '2.1') {
+    if (get_option('roxy_social_schema_version') !== '2.2') {
         if (!\RoxySocial\Store::install_schema()) {
-            error_log('Roxy Social schema migration to 2.1 failed verification; schema version was not advanced.');
+            error_log('Roxy Social schema migration to 2.2 failed verification; schema version was not advanced.');
         } else {
-            update_option('roxy_social_schema_version', '2.1');
-            if (get_option('roxy_social_schema_version') !== '2.1') error_log('Roxy Social schema migration completed but version marker did not persist.');
+            update_option('roxy_social_schema_version', '2.2');
+            if (get_option('roxy_social_schema_version') !== '2.2') error_log('Roxy Social schema migration completed but version marker did not persist.');
         }
     }
     \RoxySocial\Campaigns::init();
@@ -37,7 +37,7 @@ add_action('plugins_loaded', function () {
     if (!wp_next_scheduled('roxy_social_cleanup')) wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', 'roxy_social_cleanup');
     add_filter('cron_schedules', static function (array $schedules): array { $schedules['roxy_five_minutes'] = ['interval' => 300, 'display' => 'Every five minutes']; return $schedules; });
     add_action('roxy_social_publish_due', ['\\RoxySocial\\Publisher', 'publish_due']);
-    add_action('roxy_social_publish_single', ['\\RoxySocial\\Publisher', 'process_queued'], 10, 2);
+    add_action('roxy_social_publish_single', ['\\RoxySocial\\Publisher', 'process_queued'], 10, 3);
     add_action('roxy_social_video_status_retry', ['\\RoxySocial\\Publisher', 'queue_video_status_retry'], 10, 2);
     if (!wp_next_scheduled('roxy_social_publish_due')) wp_schedule_event(time() + 300, 'roxy_five_minutes', 'roxy_social_publish_due');
 });

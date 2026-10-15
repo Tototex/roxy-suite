@@ -66,10 +66,16 @@ final class Publisher {
         return self::queue_publish($id);
     }
 
-    public static function process_queued(int $id, int $video_attempt = 0): void {
-        self::with_lock($id, static function () use ($id, $video_attempt) {
+    public static function process_queued(int $id, int $video_attempt = 0, string $attempt_token = ''): void {
+        if (!preg_match('/^[a-f0-9-]{36}$/iD', $attempt_token)) return;
+        self::with_lock($id, static function () use ($id, $video_attempt, $attempt_token) {
             $row = Store::find($id);
-            if (!$row || (string) $row['status'] !== 'publishing') return false;
+            if (!$row || (string) $row['status'] !== 'publishing'
+                || !hash_equals((string) ($row['publish_attempt_token'] ?? ''), $attempt_token)) return false;
+            $worker_token = wp_generate_uuid4();
+            if (!Store::claim_publish_execution($id, $attempt_token, $worker_token, self::$claim)) return false;
+            $row = Store::find($id);
+            if (!$row || (string) ($row['publish_worker_token'] ?? '') !== $worker_token) return false;
             if (stripos((string) ($row['last_error'] ?? ''), 'Media ID is not available') !== false) {
                 self::save_result($id, 'needs_review', 'A queued Instagram publish retry had an earlier “Media ID is not available” outcome. The queued retry was stopped. Check the Instagram account, then approve a new attempt only after remote review; recorded platform IDs and the container ID have been retained.');
                 return false;
@@ -99,9 +105,11 @@ final class Publisher {
         return self::with_lock($id, static function () use ($id, $video_attempt) {
             $row = Store::find($id);
             if (!$row || !in_array((string) $row['status'], ['approved', 'failed'], true)) return false;
-            if (!Store::compare_publish_status($id, (string) $row['status'], 'publishing', self::$claim)) return false;
-            if (wp_next_scheduled('roxy_social_publish_single', [$id, $video_attempt]) || wp_schedule_single_event(time() + 1, 'roxy_social_publish_single', [$id, $video_attempt])) return true;
-            Store::compare_publish_status($id, 'publishing', (string) $row['status'], self::$claim);
+            $attempt_token = wp_generate_uuid4();
+            if (!Store::claim_publish_attempt($id, (string) $row['status'], $attempt_token, null, self::$claim)) return false;
+            $args = [$id, $video_attempt, $attempt_token];
+            if (wp_next_scheduled('roxy_social_publish_single', $args) || wp_schedule_single_event(time() + 1, 'roxy_social_publish_single', $args)) return true;
+            Store::restore_publish_attempt($id, $attempt_token, (string) $row['status'], self::$claim);
             return false;
         });
     }
@@ -111,7 +119,12 @@ final class Publisher {
             $row = Store::find($id);
             if (!$row || !in_array((string) $row['status'], ['approved', 'failed'], true)) return false;
             if ((string) $row['status'] === 'failed' && !empty($row['facebook_post_id']) && !empty($row['instagram_media_id'])) return false;
-            if (!Store::compare_publish_status($id, (string) $row['status'], 'publishing', self::$claim)) return false;
+            $attempt_token = wp_generate_uuid4();
+            $worker_token = wp_generate_uuid4();
+            if (!Store::claim_publish_attempt($id, (string) $row['status'], $attempt_token, $worker_token, self::$claim)) return false;
+            $row = Store::find($id);
+            if (!$row || (string) ($row['publish_attempt_token'] ?? '') !== $attempt_token
+                || (string) ($row['publish_worker_token'] ?? '') !== $worker_token) return false;
             return self::publish_row($row);
         });
     }

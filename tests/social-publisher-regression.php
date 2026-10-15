@@ -20,15 +20,19 @@ namespace RoxySocial {
         public static $fail_id = false;
         public static $locked = false;
         public static $deny_lock = false;
+        public static function claim_publish_attempt($id,$expected,$token,$worker,$claim){if(self::$row['status']!==$expected)return false;self::$row['status']='publishing';self::$row['publish_attempt_token']=$token;self::$row['publish_worker_token']=$worker;return true;}
+        public static function claim_publish_execution($id,$token,$worker,$claim){if(self::$row['status']!=='publishing'||(self::$row['publish_attempt_token']??'')!==$token||!empty(self::$row['publish_worker_token']))return false;self::$row['publish_worker_token']=$worker;return true;}
+        public static function restore_publish_attempt($id,$token,$status,$claim){if((self::$row['publish_attempt_token']??'')!==$token)return false;self::$row['status']=$status;self::$row['publish_attempt_token']=self::$row['publish_worker_token']=null;return true;}
         public static function acquire_publish_lock($id){if(self::$deny_lock||self::$locked)return null;self::$locked=true;return ['name'=>'fixture','connection'=>'1'];}
         public static function owns_publish_lock($claim){return self::$locked;}
         public static function release_publish_lock($claim){self::$locked=false;}
-        public static function compare_publish_status($id,$expected,$status){if(self::$row['status']!==$expected)return false;self::$row['status']=$status;if($expected==='needs_review'&&$status==='approved')self::$row['last_error']=null;return true;}
+        public static function compare_publish_status($id,$expected,$status){if(self::$row['status']!==$expected)return false;self::$row['status']=$status;if($status!=='publishing')self::$row['publish_attempt_token']=self::$row['publish_worker_token']=null;if($expected==='needs_review'&&$status==='approved')self::$row['last_error']=null;return true;}
         public static function find($id){return self::$row;}
         public static function table_name(){return 'fixture_social';}
         public static function update_publish_result($id,$status,$error='',$fb='',$ig=''){
             if (self::$fail_id && ($fb!=='' || $ig!=='')) return false;
             self::$row['status']=$status;self::$row['last_error']=$error;
+            if($status!=='publishing')self::$row['publish_attempt_token']=self::$row['publish_worker_token']=null;
             if($fb!=='')self::$row['facebook_post_id']=$fb;
             if($ig!=='')self::$row['instagram_media_id']=$ig;
             return true;
@@ -45,6 +49,7 @@ namespace {
     define('MINUTE_IN_SECONDS',60);define('ARRAY_A','ARRAY_A');
     function current_time($kind,$gmt=false){return $kind==='mysql'?'2026-10-04 12:00:00':1791133200;}
     function wp_timezone(){return new \DateTimeZone('UTC');}
+    function wp_generate_uuid4(){static $n=0;return sprintf('00000000-0000-4000-8000-%012d',++$n);}
     function wp_date($format,$stamp,$zone){return gmdate($format,$stamp);}
     final class PublisherFixtureDb {
         public function prepare($sql,...$args){return $sql;}
@@ -62,6 +67,7 @@ namespace {
     function http_fixture($url,$args){
         $GLOBALS['calls'][]=[$url,$args,\RoxySocial\Store::$row];
         if(!empty($GLOBALS['lose_lock']))\RoxySocial\Store::$locked=false;
+        if(!empty($GLOBALS['reenter_worker_on_http'])){$GLOBALS['reenter_worker_on_http']=false;\RoxySocial\Store::$locked=false;\RoxySocial\Publisher::process_queued(1,0,(string)(\RoxySocial\Store::$row['publish_attempt_token']??''));}
         if(!$GLOBALS['responses'])throw new \LogicException('Unexpected HTTP fixture call');
         return array_shift($GLOBALS['responses']);
     }
@@ -71,12 +77,12 @@ namespace {
     function add_query_arg($query,$url){return $url.'?'.http_build_query($query);}
     function response($data,$status=200){return ['status'=>$status,'body'=>json_encode($data)];}
     function reset_fixture($platform='both',$status='approved'){
-        \RoxySocial\Store::$row=['id'=>1,'status'=>$status,'platform'=>$platform,'post_text'=>'Fixture caption','media_type'=>'image','media_url'=>'https://fixture.test/poster.jpg','publish_facebook_story'=>0,'facebook_post_id'=>null,'instagram_media_id'=>null,'instagram_container_id'=>null,'facebook_story_state'=>null,'updated_at'=>'2020-01-01 00:00:00'];
+        \RoxySocial\Store::$row=['id'=>1,'status'=>$status,'platform'=>$platform,'post_text'=>'Fixture caption','media_type'=>'image','media_url'=>'https://fixture.test/poster.jpg','publish_facebook_story'=>0,'facebook_post_id'=>null,'instagram_media_id'=>null,'instagram_container_id'=>null,'facebook_story_state'=>null,'publish_attempt_token'=>null,'publish_worker_token'=>null,'updated_at'=>'2020-01-01 00:00:00'];
         \RoxySocial\Store::$fail_id=false;\RoxySocial\Store::$locked=false;\RoxySocial\Store::$deny_lock=false;\RoxySocial\Meta::$facebook=true;\RoxySocial\Meta::$instagram=true;
         \RoxySocial\FacebookStories::$result=[];\RoxySocial\FacebookStories::$calls=0;
         \RoxySocial\Campaigns::$verified=true;
         $GLOBALS['calls']=[];$GLOBALS['responses']=[];$GLOBALS['scheduled_events']=[];
-        $GLOBALS['lose_lock']=false;$GLOBALS['schedule_ok']=true;$GLOBALS['schedule_state']=null;
+        $GLOBALS['lose_lock']=false;$GLOBALS['reenter_worker_on_http']=false;$GLOBALS['schedule_ok']=true;$GLOBALS['schedule_state']=null;
     }
     function check($ok,$label){if(!$ok){fwrite(STDERR,"::error title=Social publisher regression failed::".$label."\n");throw new \RuntimeException($label);}echo "PASS: $label\n";}
     require ($argv[1]??dirname(__DIR__)).'/includes/modules/social-publisher/includes/class-roxy-social-publisher.php';
@@ -166,13 +172,20 @@ namespace {
     check(!\RoxySocial\Publisher::remove_published(1)&&\RoxySocial\Store::$row['facebook_post_id']==='123','false success cannot erase published ID');
     reset_fixture();\RoxySocial\Store::$deny_lock=true;
     check(!\RoxySocial\Publisher::publish_now(1)&&!$GLOBALS['calls']&&\RoxySocial\Store::$row['status']==='approved','competing worker cannot publish or change status');
-    reset_fixture();$GLOBALS['responses']=[response(['id'=>'123']),response(['id'=>'234']),response(['id'=>'345'])];
-    \RoxySocial\Publisher::publish_now(1);
-    check(!\RoxySocial\Store::$locked,'successful worker releases ownership');
-    $GLOBALS['calls']=[];\RoxySocial\Publisher::process_queued(1);
+    reset_fixture();check(\RoxySocial\Publisher::queue_publish_now(1)&&!\RoxySocial\Store::$locked,'queued worker releases ownership before cron execution');
+    $queued_args=$GLOBALS['scheduled_events'][0][2];$persisted_attempt=$queued_args[2];
+    \RoxySocial\Publisher::process_queued($queued_args[0],$queued_args[1],wp_generate_uuid4());
+    check(!$GLOBALS['calls']&&\RoxySocial\Store::$row['publish_attempt_token']===$persisted_attempt,'stale callback token cannot take over a newer queued attempt');
+    \RoxySocial\Store::$row['publish_worker_token']=wp_generate_uuid4();
+    \RoxySocial\Publisher::process_queued(...$queued_args);
+    check(!$GLOBALS['calls']&&\RoxySocial\Store::$row['status']==='publishing','duplicate callback cannot claim an already executing attempt');
+    \RoxySocial\Store::$row['publish_worker_token']=null;$GLOBALS['responses']=[response(['id'=>'123']),response(['id'=>'234']),response(['id'=>'345'])];
+    \RoxySocial\Publisher::process_queued(...$queued_args);
+    check(\RoxySocial\Store::$row['status']==='posted'&&!\RoxySocial\Store::$locked,'queued worker publishes its persisted attempt');
+    $GLOBALS['calls']=[];\RoxySocial\Publisher::process_queued(...$queued_args);
     check(!$GLOBALS['calls'],'delivered-again completed cron cannot republish');
-    reset_fixture('facebook','publishing');$GLOBALS['responses']=[];
-    \RoxySocial\Publisher::process_queued(1);
+    reset_fixture('facebook','publishing');$GLOBALS['responses']=[];\RoxySocial\Store::$row['publish_attempt_token']=wp_generate_uuid4();
+    \RoxySocial\Publisher::process_queued(1,0,\RoxySocial\Store::$row['publish_attempt_token']);
     check(\RoxySocial\Store::$row['status']==='needs_review'&&!\RoxySocial\Store::$locked,'interrupted provider call requires review and releases ownership');
     reset_fixture();$GLOBALS['schedule_ok']=false;
     check(!\RoxySocial\Publisher::queue_publish_now(1)&&$GLOBALS['schedule_state']==='publishing'&&\RoxySocial\Store::$row['status']==='approved','queue claims before scheduling and restores status on schedule failure');
@@ -180,6 +193,12 @@ namespace {
     check(\RoxySocial\Publisher::queue_publish_now(1)&&!\RoxySocial\Publisher::queue_publish_now(1),'second queue request cannot claim an already queued draft');
     reset_fixture();$GLOBALS['lose_lock']=true;$GLOBALS['responses']=[response(['id'=>'123'])];
     check(!\RoxySocial\Publisher::publish_now(1)&&count($GLOBALS['calls'])===1&&\RoxySocial\Store::$row['facebook_post_id']===null&&\RoxySocial\Store::$row['status']==='publishing','lost worker cannot persist IDs, overwrite next worker or call next provider');
+    reset_fixture();check(\RoxySocial\Publisher::queue_publish_now(1),'attempt-token duplicate-worker fixture queues');
+    $lost_connection_args=$GLOBALS['scheduled_events'][0][2];$GLOBALS['reenter_worker_on_http']=true;$GLOBALS['responses']=[response(['id'=>'accepted-remotely'])];
+    \RoxySocial\Publisher::process_queued(...$lost_connection_args);
+    check(count($GLOBALS['calls'])===1&&\RoxySocial\Store::$row['facebook_post_id']===null
+        &&\RoxySocial\Store::$row['status']==='publishing'&&!empty(\RoxySocial\Store::$row['publish_worker_token']),
+        'connection-loss retry with the same queued attempt cannot issue a duplicate provider request');
     $GLOBALS['wpdb']=new PublisherFixtureDb();reset_fixture('both','publishing');\RoxySocial\Store::$deny_lock=true;
     \RoxySocial\Publisher::publish_due();
     check(\RoxySocial\Store::$row['status']==='publishing'&&!$GLOBALS['calls'],'stale sweep cannot disturb active owner');
@@ -195,7 +214,7 @@ namespace {
         'video container creation returns immediately and queues the first bounded status retry: ' . json_encode(['result'=>$video_created,'status'=>\RoxySocial\Store::$row['status'],'error'=>\RoxySocial\Store::$row['last_error'],'container'=>\RoxySocial\Store::$row['instagram_container_id'],'calls'=>count($GLOBALS['calls']),'events'=>$GLOBALS['scheduled_events']]));
     $GLOBALS['responses']=[response(['status_code'=>'FINISHED']),response(['id'=>'345678'])];
     check(\RoxySocial\Publisher::queue_video_status_retry(1,1),'video retry claims only the failed row with its saved container');
-    \RoxySocial\Publisher::process_queued(1,1);
+    $retry_args=$GLOBALS['scheduled_events'][count($GLOBALS['scheduled_events'])-1][2];\RoxySocial\Publisher::process_queued(...$retry_args);
     check(\RoxySocial\Store::$row['status']==='posted'&&\RoxySocial\Store::$row['instagram_media_id']==='345678'
         &&\RoxySocial\Store::$row['instagram_container_id']===null&&count($GLOBALS['calls'])===3
         &&str_ends_with($GLOBALS['calls'][2][0],'/media_publish')
@@ -217,7 +236,7 @@ namespace {
     reset_fixture('instagram','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['instagram_container_id']='slow-container';
     \RoxySocial\Store::$row['last_error']='Instagram video is still processing (status check 4 of 5)';
     check(\RoxySocial\Publisher::queue_video_status_retry(1,5),'fifth video status check is queued with an explicit attempt count');
-    $GLOBALS['responses']=[response(['status_code'=>'IN_PROGRESS'])];\RoxySocial\Publisher::process_queued(1,5);
+    $GLOBALS['responses']=[response(['status_code'=>'IN_PROGRESS'])];$fifth_args=$GLOBALS['scheduled_events'][count($GLOBALS['scheduled_events'])-1][2];\RoxySocial\Publisher::process_queued(...$fifth_args);
     check(\RoxySocial\Store::$row['status']==='needs_review'
         &&!array_filter($GLOBALS['scheduled_events'],static fn($event)=>$event[1]==='roxy_social_video_status_retry'),
         'video remaining in progress after five scheduled checks stops automatic polling');
@@ -226,7 +245,7 @@ namespace {
     \RoxySocial\Store::$row['last_error']='Instagram video is still processing; the old retry event did not run';
     $GLOBALS['wpdb']=new PublisherFixtureDb();$GLOBALS['due_rows']=[\RoxySocial\Store::$row];\RoxySocial\Publisher::publish_due();
     check(\RoxySocial\Store::$row['status']==='publishing'&&$GLOBALS['scheduled_events'][0][1]==='roxy_social_publish_single'
-        &&$GLOBALS['scheduled_events'][0][2]===[1,5],
+        &&$GLOBALS['scheduled_events'][0][2][0]===1&&$GLOBALS['scheduled_events'][0][2][1]===5&&count($GLOBALS['scheduled_events'][0][2])===3,
         'legacy stuck video receives one final status-check recovery instead of an unbounded retry loop');
 
     reset_fixture('instagram','failed');\RoxySocial\Store::$row['instagram_container_id']='legacy-container';
@@ -241,9 +260,10 @@ namespace {
     \RoxySocial\Store::$row['last_error']='Meta returned HTTP 500: Media ID is not available';
     \RoxySocial\Store::$row['facebook_post_id']='facebook-queued';
     \RoxySocial\Publisher::process_queued(1);
-    check(\RoxySocial\Store::$row['status']==='needs_review'&&\RoxySocial\Store::$row['facebook_post_id']==='facebook-queued'
+    check(\RoxySocial\Store::$row['status']==='publishing'&&\RoxySocial\Store::$row['facebook_post_id']==='facebook-queued'
         &&\RoxySocial\Store::$row['instagram_container_id']==='queued-container'&&!$GLOBALS['calls'],
-        'already-queued legacy retry is stopped in the worker and preserves both platform identities');
+        'legacy queued callback without an attempt token is rejected without provider calls or state overwrite');
+    \RoxySocial\Store::$row['status']='needs_review';\RoxySocial\Store::$row['last_error']='Prior ambiguity';
     check(\RoxySocial\Store::compare_publish_status(1,'needs_review','approved')&&\RoxySocial\Store::$row['last_error']===null,
         'explicit manager approval after remote review clears only the stale ambiguity marker');
 }

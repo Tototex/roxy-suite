@@ -48,6 +48,8 @@ final class Store {
             facebook_story_state LONGTEXT NULL,
             instagram_media_id VARCHAR(190) NULL,
             instagram_container_id VARCHAR(190) NULL,
+            publish_attempt_token CHAR(36) NULL,
+            publish_worker_token CHAR(36) NULL,
             last_error TEXT NULL,
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
@@ -89,7 +91,10 @@ final class Store {
         $poster_cleanup_error = $wpdb->last_error;
         $wpdb->last_error = '';
         $story_column = $wpdb->get_var($wpdb->prepare('SHOW COLUMNS FROM ' . $main_name . ' LIKE %s', 'publish_facebook_story'));
+        $attempt_column = $wpdb->get_var($wpdb->prepare('SHOW COLUMNS FROM ' . $main_name . ' LIKE %s', 'publish_attempt_token'));
+        $worker_column = $wpdb->get_var($wpdb->prepare('SHOW COLUMNS FROM ' . $main_name . ' LIKE %s', 'publish_worker_token'));
         return $main_exists && $cleanup_exists && $poster_cleanup_exists && $story_column === 'publish_facebook_story'
+            && $attempt_column === 'publish_attempt_token' && $worker_column === 'publish_worker_token'
             && $main_error === '' && $cleanup_error === '' && $poster_cleanup_error === '' && $wpdb->last_error === '';
     }
 
@@ -699,11 +704,48 @@ final class Store {
         $clear_review_error = $expected === 'needs_review' && $status === 'approved';
         if ($claim !== null) {
             $error_sql = $clear_review_error ? ', last_error = NULL' : '';
-            return 1 === $wpdb->query($wpdb->prepare('UPDATE ' . self::table_name() . ' SET status = %s, updated_at = %s' . $error_sql . ' WHERE id = %d AND status = %s AND IS_USED_LOCK(%s) = CONNECTION_ID() AND CONNECTION_ID() = %d', $status, current_time('mysql'), $id, $expected, $claim['name'], $claim['connection']));
+            $token_sql = $status === 'publishing' ? '' : ', publish_attempt_token = NULL, publish_worker_token = NULL';
+            return 1 === $wpdb->query($wpdb->prepare('UPDATE ' . self::table_name() . ' SET status = %s, updated_at = %s' . $error_sql . $token_sql . ' WHERE id = %d AND status = %s AND IS_USED_LOCK(%s) = CONNECTION_ID() AND CONNECTION_ID() = %d', $status, current_time('mysql'), $id, $expected, $claim['name'], $claim['connection']));
         }
         $values = ['status' => $status, 'updated_at' => current_time('mysql')];
         if ($clear_review_error) $values['last_error'] = null;
+        if ($status !== 'publishing') { $values['publish_attempt_token'] = null; $values['publish_worker_token'] = null; }
         return 1 === $wpdb->update(self::table_name(), $values, ['id' => $id, 'status' => $expected]);
+    }
+
+    /** Persist an authorized publish attempt before it is queued or started. */
+    public static function claim_publish_attempt(int $id, string $expected, string $attempt_token, ?string $worker_token, array $claim): bool {
+        global $wpdb;
+        if ($id <= 0 || !in_array($expected, ['approved', 'failed'], true)
+            || !preg_match('/^[a-f0-9-]{36}$/iD', $attempt_token)
+            || ($worker_token !== null && !preg_match('/^[a-f0-9-]{36}$/iD', $worker_token))) return false;
+        $worker_sql = $worker_token === null ? 'NULL' : '%s';
+        $parameters = ['publishing', $attempt_token];
+        if ($worker_token !== null) $parameters[] = $worker_token;
+        array_push($parameters, current_time('mysql'), $id, $expected, (string) ($claim['name'] ?? ''), (int) ($claim['connection'] ?? 0));
+        return 1 === $wpdb->query($wpdb->prepare(
+            'UPDATE ' . self::table_name() . ' SET status = %s, publish_attempt_token = %s, publish_worker_token = ' . $worker_sql . ', updated_at = %s WHERE id = %d AND status = %s AND IS_USED_LOCK(%s) = CONNECTION_ID() AND CONNECTION_ID() = %d',
+            ...$parameters
+        ));
+    }
+
+    /** Only one callback may cross from queued to executing for this attempt. */
+    public static function claim_publish_execution(int $id, string $attempt_token, string $worker_token, array $claim): bool {
+        global $wpdb;
+        if ($id <= 0 || !preg_match('/^[a-f0-9-]{36}$/iD', $attempt_token) || !preg_match('/^[a-f0-9-]{36}$/iD', $worker_token)) return false;
+        return 1 === $wpdb->query($wpdb->prepare(
+            'UPDATE ' . self::table_name() . ' SET publish_worker_token = %s, updated_at = %s WHERE id = %d AND status = %s AND publish_attempt_token = %s AND publish_worker_token IS NULL AND IS_USED_LOCK(%s) = CONNECTION_ID() AND CONNECTION_ID() = %d',
+            $worker_token, current_time('mysql'), $id, 'publishing', $attempt_token, (string) ($claim['name'] ?? ''), (int) ($claim['connection'] ?? 0)
+        ));
+    }
+
+    public static function restore_publish_attempt(int $id, string $attempt_token, string $status, array $claim): bool {
+        global $wpdb;
+        if ($id <= 0 || !in_array($status, ['approved', 'failed'], true)) return false;
+        return 1 === $wpdb->query($wpdb->prepare(
+            'UPDATE ' . self::table_name() . ' SET status = %s, publish_attempt_token = NULL, publish_worker_token = NULL, updated_at = %s WHERE id = %d AND status = %s AND publish_attempt_token = %s AND IS_USED_LOCK(%s) = CONNECTION_ID() AND CONNECTION_ID() = %d',
+            $status, current_time('mysql'), $id, 'publishing', $attempt_token, (string) ($claim['name'] ?? ''), (int) ($claim['connection'] ?? 0)
+        ));
     }
 
     public static function update_ai_status(int $id, string $status): bool {
@@ -722,6 +764,10 @@ final class Store {
         ];
         if ($facebook_id !== '') $values['facebook_post_id'] = sanitize_text_field($facebook_id);
         if ($instagram_id !== '') $values['instagram_media_id'] = sanitize_text_field($instagram_id);
+        if ($status !== 'publishing') {
+            $values['publish_attempt_token'] = null;
+            $values['publish_worker_token'] = null;
+        }
         return self::save_publish_values($id, $values, $claim);
     }
 
