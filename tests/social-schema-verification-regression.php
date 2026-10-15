@@ -18,6 +18,7 @@ final class SocialSchemaFixtureWpdb {
     public string $omit_column = '';
     public array $tables = [];
     public function get_charset_collate(): string { return ''; }
+    public function esc_like(string $text): string { return addcslashes($text, '_%\\'); }
     public function prepare(string $sql, ...$args): string { return vsprintf(str_replace('%s', "'%s'", $sql), $args); }
     public function get_var(string $sql) {
         $this->last_error = '';
