@@ -47,6 +47,30 @@ final class CleanupWpdb {
     public function esc_like(string $value): string { return addcslashes($value, '_%\\'); }
     public function get_results(string $query, $format = null): array {
         $this->queries[] = $query;
+        if (strpos($query, 'SELECT id, media_url, media_urls, temporary_attachment_id FROM wp_roxy_social_posts WHERE id <>') === 0) {
+            if ($this->reference_query_error) { $this->last_error = 'fixture Social reference query error'; return []; }
+            preg_match('/id <> (\d+)/', $query, $excluded_match);
+            $excluded_id = (int) ($excluded_match[1] ?? 0);
+            preg_match('/temporary_attachment_id = (\d+)/', $query, $attachment_match);
+            $attachment_id = (int) ($attachment_match[1] ?? 0);
+            preg_match('/media_url = \'(.*?)\'/s', $query, $url_match);
+            $url = stripslashes($url_match[1] ?? '');
+            $rows = [];
+            foreach ($this->rows as $id => $row) {
+                if ((int) $id === $excluded_id) continue;
+                $row = array_merge([
+                    'id' => $id,
+                    'media_url' => null,
+                    'media_urls' => '[]',
+                    'temporary_attachment_id' => null,
+                ], $row);
+                $media_urls = str_replace('\\/', '/', (string) $row['media_urls']);
+                if ((int) $row['temporary_attachment_id'] === $attachment_id
+                    || $row['media_url'] === $url
+                    || ($url !== '' && strpos($media_urls, $url) !== false)) $rows[] = $row;
+            }
+            return array_slice(array_values($rows), 0, 101);
+        }
         if (strpos($query, 'FROM wp_roxy_social_media_cleanup') !== false) {
             preg_match('/attachment_id > (\d+)/i', $query, $cursor);
             preg_match('/attachment_id <= (\d+)/i', $query, $ceiling);
@@ -227,6 +251,8 @@ check_cleanup(strpos($initial_candidate_query, "'2026-10-06 12:00:00'") !== fals
 foreach ([
     ['shared social row', static function () { $GLOBALS['wpdb']->rows[2] = ['id'=>2,'temporary_attachment_id'=>42,'media_url'=>'']; }],
     ['shared social media URL', static function () { $GLOBALS['wpdb']->rows[2] = ['id'=>2,'temporary_attachment_id'=>null,'media_url'=>'https://fixture.invalid/uploads/clip.mp4']; }],
+    ['shared secondary Social media URL', static function () { $GLOBALS['wpdb']->rows[2] = ['id'=>2,'media_url'=>'https://fixture.invalid/uploads/other.mp4','media_urls'=>json_encode(['https://fixture.invalid/uploads/other.mp4','https://fixture.invalid/uploads/clip.mp4'])]; }],
+    ['malformed secondary Social media list', static function () { $GLOBALS['wpdb']->rows[2] = ['id'=>2,'media_urls'=>'["https://fixture.invalid/uploads/clip.mp4"']; }],
     ['shared post content', static function () { $GLOBALS['wpdb']->post_content[5] = 'wp-image-42'; }],
     ['shared post URL without attachment ID', static function () { $GLOBALS['wpdb']->post_content[5] = 'https://fixture.invalid/uploads/clip.mp4'; }],
     ['JSON-escaped post URL without attachment ID', static function () { $GLOBALS['wpdb']->post_content[5] = json_encode(['url'=>'https://fixture.invalid/uploads/clip.mp4']); }],

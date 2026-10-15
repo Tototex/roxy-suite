@@ -250,9 +250,8 @@ final class Store {
                 $url = wp_get_attachment_url($attachment_id);
                 if ($wpdb->last_error !== '' || !is_string($url) || $url === '') continue;
 
-                $wpdb->last_error = '';
-                $shared = $wpdb->get_var($wpdb->prepare('SELECT id FROM ' . self::table_name() . ' WHERE temporary_attachment_id = %d OR media_url = %s LIMIT 1', $attachment_id, $url));
-                if ($wpdb->last_error !== '' || $shared !== null) continue;
+                $shared = self::other_social_row_references_media($social_post_id, $attachment_id, $url);
+                if ($shared !== false) continue;
                 $posts = $wpdb->posts;
                 $wpdb->last_error = '';
                 $post_ref = $wpdb->get_var($wpdb->prepare('SELECT ID FROM ' . $posts . ' WHERE ID <> %d AND (post_content LIKE %s OR post_content LIKE %s OR post_content LIKE %s) LIMIT 1', $attachment_id, '%' . $wpdb->esc_like($url) . '%', '%' . str_replace('/', '%', $wpdb->esc_like($url)) . '%', '%' . $wpdb->esc_like('wp-image-' . $attachment_id) . '%'));
@@ -274,6 +273,45 @@ final class Store {
 
     public static function cleanup_detached_media_page(int $after_id, int $upper_id): int {
         return self::cleanup_detached_media(max(0, $after_id), max(0, $upper_id));
+    }
+
+    /** Check all other Social rows before deletion; null means preserve on uncertainty. */
+    private static function other_social_row_references_media(int $social_post_id, int $attachment_id, string $url): ?bool {
+        global $wpdb;
+        if ($social_post_id <= 0 || $attachment_id <= 0 || $url === '') return null;
+        $wpdb->last_error = '';
+        $media_url_pattern = '%' . $wpdb->esc_like($url) . '%';
+        $escaped_media_url_pattern = '%' . $wpdb->esc_like(str_replace('/', '\\/', $url)) . '%';
+        $rows = $wpdb->get_results($wpdb->prepare(
+            'SELECT id, media_url, media_urls, temporary_attachment_id FROM ' . self::table_name()
+                . ' WHERE id <> %d AND (temporary_attachment_id = %d OR media_url = %s OR media_urls LIKE %s OR media_urls LIKE %s) LIMIT 101',
+            $social_post_id, $attachment_id, $url, $media_url_pattern, $escaped_media_url_pattern
+        ), ARRAY_A);
+        if ($wpdb->last_error !== '' || !is_array($rows)) return null;
+        if (count($rows) > 100) return null;
+        $expected_index = 0;
+        foreach ($rows as $index => $row) {
+            if ($index !== $expected_index++ || !is_array($row)
+                || !array_key_exists('id', $row) || !is_numeric($row['id']) || (int) $row['id'] <= 0
+                || !array_key_exists('media_url', $row) || !array_key_exists('media_urls', $row)
+                || !array_key_exists('temporary_attachment_id', $row)) return null;
+            $temporary_id = $row['temporary_attachment_id'];
+            if ($temporary_id !== null && (!is_scalar($temporary_id) || !is_numeric($temporary_id))) return null;
+            if ((int) ($temporary_id ?? 0) === $attachment_id) return true;
+            $media_url = $row['media_url'];
+            if ($media_url !== null && !is_string($media_url)) return null;
+            if (is_string($media_url) && $media_url === $url) return true;
+            $media_urls = $row['media_urls'];
+            if ($media_urls === null) continue;
+            if (!is_string($media_urls) || $media_urls === '') return null;
+            $decoded = json_decode($media_urls);
+            if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) return null;
+            foreach ($decoded as $candidate_url) {
+                if (!is_string($candidate_url)) return null;
+                if ($candidate_url === $url) return true;
+            }
+        }
+        return false;
     }
 
     private static function remove_cleanup_queue_item(int $attachment_id, array $expected): bool {
@@ -343,9 +381,8 @@ final class Store {
 
                     $url = wp_get_attachment_url($attachment_id);
                     if (!is_string($url) || $url === '' || !self::owns_publish_lock($claim)) continue;
-                    $wpdb->last_error = '';
-                    $shared = $wpdb->get_var($wpdb->prepare('SELECT id FROM ' . $table . ' WHERE id <> %d AND (temporary_attachment_id = %d OR media_url = %s) LIMIT 1', $id, $attachment_id, $url));
-                    if ($wpdb->last_error !== '' || $shared !== null) continue;
+                    $shared = self::other_social_row_references_media($id, $attachment_id, $url);
+                    if ($shared !== false) continue;
 
                     $posts = $wpdb->posts;
                     $wpdb->last_error = '';
