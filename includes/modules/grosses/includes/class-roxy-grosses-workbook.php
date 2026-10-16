@@ -483,12 +483,16 @@ class Workbook {
       try {
         $sent = wp_mail($mail_to, $subject, $body, $headers, [$workbook_path]);
       } catch (\Throwable $error) {
-        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail threw: ' . substr($error->getMessage(), 0, 1500));
-        throw new \RuntimeException('Mail handling ended unexpectedly. The send is marked uncertain and will not be retried automatically; review the outbox before acting.', 0, $error);
+        $recorded = EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail threw: ' . substr($error->getMessage(), 0, 1500));
+        throw new \RuntimeException($recorded
+          ? 'Mail handling ended unexpectedly. The send is marked uncertain and will not be retried automatically; review the outbox before acting.'
+          : 'Mail handling ended unexpectedly and the outbox could not confirm the outcome state. The claim remains blocking; do not resend. Reconcile the outbox before acting.', 0, $error);
       }
       if (!$sent) {
-        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail returned false; delivery outcome may be ambiguous.');
-        throw new \RuntimeException('WordPress did not confirm the advertiser email. The attempt is marked uncertain and will not be retried automatically.');
+        $recorded = EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail returned false; delivery outcome may be ambiguous.');
+        throw new \RuntimeException($recorded
+          ? 'WordPress did not confirm the advertiser email. The attempt is marked uncertain and will not be retried automatically.'
+          : 'WordPress did not confirm the advertiser email and the outbox could not confirm the outcome state. The claim remains blocking; do not resend. Reconcile the outbox before acting.');
       }
       if (!EmailOutbox::finish((int) $claim['id'], 'accepted')) {
         throw new \RuntimeException('WordPress accepted the advertiser email, but the outbox could not record that result. Do not resend; review the outbox before acting.');

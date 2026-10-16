@@ -2830,15 +2830,19 @@ class Reporter {
       try {
         $sent = wp_mail($to, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
       } catch (\Throwable $error) {
-        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail threw: ' . substr($error->getMessage(), 0, 1500));
-        return ['success' => false, 'message' => 'Mail handling ended unexpectedly. The send is marked uncertain and will not be retried automatically. Review the outbox before acting.'];
+        $recorded = EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail threw: ' . substr($error->getMessage(), 0, 1500));
+        return ['success' => false, 'message' => $recorded
+          ? 'Mail handling ended unexpectedly. The send is marked uncertain and will not be retried automatically. Review the outbox before acting.'
+          : 'Mail handling ended unexpectedly and the outbox could not confirm the outcome state. The claim remains blocking; do not resend. Reconcile the saved report and outbox before acting.'];
       }
 
       if (!$sent) {
-        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail returned false; delivery outcome may be ambiguous.');
+        $recorded = EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail returned false; delivery outcome may be ambiguous.');
         return [
           'success' => false,
-          'message' => 'WordPress did not confirm the grosses email. The attempt is marked uncertain and will not be retried automatically.',
+          'message' => $recorded
+            ? 'WordPress did not confirm the grosses email. The attempt is marked uncertain and will not be retried automatically.'
+            : 'WordPress did not confirm the grosses email and the outbox could not confirm the outcome state. The claim remains blocking; do not resend. Reconcile the saved report and outbox before acting.',
         ];
       }
       if (!EmailOutbox::finish((int) $claim['id'], 'accepted')) {
@@ -2939,19 +2943,24 @@ class Reporter {
       try {
         $sent = wp_mail($recipients, $subject, $body, ['Content-Type: text/plain; charset=UTF-8'], [$attachment]);
       } catch (\Throwable $error) {
-        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail threw: ' . substr($error->getMessage(), 0, 1500));
-        return ['success' => false, 'message' => 'Mail handling ended unexpectedly. The send is marked uncertain and will not be retried automatically. Review the outbox before acting.'];
+        $recorded = EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail threw: ' . substr($error->getMessage(), 0, 1500));
+        return ['success' => false, 'message' => $recorded
+          ? 'Mail handling ended unexpectedly. The send is marked uncertain and will not be retried automatically. Review the outbox before acting.'
+          : 'Mail handling ended unexpectedly and the outbox could not confirm the outcome state. The claim remains blocking; do not resend. Reconcile the outbox before acting.'];
       }
 
       if (!$sent) {
-        EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail returned false; delivery outcome may be ambiguous.');
+        $recorded = EmailOutbox::finish((int) $claim['id'], 'uncertain', 'wp_mail returned false; delivery outcome may be ambiguous.');
         Store::insert_log('send_live_grosses', $mode, null, $report_date, false, 'WordPress could not send the live grosses email.', [
           'live_entry_id' => (int) ($row['id'] ?? 0),
           'include_concessions' => $include_concessions,
+          'outbox_state_recorded' => $recorded,
         ]);
         return [
           'success' => false,
-          'message' => 'WordPress could not send the live grosses email.',
+          'message' => $recorded
+            ? 'WordPress could not send the live grosses email; the attempt is marked uncertain and will not be retried automatically.'
+            : 'WordPress did not confirm the live grosses email and the outbox could not confirm the outcome state. The claim remains blocking; do not resend. Reconcile the outbox before acting.',
         ];
       }
       if (!EmailOutbox::finish((int) $claim['id'], 'accepted')) {

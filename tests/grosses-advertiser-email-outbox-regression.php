@@ -32,6 +32,7 @@ namespace RoxyGrosses {
     public static array $rows = [];
     public static int $next_id = 1;
     public static bool $throw_once = false;
+    public static bool $finish_failure = false;
     public static function claim(string $key, string $kind, int $source_id, ?string $report_date, array $payload, array $context): array {
       if (self::$throw_once) { self::$throw_once = false; throw new \RuntimeException('fixture outbox claim failure'); }
       if (isset(self::$rows[$key])) return ['claimed'=>false,'id'=>self::$rows[$key]['id'],'status'=>self::$rows[$key]['status']];
@@ -40,6 +41,7 @@ namespace RoxyGrosses {
       return ['claimed'=>true,'id'=>$id,'status'=>'sending'];
     }
     public static function finish(int $id, string $status, string $error = ''): bool {
+      if (self::$finish_failure) { self::$finish_failure = false; return false; }
       foreach (self::$rows as &$row) if ($row['id']===$id) { $row['status']=$status; return true; }
       return false;
     }
@@ -134,14 +136,29 @@ namespace {
     $blocked_retry = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 8, 'scheduled-advertiser', 2026, 8);
     $check(empty($uncertain['success']) && $uncertain_count === 3, 'unconfirmed advertiser mail outcome fails closed');
     $check(empty($blocked_retry['success']) && count($GLOBALS['advertiser_mail_calls']) === $uncertain_count, 'uncertain advertiser outcome blocks retry across modes');
+    $GLOBALS['advertiser_mail_result'] = false;
+    \RoxyGrosses\EmailOutbox::$finish_failure = true;
+    $unrecorded_false_id = '123e4567-e89b-42d3-a456-426614174012';
+    $unrecorded_false = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 7, 'manual-advertiser', 2026, 7, $unrecorded_false_id, true);
+    $unrecorded_retry = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 7, 'scheduled-advertiser', 2026, 7, $unrecorded_false_id, true);
+    $check(empty($unrecorded_false['success']) && str_contains($unrecorded_false['message'], 'could not confirm the outcome state')
+      && empty($unrecorded_retry['success']) && count($GLOBALS['advertiser_mail_calls']) === 4,
+      'failed uncertain-state persistence is reported honestly and the still-sending claim blocks retry');
     $GLOBALS['advertiser_mail_result'] = true;
     $GLOBALS['advertiser_mail_throw'] = true;
     $thrown = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 8, 'manual-advertiser', 2026, 8, '123e4567-e89b-42d3-a456-426614174001', true);
     unset($GLOBALS['advertiser_mail_throw']);
-    $check(empty($thrown['success']) && count($GLOBALS['advertiser_mail_calls']) === 4, 'thrown advertiser mail outcome is recorded as uncertain');
+    $check(empty($thrown['success']) && count($GLOBALS['advertiser_mail_calls']) === 5, 'thrown advertiser mail outcome is recorded as uncertain');
+    \RoxyGrosses\EmailOutbox::$finish_failure = true;
+    $GLOBALS['advertiser_mail_throw'] = true;
+    $unrecorded_throw = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 6, 'manual-advertiser', 2026, 6, '123e4567-e89b-42d3-a456-426614174013', true);
+    unset($GLOBALS['advertiser_mail_throw']);
+    $check(empty($unrecorded_throw['success']) && str_contains($unrecorded_throw['message'], 'could not confirm the outcome state')
+      && (\RoxyGrosses\EmailOutbox::$rows['advertiser-resend:2026-06:2026-06:123e4567-e89b-42d3-a456-426614174013']['status'] ?? '') === 'sending',
+      'thrown mail plus failed uncertainty write reports unresolved state without clearing the sending claim');
     \RoxyGrosses\EmailOutbox::$throw_once = true;
     $claim_error = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 8, 'manual-advertiser', 2026, 8, '123e4567-e89b-42d3-a456-426614174002', true);
-    $check(empty($claim_error['success']) && count($GLOBALS['advertiser_mail_calls']) === 4, 'outbox claim failure stops before mail and cleans its attachment');
+    $check(empty($claim_error['success']) && count($GLOBALS['advertiser_mail_calls']) === 6, 'outbox claim failure stops before mail and cleans its attachment');
     $attachment_paths = array_column($GLOBALS['advertiser_mail_calls'], 'attachment');
     $check(count(array_unique($attachment_paths)) === count($attachment_paths), 'each advertiser send receives a distinct workbook attachment path');
     $check($GLOBALS['advertiser_uuid_queue'] === [], 'forced filename collision was retried with a fresh UUID');

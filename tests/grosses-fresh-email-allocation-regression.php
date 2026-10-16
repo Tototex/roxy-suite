@@ -17,13 +17,17 @@ namespace FreshEmailAllocationFixture {
     public static array $rows = [];
     public static int $next_id = 1;
     public static bool $throw_on_claim = false;
+    public static bool $finish_failure = false;
     public static function claim(string $key, string $kind, int $source_id, ?string $report_date, array $payload, array $context): array {
       if (self::$throw_on_claim) { self::$throw_on_claim = false; throw new \RuntimeException('fixture outbox charset claim failure'); }
       if (isset(self::$rows[$key])) return ['claimed'=>false,'id'=>self::$rows[$key]['id'],'status'=>self::$rows[$key]['status']];
       $id=self::$next_id++; self::$rows[$key]=['id'=>$id,'status'=>'sending','source_id'=>$source_id];
       return ['claimed'=>true,'id'=>$id,'status'=>'sending'];
     }
-    public static function finish(int $id, string $status, string $error = ''): bool { foreach(self::$rows as &$row) if($row['id']===$id){$row['status']=$status;return true;} return false; }
+    public static function finish(int $id, string $status, string $error = ''): bool {
+      if (self::$finish_failure) { self::$finish_failure = false; return false; }
+      foreach(self::$rows as &$row) if($row['id']===$id){$row['status']=$status;return true;} return false;
+    }
     public static function find(string $key): ?array { return self::$rows[$key] ?? null; }
   }
   final class Store {
@@ -86,6 +90,7 @@ namespace {
     $contents = [];
     foreach ((array)$attachments as $path) $contents[] = is_file($path) ? file_get_contents($path) : false;
     $GLOBALS['fresh_email_mail_calls'][] = compact('to','subject','message','headers','attachments','contents');
+    if (!empty($GLOBALS['fresh_email_mail_throw'])) throw new \RuntimeException('fixture wp_mail exception');
     return (bool)$GLOBALS['fresh_email_mail_result'];
   }
   $check = static function (bool $ok, string $label): void {
@@ -182,6 +187,26 @@ namespace {
   $uncertain_retry = $reporter::send_report('2038-05-14', 'scheduled');
   $check(empty($uncertain_first['success']) && $count_after_uncertain === $mail_count_before_uncertain + 1, 'ambiguous first mail result is returned without claiming delivery');
   $check(empty($uncertain_retry['success']) && str_contains($uncertain_retry['message'], 'uncertain') && count($GLOBALS['fresh_email_mail_calls']) === $count_after_uncertain, 'uncertain result blocks a scheduled retry without a second mail attempt');
+  $GLOBALS['fresh_email_mail_result'] = false;
+  \FreshEmailAllocationFixture\EmailOutbox::$finish_failure = true;
+  $mail_count_before_unrecorded = count($GLOBALS['fresh_email_mail_calls']);
+  $unrecorded_false = $reporter::send_report('2038-05-16', 'manual');
+  $mail_count_after_unrecorded = count($GLOBALS['fresh_email_mail_calls']);
+  $unrecorded_false_retry = $reporter::send_report('2038-05-16', 'scheduled');
+  $check(empty($unrecorded_false['success']) && str_contains($unrecorded_false['message'], 'could not confirm the outcome state')
+    && empty($unrecorded_false_retry['success']) && $mail_count_after_unrecorded === $mail_count_before_unrecorded + 1
+    && count($GLOBALS['fresh_email_mail_calls']) === $mail_count_after_unrecorded,
+    'wp_mail false plus failed uncertain-state write is reported as unresolved and blocks duplicate retry');
+  $GLOBALS['fresh_email_mail_result'] = true;
+  $GLOBALS['fresh_email_mail_throw'] = true;
+  \FreshEmailAllocationFixture\EmailOutbox::$finish_failure = true;
+  $mail_count_before_throw = count($GLOBALS['fresh_email_mail_calls']);
+  $unrecorded_throw = $reporter::send_report('2038-05-17', 'manual');
+  unset($GLOBALS['fresh_email_mail_throw']);
+  $unrecorded_throw_retry = $reporter::send_report('2038-05-17', 'scheduled');
+  $check(empty($unrecorded_throw['success']) && str_contains($unrecorded_throw['message'], 'could not confirm the outcome state')
+    && empty($unrecorded_throw_retry['success']) && count($GLOBALS['fresh_email_mail_calls']) === $mail_count_before_throw + 1,
+    'thrown wp_mail plus failed uncertain-state write stays blocked and accurately reports the unresolved state');
 
   // A charset/database failure at the durable claim boundary must block the report email.
   // The separate failure alert is permitted only to the configured admin address.
