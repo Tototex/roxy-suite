@@ -261,11 +261,11 @@ class Reporter {
       wp_die('Could not create CSV export stream.');
     }
     try {
-      if (fputcsv($output, $header) === false) {
+      if (fputcsv($output, $header, ',', '"', '') === false) {
         throw new \RuntimeException('Could not write CSV export.');
       }
       foreach ($records as $record) {
-        if (fputcsv($output, $record) === false) {
+        if (fputcsv($output, $record, ',', '"', '') === false) {
           throw new \RuntimeException('Could not write CSV export.');
         }
       }
@@ -3097,7 +3097,7 @@ class Reporter {
   }
 
   private static function put_attachment_row($handle, array $row): void {
-    if (fputcsv($handle, $row) === false) {
+    if (fputcsv($handle, $row, ',', '"', '') === false) {
       throw new \RuntimeException('Unable to write CSV attachment.');
     }
   }

@@ -11,9 +11,9 @@ namespace RoxyGrosses {
     public static function claim(string $key, string $kind, int $source_id, ?string $report_date, array $payload, array $context): array { return ['claimed'=>true,'id'=>1,'status'=>'sending']; }
     public static function finish(int $id, string $status, string $error = ''): bool { return true; }
   }
-  function fputcsv($handle, $row) {
+  function fputcsv($handle, $row, ...$args) {
     if ($GLOBALS['write_fail'] ?? false) return false;
-    return \fputcsv($handle, $row);
+    return \fputcsv($handle, $row, ...$args);
   }
   function fflush($handle) { return ($GLOBALS['flush_fail'] ?? false) ? false : \fflush($handle); }
   function sys_get_temp_dir() { return $GLOBALS['temp_override'] ?? \sys_get_temp_dir(); }
@@ -42,7 +42,7 @@ namespace {
     $GLOBALS['checks']++;
     echo "PASS: $label\n";
   }
-  $report = ['report_date'=>'2026-10-05', 'show_time'=>'12:00', 'theater_name'=>'Roxy', 'film_title'=>"Film, \"quoted\"\nSecond line", 'general_qty'=>2, 'discount_qty'=>3, 'group_qty'=>4, 'gross_total'=>12.34];
+  $report = ['report_date'=>'2026-10-05', 'show_time'=>'12:00', 'theater_name'=>'Roxy', 'film_title'=>"Film, \"quoted\"\nSecond line \\\\ sequel", 'general_qty'=>2, 'discount_qty'=>3, 'group_qty'=>4, 'gross_total'=>12.34];
   $live = ['report_date'=>'2026-10-05', 'show_title'=>'Synthetic Live', 'presale_qty'=>2, 'online_qty'=>3, 'door_qty'=>4, 'group_sub_qty'=>5, 'total_tickets'=>14, 'gross_total'=>12.34, 'concessions_total'=>2.50];
   if (($argv[2] ?? '') === 'shutdown') {
     echo invoke_attachment('write_csv', [$report]);
