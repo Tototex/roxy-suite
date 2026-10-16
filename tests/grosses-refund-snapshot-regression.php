@@ -137,6 +137,20 @@ namespace {
   $result = $snapshot->reconcile_sale_day('2026-08-12', [$sale('sale-A')]);
   $assert($result['orders'][0]['line_items'][0]['quantity'] === '2' && $result['issues'] === [], 'completed confirmed payment refund should reduce only its matching sale');
 
+  $partial_one = $ret('return-partial-one', 'sale-multi', 'first', 'refund-one', 'payment-one');
+  $partial_two = $ret('return-partial-two', 'sale-multi', 'second', 'refund-two', 'payment-two');
+  $partial_one['_refund_verified'] = true;
+  $partial_two['_refund_verified'] = true;
+  $multi_return = \RoxyGrosses\Returns::reconcile(
+    [$sale('sale-multi')],
+    [$partial_one, $partial_two, $partial_one]
+  );
+  $assert($multi_return['orders'][0]['line_items'][0]['quantity'] === '1'
+    && count($multi_return['adjustments']) === 1
+    && $multi_return['adjustments'][0]['quantity'] === 2
+    && $multi_return['issues'] === [],
+    'two partial returns reduce the original sale cumulatively once when one return item is replayed');
+
   $reset(); $setup_source('sale-oct', '2026-10-03T22:00:00Z');
   \RoxyGrosses\Square::$orders = [$ret('return-oct', 'sale-oct', 'oct', 'refund-oct', 'payment-oct')];
   \RoxyGrosses\Square::$refunds['payment-oct_refund-oct'] = ['id' => 'payment-oct_refund-oct', 'payment_id' => 'payment-oct', 'status' => 'COMPLETED'];
