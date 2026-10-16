@@ -16,6 +16,7 @@ function sanitize_key($value) { return preg_replace('/[^a-z0-9_\-]/', '', strtol
 function wp_unslash($value) { return $value; }
 function sanitize_text_field($value) { return trim((string) $value); }
 function absint($value) { return abs((int) $value); }
+function wp_timezone() { return new DateTimeZone('America/Los_Angeles'); }
 function get_post_type($post_id) { return 'roxy_showing'; }
 function get_the_title($post_id) { return 'Fixture showing'; }
 function get_post_meta($post_id, $key, $single = true) { return $GLOBALS['sling_test_meta'][$post_id][$key] ?? ''; }
