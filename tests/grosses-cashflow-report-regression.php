@@ -138,6 +138,10 @@ namespace {
   $assert($report['totals']['square_refunded_cents'] === 200 && $report['totals']['woocommerce_refunded_cents'] === 1500 && $report['totals']['net_cents'] === 4800, 'daily cashflow subtracts refunds for both approved online gateways and omits offline gateway refunds');
   $assert($report['counts'] === ['square_collections'=>1,'woocommerce_collections'=>2,'square_refunds'=>1,'woocommerce_refunds'=>2], 'daily report counts only events from the approved providers attributed to selected local date');
   $assert($report['refund_date_bases']['square'] === ['square_updated_at_proxy'] && $report['refund_date_bases']['woocommerce'] === ['woocommerce_refund_creation_proxy'], 'daily report retains explicit refund-date provenance');
+  $assert($report['refund_date_basis_counts'] === [
+    'square' => ['square_updated_at_proxy' => 1],
+    'woocommerce' => ['woocommerce_refund_creation_proxy' => 2],
+  ], 'daily report counts refund date evidence only for refunds assigned to the selected day');
   $assert(count($report['review_exceptions']['woocommerce_manual_refunds']) === 1
     && $report['review_exceptions']['woocommerce_manual_refunds'][0]['refund_id'] === 24
     && $report['review_exceptions']['woocommerce_manual_refunds'][0]['amount_cents'] === 750,
@@ -224,6 +228,7 @@ namespace {
   $cross_midnight = \RoxyGrosses\CashflowReport::for_day('2026-10-03');
   $assert($cross_midnight['totals']['square_refunded_cents'] === 275
     && $cross_midnight['refund_date_bases']['square'] === ['square_refund_completed_event'], 'event-day discovery includes a completed refund whose Square updated_at falls on the prior Pacific day');
+  $assert($cross_midnight['refund_date_basis_counts']['square'] === ['square_refund_completed_event' => 1], 'cross-midnight report attributes provenance to its selected event day only');
   $assert(\RoxyGrosses\Square::$refund_retrieve_calls === ['sq-cross-midnight'], 'cross-day completion evidence retrieves the current Square refund once for exact validation');
   $assert(end(\RoxyGrosses\Store::$completion_candidate_calls) === ['2026-10-03 07:00:00','2026-10-04 07:00:00'], 'completion-event discovery uses exact UTC bounds for the selected Pacific day');
   \RoxyGrosses\Store::$completion_event = ['event_id'=>'different-event','event_created_at'=>'2026-10-03 07:15:00'];
@@ -232,7 +237,8 @@ namespace {
   \RoxyGrosses\Store::$completion_candidates = [];
   \RoxyGrosses\Square::$refunds = [$cross_midnight_refund];
   $prior_day = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
-  $assert($prior_day['totals']['square_refunded_cents'] === 0, 'completion-event dating prevents the same refund being counted again on its updated_at day');
+  $assert($prior_day['totals']['square_refunded_cents'] === 0 && $prior_day['refund_date_bases']['square'] === []
+    && $prior_day['refund_date_basis_counts']['square'] === [], 'completion-event dating prevents the refund and its provenance being attributed again to the updated_at day');
   \RoxyGrosses\Store::$completion_event = null;
   \RoxyGrosses\Square::$refunds_by_id = [];
   \RoxyGrosses\Square::$refunds = [[

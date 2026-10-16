@@ -175,6 +175,18 @@ final class CashflowReport {
       'square_refunded_cents' => 0, 'woocommerce_refunded_cents' => 0,
       'total_collected_cents' => 0, 'total_refunded_cents' => 0, 'net_cents' => 0,
     ];
+    $day_square_refunds = array_values(array_filter($square_refunds, static fn(array $event): bool => ($event['refund_date'] ?? '') === $report_date));
+    $day_woo_refunds = array_values(array_filter($woo_refunds, static fn(array $event): bool => ($event['refund_date'] ?? '') === $report_date));
+    $refund_basis_counts = static function (array $events): array {
+      $counts = [];
+      foreach ($events as $event) {
+        $basis = $event['refund_date_basis'] ?? '';
+        if (!is_string($basis) || $basis === '') continue;
+        $counts[$basis] = ($counts[$basis] ?? 0) + 1;
+      }
+      ksort($counts);
+      return $counts;
+    };
     return [
       'report_date' => $report_date,
       'timezone' => Settings::get_report_timezone(),
@@ -186,8 +198,12 @@ final class CashflowReport {
         'woocommerce_refunds' => count(array_filter($woo_refunds, static fn(array $event): bool => ($event['refund_date'] ?? '') === $report_date)),
       ],
       'refund_date_bases' => [
-        'square' => array_values(array_unique(array_column($square_refunds, 'refund_date_basis'))),
-        'woocommerce' => array_values(array_unique(array_column($woo_refunds, 'refund_date_basis'))),
+        'square' => array_values(array_unique(array_column($day_square_refunds, 'refund_date_basis'))),
+        'woocommerce' => array_values(array_unique(array_column($day_woo_refunds, 'refund_date_basis'))),
+      ],
+      'refund_date_basis_counts' => [
+        'square' => $refund_basis_counts($day_square_refunds),
+        'woocommerce' => $refund_basis_counts($day_woo_refunds),
       ],
       'review_exceptions' => $review_exceptions,
       'collection_date_bases' => ['square' => 'square_payment_created_at', 'woocommerce' => 'woocommerce_paid_at'],

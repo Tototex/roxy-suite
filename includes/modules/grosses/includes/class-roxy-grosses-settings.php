@@ -323,6 +323,18 @@ class Settings {
     echo '<tr><th>WooCommerce</th><td>'.esc_html($money((int) $totals['woocommerce_collected_cents'])).'</td><td>'.esc_html($money((int) $totals['woocommerce_refunded_cents'])).'</td><td>'.esc_html($money((int) ($totals['woocommerce_collected_cents'] - $totals['woocommerce_refunded_cents']))).'</td><td>'.esc_html((string) ($report['counts']['woocommerce_collections'] + $report['counts']['woocommerce_refunds'])).'</td></tr>';
     echo '<tr><th>Combined</th><td>'.esc_html($money((int) $totals['total_collected_cents'])).'</td><td>'.esc_html($money((int) $totals['total_refunded_cents'])).'</td><td><strong>'.esc_html($money((int) $totals['net_cents'])).'</strong></td><td>—</td></tr></tbody></table>';
     echo '<p><strong>Date and amount basis:</strong> Square collections use completed payment creation time and Square payment amount (excluding tips); WooCommerce uses paid time and order paid total. Refunds use a matched Square refund.updated timestamp when available, otherwise its update time; WooCommerce uses refund-record creation time. These refund dates are not bank-posting dates or settlement statements.</p>';
+    $basis_labels = [
+      'square_refund_completed_event' => 'matched Square refund.updated event',
+      'square_updated_at_proxy' => 'Square updated_at proxy',
+      'woocommerce_refund_creation_proxy' => 'WooCommerce refund-record creation proxy',
+    ];
+    $basis_parts = [];
+    foreach (['square' => 'Square', 'woocommerce' => 'WooCommerce'] as $source => $label) {
+      foreach (($report['refund_date_basis_counts'][$source] ?? []) as $basis => $count) {
+        $basis_parts[] = (int) $count . ' ' . $label . ' refund' . ((int) $count === 1 ? '' : 's') . ': ' . ($basis_labels[$basis] ?? 'date basis unavailable');
+      }
+    }
+    echo '<p><strong>Refund date evidence for this day:</strong> '.esc_html($basis_parts ? implode('; ', $basis_parts) : 'No included refunds.').'</p>';
     echo '<p>This live snapshot is not saved or emailed. Manual/offline WooCommerce gateways are excluded; only the explicitly configured online gateway IDs are included.</p>';
     $exceptions = $report['review_exceptions'] ?? [];
     $manual_refunds = $exceptions['woocommerce_manual_refunds'] ?? [];
