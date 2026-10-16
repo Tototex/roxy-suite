@@ -44,16 +44,13 @@ class Metadata {
     if ($normalized_title === '') return self::empty_metadata();
     $cache_key = self::CACHE_PREFIX . self::CACHE_VERSION . '_' . md5($normalized_title . '|' . $year);
     $cached = get_transient($cache_key);
-    if (is_array($cached)) return wp_parse_args($cached, self::empty_metadata());
+    if (is_array($cached)) return self::apply_studio_override($title, wp_parse_args($cached, self::empty_metadata()));
 
     foreach (self::candidate_titles($title, $year) as $candidate_title) {
       $override = self::known_metadata_override($candidate_title, $year);
-      if (!empty($override['studio']) || !empty($override['genre'])) return $override;
+      if (!empty($override['studio']) || !empty($override['genre'])) return self::apply_studio_override($title, $override);
     }
-    $result = self::empty_metadata();
-    $studio = self::studio_override($title);
-    if ($studio !== '') $result['studio'] = $studio;
-    return $result;
+    return self::apply_studio_override($title, self::empty_metadata());
   }
 
   public static function metadata_for_movie(string $title, int $year = 0, bool $force = false): array {
@@ -65,13 +62,14 @@ class Metadata {
     $cache_key = self::CACHE_PREFIX . self::CACHE_VERSION . '_' . md5($normalized_title . '|' . $year);
     $cached = $force ? false : get_transient($cache_key);
     if (!$force && is_array($cached)) {
-      return wp_parse_args($cached, self::empty_metadata());
+      return self::apply_studio_override($title, wp_parse_args($cached, self::empty_metadata()));
     }
 
     $titles_to_try = self::candidate_titles($title, $year);
     foreach ($titles_to_try as $candidate_title) {
       $override = self::known_metadata_override($candidate_title, $year);
       if (!empty($override['studio']) || !empty($override['genre'])) {
+        $override = self::apply_studio_override($title, $override);
         set_transient($cache_key, $override, DAY_IN_SECONDS * 30);
         return $override;
       }
@@ -86,10 +84,7 @@ class Metadata {
       }
     }
 
-    $studio_override = self::studio_override($title);
-    if ($studio_override !== '') {
-      $result['studio'] = $studio_override;
-    }
+    $result = self::apply_studio_override($title, $result);
 
     set_transient($cache_key, $result, DAY_IN_SECONDS * 30);
     return $result;
@@ -445,6 +440,12 @@ class Metadata {
       }
     }
     return '';
+  }
+
+  private static function apply_studio_override(string $title, array $metadata): array {
+    $studio = self::studio_override($title);
+    if ($studio !== '') $metadata['studio'] = $studio;
+    return $metadata;
   }
 
   private static function lookup_from_wikidata(string $title, int $year = 0): array {

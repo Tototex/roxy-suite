@@ -348,6 +348,9 @@ jobs:
       - name: Run Grosses metadata-backfill read regression
         run: php tests/grosses-metadata-backfill-read-regression.php
 
+      - name: Run Grosses configured studio override precedence regression
+        run: php tests/grosses-studio-override-precedence-regression.php
+
       - name: Run Grosses import writer regression
         run: php tests/grosses-import-write-regression.php
 
@@ -427,6 +430,7 @@ jobs:
             grosses-unmatched-concession-admin-regression.php
             grosses-sale-snapshot-regression.php
             grosses-saved-report-readonly-regression.php
+            grosses-studio-override-precedence-regression.php
             grosses-scheduler-calendar-regression.php
             grosses-scheduler-no-sales-regression.php
             grosses-secrets-regression.php
