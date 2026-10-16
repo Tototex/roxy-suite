@@ -882,13 +882,18 @@ class Conversion {
         }
 
         if ($subscriber_qty > 0) {
-            if (!class_exists('\\RoxyST\\Capacity') || !class_exists('\\RoxyST\\Reservations')) {
+            if (!class_exists('\\RoxyST\\Capacity') || !class_exists('\\RoxyST\\Reservations')
+                || !class_exists('\\Roxy_Sub_Check') || !method_exists('\\Roxy_Sub_Check', 'walkup_quantity_for_showing')) {
                 return new \WP_Error('subscriber_entitlement_unavailable', 'Subscriber entitlement and use could not be verified.');
             }
             try {
                 $entitlement = \RoxyST\Capacity::subscription_entitlement_count($user_id);
                 $used = \RoxyST\Reservations::quantity_for_showing($showing_id, $existing_order_id, $user_id);
-                $walkups = class_exists('\\Roxy_Sub_Check') ? (int) \Roxy_Sub_Check::walkup_quantity_for_showing($showing_id, $user_id) : 0;
+                $walkups = \Roxy_Sub_Check::walkup_quantity_for_showing($showing_id, $user_id);
+                if (!is_int($entitlement) || !is_int($used) || !is_int($walkups)
+                    || $entitlement < 0 || $used < 0 || $walkups < 0) {
+                    return new \WP_Error('subscriber_entitlement_unavailable', 'Subscriber entitlement and use could not be verified.');
+                }
                 if ($entitlement <= 0) return new \WP_Error('subscriber_entitlement_missing', 'The backing owner no longer has an eligible subscriber membership.');
                 if ($subscriber_qty > $entitlement - $used - $walkups) return new \WP_Error('subscriber_entitlement_exceeded', 'The backing owner no longer has enough subscriber entitlement for this showing.');
             } catch (\Throwable $error) {

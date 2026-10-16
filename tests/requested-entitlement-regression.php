@@ -72,6 +72,12 @@ namespace {
         public function get_error_code() { return $this->code; }
         public function get_error_message() { return $this->message; }
     }
+    if (!in_array('--missing-walkup-reader', $_SERVER['argv'] ?? [], true)) {
+        class Roxy_Sub_Check {
+            public static $walkups = 0;
+            public static function walkup_quantity_for_showing($showing_id, $user_id = 0) { return self::$walkups; }
+        }
+    }
     final class FixtureSubscription {
         private $status; private $qty;
         public function __construct($status, $qty = 1) { $this->status = $status; $this->qty = $qty; }
@@ -287,6 +293,7 @@ namespace {
         global $wpdb;
         $wpdb = new FixtureWpdb(); $GLOBALS['wpdb'] = $wpdb;
         \RoxyST\Reservations::$used = 0; \RoxyST\Holds::$allow = true; \RoxyST\Holds::$calls = 0;
+        if (class_exists('Roxy_Sub_Check')) \Roxy_Sub_Check::$walkups = 0;
         \RoxyST\Tickets::$sync_result = true;
         \Automattic\WooCommerce\Utilities\OrderUtil::$enabled = false;
         \RoxyST\Issuance::$busy = false; \RoxyST\Issuance::$lost = false; \RoxyST\Issuance::$released = 0;
@@ -415,12 +422,26 @@ namespace {
 
     $convert = new \ReflectionMethod('RoxyRS\\Conversion', 'convert_backing_to_order');
     $convert->setAccessible(true);
+    if (in_array('--missing-walkup-reader', $_SERVER['argv'] ?? [], true)) {
+        reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing();
+        $unavailable = $convert->invoke(null, 501, 801, ['id'=>1,'request_id'=>501,'user_id'=>77,'subscriber_qty'=>1,'charge_total'=>0]);
+        check_fixture(is_wp_error($unavailable) && $GLOBALS['fixture_order_creates'] === 0
+            && $GLOBALS['fixture_payment_calls'] === 0, 'missing walk-up reader blocks subscriber conversion before order or payment');
+        echo "OK: {$checks} missing walk-up reader checks\n";
+        exit(0);
+    }
     reset_fixture([]); seed_conversion_backing();
     $result = $convert->invoke(null, 501, 801, ['id'=>1,'request_id'=>501,'user_id'=>77,'subscriber_qty'=>1,'charge_total'=>0]);
     check_fixture(is_wp_error($result) && $GLOBALS['fixture_order_creates'] === 0, 'conversion rechecks entitlement before creating an order');
     reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing(); \RoxyST\Reservations::$used = 2;
     $result = $convert->invoke(null, 501, 801, ['id'=>1,'request_id'=>501,'user_id'=>77,'subscriber_qty'=>1,'charge_total'=>0]);
     check_fixture(is_wp_error($result) && $GLOBALS['fixture_order_creates'] === 0, 'conversion checks remaining entitlement before order creation');
+    reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing(); \Roxy_Sub_Check::$walkups = 2;
+    $result = $convert->invoke(null, 501, 801, ['id'=>1,'request_id'=>501,'user_id'=>77,'subscriber_qty'=>1,'charge_total'=>0]);
+    check_fixture(is_wp_error($result) && $GLOBALS['fixture_order_creates'] === 0, 'conversion includes existing member walk-ups in remaining entitlement');
+    reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing(); \Roxy_Sub_Check::$walkups = false;
+    $result = $convert->invoke(null, 501, 801, ['id'=>1,'request_id'=>501,'user_id'=>77,'subscriber_qty'=>1,'charge_total'=>0]);
+    check_fixture(is_wp_error($result) && $GLOBALS['fixture_order_creates'] === 0, 'malformed walk-up count fails closed before order creation');
     reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing(); \RoxyST\Holds::$allow = false;
     $result = $convert->invoke(null, 501, 801, ['id'=>1,'request_id'=>501,'user_id'=>77,'subscriber_qty'=>1,'charge_total'=>0]);
     check_fixture(is_wp_error($result) && $GLOBALS['fixture_order_creates'] === 1 && $GLOBALS['fixture_order']->completed === 0, 'failed persisted seat claim blocks no-charge completion (error=' . (is_wp_error($result) ? $result->get_error_message() : 'no') . ',creates=' . $GLOBALS['fixture_order_creates'] . ',completed=' . ($GLOBALS['fixture_order']->completed ?? -1) . ',claims=' . \RoxyST\Holds::$calls . ')');
