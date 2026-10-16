@@ -194,7 +194,7 @@ namespace {
         }
         public function insert($table, $data) { $this->insert_id++; $data['id']=$this->insert_id; $this->rows[$this->insert_id] = $data; $this->outstanding += (int) $data['subscriber_qty']; return 1; }
         public function get_results($sql, $output = null) {
-            if (strpos($sql, 'subscriber_qty') !== false) {
+            if (strpos($sql, 'subscriber_qty') !== false && strpos($sql, 'AND user_id =') !== false) {
                 if ($this->throw_read) throw new \RuntimeException('fixture read exception');
                 if ($this->read_error) { $this->last_error = 'fixture query error'; return null; }
             }
