@@ -134,10 +134,10 @@ namespace {
         &&str_ends_with($GLOBALS['calls'][9][0],'/media_publish'),
         'Instagram multi-image post waits for a ready carousel container before publishing one parent');
     foreach ([
-        ['facebook', [response(['id'=>'orphan-photo-1']), response(['error'=>['message'=>'invalid image']],400)], 2, 'Facebook album child upload'],
-        ['facebook', [response(['id'=>'orphan-photo-1']), response(['id'=>'orphan-photo-2']), response(['error'=>['message'=>'feed rejected']],400)], 3, 'Facebook album parent creation'],
-        ['instagram', [response(['id'=>'orphan-child-1']), response(['error'=>['message'=>'invalid image']],400)], 2, 'Instagram carousel child upload'],
-        ['instagram', [response(['id'=>'orphan-child-1']), response(['id'=>'orphan-child-2']), response(['error'=>['message'=>'container rejected']],400)], 3, 'Instagram carousel parent creation'],
+        ['facebook', [response(['id'=>'701']), response(['error'=>['message'=>'invalid image']],400)], 2, 'Facebook album child upload'],
+        ['facebook', [response(['id'=>'701']), response(['id'=>'702']), response(['error'=>['message'=>'feed rejected']],400)], 3, 'Facebook album parent creation'],
+        ['instagram', [response(['id'=>'801']), response(['error'=>['message'=>'invalid image']],400)], 2, 'Instagram carousel child upload'],
+        ['instagram', [response(['id'=>'801']), response(['id'=>'802']), response(['error'=>['message'=>'container rejected']],400)], 3, 'Instagram carousel parent creation'],
     ] as [$partial_platform, $partial_responses, $expected_calls, $partial_label]) {
         reset_fixture($partial_platform);
         \RoxySocial\Store::$row['media_urls']=json_encode(['https://fixture.test/one.jpg','https://fixture.test/two.png']);
