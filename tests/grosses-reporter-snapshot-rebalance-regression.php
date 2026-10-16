@@ -326,7 +326,7 @@ namespace {
     'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0,
   ]];
   $many_lines = [];
-  for ($line = 0; $line < 25; $line++) $many_lines[] = [
+  for ($line = 0; $line < 500; $line++) $many_lines[] = [
     'uid'=>'bounded-show-line-' . $line,'item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1',
     'total_money'=>['amount'=>100,'currency'=>'USD'],
   ];
@@ -335,8 +335,8 @@ namespace {
   ]];
   \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$bounded_lookup_date]));
   $check($GLOBALS['grosses_fixture_get_posts_calls'] === 5
-    && (float) \RoxyGrosses\Store::$movie[$bounded_lookup_date][0]['concessions_total'] === 25.0,
-    '25 eligible Square lines preserve their allocation while same-day showing queries stay constant');
+    && (float) \RoxyGrosses\Store::$movie[$bounded_lookup_date][0]['concessions_total'] === 500.0,
+    '500 eligible Square lines preserve exact allocation while same-day showing queries stay constant');
   $GLOBALS['grosses_fixture_enable_showings'] = false;
 
   // The production allocator must include rows past the old 1,000-row cap.
