@@ -51,6 +51,7 @@ class Admin {
         }
         echo '<h2>' . esc_html($name) . ' order review</h2><p>Edit quantities before submitting. Quantities must be whole order units, and the vendor minimum must be met.</p>';
         $direct = Settings::get('direct_vendor_sending_enabled') === '1' && $vendor['order_method'] === 'email';
+        $recipient = sanitize_email((string) ($direct ? $vendor['email'] : Settings::get('jason_email')));
         echo '<p>Submit Order sends this order to ' . esc_html($direct ? (string) $vendor['email'] . ' directly and marks it Ordered.' : 'the manager for review. The vendor is contacted manually.') . '</p>';
         $rows = [];
         foreach (Store::products() as $p) {
@@ -63,7 +64,7 @@ class Admin {
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
         echo wp_nonce_field('roxy_inventory_send_draft','_wpnonce',true,false) . '<input type="hidden" name="action" value="roxy_inventory_send_draft"><input type="hidden" name="vendor" value="' . esc_attr($name) . '">';
         $review_products = array_column($rows, 'product');
-        echo '<input type="hidden" name="review_token" value="' . esc_attr(self::review_token($vendor,$review_products)) . '"><input type="hidden" name="submission_key" value="' . esc_attr(hash('sha256',wp_generate_uuid4())) . '">';
+        echo '<input type="hidden" name="review_token" value="' . esc_attr(self::review_token($vendor,$review_products,$direct,$recipient)) . '"><input type="hidden" name="submission_key" value="' . esc_attr(hash('sha256',wp_generate_uuid4())) . '">';
         echo '<p>All tracked vendor items are shown. Set an item to zero to skip it, or increase a zero quantity to add it intentionally. Unknown costs block ordering; estimates are not verified supplier quotes. Confirmed quotes and free items must include their source and checked date.</p>';
         echo '<table class="widefat striped" id="roxy-inventory-vendor-review"><thead><tr><th>Product</th><th>On hand</th><th>Pack</th><th>Order qty</th><th>Unit cost</th><th>Line total</th></tr></thead><tbody>';
         foreach ($rows as $row) {
@@ -312,9 +313,9 @@ class Admin {
                 $recipient = (string) ($direct ? $fresh_vendor['email'] : Settings::get('jason_email'));
                 if (!is_email($recipient)) throw new \RuntimeException('Add a valid order recipient email before submitting.');
                 $products = array_values(array_filter(Store::products(), static fn($p)=>strcasecmp((string)$p['vendor'],$vendor)===0));
-                [$lines,$total] = self::reviewed_lines($fresh_vendor,$products,$_POST);
+                [$lines,$total] = self::reviewed_lines($fresh_vendor,$products,$_POST,$direct,$recipient);
                 $id = Store::create_order((string)$fresh_vendor['name'],$lines,$total,(float)$fresh_vendor['minimum_amount'],'pending_manager',$key);
-                $email = self::order_email($fresh_vendor, $lines, $total, $id, $direct);
+                $email = self::order_email($fresh_vendor, $lines, $total, $id, $direct, $recipient);
                 return ['replayed'=>false,'id'=>$id,'vendor'=>$fresh_vendor,'lines'=>$lines,'total'=>$total,'direct'=>$direct,'email'=>$email];
             });
         } catch (\Throwable $e) { self::redirect('dashboard',$e->getMessage(),false); }
@@ -337,7 +338,7 @@ class Admin {
         }
         self::redirect('dashboard', $direct ? 'Order emailed to the vendor and marked Ordered.' : 'Order submitted to the manager for approval.', true);
     }
-    public static function review_token(array $vendor, array $products): string {
+    public static function review_token(array $vendor, array $products, bool $direct = false, string $recipient = ''): string {
         $state = [];
         foreach ($products as $p) {
             $row=[];
@@ -345,10 +346,11 @@ class Admin {
             $state[(int)$p['id']]=$row;
         }
         ksort($state);
-        return hash_hmac('sha256',wp_json_encode([$vendor,$state]),wp_salt('auth'));
+        $delivery = ['mode' => $direct ? 'direct_vendor' : 'manager_approval', 'recipient' => sanitize_email($recipient)];
+        return hash_hmac('sha256',wp_json_encode([$vendor,$state,$delivery]),wp_salt('auth'));
     }
-    public static function reviewed_lines(array $vendor, array $products, array $input): array {
-        if (($input['review_complete'] ?? '') !== '1' || !hash_equals(self::review_token($vendor,$products),(string)($input['review_token'] ?? ''))) {
+    public static function reviewed_lines(array $vendor, array $products, array $input, bool $direct = false, string $recipient = ''): array {
+        if (($input['review_complete'] ?? '') !== '1' || !hash_equals(self::review_token($vendor,$products,$direct,$recipient),(string)($input['review_token'] ?? ''))) {
             throw new \RuntimeException('Inventory or vendor rules changed, or the review is incomplete. Refresh and review again; no order was submitted.');
         }
         $quantities=$input['order_qty'] ?? null;
@@ -368,7 +370,7 @@ class Admin {
         if ($total<(float)$vendor['minimum_amount']) throw new \RuntimeException('This order is below the vendor minimum.');
         return [$lines,$total];
     }
-    public static function order_email(array $vendor, array $lines, float $total, int $order_id, bool $direct): array {
+    public static function order_email(array $vendor, array $lines, float $total, int $order_id, bool $direct, ?string $recipient = null): array {
         $name = (string) $vendor['name'];
         $instruction_key = strtolower($name) . '_order_instructions';
         $instructions = in_array(strtolower($name), ['tripp', 'odom'], true) ? trim((string) Settings::get($instruction_key)) : '';
@@ -396,7 +398,7 @@ class Admin {
                 $body .= "\nMark as ordered:\n" . self::decision_url($order_id, 'ordered') . "\nReject this order:\n" . self::decision_url($order_id, 'rejected');
             }
         }
-        return ['to' => sanitize_email((string) ($direct ? $vendor['email'] : Settings::get('jason_email'))), 'subject' => 'Newport Roxy ' . ($direct ? 'order' : 'order for review') . ' #' . $order_id . ' — ' . $name, 'body' => $body];
+        return ['to' => sanitize_email((string) ($recipient ?? ($direct ? $vendor['email'] : Settings::get('jason_email')))), 'subject' => 'Newport Roxy ' . ($direct ? 'order' : 'order for review') . ' #' . $order_id . ' — ' . $name, 'body' => $body];
     }
     private static function decision_token(int $order_id, string $decision, int $expires = 0): string {
         $message = $order_id . '|' . $decision;

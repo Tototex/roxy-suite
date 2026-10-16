@@ -7,6 +7,7 @@ function wp_unslash($value) { return $value; }
 function current_time($format) { return '2026-10-03 01:00:00'; }
 function wp_timezone() { return new DateTimeZone('America/Los_Angeles'); }
 function sanitize_text_field($value) { return (string)$value; }
+function sanitize_email($value) { return trim((string)$value); }
 function add_filter(...$args) {}
 function remove_filter(...$args) {}
 class FakeDatabase {
@@ -45,6 +46,11 @@ $p=['id'=>1,'square_variation_id'=>'v1','name'=>'Candy','vendor'=>'Test vendor',
 $input=['review_complete'=>'1','review_token'=>\RoxyInventory\Admin::review_token($vendor,[$p]),'order_qty'=>[1=>'12']];
 [$lines,$total]=\RoxyInventory\Admin::reviewed_lines($vendor,[$p],$input);
 check($total===18.0 && $lines[0]['quantity']===12,'only explicit reviewed quantity submitted');
+check(rejected(fn()=>\RoxyInventory\Admin::reviewed_lines($vendor,[$p],$input,true,'vendor@example.test')),'manager-review form becomes stale if direct vendor sending is enabled');
+$direct_input=['review_complete'=>'1','review_token'=>\RoxyInventory\Admin::review_token($vendor,[$p],true,'vendor@example.test'),'order_qty'=>[1=>'12']];
+check(rejected(fn()=>\RoxyInventory\Admin::reviewed_lines($vendor,[$p],$direct_input,false,'manager@example.test')),'direct-send form becomes stale if manager approval is re-enabled');
+$manager_email_input=['review_complete'=>'1','review_token'=>\RoxyInventory\Admin::review_token($vendor,[$p],false,'manager@example.test'),'order_qty'=>[1=>'12']];
+check(rejected(fn()=>\RoxyInventory\Admin::reviewed_lines($vendor,[$p],$manager_email_input,false,'newmanager@example.test')),'manager recipient change invalidates an open vendor review');
 $unknown_cost=$p; $unknown_cost['unit_cost']=0; $unknown_cost['unit_cost_status']='unknown';
 check(rejected(fn()=>\RoxyInventory\Admin::reviewed_lines($vendor,[$unknown_cost],$input)),'unknown zero cost cannot pass order review');
 $free_cost=$p; $free_cost['unit_cost']=0; $free_cost['unit_cost_status']='free'; $free_cost['unit_cost_source']='supplier confirmation'; $free_cost['unit_cost_checked_at']='2026-10-08';

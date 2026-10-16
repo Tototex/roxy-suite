@@ -15,6 +15,7 @@ if (($argv[1] ?? '') === '--worker') {
   $GLOBALS['inventory_worker_option'] = null;
   $GLOBALS['inventory_worker_schedule_calls'] = 0;
   $GLOBALS['inventory_worker_mail_calls'] = 0;
+  $GLOBALS['inventory_worker_mail_to'] = '';
   $GLOBALS['inventory_worker_order_status'] = '';
   $GLOBALS['inventory_worker_created_lines'] = [];
 
@@ -23,8 +24,8 @@ if (($argv[1] ?? '') === '--worker') {
       public static array $calls=[];
       public static function update_product(int $id,array $data):void { $GLOBALS["inventory_worker_events"][]="product-write"; if($GLOBALS["inventory_worker_case"]==="product_fail") throw new \\RuntimeException("product storage failure"); self::$calls[]=["product",$id,$data]; }
       public static function update_vendor(int $id,array $data):void { $GLOBALS["inventory_worker_events"][]="vendor-write"; if($GLOBALS["inventory_worker_case"]==="vendor_fail") throw new \\RuntimeException("vendor storage failure"); self::$calls[]=["vendor",$id,$data]; }
-      public static function log(string $type,string $status,string $message):bool { self::$calls[]=["log",$type,$status]; return $GLOBALS["inventory_worker_case"]==="zero_qty_unknown_cost"; }
-      public static function vendors():array { return [["name"=>"Fixture Vendor","order_method"=>"phone","email"=>"","minimum_amount"=>0.0]]; }
+      public static function log(string $type,string $status,string $message):bool { self::$calls[]=["log",$type,$status]; return in_array($GLOBALS["inventory_worker_case"],["zero_qty_unknown_cost","direct_send_success"],true); }
+      public static function vendors():array { $delivery_case=in_array($GLOBALS["inventory_worker_case"],["manager_to_vendor","vendor_to_manager","manager_recipient_changed","direct_send_success"],true); return [["name"=>"Fixture Vendor","order_method"=>$delivery_case?"email":"phone","email"=>$delivery_case?"vendor@example.test":"","minimum_amount"=>0.0]]; }
       public static function all_vendors():array { return self::vendors(); }
       public static function products():array {
         $products=[["id"=>4,"name"=>"Fixture Item","vendor"=>"Fixture Vendor","square_variation_id"=>"var-4","on_hand"=>2,"pack_size"=>1,"unit_cost"=>5,"minimum_amount"=>0]];
@@ -43,7 +44,7 @@ if (($argv[1] ?? '') === '--worker') {
     final class Settings {
       public const OPTION_KEY="fixture_inventory_settings";
       public static function sanitize(array $input):array { return ["schedule_enabled"=>empty($input["schedule_enabled"])?"0":"1","direct_vendor_sending_enabled"=>empty($input["direct_vendor_sending_enabled"])?"0":"1"]; }
-      public static function get(string $key,$default="") { return $key==="jason_email"?"manager@example.invalid":($key==="direct_vendor_sending_enabled"?"0":$default); }
+      public static function get(string $key,$default="") { $case=$GLOBALS["inventory_worker_case"]; if($key==="jason_email")return $case==="manager_recipient_changed"?"newmanager@example.test":"manager@example.test"; if($key==="direct_vendor_sending_enabled")return in_array($case,["manager_to_vendor","direct_send_success"],true)?"1":"0"; return $default; }
     }
     final class Scheduler { public static function sync_schedule():void { $GLOBALS["inventory_worker_schedule_calls"]++; if($GLOBALS["inventory_worker_case"]==="settings_schedule_failure") throw new \\RuntimeException("schedule failure"); } }
   ');
@@ -68,7 +69,7 @@ if (($argv[1] ?? '') === '--worker') {
   function absint($value):int { return abs((int)$value); }
   function update_option($key,$value):bool { $GLOBALS['inventory_worker_events'][]='option-write'; if($GLOBALS['inventory_worker_update_option']) $GLOBALS['inventory_worker_option']=$value; return (bool)$GLOBALS['inventory_worker_update_option']; }
   function get_option($key,$default=false) { return $GLOBALS['inventory_worker_option'] ?? $default; }
-  function wp_mail($to,$subject,$body):bool { $GLOBALS['inventory_worker_mail_calls']++; if($GLOBALS['inventory_worker_case']==='throw_mail_uncertain')throw new RuntimeException('transport response lost'); return !in_array($GLOBALS['inventory_worker_case'],['unsent_status_failure','samekey_replay'],true); }
+  function wp_mail($to,$subject,$body):bool { $GLOBALS['inventory_worker_mail_calls']++; $GLOBALS['inventory_worker_mail_to']=(string)$to; if($GLOBALS['inventory_worker_case']==='throw_mail_uncertain')throw new RuntimeException('transport response lost'); return !in_array($GLOBALS['inventory_worker_case'],['unsent_status_failure','samekey_replay'],true); }
 
   $source=file_get_contents($candidate);
   if(!is_string($source)) throw new RuntimeException('Could not read candidate source.');
@@ -115,13 +116,20 @@ if (($argv[1] ?? '') === '--worker') {
     case 'unsent_status_failure':
     case 'throw_mail_uncertain':
     case 'samekey_replay':
+    case 'manager_to_vendor':
+    case 'vendor_to_manager':
+    case 'manager_recipient_changed':
+    case 'direct_send_success':
     case 'unknown_cost':
     case 'malformed_cost':
     case 'overflowing_cost':
     case 'zero_qty_unknown_cost':
       $store=$namespace.'\\Store';
-      $vendor=$admin::review_token($store::vendors()[0], $store::products());
-      $_POST=['vendor'=>'Fixture Vendor','submission_key'=>str_repeat('a',64),'review_complete'=>'1','review_token'=>$vendor,'order_qty'=>['4'=>'1']];
+      $vendor_row=$store::vendors()[0];$products=$store::products();
+      $review_direct=in_array($case,['vendor_to_manager','direct_send_success'],true);
+      $review_recipient=$review_direct?'vendor@example.test':'manager@example.test';
+      $review_token=$admin::review_token($vendor_row,$products,$review_direct,$review_recipient);
+      $_POST=['vendor'=>'Fixture Vendor','submission_key'=>str_repeat('a',64),'review_complete'=>'1','review_token'=>$review_token,'order_qty'=>['4'=>'1']];
       if($case==='zero_qty_unknown_cost')$_POST['order_qty']['5']='0';
       $call=static fn()=>$admin::send_draft(); break;
     case 'cancel_log_failure': $_POST=['order_id'=>73]; $call=static fn()=>$admin::cancel_order(); break;
@@ -134,7 +142,7 @@ if (($argv[1] ?? '') === '--worker') {
   $redirect=''; $died='';
   try { $call(); } catch(InventoryWorkerRedirect $e) { $redirect=$e->url; } catch(InventoryWorkerDie $e) { $died=$e->getMessage(); }
   $store='\\'.$namespace.'\\Store';
-  echo json_encode(['case'=>$case,'redirect'=>$redirect,'died'=>$died,'events'=>$GLOBALS['inventory_worker_events'],'store_calls'=>$store::$calls,'schedule_calls'=>$GLOBALS['inventory_worker_schedule_calls'],'mail_calls'=>$GLOBALS['inventory_worker_mail_calls'],'order_status'=>$GLOBALS['inventory_worker_order_status'],'created_lines'=>$GLOBALS['inventory_worker_created_lines'],'option'=>$GLOBALS['inventory_worker_option']]);
+  echo json_encode(['case'=>$case,'redirect'=>$redirect,'died'=>$died,'events'=>$GLOBALS['inventory_worker_events'],'store_calls'=>$store::$calls,'schedule_calls'=>$GLOBALS['inventory_worker_schedule_calls'],'mail_calls'=>$GLOBALS['inventory_worker_mail_calls'],'mail_to'=>$GLOBALS['inventory_worker_mail_to'],'order_status'=>$GLOBALS['inventory_worker_order_status'],'created_lines'=>$GLOBALS['inventory_worker_created_lines'],'option'=>$GLOBALS['inventory_worker_option']]);
   exit;
 }
 
@@ -183,8 +191,14 @@ foreach(['unknown_cost','malformed_cost','overflowing_cost'] as $case) {
   $invalid_cost=$run($case);$q=$url_args($invalid_cost);
   $check(($q['ok']??'')==='0'&&str_contains(rawurldecode($q['message']??''),'explicitly mark the item Free')&&$invalid_cost['mail_calls']===0&&!in_array(['create_order','pending_manager'],$invalid_cost['store_calls'],true),'positive quantity with '.$case.' is rejected before order creation or mail');
 }
+foreach(['manager_to_vendor','vendor_to_manager','manager_recipient_changed'] as $case) {
+  $stale_delivery=$run($case);$q=$url_args($stale_delivery);$message=rawurldecode($q['message']??'');
+  $check(($q['ok']??'')==='0'&&str_contains($message,'review is incomplete')&&$stale_delivery['mail_calls']===0&&!in_array(['create_order','pending_manager'],$stale_delivery['store_calls'],true),$case.' rejects changed delivery mode/recipient before order creation or email');
+}
+$direct_success=$run('direct_send_success');
+$check(($url_args($direct_success)['ok']??'')==='1'&&$direct_success['mail_calls']===1&&$direct_success['mail_to']==='vendor@example.test'&&$direct_success['order_status']==='ordered','freshly reviewed direct delivery still emails the vendor and marks the order Ordered');
 $zero_unknown=$run('zero_qty_unknown_cost');
-$check(($url_args($zero_unknown)['ok']??'')==='1'&&$zero_unknown['mail_calls']===1&&in_array(['create_order','pending_manager'],$zero_unknown['store_calls'],true)&&count($zero_unknown['created_lines'])===1&&$zero_unknown['created_lines'][0]['product']==='Fixture Item','unknown-cost row at zero quantity is omitted while a separately priced order is created and mailed');
+$check(($url_args($zero_unknown)['ok']??'')==='1'&&$zero_unknown['mail_calls']===1&&$zero_unknown['mail_to']==='manager@example.test'&&in_array(['create_order','pending_manager'],$zero_unknown['store_calls'],true)&&count($zero_unknown['created_lines'])===1&&$zero_unknown['created_lines'][0]['product']==='Fixture Item','unknown-cost row at zero quantity is omitted while a separately priced order is created and mailed to the manager');
 foreach(['sent_status_failure'] as $case) {
   $result=$run($case); $q=$url_args($result); $message=rawurldecode($q['message']??'');
   $check(($q['ok']??'')==='0' && ($q['order_id']??'')==='73' && str_contains($message,'Order email sent'),'status failure preserves actual mail outcome: '.$case);
