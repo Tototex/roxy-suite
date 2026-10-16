@@ -9,6 +9,7 @@ class Settings {
   private const CASHFLOW_GATEWAYS_CONFIGURED_KEY='_cashflow_woo_gateways_configured';
   private const ENCRYPTION_PREFIX='gcm:';
   private const ENCRYPTION_PREFIX_V2='gcm:v2:';
+  private const CASHFLOW_NONCE_ACTION='roxy_grosses_cashflow';
 
   public static function init(): void {
     add_action('admin_init',[__CLASS__,'migrate_legacy_token'],1);
@@ -293,7 +294,7 @@ class Settings {
     echo '<h2>Daily financial cashflow</h2><p>Read-only provider snapshot. This is separate from Hollywood&#8217;s nominal ticket gross and does not alter saved reports, history, or send email.</p>';
     echo '<form method="get" action="'.esc_url(admin_url('admin.php')).'">';
     echo '<input type="hidden" name="page" value="roxy-grosses"><input type="hidden" name="tab" value="cashflow"><input type="hidden" name="cashflow_load" value="1">';
-    wp_nonce_field('roxy_grosses_cashflow_' . $date);
+    wp_nonce_field(self::CASHFLOW_NONCE_ACTION);
     echo '<label for="roxy-cashflow-date">Report date (' . esc_html(self::get_report_timezone()) . ')</label> <input id="roxy-cashflow-date" type="date" name="cashflow_date" value="'.esc_attr($date).'"> ';
     submit_button('Load provider totals', 'primary', 'submit', false);
     echo '</form>';
@@ -302,7 +303,7 @@ class Settings {
       return;
     }
     $nonce = isset($_GET['_wpnonce']) ? sanitize_text_field(wp_unslash((string) $_GET['_wpnonce'])) : '';
-    if (!wp_verify_nonce($nonce, 'roxy_grosses_cashflow_' . $date)) {
+    if (!wp_verify_nonce($nonce, self::CASHFLOW_NONCE_ACTION)) {
       echo '<div class="notice notice-error"><p>The report request expired. Reload the page and try again.</p></div>';
       return;
     }
