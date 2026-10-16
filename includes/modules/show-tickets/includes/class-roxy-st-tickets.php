@@ -282,7 +282,11 @@ class Tickets {
       || !is_numeric($raw_refund_qty) || !is_finite((float) $raw_refund_qty)) {
       throw new \RuntimeException('Ticket refund quantity could not be verified');
     }
-    $refund_qty = min(count($ticket_ids), (int) ceil(abs((float) $raw_refund_qty)));
+    $refund_qty_value = abs((float) $raw_refund_qty);
+    if (floor($refund_qty_value) !== $refund_qty_value) {
+      throw new \RuntimeException('Ticket refund quantity must be a whole number');
+    }
+    $refund_qty = min(count($ticket_ids), (int) $refund_qty_value);
     $allocated = [];
     // Preserve previously allocated identities while the cumulative refund still exists.
     foreach ($ticket_ids as $ticket_id) {

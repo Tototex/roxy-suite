@@ -56,6 +56,15 @@ try {
     $malformed_refund_rejected = true;
 }
 check($malformed_refund_rejected && $GLOBALS['meta'] === $before_malformed_refund_read && get_post_meta(103,'_roxy_ticket_refunded') === '1' && !$can->invoke(null,103), 'T3: malformed refund read preserves persisted refunded ticket state');
+$order->refunded = '1.5';
+$before_fractional_refund_read = $GLOBALS['meta'];
+$fractional_refund_rejected = false;
+try {
+    $sync->invoke(null,$order,10,[101,102,103],'valid');
+} catch (RuntimeException $e) {
+    $fractional_refund_rejected = true;
+}
+check($fractional_refund_rejected && $GLOBALS['meta'] === $before_fractional_refund_read, 'T3: fractional refund quantity fails closed without reallocating ticket identities');
 $order->refunded = 0; $sync->invoke(null,$order,10,[101,102,103],'valid');
 check($can->invoke(null,102) && $can->invoke(null,103), 'T3: explicit refund removal reconciles allocation on sync');
 $GLOBALS['meta'][101]['_roxy_ticket_order_item_id'] = 999;
