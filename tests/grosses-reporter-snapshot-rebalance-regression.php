@@ -142,6 +142,7 @@ namespace RoxyGrosses {
 namespace {
   if (!defined('ABSPATH')) define('ABSPATH', __DIR__ . DIRECTORY_SEPARATOR);
   function wp_date($format, $timestamp = null, $timezone = null) { return (new DateTimeImmutable('@' . ($timestamp ?? time())))->setTimezone($timezone ?: new DateTimeZone('UTC'))->format($format); }
+  function wp_timezone() { return new DateTimeZone('America/Los_Angeles'); }
   function wp_json_encode($value) { return json_encode($value); }
   function sanitize_text_field($value) { return trim((string) $value); }
   function get_option($key, $default = false) { return ''; }
