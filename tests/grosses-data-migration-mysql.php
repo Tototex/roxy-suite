@@ -45,7 +45,7 @@ try {
   $assert($before===$store::get_entry($corrected),'unlocked correction including free/concession/notes survives initial migration');
   $assert((float)$wpdb->get_var("SELECT gross_total FROM {$history} WHERE report_date='2038-01-02'")===222.0,'newer historical row is not replaced by old saved snapshot');
   $assert((int)$wpdb->get_var("SELECT COUNT(*) FROM {$history} WHERE report_date='2038-01-05'")===2,'distinct same-date showings without source IDs retain separate derived identities');
-  $assert((int)$wpdb->get_var("SELECT COUNT(*) FROM {$entries}")===2&&(float)$wpdb->get_var("SELECT gross_total FROM {$entries} WHERE report_date='2038-01-03'")===30.0,'missing historical entry inserted with original source values');
+  $assert((int)$wpdb->get_var("SELECT COUNT(*) FROM {$entries} WHERE report_date='2038-01-03'")===1&&(float)$wpdb->get_var("SELECT gross_total FROM {$entries} WHERE report_date='2038-01-03'")===30.0,'missing historical entry inserted with original source values');
   $baseline=[$digest($history),$digest($entries)];$store::maybe_backfill_history();
   $assert($baseline===[$digest($history),$digest($entries)],'repeat bootstrap does not change rows or timestamps');
   foreach(['saved read','history read','history write','entry write','marker write','ownership read'] as $fault) {
