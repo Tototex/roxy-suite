@@ -2045,12 +2045,13 @@ class Reporter {
         $current_showing_ids = [];
         foreach (['movie', 'live'] as $mode) foreach (self::showings_for_date($report_date, $mode) as $current_showing) $current_showing_ids[(int) $current_showing['id']] = true;
         $single_show_day = $dated_report_count === 1 && count($current_showing_ids) <= 1;
-        $candidate_ids = $order_closed_at ? self::matching_entry_ids_for_order_time($order_closed_at, $reports, $single_show_day) : [];
+        $ambiguous_rental_window = false;
+        $candidate_ids = $order_closed_at ? self::matching_entry_ids_for_order_time($order_closed_at, $reports, $single_show_day, $ambiguous_rental_window) : [];
         if (!$candidate_ids) {
           // Movie and live builders run separately before the day-wide rebalance.
           // A sale valid for another show type is not unmatched merely because
           // that row is absent from this builder's partial report set.
-          if ($defer_missing_cross_type_row && $order_closed_at && self::matching_showing_time_exists($order_closed_at, $matching_showings)) continue;
+          if (!$ambiguous_rental_window && $defer_missing_cross_type_row && $order_closed_at && self::matching_showing_time_exists($order_closed_at, $matching_showings)) continue;
           if ($line_total_cents > PHP_INT_MAX - $unmatched_cents) throw new \RuntimeException('Unmatched Square concessions exceed the supported amount range.');
           $unmatched_lines++;
           $unmatched_cents += $line_total_cents;
@@ -2070,6 +2071,8 @@ class Reporter {
             $reason = 'no_report_rows';
           } elseif ($dated_report_rows === 0) {
             $reason = 'report_rows_missing_times';
+          } elseif ($ambiguous_rental_window) {
+            $reason = 'overlapping_rental_windows';
           } else {
             $reason = 'outside_showtime_window';
           }
@@ -2125,7 +2128,7 @@ class Reporter {
         ? sprintf(' There were %d dated report row(s): %s%s.', $dated_row_count, implode(', ', $visible_times), count($report_times) > count($visible_times) ? ', ...' : '')
         : ' No report rows with usable show times were available.';
       throw new \RuntimeException(sprintf(
-        '%d eligible Square concession line(s), totaling $%s, could not be matched to a report row within the show-time window.%s They were saved to the Grosses Logs unmatched-sales review queue; review this date before refreshing.',
+        '%d eligible Square concession line(s), totaling $%s, could not be safely attributed to a report row.%s They were saved to the Grosses Logs unmatched-sales review queue; review this date before refreshing.',
         $unmatched_lines,
         number_format($unmatched_cents / 100, 2, '.', ','),
         $row_context
@@ -2424,11 +2427,13 @@ class Reporter {
       : null;
   }
 
-  private static function matching_entry_ids_for_order_time(\DateTimeImmutable $order_closed_at, array $reports, bool $allow_single_row_fallback = false): array {
+  private static function matching_entry_ids_for_order_time(\DateTimeImmutable $order_closed_at, array $reports, bool $allow_single_row_fallback = false, ?bool &$ambiguous_rental_window = null): array {
+    $ambiguous_rental_window = false;
     $matches = [];
     $best_distance = null;
     $window_matches = [];
     $best_window_distance = null;
+    $containing_rental_windows = [];
 
     foreach ($reports as $entry_id => $report) {
       $start_at = $report['_start_at'] ?? null;
@@ -2444,6 +2449,7 @@ class Reporter {
           // When an exact private-event reservation window contains the sale,
           // it is stronger evidence than a nearby movie/live showtime window.
           $distance = abs($order_local->getTimestamp() - (int) (($window_start->getTimestamp() + $window_end->getTimestamp()) / 2));
+          if (($report['_entry_kind'] ?? '') === 'rental') $containing_rental_windows[] = (int) $entry_id;
           if ($best_window_distance === null || $distance < $best_window_distance) {
             $best_window_distance = $distance;
             $window_matches = [(int) $entry_id];
@@ -2470,6 +2476,12 @@ class Reporter {
       }
     }
 
+    $containing_rental_windows = array_values(array_unique($containing_rental_windows));
+    if (count($containing_rental_windows) > 1) {
+      $ambiguous_rental_window = true;
+      return [];
+    }
+    if ($containing_rental_windows) return $containing_rental_windows;
     if ($window_matches) return array_values(array_unique($window_matches));
 
     if ($matches) {
