@@ -53,6 +53,7 @@ namespace {
   if (!mkdir($private_content_dir, 0700)) throw new RuntimeException('Could not create private workbook test root.');
   define('WP_CONTENT_DIR', $private_content_dir);
   function trailingslashit($path): string { return rtrim((string) $path, '/\\') . DIRECTORY_SEPARATOR; }
+  function wp_normalize_path($path): string { return str_replace('\\', '/', (string) $path); }
   function wp_mkdir_p($path): bool { return is_dir($path) || mkdir($path, 0700, true); }
   function wp_generate_uuid4(): string {
     if (!empty($GLOBALS['advertiser_uuid_queue'])) return array_shift($GLOBALS['advertiser_uuid_queue']);
