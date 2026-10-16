@@ -71,13 +71,44 @@ namespace {
     throw new RuntimeException('Cashflow must reject an invalid nonce without starting a provider read.');
   }
 
+  \RoxyGrosses\CashflowReport::$response = [
+    'report_date' => '2026-10-15',
+    'totals' => ['square_collected_cents'=>1000,'woocommerce_collected_cents'=>0,'square_refunded_cents'=>500,'woocommerce_refunded_cents'=>0,'total_collected_cents'=>1000,'total_refunded_cents'=>500,'net_cents'=>500],
+    'counts' => ['square_collections'=>1,'woocommerce_collections'=>0,'square_refunds'=>1,'woocommerce_refunds'=>0],
+    'refund_date_basis_counts' => ['square'=>['square_updated_at_proxy'=>1],'woocommerce'=>[]],
+    'review_exceptions' => ['square_refunds_using_update_time_proxy'=>[[
+      'refund_id'=>'<refund-1>','payment_id'=>'payment-1','order_id'=>'order-1','refund_date'=>'2026-10-15','amount_cents'=>500,
+      'review'=>'Proxy date; verify provider record.',
+    ]]],
+  ];
+  $_GET = ['cashflow_date'=>'2026-10-15','cashflow_load'=>'1','_wpnonce'=>$initial_nonce];
+  ob_start();
+  $render->invoke(null, '2026-10-16');
+  $proxy_response = (string) ob_get_clean();
+  if (!str_contains($proxy_response, 'Included Square refunds using a proxy date')
+    || !str_contains($proxy_response, '&lt;refund-1&gt;')
+    || str_contains($proxy_response, '<refund-1>')
+    || !str_contains($proxy_response, '$5.00')
+    || !str_contains($proxy_response, 'Proxy date; verify provider record.')) {
+    throw new RuntimeException('Cashflow must itemize and escape proxy-dated Square refunds without changing included totals.');
+  }
+  \RoxyGrosses\CashflowReport::$response['review_exceptions']['square_refunds_using_update_time_proxy'] = [];
+  ob_start();
+  $render->invoke(null, '2026-10-16');
+  $empty_proxy_response = (string) ob_get_clean();
+  if (!str_contains($empty_proxy_response, 'No Square refunds on this date rely on the update-time proxy.')) {
+    throw new RuntimeException('Cashflow must explain when no Square proxy-dated refunds need review.');
+  }
+
   echo "OK: Cashflow accepts a selected date and rejects an invalid nonce before provider reads\n";
 }
 
 namespace RoxyGrosses {
   final class CashflowReport {
+    public static ?array $response = null;
     public static function for_day(string $date): array {
       $GLOBALS['cashflow_report_date'] = $date;
+      if (self::$response !== null) return self::$response;
       throw new \RuntimeException('Expected fixture stop after nonce acceptance.');
     }
   }
