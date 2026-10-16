@@ -417,20 +417,40 @@ final class SquareUnmatchedPaymentRefundReview {
   }
 
   private static function original_sale_date(array $order): string {
-    if (!array_key_exists('created_at', $order)) return '';
-    $created_at = $order['created_at'];
-    if (!is_string($created_at)
-      || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/D', $created_at)) {
-      throw new \RuntimeException('Square returned an invalid associated-order creation timestamp for refund review.');
+    if (!array_key_exists('closed_at', $order) || $order['closed_at'] === null || $order['closed_at'] === '') return '';
+    $closed_at = $order['closed_at'];
+    if (!is_string($closed_at)
+      || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/D', $closed_at)) {
+      throw new \RuntimeException('Square returned an invalid associated-order close timestamp for refund review.');
     }
     try {
-      $created = new \DateTimeImmutable($created_at);
+      $closed = new \DateTimeImmutable($closed_at);
       $errors = \DateTimeImmutable::getLastErrors();
       if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException();
-      return $created->setTimezone(new \DateTimeZone(Settings::get_report_timezone()))->format('Y-m-d');
+      return $closed->setTimezone(new \DateTimeZone(Settings::get_report_timezone()))->format('Y-m-d');
     } catch (\Throwable $error) {
-      throw new \RuntimeException('Square returned an invalid associated-order creation timestamp for refund review.');
+      throw new \RuntimeException('Square returned an invalid associated-order close timestamp for refund review.');
     }
+  }
+
+  /** A return container alone is not itemized evidence; require a usable item line. */
+  private static function has_itemized_return_lines(array $returns): bool {
+    foreach ($returns as $return) {
+      if (!is_array($return) || !is_string($return['source_order_id'] ?? null) || $return['source_order_id'] === '') continue;
+      $lines = $return['return_line_items'] ?? null;
+      if (!is_array($lines) || !self::is_list($lines) || !$lines) continue;
+      foreach ($lines as $line) {
+        if (!is_array($line)
+          || !is_string($line['uid'] ?? null) || $line['uid'] === ''
+          || !is_string($line['source_line_item_uid'] ?? null) || $line['source_line_item_uid'] === ''
+          || ($line['item_type'] ?? null) !== 'ITEM'
+          || !is_string($line['quantity'] ?? null)
+          || !preg_match('/^[0-9]+(?:\.\d+)?$/D', $line['quantity'])
+          || (float) $line['quantity'] <= 0) continue;
+        return true;
+      }
+    }
+    return false;
   }
 
   public static function from_refunds_and_orders(array $refunds, array $orders, string $report_date): array {
@@ -446,7 +466,7 @@ final class SquareUnmatchedPaymentRefundReview {
       $orders_by_id[$order['id']] = $order;
       if ($order['state'] !== 'COMPLETED' || !isset($order['returns'])) continue;
       if (!is_array($order['returns']) || !self::is_list($order['returns'])) throw new \RuntimeException('Square returned malformed itemized return evidence.');
-      if (!$order['returns']) continue;
+      if (!self::has_itemized_return_lines($order['returns'])) continue;
       $references = $order['refunds'] ?? [];
       if (!is_array($references) || !self::is_list($references)) throw new \RuntimeException('Square returned malformed refund references.');
       foreach ($references as $reference) {
