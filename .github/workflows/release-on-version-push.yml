@@ -84,27 +84,13 @@ jobs:
               "${{ steps.version.outputs.zip_name }}",
               "${{ steps.version.outputs.manifest_name }}"
             ]);
+            let response;
             try {
-              const response = await github.rest.repos.getReleaseByTag({
+              response = await github.rest.repos.getReleaseByTag({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 tag
               });
-              const ref = await github.rest.git.getRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: `tags/${tag}`
-              });
-              if (ref.data.object.sha !== context.sha) {
-                throw new Error(`Refusing to repair release ${tag} because its tag points to a different commit.`);
-              }
-              const assets = new Map((response.data.assets || []).map(asset => [asset.name, asset]));
-              const complete = [...required].every(name => {
-                const asset = assets.get(name);
-                return asset && asset.state === 'uploaded' && Number(asset.size) > 0;
-              });
-              core.setOutput('exists', 'true');
-              core.setOutput('complete', complete ? 'true' : 'false');
             } catch (error) {
               if (error.status === 404) {
                 core.setOutput('exists', 'false');
@@ -113,6 +99,21 @@ jobs:
               }
               throw error;
             }
+            const ref = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `tags/${tag}`
+            });
+            if (ref.data.object.sha !== context.sha) {
+              throw new Error(`Refusing to repair release ${tag} because its tag points to a different commit.`);
+            }
+            const assets = new Map((response.data.assets || []).map(asset => [asset.name, asset]));
+            const complete = [...required].every(name => {
+              const asset = assets.get(name);
+              return asset && asset.state === 'uploaded' && Number(asset.size) > 0;
+            });
+            core.setOutput('exists', 'true');
+            core.setOutput('complete', complete ? 'true' : 'false');
 
       - name: Decide whether to release
         id: compare

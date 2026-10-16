@@ -41,6 +41,9 @@ const script = (name) => {
     github.rest.git.getRef = async () => ({ data: { object: { sha: 'b'.repeat(40) } } });
     await assert.rejects(program(github, context, core), /different commit/);
     check(true, 'existing target release with a different tag commit is not overwritten');
+    github.rest.git.getRef = async () => { const error = new Error('tag ref unavailable'); error.status = 404; throw error; };
+    await assert.rejects(program(github, context, core), /tag ref unavailable/);
+    check(true, 'missing tag reference for an existing release fails closed');
     github.rest.git.getRef = async () => ({ data: { object: { sha: context.sha } } });
     github.rest.repos.getReleaseByTag = async () => { const error = new Error('not found'); error.status = 404; throw error; };
     await program(github, context, core);
