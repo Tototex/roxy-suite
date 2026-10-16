@@ -1349,17 +1349,17 @@ class Reporter {
 
   private static function saved_draft_matches_current(array $saved_rows, array $saved_summary, array $current_rows, array $current_summary): bool {
     $fields = [
-      'report_date', 'showing_id', 'film_title', 'show_title', 'show_time',
+      'report_date', 'showing_id', 'film_title', 'show_title', 'show_time', 'theater_name',
       'general_qty', 'discount_qty', 'group_qty', 'live_qty', 'presale_qty', 'online_qty', 'door_qty', 'group_sub_qty',
       'total_tickets', 'general_gross', 'discount_gross', 'group_gross', 'live_gross', 'gross_total', 'concessions_total', 'refund_adjusted',
     ];
-    $project = static function (array $rows) use ($fields): array {
+    $project = static function (array $rows) use ($fields): ?array {
       $projected = [];
       foreach ($rows as $row) {
-        if (!is_array($row)) return [];
+        if (!is_array($row)) return null;
         $item = [];
         foreach ($fields as $field) {
-          if (in_array($field, ['film_title', 'show_title', 'report_date', 'show_time'], true)) {
+          if (in_array($field, ['film_title', 'show_title', 'report_date', 'show_time', 'theater_name'], true)) {
             $item[$field] = (string) ($row[$field] ?? '');
           } elseif ($field === 'refund_adjusted') {
             $item[$field] = !empty($row[$field]);
@@ -1371,11 +1371,13 @@ class Reporter {
         }
         $projected[] = $item;
       }
-      usort($projected, static fn(array $a, array $b): int => strcmp(json_encode($a), json_encode($b)));
+      usort($projected, static fn(array $a, array $b): int => strcmp(serialize($a), serialize($b)));
       return $projected;
     };
 
-    return $project($saved_rows) === $project($current_rows)
+    $saved_projection = $project($saved_rows);
+    $current_projection = $project($current_rows);
+    return $saved_projection !== null && $current_projection !== null && $saved_projection === $current_projection
       && (int) ($saved_summary['total_tickets'] ?? 0) === (int) ($current_summary['total_tickets'] ?? 0)
       && (int) round((float) ($saved_summary['gross_total'] ?? 0) * 100) === (int) round((float) ($current_summary['gross_total'] ?? 0) * 100);
   }

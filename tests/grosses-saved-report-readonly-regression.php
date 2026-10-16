@@ -107,6 +107,7 @@ namespace {
   $refunded_row = array_replace($snapshot_row, ['general_qty'=>2,'general_gross'=>24.0,'total_tickets'=>2,'gross_total'=>24.0,'refund_adjusted'=>true]);
   $refunded_summary = ['total_tickets'=>2,'gross_total'=>24.0];
   saved_report_assert(!$projection->invoke(null, [$snapshot_row], $snapshot_summary, [$refunded_row], $refunded_summary), 'later Square refund quantity and gross changes make the saved draft stale');
+  saved_report_assert(!$projection->invoke(null, [['invalid-row']], $snapshot_summary, [], $snapshot_summary), 'malformed saved draft rows fail the freshness comparison closed');
 
   echo $GLOBALS['fixture_checks'] . " saved-report read-only checks passed; all mail is intercepted locally.\n";
 }
