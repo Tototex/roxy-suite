@@ -102,6 +102,34 @@ try {
     $controller->validate_cart();
     $assert(wc_notice_count('error') === 0, 'Store API allows checkout validation when capacity is available');
 
+    // A separate DB connection attempts a production capacity write while
+    // checkout owns the same showing-scoped lease. This exercises actual
+    // MySQL GET_LOCK contention, not just a mocked unavailable-lock result.
+    $primary_db = $wpdb;
+    $contender_db = new wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
+    $lease_owner = new RoxyST\Issuance([], 'walkup:' . $showing_id);
+    $lease_owner->acquire_lease();
+    try {
+        $owner_connection = (int) $primary_db->get_var('SELECT CONNECTION_ID()');
+        $wpdb = $contender_db;
+        $contender_connection = (int) $contender_db->get_var('SELECT CONNECTION_ID()');
+        $assert($owner_connection > 0 && $contender_connection > 0 && $owner_connection !== $contender_connection,
+            'capacity contention uses two independent MySQL connections');
+        $capacity_writer = new ReflectionMethod(RoxyST\CPT::class, 'save_capacity_with_seat_lock');
+        $capacity_writer->setAccessible(true);
+        $contended_save = $capacity_writer->invoke(null, $showing_id, 4);
+        $assert($contended_save === false, 'a competing capacity change fails while another connection holds the showing seat lease');
+        $stored_capacity = (int) $contender_db->get_var($contender_db->prepare(
+            "SELECT meta_value FROM {$contender_db->postmeta} WHERE post_id=%d AND meta_key=%s LIMIT 1",
+            $showing_id, '_roxy_capacity'
+        ));
+        $assert($stored_capacity === 3, 'contended capacity edit leaves the persisted limit unchanged');
+    } finally {
+        $wpdb = $primary_db;
+        $lease_owner->release_lease();
+        $contender_db->close();
+    }
+
     // The cart validator can cache zero paid subscriber usage. A purchase made
     // after that read must still be seen by the Store API's durable hold claim.
     if (!function_exists('wcs_get_users_subscriptions') || !class_exists(RoxyST\Holds::class)) {
