@@ -90,10 +90,24 @@ jobs:
                 repo: context.repo.repo,
                 tag
               });
-              const assets = new Set((response.data.assets || []).map(asset => asset.name));
-              core.setOutput('complete', [...required].every(name => assets.has(name)) ? 'true' : 'false');
+              const ref = await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `tags/${tag}`
+              });
+              if (ref.data.object.sha !== context.sha) {
+                throw new Error(`Refusing to repair release ${tag} because its tag points to a different commit.`);
+              }
+              const assets = new Map((response.data.assets || []).map(asset => [asset.name, asset]));
+              const complete = [...required].every(name => {
+                const asset = assets.get(name);
+                return asset && asset.state === 'uploaded' && Number(asset.size) > 0;
+              });
+              core.setOutput('exists', 'true');
+              core.setOutput('complete', complete ? 'true' : 'false');
             } catch (error) {
               if (error.status === 404) {
+                core.setOutput('exists', 'false');
                 core.setOutput('complete', 'false');
                 return;
               }
@@ -108,10 +122,19 @@ jobs:
 
           NEW_TAG="${{ steps.version.outputs.tag }}"
           LATEST_TAG="${{ steps.latest.outputs.tag }}"
+          TARGET_RELEASE_EXISTS="${{ steps.target_release.outputs.exists }}"
           TARGET_RELEASE_COMPLETE="${{ steps.target_release.outputs.complete }}"
 
           if [[ "$TARGET_RELEASE_COMPLETE" == "true" ]]; then
             echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$TARGET_RELEASE_EXISTS" == "true" ]]; then
+            # Repair this exact-commit release even if a newer version was
+            # subsequently published; the tag check above prevents rewriting
+            # a release from a different source commit.
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 

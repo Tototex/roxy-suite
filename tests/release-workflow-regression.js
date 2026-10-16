@@ -23,14 +23,25 @@ const script = (name) => {
     const context = { repo: { owner: 'fixture', repo: 'private' } };
     const outputs = {};
     const core = { setOutput: (key, value) => { outputs[key] = value; } };
-    const github = { rest: { repos: { getReleaseByTag: async () => ({ data: { assets: [
-      { name: 'roxy-suite-1.2.3.zip' }, { name: 'roxy-suite-1.2.3.manifest.json' }
-    ] } }) } } };
+    const github = { rest: {
+      repos: { getReleaseByTag: async () => ({ data: { assets: [
+        { name: 'roxy-suite-1.2.3.zip', state: 'uploaded', size: 100 },
+        { name: 'roxy-suite-1.2.3.manifest.json', state: 'uploaded', size: 50 }
+      ] } }) },
+      git: { getRef: async () => ({ data: { object: { sha: context.sha } } }) }
+    } };
     await program(github, context, core);
     check(outputs.complete === 'true', 'target release is complete only when both versioned assets exist');
-    github.rest.repos.getReleaseByTag = async () => ({ data: { assets: [{ name: 'roxy-suite-1.2.3.zip' }] } });
+    github.rest.repos.getReleaseByTag = async () => ({ data: { assets: [
+      { name: 'roxy-suite-1.2.3.zip', state: 'starter', size: 100 },
+      { name: 'roxy-suite-1.2.3.manifest.json', state: 'uploaded', size: 50 }
+    ] } });
     await program(github, context, core);
-    check(outputs.complete === 'false', 'partially uploaded target release remains retryable');
+    check(outputs.exists === 'true' && outputs.complete === 'false', 'starter or incomplete assets keep an existing target release retryable');
+    github.rest.git.getRef = async () => ({ data: { object: { sha: 'b'.repeat(40) } } });
+    await assert.rejects(program(github, context, core), /different commit/);
+    check(true, 'existing target release with a different tag commit is not overwritten');
+    github.rest.git.getRef = async () => ({ data: { object: { sha: context.sha } } });
     github.rest.repos.getReleaseByTag = async () => { const error = new Error('not found'); error.status = 404; throw error; };
     await program(github, context, core);
     check(outputs.complete === 'false', 'missing target release is eligible for creation');
@@ -44,14 +55,16 @@ const script = (name) => {
     const shell = segment.split('        run: |\n')[1].split('\n').map(line => line.slice(10)).join('\n')
       .replaceAll('${{ steps.version.outputs.tag }}', 'v1.2.3')
       .replaceAll('${{ steps.latest.outputs.tag }}', '$LATEST_TAG_FIXTURE')
+      .replaceAll('${{ steps.target_release.outputs.exists }}', '$TARGET_EXISTS_FIXTURE')
       .replaceAll('${{ steps.target_release.outputs.complete }}', '$TARGET_COMPLETE_FIXTURE');
     const bashAvailable = spawnSync('bash', ['-c', 'true'], { encoding: 'utf8' }).status === 0;
-    const decide = (latest, complete) => {
+    const decide = (latest, complete, exists = 'false') => {
       const output = path.join(os.tmpdir(), `roxy-release-decision-${process.pid}-${Math.random()}`);
       const result = spawnSync('bash', ['-c', shell], { encoding: 'utf8', env: {
         ...process.env,
         GITHUB_OUTPUT: output,
         LATEST_TAG_FIXTURE: latest,
+        TARGET_EXISTS_FIXTURE: exists,
         TARGET_COMPLETE_FIXTURE: complete
       } });
       const value = fs.existsSync(output) ? fs.readFileSync(output, 'utf8') : '';
@@ -60,10 +73,11 @@ const script = (name) => {
       return value.trim();
     };
     if (bashAvailable) {
-      check(decide('v1.2.3', 'false') === 'should_release=true', 'same-version incomplete release is retried');
-      check(decide('v1.2.3', 'true') === 'should_release=false', 'same-version complete release is skipped');
+      check(decide('v1.2.3', 'false') === 'should_release=true', 'same-version missing release is created');
+      check(decide('v1.2.3', 'true', 'true') === 'should_release=false', 'same-version complete release is skipped');
       check(decide('v1.2.2', 'false') === 'should_release=true', 'newer version release proceeds');
       check(decide('v1.2.4', 'false') === 'should_release=false', 'older version never replaces a newer release');
+      check(decide('v1.2.4', 'false', 'true') === 'should_release=true', 'older incomplete existing release can be repaired');
     } else {
       check(shell.includes('TARGET_RELEASE_COMPLETE') && shell.includes('should_release=true'), 'release decision script includes incomplete-release retry guard (shell unavailable locally)');
     }
