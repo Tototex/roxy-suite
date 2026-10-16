@@ -375,7 +375,7 @@ namespace {
 
   // Explicit booking intervals remain authoritative even if a rental's legacy
   // show-time field is blank and therefore cannot produce _start_at.
-  $missing_rental_time_date = '2038-05-12';
+  $missing_rental_time_date = '2038-05-14';
   \RoxyGrosses\Store::$movie[$missing_rental_time_date] = [['id'=>7040,'show_time'=>'8:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0]];
   \RoxyGrosses\Store::$rental[$missing_rental_time_date] = [['id'=>7041,'show_time'=>'','reserved_start_at'=>$missing_rental_time_date.' 18:30:00','reserved_end_at'=>$missing_rental_time_date.' 21:00:00','is_locked'=>0,'concessions_total'=>0]];
   \RoxyGrosses\Square::$orders[$missing_rental_time_date] = [[
