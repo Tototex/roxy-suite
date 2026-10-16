@@ -144,7 +144,7 @@ if (($argv[1] ?? '') === '--worker') {
   $redirect=''; $died='';
   try { $call(); } catch(InventoryWorkerRedirect $e) { $redirect=$e->url; } catch(InventoryWorkerDie $e) { $died=$e->getMessage(); }
   $store='\\'.$namespace.'\\Store';
-  echo json_encode(['case'=>$case,'redirect'=>$redirect,'died'=>$died,'events'=>$GLOBALS['inventory_worker_events'],'store_calls'=>$store::$calls,'schedule_calls'=>$GLOBALS['inventory_worker_schedule_calls'],'mail_calls'=>$GLOBALS['inventory_worker_mail_calls'],'mail_to'=>$GLOBALS['inventory_worker_mail_to'],'order_status'=>$GLOBALS['inventory_worker_order_status'],'created_lines'=>$GLOBALS['inventory_worker_created_lines'],'option'=>$GLOBALS['inventory_worker_option']]);
+  echo json_encode(['case'=>$case,'redirect'=>$redirect,'cancel_redirect'=>$GLOBALS['inventory_worker_cancel_redirect']??'','died'=>$died,'events'=>$GLOBALS['inventory_worker_events'],'store_calls'=>$store::$calls,'schedule_calls'=>$GLOBALS['inventory_worker_schedule_calls'],'mail_calls'=>$GLOBALS['inventory_worker_mail_calls'],'mail_to'=>$GLOBALS['inventory_worker_mail_to'],'order_status'=>$GLOBALS['inventory_worker_order_status'],'created_lines'=>$GLOBALS['inventory_worker_created_lines'],'option'=>$GLOBALS['inventory_worker_option']]);
   exit;
 }
 
