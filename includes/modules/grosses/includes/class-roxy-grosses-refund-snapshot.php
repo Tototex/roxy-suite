@@ -408,6 +408,59 @@ final class WooRefundEvents {
   }
 }
 
+/** Completed Square payment refunds without matching itemized return evidence. */
+final class SquareUnmatchedPaymentRefundReview {
+  private static function is_list(array $value): bool {
+    $expected = 0;
+    foreach ($value as $key => $_) if ($key !== $expected++) return false;
+    return true;
+  }
+
+  public static function from_refunds_and_orders(array $refunds, array $orders, string $report_date): array {
+    if (!self::is_list($refunds) || !self::is_list($orders) || !preg_match('/^\d{4}-\d{2}-\d{2}$/D', $report_date)) {
+      throw new \RuntimeException('Square refund review evidence is invalid.');
+    }
+    $matched = [];
+    foreach ($orders as $order) {
+      if (!is_array($order) || !is_string($order['id'] ?? null) || $order['id'] === '' || !is_string($order['state'] ?? null)) {
+        throw new \RuntimeException('Square returned a malformed order for payment-refund review.');
+      }
+      if ($order['state'] !== 'COMPLETED' || !isset($order['returns'])) continue;
+      if (!is_array($order['returns']) || !self::is_list($order['returns'])) throw new \RuntimeException('Square returned malformed itemized return evidence.');
+      if (!$order['returns']) continue;
+      $references = $order['refunds'] ?? [];
+      if (!is_array($references) || !self::is_list($references)) throw new \RuntimeException('Square returned malformed refund references.');
+      foreach ($references as $reference) {
+        if (!is_array($reference) || !is_string($reference['id'] ?? null) || $reference['id'] === ''
+          || !is_string($reference['tender_id'] ?? null) || $reference['tender_id'] === '') throw new \RuntimeException('Square returned a malformed itemized refund reference.');
+        $matched[$reference['tender_id']][$reference['id']] = true;
+        $matched[$reference['tender_id']][$reference['tender_id'] . '_' . $reference['id']] = true;
+      }
+    }
+
+    $exceptions = [];
+    foreach ($refunds as $refund) {
+      if (!is_array($refund) || !is_string($refund['refund_id'] ?? null) || $refund['refund_id'] === ''
+        || !is_string($refund['payment_id'] ?? null) || $refund['payment_id'] === ''
+        || !is_int($refund['amount_cents'] ?? null) || $refund['amount_cents'] < 0
+        || !is_string($refund['refund_date'] ?? null) || !preg_match('/^\d{4}-\d{2}-\d{2}$/D', $refund['refund_date'])) {
+        throw new \RuntimeException('Square returned malformed completed-refund review data.');
+      }
+      if ($refund['refund_date'] !== $report_date || isset($matched[$refund['payment_id']][$refund['refund_id']])) continue;
+      $order_id = $refund['order_id'] ?? null;
+      if ($order_id !== null && !is_string($order_id)) throw new \RuntimeException('Square refund has an invalid associated order.');
+      $exceptions[] = [
+        'refund_id' => $refund['refund_id'], 'payment_id' => $refund['payment_id'],
+        'order_id' => is_string($order_id) ? $order_id : '', 'amount_cents' => $refund['amount_cents'],
+        'refund_date_basis' => $refund['refund_date_basis'] ?? 'unknown',
+        'review' => 'Payment refund is included in Cashflow, but no matching itemized return was found. If this refunded tickets, review and correct the original sale-day ticket gross.',
+      ];
+    }
+    usort($exceptions, static fn(array $a, array $b): int => [$a['payment_id'], $a['refund_id']] <=> [$b['payment_id'], $b['refund_id']]);
+    return $exceptions;
+  }
+}
+
 /** Completed Square returns/exchanges surfaced for review, never cashflow events. */
 final class SquareReturnReviewExceptions {
   private static function is_list(array $value): bool {

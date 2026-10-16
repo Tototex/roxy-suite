@@ -160,6 +160,21 @@ final class CashflowReport {
     if (!method_exists(Square::class, 'fetch_orders_for_date')) throw new \RuntimeException('Square order review is unavailable.');
     $square_orders = Square::fetch_orders_for_date($report_date);
     if (!is_array($square_orders) || !self::is_list($square_orders)) throw new \RuntimeException('Square returned an incomplete order review list.');
+    $refund_review_orders = $square_orders;
+    $known_order_ids = [];
+    foreach ($square_orders as $order) if (is_array($order) && is_string($order['id'] ?? null)) $known_order_ids[$order['id']] = true;
+    $refund_order_ids = [];
+    foreach ($square_refunds as $refund) {
+      $order_id = $refund['order_id'] ?? null;
+      if (($refund['refund_date'] ?? '') === $report_date && is_string($order_id) && $order_id !== '' && !isset($known_order_ids[$order_id])) $refund_order_ids[$order_id] = true;
+    }
+    if (count($refund_order_ids) > 100) throw new \RuntimeException('Square refund order review exceeded its safety limit.');
+    if ($refund_order_ids) {
+      if (!method_exists(Square::class, 'retrieve_orders')) throw new \RuntimeException('Square refund-linked order review is unavailable.');
+      $linked_orders = Square::retrieve_orders(array_keys($refund_order_ids), $deadline);
+      if (!is_array($linked_orders) || !self::is_list($linked_orders)) throw new \RuntimeException('Square returned an incomplete refund-linked order review.');
+      $refund_review_orders = array_merge($refund_review_orders, $linked_orders);
+    }
     $review_exceptions = [
       'woocommerce_manual_refunds' => array_values(array_filter(
         WooRefundEvents::manual_review_exceptions($woo_refund_rows, $gateways),
@@ -169,6 +184,7 @@ final class CashflowReport {
         SquareReturnReviewExceptions::from_orders($square_orders),
         static fn(array $event): bool => ($event['date'] ?? '') === $report_date
       )),
+      'square_payment_refunds_without_itemized_returns' => SquareUnmatchedPaymentRefundReview::from_refunds_and_orders($square_refunds, $refund_review_orders, $report_date),
     ];
 
     $days = CashflowProjection::daily_totals($square_collections, $woo_collections, $square_refunds, $woo_refunds);

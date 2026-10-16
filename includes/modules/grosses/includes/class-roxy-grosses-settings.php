@@ -350,6 +350,7 @@ class Settings {
     $exceptions = $report['review_exceptions'] ?? [];
     $manual_refunds = $exceptions['woocommerce_manual_refunds'] ?? [];
     $square_returns = $exceptions['square_returns_and_exchanges'] ?? [];
+    $unmatched_square_refunds = $exceptions['square_payment_refunds_without_itemized_returns'] ?? [];
     echo '<h3>Excluded items for review</h3><p>These records are shown for reconciliation only and are not included in collected, refunded, or net totals.</p>';
     if (!$manual_refunds && !$square_returns) {
       echo '<p>No manual WooCommerce refunds or completed Square returns/exchanges were found for this date.</p>';
@@ -361,6 +362,16 @@ class Settings {
       foreach ($square_returns as $event) {
         $tender_label = is_int($event['tender_cents'] ?? null) ? $money($event['tender_cents']).' in tenders' : 'Amount unavailable';
         echo '<tr><td>Square return / exchange</td><td>'.esc_html((string) $event['order_id']).'</td><td>—</td><td>'.esc_html($tender_label).'</td><td>'.esc_html((string) $event['review']).'</td></tr>';
+      }
+      echo '</tbody></table>';
+    }
+    echo '<h3>Included Square refunds with no matched itemized return</h3><p>These completed payment refunds are included in Cashflow, but no matching itemized return was found. If a refund was for tickets, review the related sale day; ticket quantities are not automatically deducted from the refund amount alone.</p>';
+    if (!$unmatched_square_refunds) {
+      echo '<p>No unmatched completed Square payment refunds were found for this date.</p>';
+    } else {
+      echo '<table class="widefat striped" style="max-width:900px"><thead><tr><th>Refund</th><th>Payment</th><th>Associated order</th><th>Included amount</th><th>Review note</th></tr></thead><tbody>';
+      foreach ($unmatched_square_refunds as $event) {
+        echo '<tr><td>'.esc_html((string) $event['refund_id']).'</td><td>'.esc_html((string) $event['payment_id']).'</td><td>'.esc_html((string) ($event['order_id'] ?: 'Unavailable')).'</td><td>'.esc_html($money((int) $event['amount_cents'])).'</td><td>'.esc_html((string) $event['review']).'</td></tr>';
       }
       echo '</tbody></table>';
     }

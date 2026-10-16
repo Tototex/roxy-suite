@@ -28,6 +28,7 @@ namespace RoxyGrosses {
     public static array $payments = [];
     public static array $refunds = [];
     public static array $refunds_by_id = [];
+    public static array $orders_by_id = [];
     public static array $refund_retrieve_calls = [];
     public static array $calls = [];
     public static bool $fail_daily_order_read = false;
@@ -42,6 +43,14 @@ namespace RoxyGrosses {
       self::$refund_retrieve_calls[] = $id;
       if (!isset(self::$refunds_by_id[$id])) throw new \RuntimeException('Fixture refund missing.');
       return self::$refunds_by_id[$id];
+    }
+    public static function retrieve_orders(array $ids, ?float $deadline = null): array {
+      $orders = [];
+      foreach ($ids as $id) {
+        if (!isset(self::$orders_by_id[$id])) throw new \RuntimeException('Fixture associated order missing.');
+        $orders[] = self::$orders_by_id[$id];
+      }
+      return $orders;
     }
   }
   final class FakeOrder {
@@ -159,6 +168,29 @@ namespace {
     && $report['review_exceptions']['square_returns_and_exchanges'][0]['order_id'] === 'sq-exchange'
     && $report['review_exceptions']['square_returns_and_exchanges'][0]['tender_cents'] === 1250,
     'completed Square return/exchange is visible with its tender amount for review');
+  $unmatched_square_refunds = $report['review_exceptions']['square_payment_refunds_without_itemized_returns'];
+  $assert(count($unmatched_square_refunds) === 1 && $unmatched_square_refunds[0]['refund_id'] === 'sq-refund'
+    && $unmatched_square_refunds[0]['amount_cents'] === 200 && str_contains($unmatched_square_refunds[0]['review'], 'included in Cashflow'),
+    'completed Square payment refund remains in cash totals and is separately flagged without matched itemized return evidence');
+  \RoxyGrosses\Square::$daily_orders[0]['refunds'] = [['id' => 'sq-refund', 'tender_id' => 'different-payment']];
+  $wrong_payment_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $assert(count($wrong_payment_report['review_exceptions']['square_payment_refunds_without_itemized_returns']) === 1,
+    'refund reference for a different tender does not falsely clear the unmatched-refund review');
+  \RoxyGrosses\Square::$daily_orders[0]['refunds'] = [['id' => 'sq-refund', 'tender_id' => 'sq-payment']];
+  $matched_refund_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $assert($matched_refund_report['review_exceptions']['square_payment_refunds_without_itemized_returns'] === [],
+    'itemized return referencing the completed payment refund clears the unmatched-refund review exception');
+  \RoxyGrosses\Square::$daily_orders[0]['refunds'] = [];
+  \RoxyGrosses\Square::$refunds[0]['order_id'] = 'sq-return-other-day';
+  \RoxyGrosses\Square::$orders_by_id['sq-return-other-day'] = [
+    'id' => 'sq-return-other-day', 'state' => 'COMPLETED', 'returns' => [['uid' => 'return-cross-day']],
+    'refunds' => [['id' => 'sq-refund', 'tender_id' => 'sq-payment']],
+  ];
+  $linked_order_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $assert($linked_order_report['review_exceptions']['square_payment_refunds_without_itemized_returns'] === [],
+    'refund-linked itemized order is retrieved when it falls outside the selected order-day list');
+  unset(\RoxyGrosses\Square::$refunds[0]['order_id']);
+  \RoxyGrosses\Square::$orders_by_id = [];
   $GLOBALS['wc_page_result_shape'] = 'max_num_pages';
   $max_num_pages_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
   $assert($max_num_pages_report['totals'] === $report['totals'], 'WooCommerce documented max_num_pages pagination produces complete daily totals');
