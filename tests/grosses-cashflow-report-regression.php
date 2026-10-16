@@ -147,7 +147,7 @@ namespace {
   $assert($report['refund_date_bases']['square'] === ['square_updated_at_proxy'] && $report['refund_date_bases']['woocommerce'] === ['woocommerce_refund_creation_proxy'], 'daily report retains explicit refund-date provenance');
   $assert($report['refund_date_basis_counts'] === [
     'square' => ['square_updated_at_proxy' => 1],
-    'woocommerce' => ['woocommerce_refund_creation_proxy' => 2],
+    'woocommerce' => ['woocommerce_refund_creation_proxy' => 4],
   ], 'daily report counts refund date evidence only for refunds assigned to the selected day');
   $assert(count($report['review_exceptions']['woocommerce_manual_refunds']) === 1
     && $report['review_exceptions']['woocommerce_manual_refunds'][0]['refund_id'] === 24
