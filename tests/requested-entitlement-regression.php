@@ -205,6 +205,7 @@ namespace {
                 $statuses = array_map(static fn($value) => str_replace("''", "'", $value), $values[1]);
                 $rows = array_values(array_filter($rows, static fn($row) => in_array($row['status'] ?? '', $statuses, true)));
             }
+            if (strpos($sql, 'subscriber_qty') !== false && strpos($sql, 'AND user_id =') !== false && $this->lose_lock_after_read) $this->locked = false;
             return $rows;
         }
         public function update($table, $data, $where) { $this->update_calls[] = [$table,$data,$where]; if ($this->final_update_error && ($data['status'] ?? '') === 'charged') { $this->last_error = 'Fixture final result write failure'; return false; } $id=(int)($where['id']??0); if(isset($this->rows[$id]))$this->rows[$id]=array_merge($this->rows[$id],$data); return 1; }
