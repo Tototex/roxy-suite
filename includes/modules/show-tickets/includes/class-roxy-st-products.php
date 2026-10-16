@@ -434,7 +434,11 @@ class Products {
       $product_id = wp_insert_post($postarr, true);
     }
 
-    if (is_wp_error($product_id) || !$product_id) return 0;
+    if (is_wp_error($product_id) || !$product_id) {
+      // A CRUD failure is a partial synchronization, not a successful no-op.
+      // Propagate it so ensure_products_for_showing() schedules reconciliation.
+      throw new \RuntimeException('Ticket product could not be created or updated');
+    }
 
     update_post_meta($product_id, '_virtual', 'yes');
     update_post_meta($product_id, '_downloadable', 'no');

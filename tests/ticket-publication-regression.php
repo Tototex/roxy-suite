@@ -34,7 +34,7 @@ namespace {
 define('ABSPATH', __DIR__); define('MINUTE_IN_SECONDS',60); define('ROXY_ST_META_SHOWING_ID','_roxy_showing_id'); define('ROXY_ST_META_TICKET_TYPE','_roxy_ticket_type');
 $root=$argv[1]??dirname(__DIR__); $fixture=$argv[2]??$root.'/includes/modules/show-tickets/includes/';
 $GLOBALS['meta']=[]; $GLOBALS['types']=[]; $GLOBALS['statuses']=[]; $GLOBALS['notices']=[]; $GLOBALS['writes']=[]; $GLOBALS['hooks']=[]; $GLOBALS['listing_queries']=[]; $GLOBALS['cleanup_queries']=[]; $GLOBALS['cleanup_pages']=[]; $GLOBALS['transients']=[]; $GLOBALS['capacity_locks']=[]; $GLOBALS['logs']=[];
-$GLOBALS['room_lock_calls']=[]; $GLOBALS['room_conflict']=false; $GLOBALS['scheduled_events']=[]; $GLOBALS['schedule_fail']=false;
+$GLOBALS['room_lock_calls']=[]; $GLOBALS['room_conflict']=false; $GLOBALS['scheduled_events']=[]; $GLOBALS['schedule_fail']=false; $GLOBALS['product_update_fail']=false;
 class WooCommerce {} class WP_Error { private $message; function __construct($code,$message){$this->message=$message;} function get_error_message(){return $this->message;} }
 function is_wp_error($v){return $v instanceof WP_Error;}
 function __($s,...$args){return $s;}
@@ -45,7 +45,7 @@ function get_the_title($id){return $GLOBALS['titles'][$id]??'Fixture showing';}
 function get_post_meta($id,$key,$single=true){return $GLOBALS['meta'][$id][$key]??'';}
 function update_post_meta($id,$key,$value){$GLOBALS['meta'][$id][$key]=$value;return true;}
 function delete_post_meta($id,$key){unset($GLOBALS['meta'][$id][$key]);return true;}
-function wp_update_post($args,$error=false){$GLOBALS['writes'][]=$args; $GLOBALS['statuses'][$args['ID']]=$args['post_status']; return $args['ID'];}
+function wp_update_post($args,$error=false){$GLOBALS['writes'][]=$args;if(!empty($GLOBALS['product_update_fail'])&&($args['post_type']??'')==='product')return new WP_Error('fixture_product_update','fixture product update failure');$GLOBALS['statuses'][$args['ID']]=$args['post_status']; return $args['ID'];}
 function wp_trash_post($id){$GLOBALS['statuses'][$id]='trash'; return true;}
 function get_posts($args){if(($args['meta_compare']??'')==='<'){ $GLOBALS['cleanup_queries'][]=$args; return $GLOBALS['cleanup_pages'][$args['paged']??1]??[]; } $ids=[]; foreach($GLOBALS['types'] as $id=>$type){if($type!==$args['post_type'])continue; $pass=true; foreach($args['meta_query']??[] as $condition){if(get_post_meta($id,$condition['key'])!=$condition['value'])$pass=false;} if($pass)$ids[]=$id;} return $ids;}
 function sanitize_key($s){return $s;}
@@ -133,6 +133,11 @@ $GLOBALS['writes']=[]; $ownership_check_before=\RoxyST\Issuance::$ownership_chec
 check(count($GLOBALS['writes'])>0 && ($GLOBALS['scheduled_events'][0]['hook']??'')==='roxy_st_sync_products_retry' && !isset($GLOBALS['transients']['roxy_st_sync_1']),'ownership loss after a product write is logged and schedules reconciliation');
 $recovery_event=array_shift($GLOBALS['scheduled_events']); \RoxyST\Products::retry_product_sync($recovery_event['args'][0],$recovery_event['args'][1]);
 check(!isset($GLOBALS['transients']['roxy_st_sync_1']),'ownership-loss reconciliation retry completes and releases its sync lock');
+$GLOBALS['statuses'][101]='draft'; $GLOBALS['product_update_fail']=true; $GLOBALS['scheduled_events']=[];
+\RoxyST\Products::ensure_products_for_showing(1);
+check(($GLOBALS['statuses'][101]??'')==='draft' && ($GLOBALS['scheduled_events'][0]['hook']??'')==='roxy_st_sync_products_retry' && ($GLOBALS['scheduled_events'][0]['args']??[])===[1,1] && !isset($GLOBALS['transients']['roxy_st_sync_1']),'failed Woo product update is treated as partial sync and queues bounded reconciliation');
+$GLOBALS['product_update_fail']=false; $product_retry=array_shift($GLOBALS['scheduled_events']); \RoxyST\Products::retry_product_sync($product_retry['args'][0],$product_retry['args'][1]);
+check(($GLOBALS['statuses'][101]??'')==='publish' && !isset($GLOBALS['transients']['roxy_st_sync_1']),'product reconciliation retry restores publication after CRUD recovery');
 $GLOBALS['statuses'][103]='publish'; $GLOBALS['writes']=[];
 $show_end=\RoxyST\Eligibility::showing_end_timestamp(1);
 check($show_end!==null && \RoxyST\Eligibility::showing_sales_open(1,$show_end-1) && !\RoxyST\Eligibility::showing_sales_open(1,$show_end),'sales cutoff is exclusive at the actual showing end');
