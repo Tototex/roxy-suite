@@ -200,7 +200,7 @@ foreach(['manager_to_vendor','vendor_to_manager','manager_recipient_changed'] as
 $direct_success=$run('direct_send_success');
 $check(($url_args($direct_success)['ok']??'')==='1'&&$direct_success['mail_calls']===1&&$direct_success['mail_to']==='vendor@example.test'&&$direct_success['order_status']==='ordered','freshly reviewed direct delivery still emails the vendor and marks the order Ordered');
 $cancel_during_mail=$run('cancel_during_mail');
-$check(($url_args($cancel_during_mail)['ok']??'')==='1'&&$cancel_during_mail['mail_calls']===1&&$cancel_during_mail['order_status']==='approval_emailed'&&str_contains($cancel_during_mail['cancel_redirect']??'','already closed or its email is still being sent'),'concurrent cancel during wp_mail is rejected while vendor remains locked; successful send records approval');
+$check(($url_args($cancel_during_mail)['ok']??'')==='1'&&$cancel_during_mail['mail_calls']===1&&$cancel_during_mail['order_status']==='approval_emailed'&&str_contains(rawurldecode($cancel_during_mail['cancel_redirect']??''),'already closed or its email is still being sent'),'concurrent cancel during wp_mail is rejected while vendor remains locked; successful send records approval');
 $zero_unknown=$run('zero_qty_unknown_cost');
 $check(($url_args($zero_unknown)['ok']??'')==='1'&&$zero_unknown['mail_calls']===1&&$zero_unknown['mail_to']==='manager@example.test'&&in_array(['create_order','email_sending'],$zero_unknown['store_calls'],true)&&count($zero_unknown['created_lines'])===1&&$zero_unknown['created_lines'][0]['product']==='Fixture Item','unknown-cost row at zero quantity is omitted while a separately priced order is created and mailed to the manager');
 foreach(['sent_status_failure'] as $case) {
