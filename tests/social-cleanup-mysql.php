@@ -55,7 +55,8 @@ $reset=static function()use($wpdb,$table,$virtual_base){
     foreach(['open_graph_image_id','twitter_image_id'] as $image_column){
         $row=$reset();$GLOBALS['cleanup53_delete_calls']=0;
         if($wpdb->insert($yoast_table,[$image_column=>(string)$virtual_base])!==1)throw new RuntimeException('Could not seed the private Yoast image reference.');
-        $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0&&$store::find(1)['temporary_attachment_id']===$virtual_base,'Yoast '.$image_column.' keeps the referenced attachment and cleanup pointer');
+        $result=$store::cleanup_expired();$current=$store::find(1);
+        $assert($result===0&&$GLOBALS['cleanup53_delete_calls']===0&&($current['temporary_attachment_id']??null)===$virtual_base,'Yoast '.$image_column.' keeps the referenced attachment and cleanup pointer; '.json_encode(['result'=>$result,'delete_calls'=>$GLOBALS['cleanup53_delete_calls'],'attachment_id'=>$current['temporary_attachment_id']??null,'db_error'=>$wpdb->last_error,'yoast_rows'=>$wpdb->get_results('SELECT * FROM '.$yoast_table,ARRAY_A)]));
         if($wpdb->delete($yoast_table,[$image_column=>(string)$virtual_base])===false)throw new RuntimeException('Could not clear private Yoast image reference.');
     }
     $poster_path=sys_get_temp_dir().'/fixture-hangar-poster-'.bin2hex(random_bytes(6)).'-poster.png';

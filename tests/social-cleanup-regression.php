@@ -119,11 +119,12 @@ final class CleanupWpdb {
     }
     public function get_var(string $query) {
         $this->queries[] = $query;
-        if (strpos($query, 'SHOW TABLES LIKE') !== false && strpos($query, 'wp_yoast_indexable') !== false) {
+        $unescaped_query = stripslashes($query);
+        if (strpos($unescaped_query, 'SHOW TABLES LIKE') !== false && strpos($unescaped_query, 'wp_yoast_indexable') !== false) {
             if ($this->reference_query_error) { $this->last_error = 'fixture Yoast table check failed'; return null; }
             return $this->yoast_table_exists ? 'wp_yoast_indexable' : null;
         }
-        if (strpos($query, 'FROM wp_yoast_indexable') !== false) {
+        if (strpos($unescaped_query, 'FROM wp_yoast_indexable') !== false) {
             if ($this->reference_query_error) { $this->last_error = 'fixture Yoast reference query failed'; return null; }
             preg_match("/open_graph_image_id = '(\\d+)'/", $query, $open_graph);
             preg_match("/twitter_image_id = '(\\d+)'/", $query, $twitter);
