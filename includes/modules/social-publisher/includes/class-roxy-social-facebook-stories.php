@@ -58,8 +58,19 @@ final class FacebookStories {
             foreach ($segments as $index => $segment) {
                 if (!empty($state['ids'][$index])) continue;
                 if (!Publisher::owns_worker_lock()) return ['error' => 'Publishing worker ownership was lost. Review the Facebook Page before retrying.', 'ambiguous' => true];
+                // Persist a guard before asking Meta to create the upload. If
+                // Meta creates it but the start response is lost, a retry must
+                // not create a second remote upload/story.
+                $state['pending_id'] = 'starting:' . $index;
+                if (!Store::set_facebook_story_state($id, wp_json_encode($state), Publisher::worker_claim())) return ['error' => 'Facebook Story upload could not be safely started because its retry guard could not be saved.'];
                 $start = self::graph_post($page_id . '/video_stories', ['upload_phase' => 'start', 'access_token' => $token]);
-                if (!empty($start['error'])) return ['error' => 'Facebook Story upload could not be started: ' . (string) $start['error'], 'ambiguous' => !empty($start['ambiguous'])];
+                if (!empty($start['error'])) {
+                    if (empty($start['ambiguous'])) {
+                        $state['pending_id'] = '';
+                        if (!Store::set_facebook_story_state($id, wp_json_encode($state), Publisher::worker_claim())) return ['error' => 'Facebook rejected the Story upload start, but its retry guard could not be cleared. Review before retrying.', 'ambiguous' => true];
+                    }
+                    return ['error' => 'Facebook Story upload could not be started: ' . (string) $start['error'], 'ambiguous' => !empty($start['ambiguous'])];
+                }
                 if (empty($start['video_id'])) return ['error' => 'Facebook Story upload returned no video ID. Review the Page before retrying.', 'ambiguous' => true];
 
                 $state['pending_id'] = (string) $start['video_id'];

@@ -12,9 +12,11 @@ namespace RoxySocial {
     final class Store {
         public static string $state = '';
         public static int $state_writes = 0;
+        public static int $fail_state_write_at = 0;
         public static function set_facebook_story_state(int $id, string $state, ?array $claim = null): bool {
-            self::$state = $state;
             ++self::$state_writes;
+            if (self::$fail_state_write_at === self::$state_writes) return false;
+            self::$state = $state;
             return true;
         }
     }
@@ -143,9 +145,32 @@ namespace {
         \RoxySocial\Store::$state = '';
         file_put_contents($GLOBALS['story_fixture_source'], 'fixture source video');
         $GLOBALS['story_fixture_http'] = [new StoryFixtureError('start response lost')];
+        $requests_before_ambiguous_start = $GLOBALS['story_fixture_requests'];
         $start_ambiguous = \RoxySocial\FacebookStories::publish($row, $initial);
-        $assert(!empty($start_ambiguous['ambiguous']),
-            'ambiguous Story-start response is sent to manual review rather than ordinary retry');
+        $saved = json_decode(\RoxySocial\Store::$state, true);
+        $assert(!empty($start_ambiguous['ambiguous']) && ($saved['pending_id'] ?? '') === 'starting:0',
+            'ambiguous Story-start response retains a durable pre-request retry guard');
+        $requests_after_ambiguous_start = $GLOBALS['story_fixture_requests'];
+        $start_retry = \RoxySocial\FacebookStories::publish($row, \RoxySocial\Store::$state);
+        $assert(!empty($start_retry['ambiguous']) && $GLOBALS['story_fixture_requests'] === $requests_after_ambiguous_start
+            && $requests_after_ambiguous_start === $requests_before_ambiguous_start + 1,
+            'retry after a lost Story-start response makes no second remote request');
+
+        \RoxySocial\Store::$state = '';
+        $GLOBALS['story_fixture_http'] = [['response' => ['code' => 400], 'body' => json_encode(['error' => ['message' => 'invalid request']])]];
+        $definitive_start = \RoxySocial\FacebookStories::publish($row, $initial);
+        $saved = json_decode(\RoxySocial\Store::$state, true);
+        $assert(empty($definitive_start['ambiguous']) && ($saved['pending_id'] ?? 'not-empty') === '',
+            'definitive Story-start rejection clears its pre-request retry guard');
+
+        \RoxySocial\Store::$state = '';
+        \RoxySocial\Store::$fail_state_write_at = \RoxySocial\Store::$state_writes + 2;
+        $GLOBALS['story_fixture_http'] = [['response' => ['code' => 200], 'body' => json_encode(['video_id' => 'must-not-start'])]];
+        $requests_before_guard_failure = $GLOBALS['story_fixture_requests'];
+        $guard_failure = \RoxySocial\FacebookStories::publish($row, $initial);
+        $assert(empty($guard_failure['ambiguous']) && $GLOBALS['story_fixture_requests'] === $requests_before_guard_failure,
+            'failed pre-request guard persistence prevents any remote Story start');
+        \RoxySocial\Store::$fail_state_write_at = 0;
 
         \RoxySocial\Store::$state = '';
         $GLOBALS['story_fixture_http'] = [
