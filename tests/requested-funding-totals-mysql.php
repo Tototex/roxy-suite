@@ -48,16 +48,16 @@ try {
  $empty=$read(41);
  $check($empty===['support_qty'=>0,'subscriber_qty'=>0,'charge_total'=>0,'sponsor_amount'=>0,'sponsor_ticket_qty'=>0,'has_sponsor'=>false],'real empty aggregate is valid zero funding');
  foreach ([
-  ['status'=>'pending','support_qty'=>3,'charge_total'=>300],
+  ['status'=>'pending','general_qty'=>3,'support_qty'=>3,'charge_total'=>300],
   ['status'=>'approved','subscriber_qty'=>2],
-  ['status'=>'charged','sponsor_amount'=>500,'sponsor_ticket_qty'=>2,'charge_total'=>500],
+  ['status'=>'threshold_met','sponsor_amount'=>500,'sponsor_ticket_qty'=>2,'charge_total'=>500],
   ['status'=>'failed','support_qty'=>99,'charge_total'=>9999,'sponsor_amount'=>9999],
  ] as $row) {
   $row+=['created_at'=>'2026-10-06 12:00:00','updated_at'=>'2026-10-06 12:00:00','request_id'=>41,'user_id'=>0];
   if ($wpdb->insert($table,$row)===false) throw new RuntimeException('Private seed failed.');
  }
  $totals=$read(41);
- $check($totals===['support_qty'=>3,'subscriber_qty'=>2,'charge_total'=>800,'sponsor_amount'=>500,'sponsor_ticket_qty'=>2,'has_sponsor'=>true],'real pending/approved/charged sums exclude failed rows');
+ $check($totals===['support_qty'=>3,'subscriber_qty'=>2,'charge_total'=>800,'sponsor_amount'=>500,'sponsor_ticket_qty'=>2,'has_sponsor'=>true],'real pending/approved/threshold sums exclude failed rows');
  $check($read(42)===$empty,'another request cannot inherit totals');
  $force_failure=true;
  $thrown=false;

@@ -166,15 +166,22 @@ function roxy_rs_repo_insert_backing_owned(array $data, string $request_guard) {
             if ($wpdb->last_error !== '' || $connection === '' || $lock_error) return new WP_Error('subscriber_pledge_lock_lost', 'Subscriber reservations could not be safely locked. Please retry.');
             if (!roxy_rs_repo_subscriber_lock_owned($claim)) return new WP_Error('subscriber_pledge_lock_lost', 'Subscriber reservations could not be safely locked. Please retry.');
 
-            $statuses = "'pending','threshold_met','approved','charged'";
             $wpdb->last_error = '';
-            $outstanding = $wpdb->get_var($wpdb->prepare(
-                "SELECT COALESCE(SUM(subscriber_qty),0) FROM $table WHERE request_id = %d AND user_id = %d AND status IN ($statuses)",
+            $outstanding_rows = $wpdb->get_results($wpdb->prepare(
+                "SELECT id,request_id,status,support_qty,general_qty,discount_qty,subscriber_qty,charge_total,sponsor_amount,sponsor_ticket_qty,woo_order_id,agreement_json,approved_showing_id
+                 FROM $table WHERE request_id = %d AND user_id = %d AND status IN ('pending','threshold_met','approved','charged') ORDER BY id ASC",
                 $request_id,
                 $user_id
-            ));
-            $outstanding_qty = roxy_rs_repo_canonical_quantity($outstanding);
-            if ($wpdb->last_error !== '' || $outstanding_qty === null) {
+            ), ARRAY_A);
+            $outstanding_qty = 0;
+            $outstanding_valid = $wpdb->last_error === '' && is_array($outstanding_rows);
+            foreach ($outstanding_rows ?: [] as $existing_backing) {
+                try { $effective_backing = roxy_rs_repo_effective_backing($existing_backing); }
+                catch (\Throwable $error) { $outstanding_valid = false; break; }
+                if ($effective_backing['subscriber_qty'] > PHP_INT_MAX - $outstanding_qty) { $outstanding_valid = false; break; }
+                $outstanding_qty += $effective_backing['subscriber_qty'];
+            }
+            if (!$outstanding_valid) {
                 return new WP_Error('subscriber_pledge_read_failed', 'Existing subscriber reservations could not be verified. Please retry.');
             }
             if (!roxy_rs_repo_subscriber_lock_owned($claim)) return new WP_Error('subscriber_pledge_lock_lost', 'Subscriber reservations could not be safely locked. Please retry.');
@@ -291,44 +298,161 @@ function roxy_rs_repo_backing_totals(int $request_id): array {
     global $wpdb;
     $table = roxy_rs_table_backings();
     $wpdb->last_error = '';
-    $row = $wpdb->get_row(
-        $wpdb->prepare(
-            "SELECT
-                COALESCE(SUM(CASE WHEN status IN ('pending','threshold_met','approved','charged') THEN support_qty ELSE 0 END),0) AS support_qty,
-                COALESCE(SUM(CASE WHEN status IN ('pending','threshold_met','approved','charged') THEN subscriber_qty ELSE 0 END),0) AS subscriber_qty,
-                COALESCE(SUM(CASE WHEN status IN ('pending','threshold_met','approved','charged') THEN charge_total ELSE 0 END),0) AS charge_total,
-                COALESCE(SUM(CASE WHEN status IN ('pending','threshold_met','approved','charged') THEN sponsor_amount ELSE 0 END),0) AS sponsor_amount,
-                COALESCE(SUM(CASE WHEN status IN ('pending','threshold_met','approved','charged') THEN sponsor_ticket_qty ELSE 0 END),0) AS sponsor_ticket_qty,
-                MAX(CASE WHEN status IN ('pending','threshold_met','approved','charged') AND sponsor_amount > 0 THEN 1 ELSE 0 END) AS has_sponsor
-             FROM $table
-             WHERE request_id = %d",
-            $request_id
-        ),
-        ARRAY_A
-    );
-    if ($wpdb->last_error !== '') throw new RuntimeException('Requested-showing backing totals could not be read.');
-    if (!is_array($row)) throw new RuntimeException('Requested-showing backing totals returned an incomplete result.');
+    $rows = $wpdb->get_results($wpdb->prepare(
+        "SELECT id,request_id,status,support_qty,general_qty,discount_qty,subscriber_qty,charge_total,sponsor_amount,sponsor_ticket_qty,woo_order_id,agreement_json,approved_showing_id
+         FROM $table WHERE request_id = %d ORDER BY id ASC",
+        $request_id
+    ), ARRAY_A);
+    if ($wpdb->last_error !== '' || !is_array($rows)) throw new RuntimeException('Requested-showing backing totals could not be read.');
 
-    $totals = [];
-    foreach (['support_qty', 'subscriber_qty', 'charge_total', 'sponsor_amount', 'sponsor_ticket_qty'] as $key) {
-        if (!array_key_exists($key, $row)) throw new RuntimeException('Requested-showing backing totals returned an incomplete result.');
-        $value = roxy_rs_repo_canonical_quantity($row[$key]);
-        if ($value === null) throw new RuntimeException('Requested-showing backing totals returned an invalid or overflowing value.');
-        $totals[$key] = $value;
-    }
-    if (!array_key_exists('has_sponsor', $row)) throw new RuntimeException('Requested-showing backing totals returned an incomplete result.');
-    $has_sponsor = $row['has_sponsor'];
-    if ($has_sponsor === null) $totals['has_sponsor'] = false;
-    elseif ($has_sponsor === 0 || $has_sponsor === '0') $totals['has_sponsor'] = false;
-    elseif ($has_sponsor === 1 || $has_sponsor === '1') $totals['has_sponsor'] = true;
-    else throw new RuntimeException('Requested-showing backing totals returned an invalid sponsor flag.');
-    $has_any_totals = false;
-    foreach (['support_qty', 'subscriber_qty', 'charge_total', 'sponsor_amount', 'sponsor_ticket_qty'] as $key) {
-        if ($totals[$key] !== 0) { $has_any_totals = true; break; }
-    }
-    if (($has_sponsor === null && $has_any_totals)
-        || (($totals['sponsor_amount'] > 0) !== $totals['has_sponsor'])) {
-        throw new RuntimeException('Requested-showing backing totals returned inconsistent sponsorship values.');
+    $totals = ['support_qty'=>0,'subscriber_qty'=>0,'charge_total'=>0,'sponsor_amount'=>0,'sponsor_ticket_qty'=>0,'has_sponsor'=>false];
+    foreach ($rows as $row) {
+        if (!in_array((string)($row['status'] ?? ''), ['pending','threshold_met','approved','charged'], true)) continue;
+        $effective = roxy_rs_repo_effective_backing($row);
+        foreach (['support_qty','subscriber_qty','charge_total','sponsor_amount','sponsor_ticket_qty'] as $key) {
+            if ($effective[$key] > PHP_INT_MAX - $totals[$key]) throw new RuntimeException('Requested-showing backing totals exceed the supported range.');
+            $totals[$key] += $effective[$key];
+        }
+        if ($effective['sponsor_amount'] > 0) $totals['has_sponsor'] = true;
     }
     return $totals;
+}
+
+/** Calculate a backing's current contribution from Woo's durable refund ledger. */
+function roxy_rs_repo_effective_backing(array $row): array {
+    $out = [];
+    foreach (['general_qty','discount_qty','subscriber_qty','support_qty','charge_total','sponsor_amount','sponsor_ticket_qty'] as $key) {
+        $value = roxy_rs_repo_canonical_quantity($row[$key] ?? null, in_array($key, ['charge_total','sponsor_amount'], true) ? 2147483647 : PHP_INT_MAX);
+        if ($value === null) throw new RuntimeException('Requested-showing backing contains an invalid or overflowing value.');
+        $out[$key] = $value;
+    }
+    if ($out['general_qty'] > PHP_INT_MAX - $out['discount_qty']
+        || $out['support_qty'] !== $out['general_qty'] + $out['discount_qty']) {
+        throw new RuntimeException('Requested-showing backing ticket quantities are inconsistent.');
+    }
+    $status = (string)($row['status'] ?? '');
+    if ($status !== 'charged') return $out;
+    $order_id = roxy_rs_repo_canonical_quantity($row['woo_order_id'] ?? null);
+    if ($order_id === null || $order_id <= 0 || !function_exists('wc_get_order')) throw new RuntimeException('A charged backing order could not be verified.');
+    $order = wc_get_order($order_id);
+    if (!$order || !method_exists($order, 'get_id') || (int)$order->get_id() !== $order_id
+        || !method_exists($order, 'get_meta')
+        || (int)$order->get_meta('_roxy_rs_request_id', true) !== (int)($row['request_id'] ?? 0)
+        || (int)$order->get_meta('_roxy_rs_backing_id', true) !== (int)($row['id'] ?? 0)
+        || !method_exists($order, 'get_total') || !method_exists($order, 'get_total_refunded')
+        || !method_exists($order, 'get_items') || !method_exists($order, 'get_qty_refunded_for_item')
+        || !method_exists($order, 'get_total_refunded_for_item')) {
+        throw new RuntimeException('A charged backing order or its refund ledger is unavailable.');
+    }
+    $agreement_json = (string)($row['agreement_json'] ?? '');
+    $agreement = null;
+    if ($agreement_json !== '') {
+        if (!class_exists('\\RoxyRS\\Agreement')) throw new RuntimeException('Requested-showing agreement validation is unavailable.');
+        try { $agreement = \RoxyRS\Agreement::validate($agreement_json, $row); }
+        catch (\Throwable $error) { throw new RuntimeException('A charged backing agreement could not be verified.'); }
+    }
+    $order_total = roxy_rs_repo_money_cents($order->get_total());
+    $refund_total = roxy_rs_repo_money_cents($order->get_total_refunded());
+    if ($order_total !== $out['charge_total'] || $refund_total > $order_total) throw new RuntimeException('A charged backing payment total does not match its agreement.');
+    $out['charge_total'] -= $refund_total;
+
+    $unit_prices = $agreement['unit_prices_cents'] ?? [];
+    $profile = (string)($agreement['profile'] ?? '');
+    $general_price = (int)($unit_prices[$profile === 'movie_matinee' ? 'matinee' : 'general'] ?? -1);
+    $refunded_general = 0;
+    $refunded_discount = 0;
+    $refunded_subscriber = 0;
+    $refunded_sponsor_tickets = 0;
+    $ticket_refund_amount = 0;
+    $fee_refund = 0;
+    foreach ($order->get_items('line_item') as $item) {
+        if (!is_object($item) || !method_exists($item,'get_id') || !method_exists($item,'get_quantity') || !method_exists($item,'get_meta') || !method_exists($item,'get_product_id')) throw new RuntimeException('A backing ticket line could not be verified.');
+        $item_id = (int)$item->get_id();
+        $quantity = roxy_rs_repo_whole_quantity($item->get_quantity());
+        $refunded = roxy_rs_repo_whole_quantity(abs((float)$order->get_qty_refunded_for_item($item_id)));
+        if ($item_id <= 0 || $quantity === null || $refunded === null || $refunded > $quantity) throw new RuntimeException('A backing ticket refund quantity is invalid.');
+        $item_refund_amount = roxy_rs_repo_money_cents(abs((float)$order->get_total_refunded_for_item($item_id)));
+        if ($item_refund_amount > PHP_INT_MAX - $ticket_refund_amount) throw new RuntimeException('Backing ticket refunds exceed the supported range.');
+        $ticket_refund_amount += $item_refund_amount;
+        if ($refunded === 0) continue;
+        $role = (string)$item->get_meta('_roxy_rs_refund_role', true);
+        if ($role === '') {
+            $type_key = defined('ROXY_ST_META_TICKET_TYPE') ? ROXY_ST_META_TICKET_TYPE : '_roxy_ticket_type';
+            $ticket_type = function_exists('get_post_meta') ? (string)get_post_meta((int)$item->get_product_id(), $type_key, true) : '';
+            if (in_array($ticket_type, ['adult','matinee'], true)) $role = $out['sponsor_ticket_qty'] > 0 ? 'legacy_general' : 'paid_general';
+            elseif ($ticket_type === 'discount') $role = 'paid_discount';
+            elseif ($ticket_type === 'subscriber') $role = 'subscriber';
+            else throw new RuntimeException('A legacy refunded ticket line cannot be identified.');
+        }
+        if ($role === 'paid_general') $refunded_general += $refunded;
+        elseif ($role === 'paid_discount') $refunded_discount += $refunded;
+        elseif ($role === 'subscriber') $refunded_subscriber += $refunded;
+        elseif ($role === 'sponsor_ticket') $refunded_sponsor_tickets += $refunded;
+        elseif ($role === 'legacy_general') {
+            $amount = $item_refund_amount;
+            if ($amount > 0) {
+                if ($general_price <= 0) {
+                    if (!method_exists($item,'get_total') || $out['general_qty'] <= 0) throw new RuntimeException('A legacy ticket refund cannot be allocated to paid ticket quantities.');
+                    $original_paid_line = roxy_rs_repo_money_cents(abs((float)$item->get_total()));
+                    if ($original_paid_line % $out['general_qty'] !== 0) throw new RuntimeException('A legacy ticket refund cannot be allocated to paid ticket quantities.');
+                    $general_price = intdiv($original_paid_line, $out['general_qty']);
+                }
+                if ($general_price <= 0 || $amount % $general_price !== 0) throw new RuntimeException('A legacy ticket refund cannot be allocated to paid ticket quantities.');
+                $paid_units = intdiv($amount, $general_price);
+                if ($paid_units > $refunded) throw new RuntimeException('A legacy ticket refund amount and quantity do not match.');
+                $refunded_general += $paid_units;
+                $refunded_sponsor_tickets += $refunded - $paid_units;
+            } elseif ($out['sponsor_ticket_qty'] > 0) {
+                if ($out['general_qty'] > 0 && $general_price <= 0) throw new RuntimeException('A legacy zero-value mixed ticket refund cannot be allocated safely.');
+                $refunded_sponsor_tickets += $refunded;
+            } else {
+                $refunded_general += $refunded;
+            }
+        } else throw new RuntimeException('A backing ticket line has an unknown refund role.');
+    }
+    if ($refunded_general > $out['general_qty'] || $refunded_discount > $out['discount_qty']
+        || $refunded_subscriber > $out['subscriber_qty'] || $refunded_sponsor_tickets > $out['sponsor_ticket_qty']) {
+        throw new RuntimeException('Backing refund quantities exceed the original ticket quantities.');
+    }
+    $out['general_qty'] -= $refunded_general;
+    $out['discount_qty'] -= $refunded_discount;
+    $out['support_qty'] = $out['general_qty'] + $out['discount_qty'];
+    $out['subscriber_qty'] -= $refunded_subscriber;
+    $out['sponsor_ticket_qty'] -= $refunded_sponsor_tickets;
+    $sponsor_fee_total = 0;
+    foreach ($order->get_items('fee') as $fee) {
+        if (!is_object($fee) || !method_exists($fee,'get_id') || !method_exists($fee,'get_name')) throw new RuntimeException('A backing sponsorship fee could not be verified.');
+        if ($fee->get_name() !== 'Requested showing sponsorship') continue;
+        if (!method_exists($fee,'get_total')) throw new RuntimeException('A backing sponsorship fee could not be verified.');
+        $sponsor_fee_total += roxy_rs_repo_money_cents(abs((float)$fee->get_total()));
+        $fee_refund += roxy_rs_repo_money_cents(abs((float)$order->get_total_refunded_for_item((int)$fee->get_id())));
+    }
+    if ($sponsor_fee_total !== $out['sponsor_amount']) throw new RuntimeException('A backing sponsorship fee does not match its saved pledge.');
+    if ($fee_refund > $out['sponsor_amount']) throw new RuntimeException('A sponsorship refund exceeds the original pledge.');
+    if ($ticket_refund_amount > PHP_INT_MAX - $fee_refund) throw new RuntimeException('Backing refunds exceed the supported range.');
+    $allocated_refunds = $ticket_refund_amount + $fee_refund;
+    if ($allocated_refunds > $refund_total) throw new RuntimeException('Woo refund line allocations exceed the refunded payment total.');
+    // Woo permits an amount-only refund without line allocations. A complete
+    // refund unambiguously clears the sponsorship; a partial refund cannot say
+    // whether the ticket or sponsor fee was returned, so fail closed until a
+    // manager resolves the Woo refund with itemized lines.
+    $unallocated_refund = $refund_total - $allocated_refunds;
+    if ($unallocated_refund > 0 && $out['sponsor_amount'] > 0) {
+        if ($refund_total === $order_total) $fee_refund = $out['sponsor_amount'];
+        else throw new RuntimeException('A partial refund with sponsorship is not itemized and requires manager review.');
+    }
+    $out['sponsor_amount'] -= $fee_refund;
+    return $out;
+}
+
+function roxy_rs_repo_money_cents($value): int {
+    if ((!is_int($value) && !is_float($value) && !is_string($value)) || !is_numeric($value) || !is_finite((float)$value) || (float)$value < 0) throw new RuntimeException('A backing payment amount is invalid.');
+    $cents = (float)$value * 100;
+    if (!is_finite($cents) || $cents > 2147483647 || abs($cents - round($cents)) > 0.00001) throw new RuntimeException('A backing payment amount is outside the supported range.');
+    return (int)round($cents);
+}
+
+function roxy_rs_repo_whole_quantity($value): ?int {
+    if ((!is_int($value) && !is_float($value) && !is_string($value)) || !is_numeric($value) || !is_finite((float)$value) || (float)$value < 0 || floor((float)$value) !== (float)$value || (float)$value > PHP_INT_MAX) return null;
+    return (int)$value;
 }

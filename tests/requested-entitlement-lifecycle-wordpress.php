@@ -203,6 +203,9 @@ try {
             $check($order instanceof WC_Order && $order->get_customer_id() === $user_id && $order->is_paid() && (float) $order->get_total() === 0.0, 'conversion created only a zero-total Woo order for the authenticated subscriber');
             $check((int) $order->get_meta('_roxy_rs_request_id', true) === $request_id
                 && (int) $order->get_meta('_roxy_rs_backing_id', true) === $backing_id, 'Woo order is durably linked to the exact private request and backing');
+            $order_lines = $order->get_items('line_item');
+            $subscriber_line = $order_lines ? reset($order_lines) : false;
+            $check($subscriber_line && (string)$subscriber_line->get_meta('_roxy_rs_refund_role', true) === 'subscriber', 'new Woo ticket line persists its refund category for accurate future reconciliation');
             $check((int) get_post_meta($order_id, '_roxy_seat_hold_managed', true) === 1
                 && (int) get_post_meta($order_id, '_roxy_seat_hold_until', true) > 0, 'actual Show Tickets hold implementation persisted its seat claim before no-charge completion');
             $check(\RoxyST\Reservations::quantity_for_showing($showing_id, 0, $user_id) === 1, 'persisted Woo order is counted by the actual subscriber reservation query');

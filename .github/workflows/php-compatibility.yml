@@ -128,6 +128,14 @@ jobs:
             exit "$status"
           fi
           php "$GITHUB_WORKSPACE/tests/showing-room-lock-regression.php"
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/requested-refund-woo-lifecycle.php" "$GITHUB_WORKSPACE" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 50 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Requested refund Woo lifecycle fixture failed::$details"
+            exit "$status"
+          fi
           if ROXY_WP_CLI="$RUNNER_TEMP/wp-cli.phar" php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/ticket-issuance-woo.php" "$GITHUB_WORKSPACE" >"$output" 2>&1; then
             cat "$output"
           else
@@ -469,6 +477,7 @@ jobs:
             requested-entitlement-regression.php
             requested-funding-read-regression.php
             requested-money-regression.php
+            requested-refund-projection-regression.php
             requested-payment-attempt-regression.php
             requested-order-payment-completion-regression.php
             requested-payment-review-render-regression.php

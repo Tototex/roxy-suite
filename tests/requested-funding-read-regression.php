@@ -41,10 +41,7 @@ namespace {
     final class FundingFixtureWpdb {
         public string $prefix = 'wp_';
         public string $last_error = '';
-        public $row = [
-            'support_qty'=>'0', 'subscriber_qty'=>'0', 'charge_total'=>'0',
-            'sponsor_amount'=>'0', 'sponsor_ticket_qty'=>'0', 'has_sponsor'=>null,
-        ];
+        public $rows = [];
         public bool $query_fails = false;
         public int $insert_calls = 0;
         public int $row_reads = 0;
@@ -57,12 +54,14 @@ namespace {
             $this->row_reads++;
             if (strpos($sql, 'FROM wp_roxy_requested_showing_backings') === false) throw new RuntimeException('Unexpected fake SQL: ' . $sql);
             if ($this->query_fails) { $this->last_error = 'simulated totals read failure'; return null; }
-            return $this->row;
+            return $this->rows[0] ?? null;
         }
         public function insert(string $table, array $data): int { $this->insert_calls++; return 1; }
-        public function get_results(string $sql, $format = null): array {
+        public function get_results(string $sql, $format = null) {
+            $this->row_reads++;
             if (strpos($sql, 'FROM wp_roxy_requested_showing_backings') === false) throw new RuntimeException('Unexpected backing-list SQL.');
-            return [];
+            if ($this->query_fails) { $this->last_error = 'simulated totals read failure'; return null; }
+            return $this->rows;
         }
     }
     final class FundingFixtureRedirect extends RuntimeException {}
@@ -143,31 +142,30 @@ namespace {
     $wpdb = $GLOBALS['wpdb'];
 
     $empty = $totals();
-    $check($empty === ['support_qty'=>0,'subscriber_qty'=>0,'charge_total'=>0,'sponsor_amount'=>0,'sponsor_ticket_qty'=>0,'has_sponsor'=>false], 'valid empty aggregate and SQL NULL sponsor flag normalize to zero totals');
-    $wpdb->row = ['support_qty'=>'3','subscriber_qty'=>'2','charge_total'=>'3600','sponsor_amount'=>'0','sponsor_ticket_qty'=>'0','has_sponsor'=>'0'];
-    $check($totals()['charge_total'] === 3600 && $totals()['support_qty'] === 3, 'valid string-encoded aggregate values are preserved');
-    $wpdb->row = ['support_qty'=>'0','subscriber_qty'=>'0','charge_total'=>'5000','sponsor_amount'=>'5000','sponsor_ticket_qty'=>'2','has_sponsor'=>'1'];
-    $check($totals()['has_sponsor'] === true && $totals()['sponsor_amount'] === 5000, 'consistent positive sponsorship aggregate is accepted');
+    $check($empty === ['support_qty'=>0,'subscriber_qty'=>0,'charge_total'=>0,'sponsor_amount'=>0,'sponsor_ticket_qty'=>0,'has_sponsor'=>false], 'valid empty backing rows normalize to zero funding');
+    $row = ['id'=>1,'request_id'=>41,'status'=>'pending','general_qty'=>'3','discount_qty'=>'0','support_qty'=>'3','subscriber_qty'=>'2','charge_total'=>'3600','sponsor_amount'=>'0','sponsor_ticket_qty'=>'0','woo_order_id'=>null,'agreement_json'=>null,'approved_showing_id'=>null];
+    $wpdb->rows = [$row];
+    $valid = $totals();
+    $check($valid['charge_total'] === 3600 && $valid['support_qty'] === 3 && $valid['subscriber_qty'] === 2, 'valid string-encoded backing rows are summed');
+    $wpdb->rows = [['id'=>2,'request_id'=>41,'status'=>'threshold_met','general_qty'=>'0','discount_qty'=>'0','support_qty'=>'0','subscriber_qty'=>'0','charge_total'=>'5000','sponsor_amount'=>'5000','sponsor_ticket_qty'=>'2','woo_order_id'=>null,'agreement_json'=>null,'approved_showing_id'=>null]];
+    $check($totals()['has_sponsor'] === true && $totals()['sponsor_amount'] === 5000, 'positive backing sponsorship is detected');
 
     foreach ([
         null,
-        [],
-        ['support_qty'=>'0','subscriber_qty'=>'0','charge_total'=>'0','sponsor_amount'=>'0','sponsor_ticket_qty'=>'0'],
-        ['support_qty'=>'bad','subscriber_qty'=>'0','charge_total'=>'0','sponsor_amount'=>'0','sponsor_ticket_qty'=>'0','has_sponsor'=>null],
-        ['support_qty'=>'-1','subscriber_qty'=>'0','charge_total'=>'0','sponsor_amount'=>'0','sponsor_ticket_qty'=>'0','has_sponsor'=>null],
-        ['support_qty'=>'999999999999999999999999','subscriber_qty'=>'0','charge_total'=>'0','sponsor_amount'=>'0','sponsor_ticket_qty'=>'0','has_sponsor'=>null],
-        ['support_qty'=>'0','subscriber_qty'=>'0','charge_total'=>'1.5','sponsor_amount'=>'0','sponsor_ticket_qty'=>'0','has_sponsor'=>null],
-        ['support_qty'=>'0','subscriber_qty'=>'0','charge_total'=>'0','sponsor_amount'=>'0','sponsor_ticket_qty'=>'0','has_sponsor'=>'yes'],
-        ['support_qty'=>'1','subscriber_qty'=>'0','charge_total'=>'0','sponsor_amount'=>'0','sponsor_ticket_qty'=>'0','has_sponsor'=>null],
-        ['support_qty'=>'0','subscriber_qty'=>'0','charge_total'=>'0','sponsor_amount'=>'10','sponsor_ticket_qty'=>'0','has_sponsor'=>'0'],
-        ['support_qty'=>'0','subscriber_qty'=>'0','charge_total'=>'0','sponsor_amount'=>'0','sponsor_ticket_qty'=>'0','has_sponsor'=>'1'],
-    ] as $bad_row) {
-        $wpdb->row = $bad_row;
+        [array_merge($row,['support_qty'=>'0'])],
+        [array_merge($row,['general_qty'=>'bad'])],
+        [array_merge($row,['general_qty'=>'-1'])],
+        [array_merge($row,['general_qty'=>'999999999999999999999999'])],
+        [array_merge($row,['charge_total'=>'1.5'])],
+        [array_merge($row,['support_qty'=>'2'])],
+        [array_merge($row,['sponsor_amount'=>'-1'])],
+    ] as $bad_rows) {
+        $wpdb->rows = $bad_rows;
         $threw = false;
         try { $totals(); } catch (RuntimeException $error) { $threw = true; }
-        $check($threw, 'incomplete, malformed, negative, or overflowing aggregate throws');
+        $check($threw, 'unavailable, malformed, negative, overflowing, or internally inconsistent backing rows throw');
     }
-    $wpdb->row = ['support_qty'=>'0','subscriber_qty'=>'0','charge_total'=>'0','sponsor_amount'=>'0','sponsor_ticket_qty'=>'0','has_sponsor'=>null];
+    $wpdb->rows = [];
     $wpdb->query_fails = true;
     $threw = false;
     try { $totals(); } catch (RuntimeException $error) { $threw = true; }

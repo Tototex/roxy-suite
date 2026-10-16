@@ -941,18 +941,21 @@ class Conversion {
                 if ($qty > 0 && !empty($products['matinee'])) {
                     $item_id = $order->add_product(wc_get_product($products['matinee']), $qty);
                     $item = $item_id ? $order->get_item($item_id, false) : false;
-                    if (!$item || !self::set_agreed_gross($order, $item, (int) $agreement['unit_prices_cents']['matinee'] * $qty)) return new \WP_Error('agreement_price_apply_failed', 'The agreed matinee price could not be applied safely. No payment was attempted.');
+                    if (!$item || !self::set_agreed_gross($order, $item, (int) $agreement['unit_prices_cents']['matinee'] * $qty)
+                        || !self::set_refund_role($item, 'paid_general')) return new \WP_Error('agreement_price_apply_failed', 'The agreed matinee price could not be applied safely. No payment was attempted.');
                 }
             } else {
                 if ($general_qty > 0 && !empty($products['adult'])) {
                     $item_id = $order->add_product(wc_get_product($products['adult']), $general_qty);
                     $item = $item_id ? $order->get_item($item_id, false) : false;
-                    if (!$item || !self::set_agreed_gross($order, $item, (int) $agreement['unit_prices_cents']['general'] * $general_qty)) return new \WP_Error('agreement_price_apply_failed', 'The agreed general ticket price could not be applied safely. No payment was attempted.');
+                    if (!$item || !self::set_agreed_gross($order, $item, (int) $agreement['unit_prices_cents']['general'] * $general_qty)
+                        || !self::set_refund_role($item, 'paid_general')) return new \WP_Error('agreement_price_apply_failed', 'The agreed general ticket price could not be applied safely. No payment was attempted.');
                 }
                 if ($discount_qty > 0 && !empty($products['discount'])) {
                     $item_id = $order->add_product(wc_get_product($products['discount']), $discount_qty);
                     $item = $item_id ? $order->get_item($item_id, false) : false;
-                    if (!$item || !self::set_agreed_gross($order, $item, (int) $agreement['unit_prices_cents']['discount'] * $discount_qty)) return new \WP_Error('agreement_price_apply_failed', 'The agreed discount ticket price could not be applied safely. No payment was attempted.');
+                    if (!$item || !self::set_agreed_gross($order, $item, (int) $agreement['unit_prices_cents']['discount'] * $discount_qty)
+                        || !self::set_refund_role($item, 'paid_discount')) return new \WP_Error('agreement_price_apply_failed', 'The agreed discount price could not be applied safely. No payment was attempted.');
                 }
             }
 
@@ -960,6 +963,7 @@ class Conversion {
                 $item_id = $order->add_product($subscriber_product, $subscriber_qty);
                 $item = $item_id ? $order->get_item($item_id, false) : false;
                 if (!$item) return new \WP_Error('subscriber_order_unverified', 'The subscriber reservation could not be added safely. No payment was attempted.');
+                if (!self::set_refund_role($item, 'subscriber')) return new \WP_Error('subscriber_order_unverified', 'The subscriber reservation could not be classified safely. No payment was attempted.');
                 $item->set_subtotal(0);
                 $item->set_total(0);
                 $item->set_taxes(false);
@@ -972,6 +976,7 @@ class Conversion {
                     $item_id = $order->add_product(wc_get_product($sponsor_product_id), $sponsor_tickets);
                     $item = $item_id ? $order->get_item($item_id, false) : false;
                     if (!$item) return new \WP_Error('sponsor_ticket_order_unverified', 'The sponsored ticket reservation could not be added safely. No payment was attempted.');
+                    if (!self::set_refund_role($item, 'sponsor_ticket')) return new \WP_Error('sponsor_ticket_order_unverified', 'The sponsored ticket reservation could not be classified safely. No payment was attempted.');
                     $item->set_subtotal(0);
                     $item->set_total(0);
                     $item->set_taxes(false);
@@ -1288,6 +1293,15 @@ class Conversion {
         $item->save();
         return self::money_to_cents($item->get_total()) === $gross_cents
             && self::money_to_cents($item->get_total_tax()) === 0;
+    }
+
+    /** Store the refund category on its own Woo line so later refunds map cleanly. */
+    private static function set_refund_role($item, string $role): bool {
+        if (!in_array($role, ['paid_general','paid_discount','subscriber','sponsor_ticket'], true)
+            || !is_object($item) || !method_exists($item, 'add_meta_data') || !method_exists($item, 'save') || !method_exists($item, 'get_meta')) return false;
+        $item->add_meta_data('_roxy_rs_refund_role', $role, true);
+        $item->save();
+        return (string)$item->get_meta('_roxy_rs_refund_role', true) === $role;
     }
 
     /** Sponsorship is also recorded without collecting or reporting ticket tax. */
