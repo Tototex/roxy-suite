@@ -24,7 +24,7 @@ eval('namespace ' . $namespace . ';
     public function get_total(): float { return $this->total; }
   }
   final class Order {
-    public int $id; public string $status; public bool $paid; public array $items; public array $refund_qty; public array $refund_total; public array $meta=[];
+    public int $id; public string $status; public bool $paid; public array $items; public array $refund_qty; public array $refund_total; public array $meta=[]; public array $pending_meta=[];
     public function __construct(string $status, bool $paid, array $items, array $refund_qty=[], array $refund_total=[], int $id=42) { $this->id=$id; $this->status=$status; $this->paid=$paid; $this->items=$items; $this->refund_qty=$refund_qty; $this->refund_total=$refund_total; }
     public function get_status(): string { return $this->status; }
     public function is_paid(): bool { return $this->paid; }
@@ -32,11 +32,11 @@ eval('namespace ' . $namespace . ';
     public function get_qty_refunded_for_item(int $id) { return $this->refund_qty[$id] ?? 0; }
     public function get_total_refunded_for_item(int $id) { return $this->refund_total[$id] ?? 0; }
     public function get_date_created() { return null; }
-    public function get_meta(string $key, bool $single=true) { return $this->meta[$key] ?? ""; }
-    public function update_meta_data(string $key, $value): void { $this->meta[$key]=$value; }
-    public function save(): int { if (!empty($GLOBALS["sales_fixture_order_save_failure"])) return 0; return $this->id; }
+    public function get_meta(string $key, bool $single=true) { return $this->pending_meta[$key] ?? $this->meta[$key] ?? ""; }
+    public function update_meta_data(string $key, $value): void { $this->pending_meta[$key]=$value; }
+    public function save(): int { if (!empty($GLOBALS["sales_fixture_order_save_failure"])) { $this->pending_meta=[]; return 0; } $this->meta=array_merge($this->meta,$this->pending_meta); $this->pending_meta=[]; return $this->id; }
   }
-  function wc_get_orders(array $args) { $GLOBALS["sales_fixture_query"] = $args; if (!empty($GLOBALS["sales_fixture_query_failure"]) && (empty($GLOBALS["sales_fixture_legacy_failure_only"]) || !isset($args["meta_query"]))) return false; return array_keys(array_filter($GLOBALS["sales_fixture_orders"] ?? [], static fn($order) => in_array($order->get_status(), $args["status"] ?? [], true))); }
+  function wc_get_orders(array $args) { $GLOBALS["sales_fixture_query"] = $args; if (!empty($GLOBALS["sales_fixture_query_failure"]) && (empty($GLOBALS["sales_fixture_legacy_failure_only"]) || !isset($args["meta_query"]))) return false; $orders=array_filter($GLOBALS["sales_fixture_orders"] ?? [], static fn($order) => in_array($order->get_status(), $args["status"] ?? [], true)); if (!empty($GLOBALS["sales_fixture_filter_tagged_orders"]) && isset($args["meta_query"][0])) { $meta=$args["meta_query"][0]; $orders=array_filter($orders,static fn($order) => (string)$order->get_meta((string)$meta["key"],true)===(string)$meta["value"]); } return array_keys($orders); }
   function wc_get_order($id) { return $GLOBALS["sales_fixture_orders"][(int)$id] ?? null; }
   function get_post_meta($id, $key, $single=false) { return $GLOBALS["sales_fixture_meta"][(int)$id][$key] ?? ""; }
   function update_post_meta($id, $key, $value) { if (!empty($GLOBALS["sales_fixture_tag_write_failure"]) && strpos((string)$key, "_roxy_contains_showing_") === 0) return false; $GLOBALS["sales_fixture_meta"][(int)$id][$key]=$value; return true; }
@@ -188,8 +188,7 @@ $GLOBALS['sales_fixture_order_save_failure'] = true;
 $order_hook_survives_marker_failure = true;
 try { $sales::mark_order_showings(42); } catch (Throwable $e) { $order_hook_survives_marker_failure = false; }
 unset($GLOBALS['sales_fixture_order_save_failure']);
-$GLOBALS['sales_fixture_orders'][42]->meta=[];
-$check($order_hook_survives_marker_failure && !isset($GLOBALS['sales_fixture_meta'][42]['_roxy_contains_showing_' . $showing_id]),
+$check($order_hook_survives_marker_failure && !isset($GLOBALS['sales_fixture_orders'][42]->meta['_roxy_contains_showing_' . $showing_id]),
   'order status hook does not propagate a marker-save failure or claim the order marker persisted');
 
 $sales::mark_order_showings(42);
@@ -197,9 +196,36 @@ $marker = '_roxy_contains_showing_' . $showing_id;
 $check($GLOBALS['sales_fixture_orders'][42]->get_meta($marker, true)==='1'
   && !isset($GLOBALS['sales_fixture_meta'][42][$marker]),
   'showing discovery marker is stored on the Woo order object, not order postmeta');
-$GLOBALS['sales_fixture_orders'][42]->meta[$marker]='1';
 $sales::mark_order_showings(42);
 $check($GLOBALS['sales_fixture_orders'][42]->get_meta($marker, true)==='1',
   'repeated order change preserves an existing showing marker');
+
+$GLOBALS['sales_fixture_filter_tagged_orders']=true;
+$GLOBALS['sales_fixture_orders'] = [
+  42 => new $order('processing',true,[new $item(901,701,1,10.0)]),
+  43 => new $order('processing',true,[new $item(902,701,1,10.0)],[],[],43),
+];
+$GLOBALS['sales_fixture_orders'][42]->meta[$marker]='1';
+$GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete']='1';
+$GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_pid_adult']=$product_id;
+$GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats']=['cache_version'=>3,'sold_qty'=>1,'paid_qty'=>1,'gross_revenue'=>10.0,'refunded_revenue'=>0.0,'net_revenue'=>10.0,'order_count'=>1];
+$GLOBALS['sales_fixture_order_save_failure']=true;
+$sales::on_order_changed(43);
+unset($GLOBALS['sales_fixture_order_save_failure']);
+$preserved=$sales::get_showing_stats($showing_id);
+$check(!empty($preserved['read_error']) && $preserved['sold_qty']===1
+  && $GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats']['sold_qty']===1
+  && !isset($GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete']),
+  'failed marker save forces a complete retry, preserves the last good totals, and invalidates prior scan completion');
+unset($GLOBALS['sales_fixture_filter_tagged_orders']);
+$GLOBALS['sales_fixture_orders'] = [
+  42 => new $order('processing',true,[new $item(901,701,1,10.0)]),
+  43 => new $order('processing',true,[new $item(902,701,1,10.0)],[],[],43),
+];
+$GLOBALS['sales_fixture_orders'][42]->meta[$marker]='1';
+unset($GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete']);
+$stats=$calculate();
+$check($stats['sold_qty']===2 && $stats['order_count']===2,
+  'an incomplete historical scan merges newly discovered orders with already-tagged orders without double-counting');
 
 echo "Passed {$checks} isolated Sales payment/refund checks. No provider or database access.\n";

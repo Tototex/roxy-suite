@@ -23,9 +23,9 @@ class Sales {
   }
 
   public static function on_order_changed(int $order_id): void {
-    self::mark_order_showings($order_id);
+    $markers_saved = self::mark_order_showings($order_id);
     foreach (self::showing_ids_for_order($order_id) as $showing_id) {
-      self::refresh_showing_stats($showing_id);
+      self::refresh_showing_stats($showing_id, !$markers_saved);
     }
   }
 
@@ -66,14 +66,14 @@ class Sales {
     return self::refresh_showing_stats($showing_id);
   }
 
-  public static function refresh_showing_stats(int $showing_id): array {
+  public static function refresh_showing_stats(int $showing_id, bool $force_legacy_scan = false): array {
     $showing_id = (int) $showing_id;
     if ($showing_id <= 0) {
       return self::empty_stats();
     }
 
     try {
-      $stats = self::calculate_showing_stats($showing_id);
+      $stats = self::calculate_showing_stats($showing_id, $force_legacy_scan);
     } catch (\Throwable $e) {
       self::$stats_read_errors[$showing_id] = true;
       if (function_exists('error_log')) {
@@ -115,7 +115,7 @@ class Sales {
     return (int) ($stats['sold_qty'] ?? 0);
   }
 
-  private static function calculate_showing_stats(int $showing_id): array {
+  private static function calculate_showing_stats(int $showing_id, bool $force_legacy_scan = false): array {
     $product_map = self::product_map_for_showing($showing_id);
     if (!$product_map) {
       return self::empty_stats();
@@ -148,8 +148,9 @@ class Sales {
 
     self::assert_order_ids_readable($order_ids, 'showing sales');
 
-    if (!$order_ids && !self::legacy_scan_complete($showing_id)) {
-      $order_ids = self::find_and_tag_legacy_orders_for_showing($showing_id, $ticket_type_by_product);
+    if ($force_legacy_scan || !self::legacy_scan_complete($showing_id)) {
+      $legacy_order_ids = self::find_and_tag_legacy_orders_for_showing($showing_id, $ticket_type_by_product);
+      $order_ids = array_values(array_unique(array_merge($order_ids, $legacy_order_ids)));
     }
 
     foreach ($order_ids as $oid) {
@@ -330,22 +331,28 @@ class Sales {
     return wp_date('Y-m-d', strtotime('-180 days'), wp_timezone());
   }
 
-  public static function mark_order_showings($order_id): void {
+  public static function mark_order_showings($order_id): bool {
     $order = wc_get_order($order_id);
-    if (!$order) return;
+    if (!$order) return true;
 
     $showing_ids = self::showing_ids_for_order((int) $order_id);
-    if (!$showing_ids) return;
+    if (!$showing_ids) return true;
 
+    $all_saved = true;
     foreach ($showing_ids as $showing_id) {
       try {
         self::tag_order_for_showing($order, (int) $order_id, (int) $showing_id);
       } catch (\Throwable $e) {
+        $all_saved = false;
+        // Permit a future complete scan to rediscover this order even when
+        // earlier historical markers were already certified for the showing.
+        delete_post_meta((int) $showing_id, self::LEGACY_SCAN_COMPLETE_KEY);
         if (function_exists('error_log')) {
           error_log('[Roxy Suite Sales] Could not save showing marker for order ' . (int) $order_id . ' and showing ' . (int) $showing_id . '.');
         }
       }
     }
+    return $all_saved;
   }
 
   /** Persist the discovery marker through WooCommerce's active order data store. */
