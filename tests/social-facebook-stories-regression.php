@@ -146,6 +146,21 @@ namespace {
         $start_ambiguous = \RoxySocial\FacebookStories::publish($row, $initial);
         $assert(!empty($start_ambiguous['ambiguous']),
             'ambiguous Story-start response is sent to manual review rather than ordinary retry');
+
+        \RoxySocial\Store::$state = '';
+        $GLOBALS['story_fixture_http'] = [
+            ['response' => ['code' => 200], 'body' => json_encode(['video_id' => 'story-id-without-url'])],
+        ];
+        $requests_before_incomplete_start = $GLOBALS['story_fixture_requests'];
+        $incomplete_start = \RoxySocial\FacebookStories::publish($row, $initial);
+        $saved = json_decode(\RoxySocial\Store::$state, true);
+        $assert(!empty($incomplete_start['ambiguous']) && ($saved['pending_id'] ?? '') === 'story-id-without-url',
+            'Story start with a video ID but no upload URL persists the ID before requiring review');
+        $requests_after_incomplete_start = $GLOBALS['story_fixture_requests'];
+        $incomplete_retry = \RoxySocial\FacebookStories::publish($row, \RoxySocial\Store::$state);
+        $assert(!empty($incomplete_retry['ambiguous']) && $GLOBALS['story_fixture_requests'] === $requests_after_incomplete_start
+            && $requests_after_incomplete_start === $requests_before_incomplete_start + 1,
+            'incomplete Story start retries without creating another remote upload');
         echo 'Passed ' . $checks . ' Facebook Story state checks.' . PHP_EOL;
     } finally {
         foreach (glob($root . DIRECTORY_SEPARATOR . '*') ?: [] as $path) if (is_file($path)) unlink($path);

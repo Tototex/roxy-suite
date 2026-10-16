@@ -278,12 +278,17 @@ final class Publisher {
             $photo = self::request('https://graph.facebook.com/' . rawurlencode(Meta::page_id()) . '/photos', [
                 'access_token' => Meta::page_access_token(), 'url' => $url, 'published' => 'false',
             ]);
-            if (!empty($photo['error']) || empty($photo['id'])) return $photo ?: ['error' => 'Facebook did not return an uploaded photo ID.'];
+            if (!empty($photo['error']) || empty($photo['id'])) {
+                if ($photo_ids) $photo['ambiguous'] = true;
+                return $photo ?: ['error' => 'Facebook did not return an uploaded photo ID.'];
+            }
             $photo_ids[] = (string) $photo['id'];
         }
         $body = ['access_token' => Meta::page_access_token(), 'message' => $caption];
         foreach ($photo_ids as $index => $photo_id) $body['attached_media[' . $index . ']'] = wp_json_encode(['media_fbid' => $photo_id]);
-        return self::request('https://graph.facebook.com/' . rawurlencode(Meta::page_id()) . '/feed', $body);
+        $post = self::request('https://graph.facebook.com/' . rawurlencode(Meta::page_id()) . '/feed', $body);
+        if ((!empty($post['error']) || empty($post['id'])) && $photo_ids) $post['ambiguous'] = true;
+        return $post;
     }
 
     private static function publish_instagram_carousel(array $urls, string $caption, int $post_id, string $existing_container_id = ''): array {
@@ -297,14 +302,20 @@ final class Publisher {
                 $child = self::request($base . '/media', [
                     'access_token' => Meta::access_token(), 'image_url' => $url, 'is_carousel_item' => 'true',
                 ]);
-                if (!empty($child['error']) || empty($child['id'])) return $child ?: ['error' => 'Instagram did not return a carousel image ID.'];
+                if (!empty($child['error']) || empty($child['id'])) {
+                    if ($children) $child['ambiguous'] = true;
+                    return $child ?: ['error' => 'Instagram did not return a carousel image ID.'];
+                }
                 $children[] = (string) $child['id'];
             }
             $container = self::request($base . '/media', [
                 'access_token' => Meta::access_token(), 'media_type' => 'CAROUSEL',
                 'children' => implode(',', $children), 'caption' => $caption,
             ]);
-            if (!empty($container['error']) || empty($container['id'])) return $container ?: ['error' => 'Instagram did not return a carousel container ID.'];
+            if (!empty($container['error']) || empty($container['id'])) {
+                if ($children) $container['ambiguous'] = true;
+                return $container ?: ['error' => 'Instagram did not return a carousel container ID.'];
+            }
         }
         if (!Store::set_instagram_container_id($post_id, (string) $container['id'], self::$claim)) return ['error' => 'Instagram carousel container ID could not be saved. Review before retrying.', 'ambiguous' => true];
         $status = self::get('https://graph.facebook.com/' . rawurlencode((string) $container['id']), ['fields' => 'status_code,status', 'access_token' => Meta::access_token()]);

@@ -60,10 +60,11 @@ final class FacebookStories {
                 if (!Publisher::owns_worker_lock()) return ['error' => 'Publishing worker ownership was lost. Review the Facebook Page before retrying.', 'ambiguous' => true];
                 $start = self::graph_post($page_id . '/video_stories', ['upload_phase' => 'start', 'access_token' => $token]);
                 if (!empty($start['error'])) return ['error' => 'Facebook Story upload could not be started: ' . (string) $start['error'], 'ambiguous' => !empty($start['ambiguous'])];
-                if (empty($start['video_id']) || empty($start['upload_url'])) return ['error' => 'Facebook Story upload returned incomplete upload details. Review the Page before retrying.', 'ambiguous' => true];
+                if (empty($start['video_id'])) return ['error' => 'Facebook Story upload returned no video ID. Review the Page before retrying.', 'ambiguous' => true];
 
                 $state['pending_id'] = (string) $start['video_id'];
                 if (!Store::set_facebook_story_state($id, wp_json_encode($state), Publisher::worker_claim())) return ['error' => 'Facebook Story upload started, but its ID could not be recorded. Review the Page before retrying.', 'ambiguous' => true];
+                if (empty($start['upload_url'])) return ['error' => 'Facebook Story upload returned no upload URL. Its video ID is retained for review; do not retry automatically.', 'ambiguous' => true];
 
                 $binary = file_get_contents($segment);
                 if (!is_string($binary)) {
@@ -74,9 +75,7 @@ final class FacebookStories {
                 $upload_url = esc_url_raw((string) $start['upload_url']);
                 $upload_host = strtolower((string) wp_parse_url($upload_url, PHP_URL_HOST));
                 if (wp_parse_url($upload_url, PHP_URL_SCHEME) !== 'https' || $upload_host !== 'rupload.facebook.com') {
-                    $state['pending_id'] = '';
-                    Store::set_facebook_story_state($id, wp_json_encode($state), Publisher::worker_claim());
-                    return ['error' => 'Facebook returned an unexpected Story upload destination.'];
+                    return ['error' => 'Facebook returned an unexpected Story upload destination. Its video ID is retained for review; do not retry automatically.', 'ambiguous' => true];
                 }
                 $upload = wp_remote_post($upload_url, [
                     'timeout' => 45,

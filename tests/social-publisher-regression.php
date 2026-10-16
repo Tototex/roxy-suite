@@ -133,6 +133,25 @@ namespace {
         &&str_contains($GLOBALS['calls'][8][0], 'fields=status_code%2Cstatus')
         &&str_ends_with($GLOBALS['calls'][9][0],'/media_publish'),
         'Instagram multi-image post waits for a ready carousel container before publishing one parent');
+    foreach ([
+        ['facebook', [response(['id'=>'orphan-photo-1']), response(['error'=>['message'=>'invalid image']],400)], 2, 'Facebook album child upload'],
+        ['facebook', [response(['id'=>'orphan-photo-1']), response(['id'=>'orphan-photo-2']), response(['error'=>['message'=>'feed rejected']],400)], 3, 'Facebook album parent creation'],
+        ['instagram', [response(['id'=>'orphan-child-1']), response(['error'=>['message'=>'invalid image']],400)], 2, 'Instagram carousel child upload'],
+        ['instagram', [response(['id'=>'orphan-child-1']), response(['id'=>'orphan-child-2']), response(['error'=>['message'=>'container rejected']],400)], 3, 'Instagram carousel parent creation'],
+    ] as [$partial_platform, $partial_responses, $expected_calls, $partial_label]) {
+        reset_fixture($partial_platform);
+        \RoxySocial\Store::$row['media_urls']=json_encode(['https://fixture.test/one.jpg','https://fixture.test/two.png']);
+        \RoxySocial\Store::$row['media_url']='https://fixture.test/one.jpg';
+        if ($partial_platform === 'facebook') \RoxySocial\Meta::$instagram=false;
+        else \RoxySocial\Meta::$facebook=false;
+        $GLOBALS['responses']=$partial_responses;
+        check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='needs_review'
+            &&count($GLOBALS['calls'])===$expected_calls,
+            $partial_label . ' with previously uploaded children enters review');
+        $calls_before_review_retry=count($GLOBALS['calls']);
+        check(!\RoxySocial\Publisher::publish_now(1)&&count($GLOBALS['calls'])===$calls_before_review_retry,
+            $partial_label . ' cannot be blindly retried while in review');
+    }
     reset_fixture();\RoxySocial\Store::$row['media_urls']=json_encode(['https://fixture.test/one.jpg','https://fixture.test/two.png','https://fixture.test/three.webp']);
     $GLOBALS['responses']=[response(['id'=>'101']),response(['id'=>'102']),response(['id'=>'103']),response(['id'=>'104']),response(['id'=>'201']),response(['id'=>'202']),response(['id'=>'203']),response(['id'=>'204']),response(['status_code'=>'IN_PROGRESS','status'=>'In progress'])];
     check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='needs_review'
