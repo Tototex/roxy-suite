@@ -1248,12 +1248,26 @@ class Workbook {
   }
 
   private static function ensure_private_directory(string $dir): void {
+    // A symlink at either the private root or one of its child directories can
+    // redirect templates/workbooks into a web-accessible location. Do not rely
+    // on the configured path string alone to establish privacy.
+    if (is_link($dir)) {
+      throw new \RuntimeException('The private workbook directory cannot be a symbolic link.');
+    }
+
     if (!is_dir($dir)) {
       wp_mkdir_p($dir);
     }
 
-    if (!is_dir($dir)) {
+    if (!is_dir($dir) || is_link($dir)) {
       throw new \RuntimeException('Could not create the private grosses workbook directory.');
+    }
+
+    $real_directory = realpath($dir);
+    $real_parent = realpath(dirname($dir));
+    if ($real_directory === false || $real_parent === false
+      || wp_normalize_path(dirname($real_directory)) !== wp_normalize_path($real_parent)) {
+      throw new \RuntimeException('The private workbook directory resolved outside its expected parent.');
     }
 
     self::protect_directory($dir);

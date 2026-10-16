@@ -80,6 +80,27 @@ try {
     $rechecked = file_get_contents($rules_path);
     $check($rechecked === $canonical_rules, 'repeated verification leaves the canonical policy unchanged');
 
+    $public_target = $fixture_root . DIRECTORY_SEPARATOR . 'public-target';
+    if (!mkdir($public_target, 0700)) throw new RuntimeException('Could not create symlink target fixture.');
+    $private_root_link = $fixture_root . DIRECTORY_SEPARATOR . 'private-root-link';
+    if (!symlink($public_target, $private_root_link)) throw new RuntimeException('Could not create private-root symlink fixture.');
+    $root_link_rejected = false;
+    $ensure_method = new ReflectionMethod($namespace . '\\Workbook', 'ensure_private_directory');
+    $ensure_method->setAccessible(true);
+    try { $ensure_method->invoke(null, $private_root_link); }
+    catch (RuntimeException $error) { $root_link_rejected = true; }
+    $check($root_link_rejected && !is_file($public_target . DIRECTORY_SEPARATOR . 'index.html'), 'symlinked private root is rejected without writing into its target');
+    unlink($private_root_link);
+
+    $workbook_link = $fixture_root . DIRECTORY_SEPARATOR . 'content' . DIRECTORY_SEPARATOR . 'roxy-grosses-private' . DIRECTORY_SEPARATOR . 'workbooks';
+    if (!rmdir($workbooks_method->invoke(null))) throw new RuntimeException('Could not remove private workbooks fixture directory.');
+    if (!symlink($public_target, $workbook_link)) throw new RuntimeException('Could not create child-directory symlink fixture.');
+    $child_link_rejected = false;
+    try { $workbooks_method->invoke(null); } catch (RuntimeException $error) { $child_link_rejected = true; }
+    $check($child_link_rejected && !is_file($public_target . DIRECTORY_SEPARATOR . 'index.html'), 'symlinked workbook child directory is rejected without writing into its target');
+    unlink($workbook_link);
+    if (!mkdir($workbook_link, 0700)) throw new RuntimeException('Could not restore private workbooks fixture directory.');
+
     $workbooks_dir = $workbooks_method->invoke(null);
     $occupied = $workbooks_dir . DIRECTORY_SEPARATOR . 'collision.xlsx';
     $source = $fixture_root . DIRECTORY_SEPARATOR . 'source.xlsx';
