@@ -376,8 +376,13 @@ namespace {
     $_POST['subscriber_qty'] = '01';
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'noncanonical leading-zero quantity is rejected');
     reset_fixture([new FixtureSubscription('active', 2)]);
-    $wpdb->outstanding = 1; $GLOBALS['wpdb'] = $wpdb; $_POST['subscriber_qty'] = '2';
-    check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'pledge cannot exceed remaining entitlement for request');
+    $wpdb->insert('wp_roxy_requested_showing_backings', [
+        'request_id'=>501,'user_id'=>77,'status'=>'pending','general_qty'=>0,'discount_qty'=>0,
+        'support_qty'=>0,'subscriber_qty'=>1,'charge_total'=>0,'sponsor_amount'=>0,
+        'sponsor_ticket_qty'=>0,'woo_order_id'=>null,'agreement_json'=>null,'approved_showing_id'=>null,
+    ]);
+    $GLOBALS['wpdb'] = $wpdb; $_POST['subscriber_qty'] = '2';
+    check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 1, 'subscriber reservation cannot exceed remaining entitlement for request');
     check_fixture($wpdb->release_count === 1 && !$wpdb->is_locked(), 'pre-lease excess denial leaves no subscriber lease to release');
     reset_fixture([new FixtureSubscription('active', 2)]);
     $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_DISCOUNT_PRICE] = '';
