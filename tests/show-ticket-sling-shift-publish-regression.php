@@ -11,6 +11,7 @@ class WP_Error {
 }
 function is_wp_error($value) { return $value instanceof WP_Error; }
 function current_user_can($capability, $post_id = null) { return true; }
+function get_current_user_id() { return 7; }
 function check_admin_referer($action) { return true; }
 function sanitize_key($value) { return preg_replace('/[^a-z0-9_\-]/', '', strtolower((string) $value)); }
 function wp_unslash($value) { return $value; }
