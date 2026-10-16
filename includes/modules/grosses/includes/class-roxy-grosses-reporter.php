@@ -1254,7 +1254,7 @@ class Reporter {
   }
 
   public static function send_saved_report(int $report_id, string $send_request_id = '', bool $intentional_resend = false): array {
-    try { return Store::with_refund_review_lock(static fn() => self::send_saved_report_locked($report_id, $send_request_id, $intentional_resend)); }
+    try { return Square::with_sale_snapshot(static fn() => Store::with_refund_review_lock(static fn() => self::send_saved_report_locked($report_id, $send_request_id, $intentional_resend))); }
     catch (\Throwable $error) { return ['success' => false, 'message' => $error->getMessage()]; }
   }
 
@@ -1279,6 +1279,21 @@ class Reporter {
         'success' => false,
         'message' => 'Saved report has no rows to email.',
       ];
+    }
+
+    if (($saved['status'] ?? '') === 'draft') {
+      try {
+        $current_rows = self::build_reports((string) ($saved['report_end_date'] ?? ''));
+        $current_summary = self::summarize_reports($current_rows);
+      } catch (\Throwable $error) {
+        Store::insert_log('send_saved_report', 'saved-report', $report_id, (string) ($saved['report_end_date'] ?? ''), false, 'Draft freshness check failed; email was not attempted: ' . $error->getMessage());
+        return ['success' => false, 'message' => 'Could not verify this draft against current Square and refund data. No email was sent; pull and review a fresh draft before trying again.'];
+      }
+
+      if (!self::saved_draft_matches_current($rows, $summary, $current_rows, $current_summary)) {
+        Store::insert_log('send_saved_report', 'saved-report', $report_id, (string) ($saved['report_end_date'] ?? ''), false, 'Saved draft is stale; current report figures differ. Email was not attempted.');
+        return ['success' => false, 'message' => 'This draft is out of date. Current Square or refund data has changed since it was prepared. No email was sent; pull and review a fresh draft.'];
+      }
     }
 
     Store::assert_refund_review_lock();
@@ -1330,6 +1345,39 @@ class Reporter {
       'success' => true,
       'message' => $message,
     ];
+  }
+
+  private static function saved_draft_matches_current(array $saved_rows, array $saved_summary, array $current_rows, array $current_summary): bool {
+    $fields = [
+      'report_date', 'showing_id', 'film_title', 'show_title', 'show_time',
+      'general_qty', 'discount_qty', 'group_qty', 'live_qty', 'presale_qty', 'online_qty', 'door_qty', 'group_sub_qty',
+      'total_tickets', 'general_gross', 'discount_gross', 'group_gross', 'live_gross', 'gross_total', 'concessions_total', 'refund_adjusted',
+    ];
+    $project = static function (array $rows) use ($fields): array {
+      $projected = [];
+      foreach ($rows as $row) {
+        if (!is_array($row)) return [];
+        $item = [];
+        foreach ($fields as $field) {
+          if (in_array($field, ['film_title', 'show_title', 'report_date', 'show_time'], true)) {
+            $item[$field] = (string) ($row[$field] ?? '');
+          } elseif ($field === 'refund_adjusted') {
+            $item[$field] = !empty($row[$field]);
+          } elseif (str_ends_with($field, '_gross') || in_array($field, ['gross_total', 'concessions_total'], true)) {
+            $item[$field] = (int) round((float) ($row[$field] ?? 0) * 100);
+          } elseif (array_key_exists($field, $row)) {
+            $item[$field] = (int) $row[$field];
+          }
+        }
+        $projected[] = $item;
+      }
+      usort($projected, static fn(array $a, array $b): int => strcmp(json_encode($a), json_encode($b)));
+      return $projected;
+    };
+
+    return $project($saved_rows) === $project($current_rows)
+      && (int) ($saved_summary['total_tickets'] ?? 0) === (int) ($current_summary['total_tickets'] ?? 0)
+      && (int) round((float) ($saved_summary['gross_total'] ?? 0) * 100) === (int) round((float) ($current_summary['gross_total'] ?? 0) * 100);
   }
 
   public static function build_reports(string $report_date, bool $include_empty = false, ?RefundSnapshot $refund_snapshot = null, bool $include_concessions = true): array {

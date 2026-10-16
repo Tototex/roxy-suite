@@ -28,6 +28,9 @@ namespace RoxyGrosses {
     public static function insert_log(...$args): int { self::$logs[] = $args; return 1; }
     public static function mark_emailed(int $id): bool { self::$emailed[] = $id; return true; }
   }
+  final class Square {
+    public static function with_sale_snapshot(callable $operation) { return $operation(); }
+  }
 }
 
 namespace {
@@ -87,6 +90,14 @@ namespace {
   saved_report_assert(empty($result['success']), 'email failure is reported');
   saved_report_assert(\RoxyGrosses\Store::$entries === $original_entries && \RoxyGrosses\Store::$history === $original_history && \RoxyGrosses\Store::$upsert_calls === 0, 'failed send performs zero entry/history mutations');
   saved_report_assert(\RoxyGrosses\Store::$emailed === [] && count(\RoxyGrosses\Store::$logs) === 1 && $GLOBALS['fixture_status'] === [], 'failed send keeps failure log but does not mark emailed or update status');
+
+  \RoxyGrosses\Store::$snapshot['status'] = 'draft';
+  \RoxyGrosses\Store::$logs = [];
+  $GLOBALS['fixture_mail'] = [];
+  $GLOBALS['fixture_mail_result'] = true;
+  $result = \RoxyGrosses\Reporter::send_saved_report(41);
+  saved_report_assert(empty($result['success']) && str_contains($result['message'], 'out of date'), 'draft with changed current Square figures is refused as stale');
+  saved_report_assert($GLOBALS['fixture_mail'] === [] && \RoxyGrosses\Store::$emailed === [] && count(\RoxyGrosses\Store::$logs) === 1, 'stale draft refusal attempts no email and does not mark report emailed');
 
   echo $GLOBALS['fixture_checks'] . " saved-report read-only checks passed; all mail is intercepted locally.\n";
 }
