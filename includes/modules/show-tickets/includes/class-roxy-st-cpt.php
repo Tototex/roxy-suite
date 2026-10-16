@@ -869,6 +869,10 @@ class CPT {
             wp_delete_post($new_post_id, true);
             return new \WP_Error($code, $message);
           };
+          $saved_post = get_post($new_post_id);
+          if (!$saved_post || (string) $saved_post->post_type !== self::POST_TYPE || (string) $saved_post->post_status !== $child_status) {
+            return $fail_child('schedule_child_post_write', 'The scheduled showing could not be verified after creation.');
+          }
           $child_meta = $shared_meta + [
             '_roxy_start' => $row['start'],
             '_roxy_pricing_profile' => $row['profile'],
