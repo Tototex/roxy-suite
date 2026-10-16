@@ -18,7 +18,9 @@ class Metadata {
 
     $studio = trim((string) ($row['studio'] ?? ''));
     $genre = trim((string) ($row['genre'] ?? ''));
+    $configured_studio = self::studio_override($title);
     if (!$force && $studio !== '' && $genre !== '') {
+      if ($configured_studio !== '') $row['studio'] = $configured_studio;
       return $row;
     }
 
@@ -34,6 +36,7 @@ class Metadata {
     if (($force || $genre === '') && !empty($metadata['genre'])) {
       $row['genre'] = (string) $metadata['genre'];
     }
+    if ($configured_studio !== '') $row['studio'] = $configured_studio;
 
     return $row;
   }

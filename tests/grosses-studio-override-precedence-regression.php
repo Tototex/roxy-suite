@@ -31,6 +31,13 @@ StudioOverrideSettingsFixture::$mappings = [['match' => 'barbie', 'studio' => 'R
 $local = \RoxyGrosses\Metadata::enrich_movie_row(['movie_title' => 'Barbie'], false, false);
 studio_override_check(($local['studio'] ?? '') === 'Roxy Distribution', 'configured studio wins over curated metadata in local report enrichment');
 studio_override_check(($local['genre'] ?? '') === 'Adventure, Comedy, Fantasy', 'configured studio override preserves curated genre data');
+$existing = \RoxyGrosses\Metadata::enrich_movie_row([
+  'movie_title' => 'Barbie',
+  'studio' => 'Warner Bros. Entertainment',
+  'genre' => 'Existing report genre',
+], false, false);
+studio_override_check(($existing['studio'] ?? '') === 'Roxy Distribution', 'configured studio replaces existing studio on an already-enriched report row');
+studio_override_check(($existing['genre'] ?? '') === 'Existing report genre', 'studio mapping preserves an already-populated report-row genre');
 
 $forced = \RoxyGrosses\Metadata::metadata_for_movie('Barbie', 2023, true);
 studio_override_check(($forced['studio'] ?? '') === 'Roxy Distribution', 'configured studio wins in forced metadata refresh');
