@@ -32,7 +32,7 @@ eval('namespace ' . $namespace . ';
     public function get_qty_refunded_for_item(int $id) { return $this->refund_qty[$id] ?? 0; }
     public function get_total_refunded_for_item(int $id) { return $this->refund_total[$id] ?? 0; }
     public function get_date_created() { return null; }
-    public function get_meta(string $key, bool $single=true) { return $this->meta[$key] ?? ''; }
+    public function get_meta(string $key, bool $single=true) { return $this->meta[$key] ?? ""; }
     public function update_meta_data(string $key, $value): void { $this->meta[$key]=$value; }
     public function save(): int { if (!empty($GLOBALS["sales_fixture_order_save_failure"])) return 0; return $this->id; }
   }
