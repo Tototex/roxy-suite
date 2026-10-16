@@ -97,6 +97,7 @@ try { roxy_rs_repo_effective_backing($backing); } catch (RuntimeException $error
 check_refund_projection($bad,'fractional refunded ticket quantities fail closed');
 $bad=false;
 $GLOBALS['refund_projection_order']=new class extends RefundProjectionOrder {
+    public function __construct() { parent::__construct(88,60.0,0.0,[],[]); }
     public function get_meta($key, $single = true): int { return 0; }
 };
 try { roxy_rs_repo_effective_backing($backing); } catch (RuntimeException $error) { $bad=true; }
