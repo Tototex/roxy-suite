@@ -117,7 +117,7 @@ namespace {
   ];
   \RoxyGrosses\Square::$refunds = [[
     'id' => 'sq-refund', 'payment_id' => 'sq-payment', 'location_id' => 'loc', 'status' => 'COMPLETED',
-    'amount_money' => ['amount' => 200, 'currency' => 'USD'], 'updated_at' => '2026-10-03T03:00:00Z',
+    'amount_money' => ['amount' => 200, 'currency' => 'USD'], 'updated_at' => '2026-10-03T03:00:00Z', 'order_id' => 'sq-order',
   ]];
   $GLOBALS['wc_pages'] = [
     'shop_order' => [1 => [
@@ -140,7 +140,7 @@ namespace {
     'id' => 'sq-exchange', 'state' => 'COMPLETED', 'closed_at' => '2026-10-03T06:30:00Z',
     'returns' => [['uid' => 'return-1']],
     'tenders' => [['amount_money' => ['amount' => 1250, 'currency' => 'USD']]],
-  ]];
+  ], ['id' => 'sq-order', 'state' => 'COMPLETED', 'created_at' => '2026-10-02T03:00:00Z']];
   $GLOBALS['wc_parent_orders'] = [
     21 => new \RoxyGrosses\FakeOrder(21, 'stripe', '30.00', 'stripe-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
     99 => new \RoxyGrosses\FakeOrder(99, 'paypal', '20.00', 'paypal-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
@@ -170,12 +170,18 @@ namespace {
     'completed Square return/exchange is visible with its tender amount for review');
   $unmatched_square_refunds = $report['review_exceptions']['square_payment_refunds_without_itemized_returns'];
   $assert(count($unmatched_square_refunds) === 1 && $unmatched_square_refunds[0]['refund_id'] === 'sq-refund'
-    && $unmatched_square_refunds[0]['amount_cents'] === 200 && str_contains($unmatched_square_refunds[0]['review'], 'included in Cashflow'),
-    'completed Square payment refund remains in cash totals and is separately flagged without matched itemized return evidence');
+    && $unmatched_square_refunds[0]['amount_cents'] === 200
+    && $unmatched_square_refunds[0]['original_sale_date'] === '2026-10-01'
+    && str_contains($unmatched_square_refunds[0]['review'], 'included in Cashflow'),
+    'completed Square payment refund remains in cash totals and review identifies its site-local original sale day without itemized return evidence');
   \RoxyGrosses\Square::$daily_orders[0]['refunds'] = [['id' => 'sq-refund', 'tender_id' => 'different-payment']];
   $wrong_payment_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
   $assert(count($wrong_payment_report['review_exceptions']['square_payment_refunds_without_itemized_returns']) === 1,
     'refund reference for a different tender does not falsely clear the unmatched-refund review');
+  \RoxyGrosses\Square::$daily_orders[1]['created_at'] = 'not-a-square-timestamp';
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'),
+    'malformed linked Square order timestamp fails closed rather than guessing the original sale date');
+  \RoxyGrosses\Square::$daily_orders[1]['created_at'] = '2026-10-02T03:00:00Z';
   \RoxyGrosses\Square::$daily_orders[0]['refunds'] = [['id' => 'sq-refund', 'tender_id' => 'sq-payment']];
   $matched_refund_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
   $assert($matched_refund_report['review_exceptions']['square_payment_refunds_without_itemized_returns'] === [],

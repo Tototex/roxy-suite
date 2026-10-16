@@ -416,15 +416,34 @@ final class SquareUnmatchedPaymentRefundReview {
     return true;
   }
 
+  private static function original_sale_date(array $order): string {
+    if (!array_key_exists('created_at', $order)) return '';
+    $created_at = $order['created_at'];
+    if (!is_string($created_at)
+      || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/D', $created_at)) {
+      throw new \RuntimeException('Square returned an invalid associated-order creation timestamp for refund review.');
+    }
+    try {
+      $created = new \DateTimeImmutable($created_at);
+      $errors = \DateTimeImmutable::getLastErrors();
+      if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException();
+      return $created->setTimezone(new \DateTimeZone(Settings::get_report_timezone()))->format('Y-m-d');
+    } catch (\Throwable $error) {
+      throw new \RuntimeException('Square returned an invalid associated-order creation timestamp for refund review.');
+    }
+  }
+
   public static function from_refunds_and_orders(array $refunds, array $orders, string $report_date): array {
     if (!self::is_list($refunds) || !self::is_list($orders) || !preg_match('/^\d{4}-\d{2}-\d{2}$/D', $report_date)) {
       throw new \RuntimeException('Square refund review evidence is invalid.');
     }
     $matched = [];
+    $orders_by_id = [];
     foreach ($orders as $order) {
       if (!is_array($order) || !is_string($order['id'] ?? null) || $order['id'] === '' || !is_string($order['state'] ?? null)) {
         throw new \RuntimeException('Square returned a malformed order for payment-refund review.');
       }
+      $orders_by_id[$order['id']] = $order;
       if ($order['state'] !== 'COMPLETED' || !isset($order['returns'])) continue;
       if (!is_array($order['returns']) || !self::is_list($order['returns'])) throw new \RuntimeException('Square returned malformed itemized return evidence.');
       if (!$order['returns']) continue;
@@ -449,9 +468,11 @@ final class SquareUnmatchedPaymentRefundReview {
       if ($refund['refund_date'] !== $report_date || isset($matched[$refund['payment_id']][$refund['refund_id']])) continue;
       $order_id = $refund['order_id'] ?? null;
       if ($order_id !== null && !is_string($order_id)) throw new \RuntimeException('Square refund has an invalid associated order.');
+      $sale_order = is_string($order_id) ? ($orders_by_id[$order_id] ?? null) : null;
       $exceptions[] = [
         'refund_id' => $refund['refund_id'], 'payment_id' => $refund['payment_id'],
         'order_id' => is_string($order_id) ? $order_id : '', 'amount_cents' => $refund['amount_cents'],
+        'original_sale_date' => is_array($sale_order) ? self::original_sale_date($sale_order) : '',
         'refund_date_basis' => $refund['refund_date_basis'] ?? 'unknown',
         'review' => 'Payment refund is included in Cashflow, but no matching itemized return was found. If this refunded tickets, review and correct the original sale-day ticket gross.',
       ];

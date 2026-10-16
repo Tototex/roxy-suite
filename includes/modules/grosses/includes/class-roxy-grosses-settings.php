@@ -369,9 +369,9 @@ class Settings {
     if (!$unmatched_square_refunds) {
       echo '<p>No unmatched completed Square payment refunds were found for this date.</p>';
     } else {
-      echo '<table class="widefat striped" style="max-width:900px"><thead><tr><th>Refund</th><th>Payment</th><th>Associated order</th><th>Included amount</th><th>Review note</th></tr></thead><tbody>';
+      echo '<table class="widefat striped" style="max-width:900px"><thead><tr><th>Refund</th><th>Payment</th><th>Associated order</th><th>Original sale date</th><th>Included amount</th><th>Review note</th></tr></thead><tbody>';
       foreach ($unmatched_square_refunds as $event) {
-        echo '<tr><td>'.esc_html((string) $event['refund_id']).'</td><td>'.esc_html((string) $event['payment_id']).'</td><td>'.esc_html((string) ($event['order_id'] ?: 'Unavailable')).'</td><td>'.esc_html($money((int) $event['amount_cents'])).'</td><td>'.esc_html((string) $event['review']).'</td></tr>';
+        echo '<tr><td>'.esc_html((string) $event['refund_id']).'</td><td>'.esc_html((string) $event['payment_id']).'</td><td>'.esc_html((string) ($event['order_id'] ?: 'Unavailable')).'</td><td>'.esc_html((string) ($event['original_sale_date'] ?: 'Unavailable')).'</td><td>'.esc_html($money((int) $event['amount_cents'])).'</td><td>'.esc_html((string) $event['review']).'</td></tr>';
       }
       echo '</tbody></table>';
     }
