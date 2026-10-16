@@ -404,6 +404,18 @@ class Store {
     public static function mark_stock_increases(array $previous_stock = [], array $receipt_events = []): int {
         return self::transaction(static function () use ($previous_stock,$receipt_events) { return self::mark_stock_increases_locked($previous_stock,$receipt_events); });
     }
+    private static function receipt_qualifies_for_order(array $receipt, int $order_created_ts): bool {
+        $created_at=$receipt['created_at']??null; $occurred_at=$receipt['occurred_at']??null;
+        return in_array($receipt['from_state']??'', ['NONE','UNLINKED_RETURN'], true)
+            && ($receipt['to_state']??'')==='IN_STOCK'
+            && ($receipt['reason_type']??'')==='RECEIVED'
+            && is_numeric($receipt['quantity']??null) && is_finite((float)$receipt['quantity']) && (float)$receipt['quantity']>0
+            && is_string($receipt['id']??null) && $receipt['id']!==''
+            && is_string($created_at) && strtotime($created_at)!==false
+            && is_string($occurred_at) && strtotime($occurred_at)!==false
+            && strtotime($created_at)>=$order_created_ts
+            && strtotime($occurred_at)>=$order_created_ts;
+    }
     private static function mark_stock_increases_locked(array $previous_stock,array $receipt_events): int {
         global $wpdb;
         $products = self::rows("SELECT square_variation_id,name,on_hand FROM " . self::products_table());
@@ -416,6 +428,33 @@ class Store {
             else $by_name[$name_key] = ['square_variation_id' => (string) $product['square_variation_id'], 'on_hand' => (float) $product['on_hand']];
         }
         $orders = self::rows("SELECT id,payload,created_at FROM " . self::orders_table() . " WHERE status='ordered'");
+        // A single Square receipt cannot safely establish which of multiple
+        // outstanding vendor orders for the same variation it belongs to.
+        // Count distinct orders (not matching payload lines) and defer all
+        // matching orders until the ambiguity is resolved.
+        $receipt_order_ids=[];
+        foreach ($orders as $candidate) {
+            $candidate_lines=json_decode((string)($candidate['payload']??''),true);
+            if (!is_array($candidate_lines)) continue;
+            try { $candidate_created_ts=(new \DateTimeImmutable((string)($candidate['created_at']??''),wp_timezone()))->getTimestamp(); }
+            catch (\Throwable $e) { $candidate_created_ts=PHP_INT_MAX; }
+            foreach ($candidate_lines as $candidate_line) {
+                if (!is_array($candidate_line)) continue;
+                $candidate_variation=(string)($candidate_line['square_variation_id']??'');
+                if ($candidate_variation==='') {
+                    $candidate_name_key=strtolower((string)($candidate_line['product']??''));
+                    if (isset($by_name[$candidate_name_key])) $candidate_variation=(string)$by_name[$candidate_name_key]['square_variation_id'];
+                }
+                $candidate_receipt=$receipt_events[$candidate_variation]??null;
+                if (!is_array($candidate_receipt) && is_array($candidate_line['square_receipt_review']??null)) $candidate_receipt=$candidate_line['square_receipt_review'];
+                if ($candidate_variation!=='' && is_array($candidate_receipt)
+                    && self::receipt_qualifies_for_order($candidate_receipt,$candidate_created_ts)) {
+                    $receipt_order_ids[$candidate_variation][(string)$candidate['id']]=true;
+                }
+            }
+        }
+        $ambiguous_receipts=[];
+        foreach ($receipt_order_ids as $variation_id=>$order_ids) if (count($order_ids)>1) $ambiguous_receipts[$variation_id]=true;
         $marked = 0;
         foreach ($orders as $order) {
             $lines = json_decode((string) ($order['payload'] ?? ''), true);
@@ -437,19 +476,13 @@ class Store {
                 if ($variation_id !== '' && array_key_exists($variation_id, $current) && array_key_exists('on_hand', $line)) {
                     $before = $previous_stock[$variation_id] ?? ($line['last_observed_on_hand'] ?? $line['on_hand']);
                     $receipt = $receipt_events[$variation_id] ?? null;
+                    if (!is_array($receipt) && is_array($line['square_receipt_review']??null)) $receipt=$line['square_receipt_review'];
                     $receipt_created_at = is_array($receipt) ? ($receipt['created_at'] ?? null) : null;
                     $receipt_occurred_at = is_array($receipt) ? ($receipt['occurred_at'] ?? null) : null;
-                    if (is_array($receipt)
-                        && in_array($receipt['from_state'] ?? '', ['NONE','UNLINKED_RETURN'], true)
-                        && ($receipt['to_state'] ?? '') === 'IN_STOCK'
-                        && ($receipt['reason_type'] ?? '') === 'RECEIVED'
-                        && is_numeric($receipt['quantity'] ?? null) && is_finite((float)$receipt['quantity']) && (float)$receipt['quantity'] > 0
-                        && is_string($receipt['id'] ?? null) && $receipt['id'] !== ''
-                        && is_string($receipt_created_at) && strtotime($receipt_created_at)!==false
-                        && is_string($receipt_occurred_at) && strtotime($receipt_occurred_at)!==false
-                        && strtotime($receipt_created_at)>=$order_created_ts
-                        && strtotime($receipt_occurred_at)>=$order_created_ts) {
+                    if (is_array($receipt) && empty($ambiguous_receipts[$variation_id])
+                        && self::receipt_qualifies_for_order($receipt,$order_created_ts)) {
                         $increased = true;
+                        unset($line['square_receipt_review'], $line['square_receipt_review_event_id'], $line['square_receipt_review_created_at']);
                         $line['stock_increase_detected_at'] = $receipt_created_at;
                         $line['stock_increase_from'] = (float) $before;
                         $line['stock_increase_to'] = $current[$variation_id];
@@ -458,6 +491,11 @@ class Store {
                         $line['square_receipt_created_at'] = $receipt_created_at;
                         $line['square_receipt_occurred_at'] = $receipt_occurred_at;
                         $line['square_receipt_reason'] = 'RECEIVED';
+                    } elseif (is_array($receipt) && !empty($ambiguous_receipts[$variation_id])
+                        && self::receipt_qualifies_for_order($receipt,$order_created_ts)) {
+                        $line['square_receipt_review_event_id'] = (string) $receipt['id'];
+                        $line['square_receipt_review_created_at'] = $receipt_created_at;
+                        $line['square_receipt_review'] = $receipt;
                     }
                     $line['last_observed_on_hand'] = $current[$variation_id];
                     $changed = true;

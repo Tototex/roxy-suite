@@ -17,6 +17,7 @@ final class Admin {
         add_action('wp_ajax_roxy_social_update_draft', [__CLASS__, 'update_draft']);
         add_action('admin_post_roxy_social_delete_draft', [__CLASS__, 'delete_draft']);
         add_action('admin_post_roxy_social_publish_now', [__CLASS__, 'publish_now']);
+        add_action('admin_post_roxy_social_retry_facebook_story', [__CLASS__, 'retry_facebook_story']);
         add_action('admin_post_roxy_social_remove_published', [__CLASS__, 'remove_published']);
         add_action('admin_post_roxy_social_create_manual', [__CLASS__, 'create_manual']);
         add_action('admin_post_roxy_social_remove_media', [__CLASS__, 'remove_media']);
@@ -79,6 +80,10 @@ final class Admin {
         if (isset($_GET['removed_live'])) {
             $removed = (string) $_GET['removed_live'] === '1';
             echo '<div class="notice ' . ($removed ? 'notice-success' : 'notice-error') . '"><p>' . ($removed ? 'The recorded live posts were removed.' : 'Removal was not confirmed. Review the draft error and the remote accounts before retrying; unconfirmed IDs have been retained.') . '</p></div>';
+        }
+        if (isset($_GET['story_retry'])) {
+            $queued = (string) $_GET['story_retry'] === '1';
+            echo '<div class="notice ' . ($queued ? 'notice-success' : 'notice-error') . '"><p>' . ($queued ? 'The Facebook Story-only retry was queued. Existing feed posts will not be repeated.' : 'The Story retry could not be queued. Reload and review the draft state before trying again.') . '</p></div>';
         }
         if (isset($_GET['updated'])) {
             $saved = (string) $_GET['updated'] === '1';
@@ -144,6 +149,18 @@ final class Admin {
             if ($status === 'failed' && $has_published_ids && (empty($row['facebook_post_id']) || empty($row['instagram_media_id']))) {
                 $publish_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_publish_now&id=' . (int) $row['id']), 'roxy_social_publish_now_' . (int) $row['id']);
                 echo ' <a class="button button-primary" href="' . esc_url($publish_url) . '" onclick="return confirm(\'Retry publishing the missing social account?\')">Retry publish</a>';
+            }
+            $story_retry_platform = (string) ($row['platform'] ?? 'both');
+            $story_retry_safe = $status === 'failed' && !empty($row['publish_facebook_story'])
+                && (string) ($row['media_type'] ?? '') === 'video'
+                && in_array($story_retry_platform, ['facebook', 'instagram', 'both'], true)
+                && str_starts_with((string) ($row['last_error'] ?? ''), 'Facebook Story: ')
+                && ($story_retry_platform === 'instagram' || !empty($row['facebook_post_id']))
+                && ($story_retry_platform === 'facebook' || !empty($row['instagram_media_id']))
+                && empty($row['instagram_container_id']);
+            if ($story_retry_safe) {
+                $story_retry_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_retry_facebook_story&id=' . (int) $row['id']), 'roxy_social_retry_facebook_story_' . (int) $row['id']);
+                echo ' <a class="button button-primary" href="' . esc_url($story_retry_url) . '" onclick="return confirm(\'Retry only the unfinished Facebook Story? The normal Facebook and Instagram posts will not be repeated.\')">Retry Facebook Story</a>';
             }
             if (in_array($status, ['failed', 'needs_review'], true) && $has_published_ids) {
                 $remove_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_remove_published&id=' . (int) $row['id']), 'roxy_social_remove_published_' . (int) $row['id']);
@@ -289,6 +306,15 @@ final class Admin {
         check_admin_referer('roxy_social_publish_now_' . $id);
         \RoxySocial\Publisher::queue_publish_now($id);
         wp_safe_redirect(self::drafts_url(['published_now' => '1']));
+        exit;
+    }
+
+    public static function retry_facebook_story(): void {
+        if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
+        $id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
+        check_admin_referer('roxy_social_retry_facebook_story_' . $id);
+        $queued = Publisher::queue_facebook_story_retry($id);
+        wp_safe_redirect(self::drafts_url(['story_retry' => ($queued ? '1' : '0')]));
         exit;
     }
 

@@ -75,7 +75,21 @@ eval($vendor_map_code);
     $created_tables = [];
     $created_triggers = [];
     $http_requests = [];
-    $http_filter = static function ($preempt, $args, $url) use (&$http_requests) {
+    $receipt_changes = [[
+        'type' => 'ADJUSTMENT',
+        'adjustment' => [
+            'id' => 'fixture-receipt',
+            'catalog_object_id' => 'sync-v',
+            'to_location_id' => 'fixture-location',
+            'from_state' => 'NONE',
+            'to_state' => 'IN_STOCK',
+            'quantity' => '5',
+            'reason_id' => ['type' => 'RECEIVED'],
+            'created_at' => '2026-02-01T12:00:00Z',
+            'occurred_at' => '2026-02-01T11:59:00Z',
+        ],
+    ]];
+    $http_filter = static function ($preempt, $args, $url) use (&$http_requests, &$receipt_changes) {
         $http_requests[] = ['method' => strtoupper((string)($args['method'] ?? 'GET')), 'url' => (string)$url];
         $path = (string)parse_url((string)$url, PHP_URL_PATH);
         $host = (string)parse_url((string)$url, PHP_URL_HOST);
@@ -95,20 +109,7 @@ eval($vendor_map_code);
                 ],
             ]]];
         } elseif ($path === '/v2/inventory/changes/batch-retrieve') {
-            $payload = ['changes' => [[
-                'type' => 'ADJUSTMENT',
-                'adjustment' => [
-                    'id' => 'fixture-receipt',
-                    'catalog_object_id' => 'sync-v',
-                    'to_location_id' => 'fixture-location',
-                    'from_state' => 'NONE',
-                    'to_state' => 'IN_STOCK',
-                    'quantity' => '5',
-                    'reason_id' => ['type' => 'RECEIVED'],
-                    'created_at' => '2026-02-01T12:00:00Z',
-                    'occurred_at' => '2026-02-01T11:59:00Z',
-                ],
-            ]]];
+            $payload = ['changes' => $receipt_changes];
         } elseif ($path === '/v2/inventory/counts/batch-retrieve') {
             $payload = ['counts' => [
                 ['catalog_object_id' => 'sync-v', 'location_id' => 'fixture-location', 'state' => 'IN_STOCK', 'quantity' => '9'],
@@ -257,6 +258,16 @@ eval($vendor_map_code);
         $failed_pull_rolls_back('activity-log insert failure after inventory and receipt writes', $activity_failure, 'activity');
         $check(hash_equals($baseline, $snapshot()), 'activity-log failure preserves exact initial fixture state');
 
+        // Duplicate lines in one order are not distinct order claims. A second
+        // vendor order for the same variation makes the single receipt ambiguous.
+        $duplicate_lines = [$order_line, $order_line];
+        if ($wpdb->update($tables['orders'], ['payload'=>wp_json_encode($duplicate_lines)], ['id'=>1]) !== 1) throw new RuntimeException('Could not set duplicate-line fixture payload.');
+        if ($wpdb->insert($tables['orders'], [
+            'vendor' => 'Second Fixture Vendor', 'status' => 'ordered', 'estimated_total' => 18,
+            'minimum_amount' => 0, 'item_count' => 1, 'payload' => wp_json_encode([$order_line]),
+            'submission_key' => null, 'created_at' => '2026-01-02 00:00:00',
+        ]) !== 1) throw new RuntimeException('Could not seed second private ordered-product fixture.');
+        $second_order_id = (int)$wpdb->insert_id;
         $request_count = count($http_requests);
         $pulled = \RoxyInventorySyncFixture\Square::pull();
         $check(isset($pulled['sync-v'], $pulled['new-v']) && $pulled['sync-v']['on_hand'] === 9.0 && $pulled['new-v']['on_hand'] === 2.0,
@@ -277,6 +288,30 @@ eval($vendor_map_code);
         $check($product_map['stale-v']['active'] === '0' && (float)$product_map['stale-v']['on_hand'] === 7.0,
             'successful retry deactivates only the missing Square product without erasing its prior stock');
         $order = $wpdb->get_row('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=1', ARRAY_A);
+        $second_order = $wpdb->get_row($wpdb->prepare('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=%d', $second_order_id), ARRAY_A);
+        $check($order['status'] === 'ordered' && $second_order['status'] === 'ordered',
+            'one receipt qualifying for two distinct vendor orders releases neither, despite duplicate matching lines in the first order');
+        $first_lines = json_decode((string)$order['payload'], true);
+        $check(count($first_lines) === 2 && (float)($first_lines[0]['last_observed_on_hand'] ?? -1) === 9.0
+            && (float)($first_lines[1]['last_observed_on_hand'] ?? -1) === 9.0
+            && ($first_lines[0]['square_receipt_review_event_id'] ?? '') === 'fixture-receipt'
+            && ($first_lines[1]['square_receipt_review_event_id'] ?? '') === 'fixture-receipt'
+            && ($first_lines[0]['square_receipt_review']['id'] ?? '') === 'fixture-receipt',
+            'ambiguous receipt pull advances observed stock and durably records the receipt for review on each matching line');
+        $second_payload_before_cancel = (string)$second_order['payload'];
+        $check(\RoxyInventorySyncFixture\Store::update_order_status($second_order_id, 'cancelled'),
+            'real Store transition explicitly cancels one ambiguous order');
+        $receipt_changes = [];
+        $check(\RoxyInventorySyncFixture\Square::pull() !== [],
+            'persisted ambiguous receipt is reconciled after cancellation even when Square returns no new events');
+        $order = $wpdb->get_row('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=1', ARRAY_A);
+        $second_order = $wpdb->get_row($wpdb->prepare('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=%d', $second_order_id), ARRAY_A);
+        $check($order['status'] === 'stock_increased' && $second_order['status'] === 'cancelled',
+            'after one order is cancelled, the same receipt releases only the remaining matching order');
+        $check(\RoxyInventorySyncFixture\Square::pull() !== [], 'subsequent pull completes after the receipt reconciliation');
+        $second_after_retry = $wpdb->get_row($wpdb->prepare('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=%d', $second_order_id), ARRAY_A);
+        $check($second_after_retry['status'] === 'cancelled' && (string)$second_after_retry['payload'] === $second_payload_before_cancel,
+            'later repeated receipt history never reopens or rewrites the cancelled order');
         $order_lines = json_decode((string)$order['payload'], true);
         $check($order['status'] === 'stock_increased'
             && ($order_lines[0]['square_receipt_event_id'] ?? '') === 'fixture-receipt'
@@ -288,7 +323,7 @@ eval($vendor_map_code);
         $check(is_array($run) && $run['run_type'] === 'pull' && $run['status'] === 'success'
             && strpos($run['message'], '2 Square variations pulled') !== false,
             'successful retry commits the pull activity record last');
-        $check(count($http_requests) === $request_count + 3, 'successful retry uses only mocked Square reads');
+        $check(count($http_requests) === $request_count + 8, 'ambiguous, resolved, and follow-up pulls use only mocked Square reads');
         foreach ($http_requests as $request) {
             $check(parse_url($request['url'], PHP_URL_HOST) === 'connect.squareupsandbox.com', 'every provider request was intercepted by the sandbox fixture');
         }

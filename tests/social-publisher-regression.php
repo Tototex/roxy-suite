@@ -109,12 +109,36 @@ namespace {
         &&count($GLOBALS['calls'])===3
         &&str_ends_with($GLOBALS['calls'][2][0],'/media_publish'),
         'Facebook Story processing failure does not block Instagram Reel publication and retains per-platform results');
+    reset_fixture('both','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['publish_facebook_story']=1;
+    \RoxySocial\Store::$row['facebook_post_id']='123';\RoxySocial\Store::$row['instagram_media_id']='456';
+    \RoxySocial\Store::$row['facebook_story_state']=json_encode(['version'=>1,'expected'=>1,'ids'=>[],'pending_id'=>'']);
+    \RoxySocial\Store::$row['last_error']='Facebook Story: video tooling was unavailable.';
+    \RoxySocial\FacebookStories::$result=['state'=>json_encode(['version'=>1,'expected'=>1,'ids'=>['0'=>'789'],'pending_id'=>''])];
+    check(\RoxySocial\Publisher::queue_facebook_story_retry(1)
+        &&\RoxySocial\Store::$row['status']==='publishing'
+        &&\RoxySocial\FacebookStories::$calls===0
+        &&count($GLOBALS['scheduled_events'])===1
+        &&$GLOBALS['scheduled_events'][0][1]==='roxy_social_facebook_story_retry',
+        'Story-only retry claims the draft and queues a dedicated worker');
+    $story_retry_args=$GLOBALS['scheduled_events'][0][2];
+    \RoxySocial\Publisher::process_facebook_story_retry(...$story_retry_args);
+    check(\RoxySocial\Store::$row['status']==='posted'
+        &&\RoxySocial\Store::$row['facebook_post_id']==='123'
+        &&\RoxySocial\Store::$row['instagram_media_id']==='456'
+        &&\RoxySocial\FacebookStories::$calls===1
+        &&count($GLOBALS['calls'])===0,
+        'Story-only retry completes the unfinished Story without repeating normal Facebook or Instagram posts');
+    \RoxySocial\Publisher::process_facebook_story_retry(...$story_retry_args);
+    check(\RoxySocial\FacebookStories::$calls===1,'duplicate Story retry callback cannot republish the Story');
     reset_fixture('both','failed');\RoxySocial\Store::$row['facebook_post_id']='123';\RoxySocial\Campaigns::$verified=false;$GLOBALS['responses']=[response(['id'=>'234']),response(['id'=>'345'])];
     check(\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['facebook_post_id']==='123'&&\RoxySocial\Store::$row['status']==='posted'&&count($GLOBALS['calls'])===2,'schedule wording does not block safe retry to only the missing account');
     $decode=new \ReflectionMethod(\RoxySocial\Publisher::class,'decode_response');$decode->setAccessible(true);
-    foreach([response(['id'=>'123'],500),response([]),['status'=>200,'body'=>'not JSON'],response(['id'=>['123']]),response(['id'=>'']),new \RuntimeException('timeout')] as $r){
+    foreach([response(['id'=>'123'],500),response(['id'=>'123'],408),response([]),['status'=>200,'body'=>'not JSON'],response(['id'=>['123']]),response(['id'=>'']),new \RuntimeException('timeout')] as $r){
         $v=$decode->invoke(null,$r,true,false);check(!empty($v['error'])&&!empty($v['ambiguous']),'unknown or invalid publication never becomes success');
     }
+    reset_fixture('facebook');$GLOBALS['responses']=[response(['error'=>['message'=>'request timed out']],408)];
+    check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='needs_review'&&count($GLOBALS['calls'])===1,
+        'Facebook HTTP 408 is ambiguous and cannot be blindly retried as a new post');
     foreach([response(['success'=>false]),response([]),response(['success'=>true],429)] as $r){check(!empty($decode->invoke(null,$r,false,true)['error']),'unconfirmed deletion retains ID');}
     check(($decode->invoke(null,response(['id'=>'11_123']),true,false)['id']??'')==='11_123','valid provider ID accepted');
     reset_fixture();$GLOBALS['responses']=[response(['id'=>'123']),response(['id'=>'234']),response(['id'=>'345'])];

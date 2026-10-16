@@ -129,6 +129,73 @@ final class Publisher {
         });
     }
 
+    /** Queue a Story-only retry only after every selected feed post already succeeded. */
+    public static function queue_facebook_story_retry(int $id): bool {
+        return self::with_lock($id, static function () use ($id) {
+            $row = Store::find($id);
+            if (!self::story_retry_is_safe($row)) return false;
+            $attempt_token = wp_generate_uuid4();
+            if (!Store::claim_publish_attempt($id, 'failed', $attempt_token, null, self::$claim)) return false;
+            $args = [$id, $attempt_token];
+            if (wp_next_scheduled('roxy_social_facebook_story_retry', $args)
+                || wp_schedule_single_event(time() + 1, 'roxy_social_facebook_story_retry', $args)) return true;
+            Store::restore_publish_attempt($id, $attempt_token, 'failed', self::$claim);
+            return false;
+        });
+    }
+
+    private static function story_retry_is_safe(?array $row): bool {
+        if (!$row || (string) ($row['status'] ?? '') !== 'failed'
+            || empty($row['publish_facebook_story'])
+            || (string) ($row['media_type'] ?? '') !== 'video'
+            || !str_starts_with((string) ($row['last_error'] ?? ''), 'Facebook Story: ')) return false;
+        $platform = (string) ($row['platform'] ?? 'both');
+        return in_array($platform, ['facebook', 'instagram', 'both'], true)
+            && ($platform === 'instagram' || !empty($row['facebook_post_id']))
+            && ($platform === 'facebook' || !empty($row['instagram_media_id']))
+            && empty($row['instagram_container_id']);
+    }
+
+    public static function process_facebook_story_retry(int $id, string $attempt_token): void {
+        if (!preg_match('/^[a-f0-9-]{36}$/iD', $attempt_token)) return;
+        self::with_lock($id, static function () use ($id, $attempt_token) {
+            $row = Store::find($id);
+            if (!$row || (string) ($row['status'] ?? '') !== 'publishing'
+                || !hash_equals((string) ($row['publish_attempt_token'] ?? ''), $attempt_token)
+                || !empty($row['publish_worker_token'])) return false;
+            $worker_token = wp_generate_uuid4();
+            if (!Store::claim_publish_execution($id, $attempt_token, $worker_token, self::$claim)) return false;
+            $row = Store::find($id);
+            if (!$row || (string) ($row['status'] ?? '') !== 'publishing'
+                || (string) ($row['publish_attempt_token'] ?? '') !== $attempt_token
+                || (string) ($row['publish_worker_token'] ?? '') !== $worker_token) return false;
+
+            try {
+                $story = FacebookStories::publish($row, (string) ($row['facebook_story_state'] ?? ''));
+            } catch (\Throwable $error) {
+                $story = ['error' => 'Facebook Story retry was interrupted. Review the Page before retrying.', 'ambiguous' => true];
+            }
+
+            if (!empty($story['state']) && !Store::set_facebook_story_state($id, (string) $story['state'], self::$claim)) {
+                self::save_result($id, 'needs_review', 'Facebook Story retry completed, but its state could not be saved. Review the Page before retrying.');
+                return false;
+            }
+            if (!empty($story['error'])) {
+                self::save_result($id, !empty($story['ambiguous']) ? 'needs_review' : 'failed', 'Facebook Story: ' . (string) $story['error']);
+                return false;
+            }
+
+            $state = json_decode((string) ($story['state'] ?? ''), true);
+            $expected = is_array($state) ? (int) ($state['expected'] ?? 0) : 0;
+            $published_ids = is_array($state) ? array_filter((array) ($state['ids'] ?? [])) : [];
+            if ($expected < 1 || count($published_ids) < $expected || !empty($state['pending_id'])) {
+                self::save_result($id, 'needs_review', 'Facebook Story retry returned incomplete state. Review the Page before retrying.');
+                return false;
+            }
+            return self::save_result($id, 'posted');
+        });
+    }
+
     public static function remove_published(int $id): bool {
         return self::with_lock($id, static function () use ($id) { return self::remove_row($id); });
     }
@@ -390,7 +457,7 @@ final class Publisher {
         if (is_wp_error($response)) return ['error'=>'Meta request outcome is unknown. Review the remote account before retrying.','ambiguous'=>$require_id];
         $status=(int)wp_remote_retrieve_response_code($response);
         $data=json_decode((string)wp_remote_retrieve_body($response),true);
-        if($status<200||$status>=300) return ['error'=>'Meta returned HTTP '.$status.': '.sanitize_text_field((string)($data['error']['message']??'No success was recorded.')),'ambiguous'=>$require_id&&($status>=500||$status===0)];
+        if($status<200||$status>=300) return ['error'=>'Meta returned HTTP '.$status.': '.sanitize_text_field((string)($data['error']['message']??'No success was recorded.')),'ambiguous'=>$require_id&&($status>=500||$status===0||$status===408)];
         if(!is_array($data))return ['error'=>'Meta returned an unreadable response. Review the remote account before retrying.','ambiguous'=>$require_id];
         if(isset($data['error']))return ['error'=>sanitize_text_field((string)($data['error']['message']??'Meta reported an error.'))];
         if($require_success&&($data['success']??null)!==true)return ['error'=>'Meta did not confirm removal; the recorded ID was retained.'];

@@ -2,7 +2,7 @@
 namespace RoxySocial {
     class Store {
         public static $saved;
-        public static function all_recent() { return array_map(static function($id) { return ['id'=>$id,'status'=>'approved','scheduled_for'=>'2026-10-09 10:00:00','campaign_key'=>'movie-20261009','post_text'=>'Original '.$id,'media_url'=>'','media_type'=>'image','trailer_url'=>'','facebook_post_id'=>null,'instagram_media_id'=>null,'instagram_container_id'=>null,'last_error'=>null]; }, [1,2,3]); }
+        public static function all_recent() { return array_map(static function($id) { return ['id'=>$id,'status'=>$id===4?'failed':'approved','scheduled_for'=>'2026-10-09 10:00:00','campaign_key'=>'movie-20261009','post_text'=>'Original '.$id,'media_url'=>$id===4?'https://example.test/video.mp4':'','media_type'=>$id===4?'video':'image','platform'=>'both','publish_facebook_story'=>$id===4?1:0,'facebook_story_state'=>$id===4?json_encode(['expected'=>1,'ids'=>[],'pending_id'=>'']):null,'trailer_url'=>'','facebook_post_id'=>$id===4?'123':null,'instagram_media_id'=>$id===4?'456':null,'instagram_container_id'=>null,'last_error'=>$id===4?'Facebook Story: temporary failure':null]; }, [1,2,3,4]); }
         public static function draft_revision($r) { return 'revision-'.$r['id']; }
         public static function find($id) { return ['id'=>$id]; }
         public static function update_draft(...$args) { self::$saved=$args; return $args[5] === 'revision-'.$args[0]; }
@@ -31,6 +31,7 @@ namespace {
     function wp_timezone() { return new \DateTimeZone('America/Los_Angeles'); }
     function wp_date($format,$stamp,$zone) { return (new \DateTimeImmutable('@'.$stamp))->setTimezone($zone)->format($format); }
     function current_time($v) { return time(); }
+    function attachment_url_to_postid($v) { return 0; }
     function wp_get_referer() { return $GLOBALS['referer'] ?? ''; }
     function wp_parse_url($v,$part) { return parse_url($v,$part); }
     function add_query_arg($a,$u) { return $u.'?'.http_build_query($a); }
@@ -68,5 +69,11 @@ namespace {
     $_POST['draft_revision']='stale';
     try { \RoxySocial\Admin::update_draft(); } catch (\RuntimeException $e) { $result=json_decode($e->getMessage(),true); }
     $check($result['success']===false);
+    $_GET=['status'=>'failed'];
+    ob_start(); \RoxySocial\Admin::render_page(); $failed_html=ob_get_clean();
+    $check(str_contains($failed_html,'Retry Facebook Story')
+        &&str_contains($failed_html,'roxy_social_retry_facebook_story')
+        &&str_contains($failed_html,'The normal Facebook and Instagram posts will not be repeated.')
+        &&!str_contains($failed_html,'>Retry publish</a>'));
     echo $checks," bulk editor server checks passed\n";
 }
