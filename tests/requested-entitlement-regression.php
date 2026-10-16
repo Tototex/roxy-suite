@@ -94,7 +94,7 @@ namespace {
     final class WC_Payment_Tokens { public static function get_customer_tokens($user_id) { return [new FixtureToken()]; } }
     final class FixtureProduct { public $id; public function __construct($id) { $this->id = $id; } public function get_tax_class() { return ''; } public function get_tax_status() { return 'none'; } }
     final class FixtureOrderItem {
-        private $product; private $qty; private $subtotal = 0; private $total = 0; private $taxes = [];
+        private $product; private $qty; private $subtotal = 0; private $total = 0; private $taxes = []; private $meta = [];
         public function __construct($product, $qty) { $this->product = $product; $this->qty = $qty; }
         public function get_product_id() { return $this->product; }
         public function get_product() { return new FixtureProduct($this->product); }
@@ -107,6 +107,8 @@ namespace {
         public function get_taxes() { return $this->taxes; }
         public function get_total_tax() { return 0; }
         public function get_subtotal_tax() { return 0; }
+        public function add_meta_data($key, $value, $unique = false) { $this->meta[$key] = $value; }
+        public function get_meta($key, $single = true) { return $this->meta[$key] ?? ''; }
         public function save() {}
     }
     class WC_Order {
