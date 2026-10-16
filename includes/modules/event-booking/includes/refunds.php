@@ -1,6 +1,29 @@
 <?php
 if (!defined('ABSPATH')) exit;
 
+/** Ensure a paid booking change is covered by the still-collected adjustment line. */
+function roxy_eb_booking_adjustment_payment_matches($order, $item, array $booking, array $adjustment) {
+    $delta = $adjustment['delta_total'] ?? null;
+    $new_total = $adjustment['new_total_price'] ?? null;
+    if (!$item || !is_numeric($delta) || !is_finite((float) $delta) || (float) $delta <= 0
+        || !is_numeric($new_total) || !is_finite((float) $new_total)
+        || (float) $delta !== (float) intval($delta)
+        || (float) $new_total !== (float) intval($new_total)
+        || intval($new_total) !== intval($booking['total_price'] ?? 0) + intval($delta)
+        || (float) $item->get_quantity() !== 1.0) {
+        return new WP_Error('adjustment_amount', 'Paid adjustment amount does not match the verified booking change. Manager review is required.');
+    }
+    $item_id = (int) $item->get_id();
+    $line_total = (float) $item->get_total();
+    if ($item_id <= 0 || !is_finite($line_total)) return new WP_Error('adjustment_amount', 'Paid adjustment line could not be verified. Manager review is required.');
+    $precision = function_exists('wc_get_price_decimals') ? wc_get_price_decimals() : 2;
+    $net_line_total = $line_total - (float) $order->get_total_refunded_for_item($item_id);
+    if (round($net_line_total, $precision) !== round((float) $delta, $precision)) {
+        return new WP_Error('adjustment_amount', 'Paid adjustment was discounted or refunded and cannot be applied automatically. Manager review is required.');
+    }
+    return true;
+}
+
 /** Use actual discounted order-line totals/taxes, never the original booking quote. */
 function roxy_eb_booking_refund_plan($order, int $booking_id, int $item_id = 0) {
     if (!$order || !is_a($order, 'WC_Order')) return new WP_Error('invalid_order', 'Invalid WooCommerce order.');

@@ -895,9 +895,13 @@ function roxy_eb_apply_booking_adjustment_from_order($order, array $adjustment) 
         global $wpdb;
         $id = (int) ($adjustment['booking_id'] ?? 0);
         $matches = 0;
+        $adjustment_item = null;
         foreach ($order->get_items() as $item) {
             $data = json_decode((string) $item->get_meta('_roxy_eb_booking_adjustment', true), true);
-            if (is_array($data) && (int) ($data['booking_id'] ?? 0) === $id) $matches++;
+            if (is_array($data) && (int) ($data['booking_id'] ?? 0) === $id) {
+                $matches++;
+                $adjustment_item = $item;
+            }
         }
         if ($matches > 1) return new WP_Error('adjustment_ambiguous', 'Multiple paid adjustments for the same booking require manager review.');
         $table = roxy_eb_table_bookings();
@@ -905,6 +909,9 @@ function roxy_eb_apply_booking_adjustment_from_order($order, array $adjustment) 
         if (!$booking) return new WP_Error('booking_missing', 'Booking not found for adjustment.');
         if (in_array((int) $order->get_id(), roxy_eb_booking_adjustment_order_ids($booking), true)) return true;
         if (!in_array($booking['status'], ['confirmed', 'pending_invoice'], true)) return new WP_Error('booking_status', 'Paid adjustment cannot change this booking status. Manager review is required.');
+        if ($matches !== 1 || !$adjustment_item) return new WP_Error('adjustment_amount', 'Paid adjustment line could not be verified. Manager review is required.');
+        $payment_matches = roxy_eb_booking_adjustment_payment_matches($order, $adjustment_item, $booking, $adjustment);
+        if (is_wp_error($payment_matches)) return $payment_matches;
         if (!roxy_eb_can_customer_edit_order($booking)) return new WP_Error('adjustment_cutoff', 'Paid adjustment reached the edit cutoff before completion. Manager review is required.');
         $owner = (int) ($booking['wp_user_id'] ?? 0) > 0 && (int) $booking['wp_user_id'] === (int) $order->get_user_id();
         $email = strtolower(trim((string) ($booking['customer_email'] ?? '')));

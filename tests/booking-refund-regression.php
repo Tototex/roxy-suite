@@ -20,8 +20,9 @@ class WP_Error {
 function is_wp_error($value) { return $value instanceof WP_Error; }
 
 class FakeRefundItem {
-    public $qty; public $total; public $tax; public $meta; public $taxes; public $type;
+    public $id=1; public $qty; public $total; public $tax; public $meta; public $taxes; public $type;
     public function __construct($qty, $total, $tax, array $meta = [], array $taxes = [], $type = 'line_item') { $this->qty=$qty; $this->total=$total; $this->tax=$tax; $this->meta=$meta; $this->taxes=$taxes ?: ($tax ? [1=>$tax] : []); $this->type=$type; }
+    public function get_id() { return $this->id; }
     public function get_quantity() { return $this->qty; }
     public function get_total() { return $this->total; }
     public function get_total_tax() { return $this->tax; }
@@ -30,7 +31,7 @@ class FakeRefundItem {
     public function get_meta($key, $single = true) { return $this->meta[$key] ?? ''; }
 }
 class WC_Order {
-    public $id; public $total; public $items; public $refunds=[]; public $primaryBooking=0; public $paid=true; public $meta=[]; public $savedMeta=[];
+    public $id; public $total; public $items; public $refunds=[]; public $primaryBooking=0; public $paid=true; public $meta=[]; public $savedMeta=[]; public $refundedItemTotals=[];
     public $datePaid = null; public $saveFailure = false; public $readbackFailure = false; public $status='processing'; public $saveCalls=0; public $failSaveOnCall=0; public $failReadbackOnCall=0; public $readCalls=0;
     public function __construct($id, $total, array $items, $primaryBooking = 0, array $refunds = [], $paid = true) { $this->id=$id; $this->total=$total; $this->items=$items; $this->primaryBooking=$primaryBooking; $this->refunds=$refunds; $this->paid=$paid; $this->datePaid=$paid ? (object)['date'=>'2026-01-01'] : null; }
     public function get_id() { return $this->id; }
@@ -47,7 +48,7 @@ class WC_Order {
     public function read_meta_data($force = false) { $this->readCalls++; $this->meta=($this->readbackFailure || $this->readCalls === $this->failReadbackOnCall) ? [] : $this->savedMeta; }
     public function get_total_refunded() { return array_sum(array_map(static function($r) { return (float)$r->get_amount(); }, $this->refunds)); }
     private function refundItems($id) { $out=[]; foreach ($this->refunds as $r) foreach ($r->get_items(['line_item','fee','shipping']) as $rid=>$item) if ((int)$rid===(int)$id) $out[]=$item; return $out; }
-    public function get_total_refunded_for_item($id) { return array_sum(array_map(static function($i){return -(float)$i->get_total();},$this->refundItems($id))); }
+    public function get_total_refunded_for_item($id) { return array_sum(array_map(static function($i){return -(float)$i->get_total();},$this->refundItems($id))) + (float)($this->refundedItemTotals[$id]??0); }
     public function get_tax_refunded_for_item($id, $rate) { $sum=0; foreach($this->refundItems($id) as $i) $sum += -(float)($i->get_taxes()['total'][$rate]??0); return $sum; }
     public function get_qty_refunded_for_item($id) { return array_sum(array_map(static function($i){return (float)$i->get_quantity();},$this->refundItems($id))); }
 }
@@ -115,6 +116,27 @@ function make_adjustment_item($booking_id,$total,$tax=0) { return new FakeRefund
 $helper = ($argv[1] ?? dirname(__DIR__)) . '/includes/modules/event-booking/includes/refunds.php';
 if (!is_file($helper)) { fwrite(STDERR, "Missing planned helper: $helper\n"); exit(2); }
 require_once $helper;
+
+run_test('paid adjustment must match collected and unrefunded line amount', function() {
+    $booking=['total_price'=>250];
+    $adjustment=['delta_total'=>140,'new_total_price'=>390];
+    $item=new FakeRefundItem(1,140,0);
+    $order=new WC_Order(901,140,[1=>$item]);
+    check(roxy_eb_booking_adjustment_payment_matches($order,$item,$booking,$adjustment)===true,'exact paid adjustment amount is accepted');
+
+    $discounted=new FakeRefundItem(1,100,0);
+    check(is_wp_error(roxy_eb_booking_adjustment_payment_matches(new WC_Order(902,100,[1=>$discounted]),$discounted,$booking,$adjustment)),'discounted adjustment cannot apply full booking change');
+
+    $refunded=new FakeRefundItem(1,140,0);
+    $partially_refunded=new WC_Order(903,140,[1=>$refunded]);
+    $partially_refunded->refundedItemTotals[1]=1;
+    check(is_wp_error(roxy_eb_booking_adjustment_payment_matches($partially_refunded,$refunded,$booking,$adjustment)),'partially refunded adjustment cannot apply full booking change');
+
+    $mismatched=$adjustment; $mismatched['new_total_price']=391;
+    check(is_wp_error(roxy_eb_booking_adjustment_payment_matches($order,$item,$booking,$mismatched)),'inconsistent booking total and adjustment delta are rejected');
+    $multiple=new FakeRefundItem(2,140,0);
+    check(is_wp_error(roxy_eb_booking_adjustment_payment_matches($order,$multiple,$booking,$adjustment)),'multi-quantity adjustment line is rejected');
+});
 
 run_test('mixed cart plan preserves unrelated item and actual paid item totals/tax', function() {
     $order=new WC_Order(10, 160, [21=>make_item(7,null,100,10), 22=>make_item(null,null,40,4), 23=>make_item(8,null,20,2)]);
