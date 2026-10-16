@@ -47,8 +47,8 @@ namespace {
     $command = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__FILE__) . ' child success ' . escapeshellarg($dataset) . ' ' . escapeshellarg($root);
     $csv = shell_exec($command);
     $stream = fopen('php://temp', 'w+'); fwrite($stream, $csv); rewind($stream);
-    $header = fgetcsv($stream); $count = 0; $first = null; $last = null;
-    while (($row = fgetcsv($stream)) !== false) { $first ??= $row; $last = $row; $count++; }
+    $header = fgetcsv($stream, null, ',', '"', ''); $count = 0; $first = null; $last = null;
+    while (($row = fgetcsv($stream, null, ',', '"', '')) !== false) { $first ??= $row; $last = $row; $count++; }
     fclose($stream);
     export_assert(count($header) === $columns && $count === 5001 && count($first) === $columns && count($last) === $columns, "$dataset: actual handler exports 5,001 complete CSV rows with original columns");
     export_assert(in_array('$2.50', $first, true) && in_array('$2.50', $last, true), "$dataset: monetary formatting preserved");
