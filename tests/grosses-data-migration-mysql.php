@@ -31,14 +31,25 @@ try {
   $no_id_report_id=(int)$wpdb->insert_id;
   $no_id_payload=$wpdb->get_var($wpdb->prepare('SELECT payload_json FROM '.$reports.' WHERE id=%d',$no_id_report_id));
   if(!is_string($no_id_payload)||$wpdb->last_error!=='')throw new RuntimeException('Could not preserve saved migration fixture payload');
-  $assert($wpdb->update($reports,['payload_json'=>'not-json'],['id'=>$no_id_report_id])!==false,'malformed saved-report fixture installed');
   update_option($store::HISTORY_BACKFILL_OPTION,'0.0.1',false);update_option($store::ENTRY_MIGRATION_OPTION,'0.0.1',false);
   $store::maybe_backfill_history();
   $assert($before===$store::get_entry($corrected)&&$history_before===$digest($history),'old completed version markers do not replay historical data');
   $assert(get_option($store::ENTRY_MIGRATION_OPTION)==='0.0.1','legacy marker retained without version bump');
   delete_option($store::HISTORY_BACKFILL_OPTION);delete_option($store::ENTRY_MIGRATION_OPTION);
-  $store::maybe_backfill_history();
-  $assert((string)get_option($store::HISTORY_BACKFILL_OPTION,'')===''&&(int)$wpdb->get_var("SELECT COUNT(*) FROM {$history} WHERE report_date='2038-01-05'")===0,'malformed saved-report payload remains retryable and writes no history rows');
+  $invalid_payloads=[
+    'invalid JSON'=>'not-json',
+    'missing row list'=>wp_json_encode(['summary'=>[]]),
+    'non-list row collection'=>wp_json_encode(['rows'=>['key'=>'not-a-list']]),
+    'malformed row'=>wp_json_encode(['rows'=>['not-an-array']]),
+    'invalid calendar date'=>wp_json_encode(['rows'=>[array_merge($no_id_a,['report_date'=>'2038-02-30'])]]),
+    'missing movie title'=>wp_json_encode(['rows'=>[array_merge($no_id_a,['film_title'=>''])]]),
+  ];
+  foreach($invalid_payloads as $label=>$payload_json) {
+    if(!is_string($payload_json)||$wpdb->update($reports,['payload_json'=>$payload_json],['id'=>$no_id_report_id])===false)throw new RuntimeException('Could not install malformed saved-report fixture');
+    $history_before_invalid_payload=$digest($history);
+    $store::maybe_backfill_history();
+    $assert((string)get_option($store::HISTORY_BACKFILL_OPTION,'')===''&&$history_before_invalid_payload===$digest($history),"$label saved-report payload is rejected without history writes or completion stamp");
+  }
   $assert($wpdb->update($reports,['payload_json'=>$no_id_payload],['id'=>$no_id_report_id])!==false,'saved-report payload restored for retry');
   $store::maybe_backfill_history();
   $assert(get_option($store::HISTORY_BACKFILL_OPTION)==='1'&&get_option($store::ENTRY_MIGRATION_OPTION)==='1','fresh migrations stamp independent one-time completion');
