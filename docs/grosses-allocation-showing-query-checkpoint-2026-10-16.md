@@ -13,7 +13,8 @@
 - No daily pull, report refresh, database write, email, historical correction, or external order was triggered during this verification.
 - The scale regression expansion is committed as `0ae499e` and hosted run [38877267193](https://github.com/Tototex/roxy-suite/actions/runs/38877267193) passed all eight jobs, including the full PHP 8.3 regression suite, PHP 8.0–8.4 syntax, private MySQL, Social browser, and Requested Showings/Woo lifecycle jobs.
 - The disposable-MySQL fixture now combines 1,001 report rows with 100 actual-class Square orders/lines, checks all 100,100 cents are conserved, and retains six bounded update batches. Commit `1abb1f2`; hosted run [38877833369](https://github.com/Tototex/roxy-suite/actions/runs/38877833369) passed all eight jobs, including this private WordPress/MySQL fixture.
+- A production read-only reconciliation of Oct 10–16, 2026 completed in 1.083 seconds with a 250,245,120-byte PHP peak allocation (about 239 MiB, including WordPress bootstrap). It returned three populated dates; each Square total matched its persisted Movie + Live + Rental assignment to the cent (Oct 10 $256.65, Oct 11 $217.59, Oct 13 $141.77). This benchmarks the bounded range-read/reconciliation path, not the full report allocation/rebalance pipeline; no report refresh, write, email, or external mutation occurred.
 
 ## Remaining scope
 
-This closes the repeated-showing-query inefficiency. G11 remains open for a representative populated/scale benchmark of the full allocation pipeline; the existing report-date EXPLAIN only established index selection on current production data.
+This closes the repeated-showing-query inefficiency and adds a representative seven-day production read benchmark with balanced persisted totals. G11 remains open for a representative populated/scale benchmark of the full allocation pipeline; this read benchmark does not invoke the write-capable rebalance path.
