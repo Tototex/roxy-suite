@@ -34,7 +34,7 @@ eval('namespace ' . $namespace . ';
     public function get_date_created() { return null; }
     public function get_meta(string $key, bool $single=true) { return $this->meta[$key] ?? ''; }
     public function update_meta_data(string $key, $value): void { $this->meta[$key]=$value; }
-    public function save(): int { if (!empty($GLOBALS['sales_fixture_order_save_failure'])) return 0; return $this->id; }
+    public function save(): int { if (!empty($GLOBALS["sales_fixture_order_save_failure"])) return 0; return $this->id; }
   }
   function wc_get_orders(array $args) { $GLOBALS["sales_fixture_query"] = $args; if (!empty($GLOBALS["sales_fixture_query_failure"]) && (empty($GLOBALS["sales_fixture_legacy_failure_only"]) || !isset($args["meta_query"]))) return false; return array_keys(array_filter($GLOBALS["sales_fixture_orders"] ?? [], static fn($order) => in_array($order->get_status(), $args["status"] ?? [], true))); }
   function wc_get_order($id) { return $GLOBALS["sales_fixture_orders"][(int)$id] ?? null; }
