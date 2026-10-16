@@ -451,11 +451,23 @@ class Products {
     update_post_meta($product_id, '_price', $price_str);
     update_post_meta($product_id, '_tax_status', 'none');
     update_post_meta($product_id, '_tax_class', '');
-
-    wp_set_object_terms($product_id, ['exclude-from-catalog','exclude-from-search'], 'product_visibility', false);
-
+    // Persist the managed identity before applying visibility. If the taxonomy
+    // write fails on a newly created product, the retry can still discover it.
     update_post_meta($product_id, ROXY_ST_META_SHOWING_ID, $showing_id);
     update_post_meta($product_id, ROXY_ST_META_TICKET_TYPE, $ticket_type);
+
+    $visibility_result = wp_set_object_terms($product_id, ['exclude-from-catalog','exclude-from-search'], 'product_visibility', false);
+    if (is_wp_error($visibility_result)) {
+      // Keep a partially synchronized ticket out of public purchase flows until
+      // the bounded retry can restore its required catalog visibility terms.
+      $deactivated = wp_update_post(['ID' => $product_id, 'post_status' => 'draft'], true);
+      if (is_wp_error($deactivated) || !$deactivated) {
+        Log::warn('ticket product could not be deactivated after visibility sync failure', ['product_id'=>$product_id]);
+      }
+      // Without these terms WooCommerce can expose managed ticket products in
+      // catalog/search. Treat that as a partial sync so bounded reconciliation runs.
+      throw new \RuntimeException('Ticket product visibility could not be synchronized');
+    }
 
     if ($thumb_id) {
       set_post_thumbnail($product_id, $thumb_id);

@@ -34,7 +34,7 @@ namespace {
 define('ABSPATH', __DIR__); define('MINUTE_IN_SECONDS',60); define('ROXY_ST_META_SHOWING_ID','_roxy_showing_id'); define('ROXY_ST_META_TICKET_TYPE','_roxy_ticket_type');
 $root=$argv[1]??dirname(__DIR__); $fixture=$argv[2]??$root.'/includes/modules/show-tickets/includes/';
 $GLOBALS['meta']=[]; $GLOBALS['types']=[]; $GLOBALS['statuses']=[]; $GLOBALS['notices']=[]; $GLOBALS['writes']=[]; $GLOBALS['hooks']=[]; $GLOBALS['listing_queries']=[]; $GLOBALS['cleanup_queries']=[]; $GLOBALS['cleanup_pages']=[]; $GLOBALS['transients']=[]; $GLOBALS['capacity_locks']=[]; $GLOBALS['logs']=[];
-$GLOBALS['room_lock_calls']=[]; $GLOBALS['room_conflict']=false; $GLOBALS['scheduled_events']=[]; $GLOBALS['schedule_fail']=false; $GLOBALS['product_update_fail']=false;
+$GLOBALS['room_lock_calls']=[]; $GLOBALS['room_conflict']=false; $GLOBALS['scheduled_events']=[]; $GLOBALS['schedule_fail']=false; $GLOBALS['product_update_fail']=false; $GLOBALS['product_visibility_fail']=false; $GLOBALS['product_visibility_terms']=[];
 class WooCommerce {} class WP_Error { private $message; function __construct($code,$message){$this->message=$message;} function get_error_message(){return $this->message;} }
 function is_wp_error($v){return $v instanceof WP_Error;}
 function __($s,...$args){return $s;}
@@ -78,7 +78,7 @@ function wc_format_localized_price($price){return number_format((float)$price,2,
 function wc_format_decimal($price,$decimals=2){return number_format((float)$price,(int)$decimals,'.','');}
 function wc_get_price_decimals(){return 2;}
 function get_post_thumbnail_id($id){return 0;}
-function wp_set_object_terms(...$args){return true;}
+function wp_set_object_terms(...$args){if(!empty($GLOBALS['product_visibility_fail'])&&($args[2]??'')==='product_visibility')return new WP_Error('fixture_visibility_update','fixture visibility update failure');$GLOBALS['product_visibility_terms'][$args[0]]=$args[1];return true;}
 function wp_timezone(){return new DateTimeZone('America/Los_Angeles');}
 function wp_date($format,$timestamp){return (new DateTimeImmutable('@'.(int)$timestamp))->setTimezone(wp_timezone())->format('Y-m-d H:i');}
 function current_datetime(){return new DateTimeImmutable('2040-01-02 12:00:00',wp_timezone());}
@@ -138,6 +138,11 @@ $GLOBALS['statuses'][101]='draft'; $GLOBALS['product_update_fail']=true; $GLOBAL
 check(($GLOBALS['statuses'][101]??'')==='draft' && ($GLOBALS['scheduled_events'][0]['hook']??'')==='roxy_st_sync_products_retry' && ($GLOBALS['scheduled_events'][0]['args']??[])===[1,1] && !isset($GLOBALS['transients']['roxy_st_sync_1']),'failed Woo product update is treated as partial sync and queues bounded reconciliation');
 $GLOBALS['product_update_fail']=false; $product_retry=array_shift($GLOBALS['scheduled_events']); \RoxyST\Products::retry_product_sync($product_retry['args'][0],$product_retry['args'][1]);
 check(($GLOBALS['statuses'][101]??'')==='publish' && !isset($GLOBALS['transients']['roxy_st_sync_1']),'product reconciliation retry restores publication after CRUD recovery');
+$GLOBALS['product_visibility_fail']=true; $GLOBALS['scheduled_events']=[]; $GLOBALS['product_visibility_terms'][101]=[];
+\RoxyST\Products::ensure_products_for_showing(1);
+check(($GLOBALS['statuses'][101]??'')==='draft' && ($GLOBALS['product_visibility_terms'][101]??null)===[] && ($GLOBALS['meta'][101][ROXY_ST_META_SHOWING_ID]??0)===1 && ($GLOBALS['meta'][101][ROXY_ST_META_TICKET_TYPE]??'')==='adult' && ($GLOBALS['scheduled_events'][0]['hook']??'')==='roxy_st_sync_products_retry' && ($GLOBALS['scheduled_events'][0]['args']??[])===[1,1] && !isset($GLOBALS['transients']['roxy_st_sync_1']),'failed Woo visibility taxonomy write fails closed, preserves managed identity, and queues bounded reconciliation');
+$GLOBALS['product_visibility_fail']=false; $visibility_retry=array_shift($GLOBALS['scheduled_events']); \RoxyST\Products::retry_product_sync($visibility_retry['args'][0],$visibility_retry['args'][1]);
+check(($GLOBALS['product_visibility_terms'][101]??[])===['exclude-from-catalog','exclude-from-search'] && !isset($GLOBALS['transients']['roxy_st_sync_1']),'product reconciliation retry restores hidden catalog/search visibility after taxonomy recovery');
 $GLOBALS['statuses'][103]='publish'; $GLOBALS['writes']=[];
 $show_end=\RoxyST\Eligibility::showing_end_timestamp(1);
 check($show_end!==null && \RoxyST\Eligibility::showing_sales_open(1,$show_end-1) && !\RoxyST\Eligibility::showing_sales_open(1,$show_end),'sales cutoff is exclusive at the actual showing end');
