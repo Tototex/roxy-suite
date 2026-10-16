@@ -14,7 +14,7 @@ class TestItem { public function get_meta($key, $single) { return [101,102,103];
 class TestOrder {
     public $status = 'processing'; public $refunded = 0;
     public function get_status() { return $this->status; }
-    public function get_qty_refunded_for_item($id) { return -$this->refunded; }
+    public function get_qty_refunded_for_item($id) { return is_numeric($this->refunded) ? -$this->refunded : $this->refunded; }
     public function get_item($id) { return $id === 10 ? new TestItem() : false; }
 }
 require $root . '/includes/modules/show-tickets/includes/class-roxy-st-tickets.php';
