@@ -43,6 +43,14 @@ try {
     $first_connection=$wpdb;
     $second_connection=new wpdb(DB_USER,DB_PASSWORD,DB_NAME,DB_HOST);
     $second_connection->prefix=$fixture_prefix;
+    $poster_claim=\RoxySocial\PublishFixtureStore::acquire_poster_lifecycle_lock();
+    roxy_publish_fixture_check($poster_claim&&\RoxySocial\PublishFixtureStore::owns_publish_lock($poster_claim),'actual connection owns Hangar poster lifecycle lock');
+    $wpdb=$second_connection;
+    roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::acquire_poster_lifecycle_lock()===null
+        &&!\RoxySocial\PublishFixtureStore::owns_publish_lock($poster_claim),'separate database connection cannot interleave poster reference update with cleanup');
+    $wpdb=$first_connection;
+    \RoxySocial\PublishFixtureStore::release_publish_lock($poster_claim);
+    roxy_publish_fixture_check((int)$wpdb->get_var($wpdb->prepare('SELECT IS_FREE_LOCK(%s)',$poster_claim['name']))===1,'poster lifecycle lock is released after protected mutation');
     try {
         $wpdb=$first_connection;
         $wpdb->insert($table,['id'=>4,'status'=>'approved','updated_at'=>current_time('mysql')]);

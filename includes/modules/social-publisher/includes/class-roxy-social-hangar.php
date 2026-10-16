@@ -187,16 +187,36 @@ final class Hangar {
             error_log('Roxy Social could not retain the previous Hangar video poster for cleanup; replacement was not applied.');
             return;
         }
-        update_post_meta($attachment_id, '_roxy_social_video_poster_url', $poster_url);
-        update_post_meta($attachment_id, '_roxy_social_video_poster_file', $poster_path);
-        if ((string) get_post_meta($attachment_id, '_roxy_social_video_poster_url', true) !== $poster_url
-            || (string) get_post_meta($attachment_id, '_roxy_social_video_poster_file', true) !== $poster_path) {
-            // Restore the prior pair; do not leave metadata pointing at a
-            // partial replacement when the database write fails.
-            if ($old_url === '' || $old_url === null) delete_post_meta($attachment_id, '_roxy_social_video_poster_url');
-            else update_post_meta($attachment_id, '_roxy_social_video_poster_url', $old_url);
-            if ($old_file === '' || $old_file === null) delete_post_meta($attachment_id, '_roxy_social_video_poster_file');
-            else update_post_meta($attachment_id, '_roxy_social_video_poster_file', $old_file);
+        $claim = Store::acquire_poster_lifecycle_lock();
+        if ($claim === null) {
+            if (!Store::queue_poster_cleanup($poster_path)) error_log('Roxy Social could not queue an unassigned Hangar poster after lock contention.');
+            else self::schedule_video_thumbnail_cleanup($poster_path, 1);
+            return;
+        }
+        $saved = false;
+        try {
+            if (Store::owns_publish_lock($claim)) {
+                update_post_meta($attachment_id, '_roxy_social_video_poster_url', $poster_url);
+                update_post_meta($attachment_id, '_roxy_social_video_poster_file', $poster_path);
+                $saved = (string) get_post_meta($attachment_id, '_roxy_social_video_poster_url', true) === $poster_url
+                    && (string) get_post_meta($attachment_id, '_roxy_social_video_poster_file', true) === $poster_path
+                    && Store::owns_publish_lock($claim);
+            }
+            if (!$saved) {
+                // Restore the prior pair while cleanup is excluded; if the
+                // connection lost its lock, keep the new file queued and do
+                // not try to unlink it in this request.
+                if (Store::owns_publish_lock($claim)) {
+                    if ($old_url === '' || $old_url === null) delete_post_meta($attachment_id, '_roxy_social_video_poster_url');
+                    else update_post_meta($attachment_id, '_roxy_social_video_poster_url', $old_url);
+                    if ($old_file === '' || $old_file === null) delete_post_meta($attachment_id, '_roxy_social_video_poster_file');
+                    else update_post_meta($attachment_id, '_roxy_social_video_poster_file', $old_file);
+                }
+            }
+        } finally {
+            Store::release_publish_lock($claim);
+        }
+        if (!$saved) {
             self::delete_owned_video_thumbnail_file_or_queue($poster_path);
             return;
         }
@@ -256,16 +276,36 @@ final class Hangar {
             return;
         }
         $attempt = max(1, min(5, (int) $attempt));
-        $referenced = Store::poster_path_is_referenced($file);
-        if ($referenced === true || $referenced === null) {
+        $claim = Store::acquire_poster_lifecycle_lock();
+        if ($claim === null) {
             Store::record_poster_cleanup_failure($file);
             return;
         }
-        if (self::delete_owned_video_thumbnail_file($file)) {
-            if (!Store::remove_poster_cleanup($file)) error_log('Roxy Social removed a Hangar video poster but could not clear its durable cleanup record.');
+        $removed = false;
+        $deleted = false;
+        try {
+            if (!Store::owns_publish_lock($claim)) {
+                Store::record_poster_cleanup_failure($file);
+            } else {
+                $referenced = Store::poster_path_is_referenced($file);
+                if ($referenced === true || $referenced === null) {
+                    Store::record_poster_cleanup_failure($file);
+                } elseif (!Store::owns_publish_lock($claim)) {
+                    Store::record_poster_cleanup_failure($file);
+                } elseif (self::delete_owned_video_thumbnail_file($file)) {
+                    $deleted = true;
+                    $removed = Store::remove_poster_cleanup($file);
+                } else {
+                    Store::record_poster_cleanup_failure($file);
+                }
+            }
+        } finally {
+            Store::release_publish_lock($claim);
+        }
+        if ($deleted) {
+            if (!$removed) error_log('Roxy Social removed a Hangar video poster but could not clear its durable cleanup record.');
             return;
         }
-        Store::record_poster_cleanup_failure($file);
         if ($attempt < 5) {
             self::schedule_video_thumbnail_cleanup($file, $attempt + 1);
             return;

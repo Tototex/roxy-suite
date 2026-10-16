@@ -23,6 +23,18 @@ namespace RoxySocial {
     final class Store {
         public static array $poster_queue = [];
         private static int $queue_clock = 0;
+        private static bool $poster_lock_held = false;
+        public static function acquire_poster_lifecycle_lock(): ?array {
+            if (self::$poster_lock_held || !empty($GLOBALS['hangar_fixture']['poster_lock_busy'])) return null;
+            self::$poster_lock_held = true;
+            return ['name' => 'fixture-poster-lock', 'connection' => '1'];
+        }
+        public static function owns_publish_lock(array $claim): bool {
+            return self::$poster_lock_held && ($claim['name'] ?? '') === 'fixture-poster-lock';
+        }
+        public static function release_publish_lock(array $claim): void {
+            if (self::owns_publish_lock($claim)) self::$poster_lock_held = false;
+        }
         public static function find(int $id): array { return ['id' => $id, 'status' => $GLOBALS['hangar_fixture']['draft_status'] ?? 'draft']; }
         public static function update_imported_media(...$args): bool { return true; }
         public static function queue_poster_cleanup(string $path): bool {
@@ -46,6 +58,11 @@ namespace RoxySocial {
         public static function remove_poster_cleanup(string $path): bool { unset(self::$poster_queue[hash('sha256', $path)]); return true; }
         public static function poster_path_is_referenced(string $path): ?bool {
             if (!empty($GLOBALS['hangar_fixture']['reference_read_failed'])) return null;
+            if (isset($GLOBALS['hangar_fixture']['during_poster_reference_check'])) {
+                $callback = $GLOBALS['hangar_fixture']['during_poster_reference_check'];
+                unset($GLOBALS['hangar_fixture']['during_poster_reference_check']);
+                $callback($path);
+            }
             if (!empty($GLOBALS['hangar_fixture']['referenced_poster'])) return true;
             foreach ($GLOBALS['hangar_fixture']['meta'] as $metadata) {
                 if (($metadata['_roxy_social_video_poster_file'] ?? null) === $path) return true;
@@ -124,9 +141,9 @@ namespace RoxySocial {
     if (!is_file($candidate)) throw new \RuntimeException('Candidate Hangar class missing: ' . $candidate);
     require $candidate;
     $validate = new \ReflectionMethod(Hangar::class, 'validated_thumbnail_url');
-    $validate->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $validate->setAccessible(true);
     $fetch = new \ReflectionMethod(Hangar::class, 'fetch_thumbnail');
-    $fetch->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $fetch->setAccessible(true);
     if (($argv[2] ?? '') === 'proxy-child') {
         $GLOBALS['hangar_fixture']['cache']['roxy_social_hangar_thumb_22'] = 'https://hangar.paperairmedia.com/thumb.png';
         $GLOBALS['hangar_fixture']['response'] = ['response' => ['code' => 200], 'headers' => ['content-type' => 'image/png'], 'body' => base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/nJ8AAAAASUVORK5CYII=')];
@@ -189,9 +206,9 @@ namespace RoxySocial {
         if (is_dir($upload_dir)) @rmdir($upload_dir);
     });
     $save_poster = new \ReflectionMethod(Hangar::class, 'save_video_thumbnail');
-    $save_poster->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $save_poster->setAccessible(true);
     $write_download = new \ReflectionMethod(Hangar::class, 'write_download_temp_file');
-    $write_download->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $write_download->setAccessible(true);
     $download_temp = $upload_dir . DIRECTORY_SEPARATOR . 'featured-image.tmp';
     file_put_contents($download_temp, 'seed');
     $check($write_download->invoke(null, $download_temp, $png) === true && file_get_contents($download_temp) === $png, 'featured-image temp download verifies complete byte count');
@@ -348,6 +365,29 @@ namespace RoxySocial {
     unset($GLOBALS['hangar_fixture']['uploads_unavailable'], $GLOBALS['hangar_fixture']['reject_schedule']);
     Hangar::cleanup_video_thumbnail_queue();
     $check(!file_exists($retry_path) && !isset(Store::$poster_queue[hash('sha256', $retry_path)]), 'daily cleanup recovers a durable poster after cron rejection and retry exhaustion');
+
+    $lock_busy_path = $upload_dir . DIRECTORY_SEPARATOR . 'lock-busy-poster.png';
+    file_put_contents($lock_busy_path, $png);
+    $GLOBALS['hangar_fixture']['poster_lock_busy'] = true;
+    Hangar::retry_video_thumbnail_cleanup($lock_busy_path, 1);
+    $check(is_file($lock_busy_path) && isset(Store::$poster_queue[hash('sha256', $lock_busy_path)]), 'poster cleanup lock contention preserves file and durable retry row');
+    unset($GLOBALS['hangar_fixture']['poster_lock_busy']);
+    Hangar::retry_video_thumbnail_cleanup($lock_busy_path, 1);
+    $check(!file_exists($lock_busy_path), 'poster cleanup retries after lifecycle lock becomes available');
+
+    $race_path = $upload_dir . DIRECTORY_SEPARATOR . 'poster-reference-race-poster.png';
+    file_put_contents($race_path, $png);
+    $GLOBALS['hangar_fixture']['during_poster_reference_check'] = static function (string $path): void {
+        $writer_claim = Store::acquire_poster_lifecycle_lock();
+        if ($writer_claim === null) $GLOBALS['hangar_fixture']['poster_writer_blocked'] = true;
+        else {
+            $GLOBALS['hangar_fixture']['meta'][520]['_roxy_social_video_poster_file'] = $path;
+            Store::release_publish_lock($writer_claim);
+        }
+    };
+    Hangar::retry_video_thumbnail_cleanup($race_path, 1);
+    $check(!empty($GLOBALS['hangar_fixture']['poster_writer_blocked']) && !file_exists($race_path)
+        && !isset($GLOBALS['hangar_fixture']['meta'][520]['_roxy_social_video_poster_file']), 'poster reference writer cannot interleave between cleanup reference check and unlink');
 
     $queue_failure_path = $upload_dir . DIRECTORY_SEPARATOR . 'queue-failure-poster.png';
     file_put_contents($queue_failure_path, $png);

@@ -781,6 +781,25 @@ final class Store {
         if (self::owns_publish_lock($claim)) $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $claim['name']));
     }
 
+    /** Serialize Hangar poster reference writes with the check-and-unlink cleanup. */
+    public static function acquire_poster_lifecycle_lock(): ?array {
+        global $wpdb;
+        $name = 'roxy-social-poster-' . substr(hash('sha256', DB_NAME . ':' . self::poster_cleanup_table_name()), 0, 40);
+        $wpdb->last_error = '';
+        $locked = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $name));
+        if ($wpdb->last_error !== '' || (string) $locked !== '1') return null;
+        $wpdb->last_error = '';
+        $connection = (string) $wpdb->get_var('SELECT CONNECTION_ID()');
+        if ($wpdb->last_error !== '' || !preg_match('/^[1-9][0-9]*$/D', $connection)) $connection = '';
+        $claim = ['name' => $name, 'connection' => $connection];
+        if (!self::owns_publish_lock($claim)) {
+            $wpdb->last_error = '';
+            $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $name));
+            return null;
+        }
+        return $claim;
+    }
+
     public static function compare_publish_status(int $id, string $expected, string $status, ?array $claim = null): bool {
         global $wpdb;
         $clear_review_error = $expected === 'needs_review' && $status === 'approved';
