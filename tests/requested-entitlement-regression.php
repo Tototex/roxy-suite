@@ -402,7 +402,8 @@ namespace {
     check_fixture($wpdb->release_count === 1 && !$wpdb->is_locked(), 'distinct excess retry is denied before acquiring a subscriber lease');
     reset_fixture([new FixtureSubscription('active', 2)]); $wpdb->read_error = true;
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'subscriber-reservation row read error fails closed');
-    check_fixture($wpdb->lock_count === 1 && $wpdb->release_count === 1 && !$wpdb->is_locked(), 'subscriber read error releases verified lease');
+    check_fixture($wpdb->lock_count === 1 && $wpdb->release_count === 1 && !$wpdb->is_locked(),
+        'subscriber read error releases verified lease (acquired=' . $wpdb->lock_count . ', released=' . $wpdb->release_count . ', locked=' . (int)$wpdb->is_locked() . ')');
     reset_fixture([new FixtureSubscription('active', 2)]); $GLOBALS['fixture_subscription_error'] = true;
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'WCS entitlement exception fails closed');
     check_fixture($wpdb->release_count === 0 && !$wpdb->is_locked(), 'entitlement exception acquired no lease');
