@@ -18,13 +18,23 @@ namespace {
   require_once __DIR__ . '/../includes/modules/grosses/includes/class-roxy-grosses-settings.php';
 
   $defaults = \RoxyGrosses\Settings::defaults();
-  if (($defaults['cashflow_woo_gateways'] ?? null) !== "stripe\npaypal") {
-    throw new RuntimeException('Cashflow defaults must include the verified active Stripe and PayPal Standard gateway IDs.');
+  if (($defaults['cashflow_woo_gateways'] ?? null) !== "paypal\nstripe") {
+    throw new RuntimeException('Cashflow defaults must include the actual approved enabled non-Square gateway IDs.');
   }
 
   $GLOBALS['settings_fixture'] = ['cashflow_woo_gateways' => ''];
-  if (\RoxyGrosses\Settings::get('cashflow_woo_gateways') !== "stripe\npaypal") {
-    throw new RuntimeException('A legacy blank default must migrate to the manager-approved Stripe and PayPal gateways.');
+  if (\RoxyGrosses\Settings::get('cashflow_woo_gateways') !== "paypal\nstripe") {
+    throw new RuntimeException('A legacy blank default must migrate to the manager-approved non-Square gateways.');
+  }
+
+  $GLOBALS['settings_fixture'] = ['cashflow_woo_gateways' => "stripe\npaypal"];
+  if (\RoxyGrosses\Settings::get('cashflow_woo_gateways') !== "paypal\nstripe") {
+    throw new RuntimeException('The exact prior built-in gateway default must normalize to the actual gateway IDs.');
+  }
+
+  $GLOBALS['settings_fixture'] = ['cashflow_woo_gateways' => "paypal\nstripe\nstripe_blik\nstripe_link"];
+  if (\RoxyGrosses\Settings::get('cashflow_woo_gateways') !== "paypal\nstripe") {
+    throw new RuntimeException('Legacy pseudo-gateway defaults for Link/BLIK normalize to Stripe gateway ID.');
   }
 
   $GLOBALS['settings_fixture'] = ['cashflow_woo_gateways' => '', '_cashflow_woo_gateways_configured' => '1'];

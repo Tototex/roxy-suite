@@ -58,7 +58,7 @@ class Settings {
   public static function defaults(): array {
     return [
       'square_environment'=>'production','square_access_token'=>'','square_webhook_signature_key'=>'','square_location_ids'=>'',
-      'cashflow_woo_gateways'=>"stripe\npaypal",
+      'cashflow_woo_gateways'=>"paypal\nstripe",
       'report_timezone'=>wp_timezone_string()?:'America/Los_Angeles',
       'ticket_keywords'=>"ticket\nadmission",'exclude_keywords'=>"popcorn\nsoda\ndrink\ncandy\nmembership",
       'film_mappings'=>'','studio_mappings'=>'',
@@ -83,6 +83,15 @@ class Settings {
     // state to the manager-approved active gateways, while a blank saved through
     // this settings form remains an explicit opt-out.
     if (trim((string) ($saved['cashflow_woo_gateways'] ?? '')) === '' && empty($saved[self::CASHFLOW_GATEWAYS_CONFIGURED_KEY])) {
+      $all['cashflow_woo_gateways'] = self::defaults()['cashflow_woo_gateways'];
+    }
+    // These exact old defaults represented the full enabled checkout set.
+    // Woo stores Stripe Link and BLIK under the Stripe gateway ID.
+    $legacy_gateways = trim((string) ($saved['cashflow_woo_gateways'] ?? ''));
+    if (in_array($legacy_gateways, [
+      "stripe\npaypal",
+      "paypal\nstripe\nstripe_blik\nstripe_link",
+    ], true)) {
       $all['cashflow_woo_gateways'] = self::defaults()['cashflow_woo_gateways'];
     }
     $all['square_access_token'] = self::decrypt_secret((string) ($saved['square_access_token'] ?? $all['square_access_token']));
@@ -218,7 +227,7 @@ class Settings {
         $rows=$key==='film_mappings'?'8':'5';
         echo '<textarea class="large-text code" rows="'.esc_attr($rows).'" name="'.esc_attr($name).'">'.esc_textarea((string) $value).'</textarea>';
         if($key==='square_location_ids') echo '<p class="description">One Square location ID per line. Square requires at least one location ID for order searches.</p>';
-        elseif($key==='cashflow_woo_gateways') echo '<p class="description">Explicit WooCommerce payment method IDs to include in read-only financial totals, one per line. The current defaults include the active Stripe and PayPal Standard gateways. Stripe checkout methods such as Link are attributed to Stripe. Leave blank to disable combined cashflow. Offline/manual and Square-backed gateways must not be included; Square is reported separately. Square access also requires PAYMENTS_READ permission.</p>';
+        elseif($key==='cashflow_woo_gateways') echo '<p class="description">WooCommerce payment gateway IDs to include in read-only financial totals, one per line. Supported IDs are paypal and stripe; Stripe Link and BLIK checkouts are recorded under Stripe and are included. Leave blank to disable combined cashflow. Offline/manual and Square-backed gateways are excluded; Square is reported separately.</p>';
         elseif($key==='ticket_keywords') echo '<p class="description">One keyword per line. A line item must match at least one keyword to count as a ticket.</p>';
         elseif($key==='exclude_keywords') echo '<p class="description">One keyword per line. Matching line items are always ignored.</p>';
         elseif($key==='film_mappings') echo '<p class="description">One mapping per line in the format: match text|Comscore title|Film code.</p>';

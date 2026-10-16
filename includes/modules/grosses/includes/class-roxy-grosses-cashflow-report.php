@@ -7,6 +7,8 @@ if (!defined('ABSPATH')) exit;
 final class CashflowReport {
   private const PAGE_SIZE = 100;
   private const MAX_PAGES = 100;
+  // Woo exposes Link and BLIK under the Stripe gateway ID, not separate IDs.
+  private const APPROVED_WOO_GATEWAYS = ['paypal', 'stripe'];
 
   private static function is_list(array $value): bool {
     $expected = 0;
@@ -87,8 +89,8 @@ final class CashflowReport {
     if (!$gateways) throw new \RuntimeException('Configure the WooCommerce online payment gateway IDs in Grosses settings before calculating a combined cashflow total.');
     $seen_gateways = [];
     foreach ($gateways as $gateway) {
-      if (!preg_match('/^[a-z0-9_-]{1,80}$/D', $gateway) || stripos($gateway, 'square') !== false || isset($seen_gateways[$gateway])) {
-        throw new \RuntimeException('WooCommerce gateway configuration is invalid or overlaps Square collections.');
+      if (!in_array($gateway, self::APPROVED_WOO_GATEWAYS, true) || isset($seen_gateways[$gateway])) {
+        throw new \RuntimeException('WooCommerce gateway configuration contains an unapproved or duplicate ID.');
       }
       $seen_gateways[$gateway] = true;
     }
