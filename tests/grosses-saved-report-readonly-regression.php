@@ -38,6 +38,7 @@ namespace {
   define('WP_CONTENT_DIR', ABSPATH . 'wp-content');
   function add_action(...$args): void {}
   function sanitize_email($value): string { return (string) $value; }
+  function post_type_exists($type): bool { return false; }
   function get_option($key, $default = false) { return $default; }
   function wp_date($format, $timestamp = null, $timezone = null): string { return '2026-10-05 12:00:00'; }
   function wp_mail($to, $subject, $body, $headers = [], $attachments = []) {
