@@ -423,6 +423,7 @@ jobs:
             grosses-sale-snapshot-regression.php
             grosses-saved-report-readonly-regression.php
             grosses-scheduler-calendar-regression.php
+            grosses-scheduler-no-sales-regression.php
             grosses-secrets-regression.php
             grosses-square-money-regression.php
             grosses-square-response-regression.php
