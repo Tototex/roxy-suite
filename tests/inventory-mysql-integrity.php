@@ -27,10 +27,12 @@ try {
     $store::upgrade_submission_identity();
     $check((bool)$wpdb->get_var("SHOW COLUMNS FROM `$orders` LIKE 'submission_key'"), 'production upgrade creates submission identity and is repeatable');
     $line=['product'=>'Fixture candy','square_variation_id'=>'fixture-v','on_hand'=>40,'quantity'=>12];
-    $id=$store::create_order('TEST ONLY',[$line],18,12,'pending_manager',str_repeat('a',64));
+    $id=$store::create_order('TEST ONLY',[$line],18,12,'email_sending',str_repeat('a',64));
     $check($id>0 && $store::order_for_submission(str_repeat('a',64))['id']==$id,'real submission identity stored');
+    $check($store::open_order_for_vendor('TEST ONLY')['status']==='email_sending','in-flight mail is an open vendor lock');
     $blocked=false;try{$store::create_order('TEST ONLY',[$line],18,12);}catch(Throwable $e){$blocked=true;}
     $check($blocked,'duplicate open vendor order blocked');
+    $check(!$store::update_order_status($id,'cancelled'),'in-flight mail cannot be cancelled');
     $check($store::update_order_status($id,'ordered'),'real conditional order transition');
     $products=$fixture_prefix.'roxy_inventory_products';
     $check($wpdb->insert($products,['square_variation_id'=>'fixture-v','name'=>'Fixture candy','on_hand'=>25,'updated_at'=>current_time('mysql')])===1,'fixture product stored');

@@ -144,6 +144,11 @@ namespace {
         $wpdb->orders[1] = ['id' => 1, 'status' => $status];
         check(\RoxyInventory\Store::update_order_status(1, 'cancelled'), 'Cancellation saves for ' . $status);
     }
+    $wpdb->orders[1] = ['id' => 1, 'status' => 'email_sending'];
+    check(!\RoxyInventory\Store::update_order_status(1, 'cancelled'), 'In-flight email cannot be cancelled');
+    check(\RoxyInventory\Store::update_order_status(1, 'approval_emailed'), 'In-flight manager email advances after successful send');
+    $wpdb->orders[1] = ['id' => 1, 'status' => 'email_sending'];
+    check(\RoxyInventory\Store::update_order_status(1, 'ordered'), 'In-flight direct vendor email advances after successful send');
     $wpdb->orders[1] = ['id' => 1, 'status' => 'pending_manager'];
     check(\RoxyInventory\Store::update_order_status(1, 'email_failed'), 'Email failure releases pending status');
     check(!\RoxyInventory\Store::update_order_status(999, 'ordered'), 'Missing order rejected');

@@ -28,7 +28,7 @@ class Admin {
             $open = Store::open_order_for_vendor((string) $vendor['name']);
             if ($open) {
                 $status = (string) $open['status'];
-                $status_label = $status === 'pending_manager' ? 'Submission awaiting review' : ($status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'ordered' ? 'Ordered' : 'Order in review'));
+                $status_label = $status === 'email_sending' ? 'Email being sent — order locked' : ($status === 'pending_manager' ? 'Submission awaiting review' : ($status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'ordered' ? 'Ordered' : 'Order in review')));
             } else {
                 $status_label = $estimate['incomplete'] ? 'Cost incomplete' : ($total >= (float) $vendor['minimum_amount'] ? 'Ready for review' : 'Below minimum');
             }
@@ -46,7 +46,7 @@ class Admin {
         $status_text = '';
         if ($open) {
             $status = (string) $open['status'];
-            $status_text = $status === 'pending_manager' ? 'Submission awaiting review' : ($status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'ordered' ? 'Ordered' : 'Order in review'));
+            $status_text = $status === 'email_sending' ? 'Email being sent — order locked' : ($status === 'pending_manager' ? 'Submission awaiting review' : ($status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'ordered' ? 'Ordered' : 'Order in review')));
             echo '<div class="notice notice-warning inline"><p>This vendor already has an open order: <strong>' . esc_html($status_text) . '</strong>. A new order cannot be submitted until Square records a received-stock adjustment for one of the ordered items.</p><p><a class="button" href="' . esc_url(add_query_arg(['tab'=>'history','order_id'=>(int) $open['id']], self::url('history'))) . '">View existing order</a></p></div>';
         }
         echo '<h2>' . esc_html($name) . ' order review</h2><p>Edit quantities before submitting. Quantities must be whole order units, and the vendor minimum must be met.</p>';
@@ -93,7 +93,7 @@ class Admin {
         echo '<table class="widefat striped"><thead><tr><th>Date</th><th>Vendor</th><th>Status</th><th>Items</th><th>Total</th><th>Action</th></tr></thead><tbody>';
         foreach (Store::orders($page,$search) as $o) {
             $status = (string) $o['status'];
-            $label = $status === 'pending_manager' ? 'Submission awaiting review' : ($status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'stock_increased' ? 'Stock increase detected' : ucfirst(str_replace('_', ' ', $status))));
+            $label = $status === 'email_sending' ? 'Email being sent — order locked' : ($status === 'pending_manager' ? 'Submission awaiting review' : ($status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'stock_increased' ? 'Stock increase detected' : ucfirst(str_replace('_', ' ', $status)))));
             $view_url = add_query_arg(['tab' => 'history', 'order_id' => (int) $o['id']], self::url('history'));
             $action = '<a class="button" href="' . esc_url($view_url) . '">View items</a>';
             if ($status === 'approval_emailed') $action .= ' <a class="button" href="' . esc_url(self::decision_url((int)$o['id'], 'ordered')) . '">Ordered</a> <a class="button" href="' . esc_url(self::decision_url((int)$o['id'], 'rejected')) . '">Rejected</a>';
@@ -113,6 +113,7 @@ class Admin {
         if (!is_array($lines)) $lines = [];
         $selected_estimate = self::cost_summary($lines);
         echo '<h2>Order #' . esc_html((string) $selected['id']) . ' — ' . esc_html($selected['vendor']) . '</h2>';
+        if ((string) $selected['status'] === 'email_sending') echo '<div class="notice notice-warning inline"><p>The order email is currently being sent. This vendor is locked while delivery is in progress; do not retry or cancel.</p></div>';
         if ((string) $selected['status'] === 'pending_manager') echo '<div class="notice notice-warning inline"><p>Email delivery for this submission may be unconfirmed. Check the manager/vendor inbox before retrying; cancel only if the order was not placed.</p></div>';
         echo '<p>Check each item as you add it to the vendor cart, then save your progress.</p>';
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">' . wp_nonce_field('roxy_inventory_save_order_items', '_wpnonce', true, false);
@@ -314,7 +315,7 @@ class Admin {
                 if (!is_email($recipient)) throw new \RuntimeException('Add a valid order recipient email before submitting.');
                 $products = array_values(array_filter(Store::products(), static fn($p)=>strcasecmp((string)$p['vendor'],$vendor)===0));
                 [$lines,$total] = self::reviewed_lines($fresh_vendor,$products,$_POST,$direct,$recipient);
-                $id = Store::create_order((string)$fresh_vendor['name'],$lines,$total,(float)$fresh_vendor['minimum_amount'],'pending_manager',$key);
+                $id = Store::create_order((string)$fresh_vendor['name'],$lines,$total,(float)$fresh_vendor['minimum_amount'],'email_sending',$key);
                 $email = self::order_email($fresh_vendor, $lines, $total, $id, $direct, $recipient);
                 return ['replayed'=>false,'id'=>$id,'vendor'=>$fresh_vendor,'lines'=>$lines,'total'=>$total,'direct'=>$direct,'email'=>$email];
             });
@@ -326,8 +327,11 @@ class Admin {
         try { $mail_sent = $email['to'] !== '' && wp_mail($email['to'], $email['subject'], $email['body']); }
         catch (\Throwable $error) { $mail_sent = false; }
         if (!$mail_sent) {
+            $released = false;
+            try { $released = Store::update_order_status($order_id, 'pending_manager'); } catch (\Throwable $error) { $released = false; }
             try { Store::log('email_delivery', 'uncertain', 'Delivery could not be confirmed for order #' . $order_id . ' to ' . ($direct ? 'vendor' : 'manager') . '.'); }
             catch (\Throwable $error) { /* The persistent pending order remains the retry guard. */ }
+            if (!$released) self::redirect('history', 'Order email delivery could not be confirmed and the sending lock could not be cleared. Do not resubmit or cancel; contact support to reconcile this order.', false, $order_id);
             self::redirect('history', 'Order email delivery could not be confirmed. Do not resubmit; check the manager/vendor inbox, then cancel only if the order was not placed.', false, $order_id);
         }
         try { $saved = Store::update_order_status($order_id, $direct ? 'ordered' : 'approval_emailed'); }
@@ -444,7 +448,7 @@ class Admin {
         $order_id = absint($_POST['order_id'] ?? 0);
         $order = Store::order($order_id);
         if (!$order) self::redirect('history', 'Order not found.', false);
-        if (!in_array((string) $order['status'], ['pending_manager','approval_emailed','ordered'], true)) self::redirect('history', 'This order is already closed.', false, $order_id);
+        if (!in_array((string) $order['status'], ['pending_manager','approval_emailed','ordered'], true)) self::redirect('history', 'This order is already closed or its email is still being sent.', false, $order_id);
         try { $saved = Store::update_order_status($order_id, 'cancelled'); }
         catch (\Throwable $e) { $saved = false; }
         if (!$saved) self::redirect('history', 'Could not cancel the order. Refresh and try again.', false, $order_id);

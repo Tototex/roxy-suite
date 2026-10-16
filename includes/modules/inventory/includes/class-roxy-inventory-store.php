@@ -375,6 +375,7 @@ class Store {
         return self::transaction(static function () use ($id,$status,$wpdb) {
         $allowed = [
             'pending_manager' => ['approval_emailed', 'ordered', 'email_failed', 'cancelled'],
+            'email_sending' => ['approval_emailed', 'ordered', 'pending_manager'],
             'approval_emailed' => ['ordered', 'rejected', 'cancelled'],
             'ordered' => ['stock_increased', 'cancelled'],
         ];
@@ -396,7 +397,7 @@ class Store {
     }
     public static function open_order_for_vendor(string $vendor): ?array {
         global $wpdb;
-        $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::orders_table() . " WHERE vendor=%s AND status IN ('pending_manager','approval_emailed','ordered') ORDER BY id DESC LIMIT 1", $vendor), ARRAY_A);
+        $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::orders_table() . " WHERE vendor=%s AND status IN ('pending_manager','email_sending','approval_emailed','ordered') ORDER BY id DESC LIMIT 1", $vendor), ARRAY_A);
         self::checked_read();
         return is_array($row) ? $row : null;
     }
