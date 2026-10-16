@@ -133,6 +133,7 @@ $single_order('processing', true, 2, 20.0, [901=>-9], [901=>-20.0]);
 $check($calculate()['sold_qty']===0, 'refunded item quantity is clamped at zero rather than becoming negative');
 
 // Cached stats are version-invalidated; refund deletion uses Woo’s (refund_id, parent_order_id) hook contract.
+$sales::clear_showing_cache($showing_id);
 $single_order('processing', true, 3, 30.0, [901=>-1], [901=>-10.0]);
 $GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats'] = ['cache_version'=>2,'sold_qty'=>99,'gross_revenue'=>999.0];
 $fresh = $sales::get_showing_stats($showing_id);
