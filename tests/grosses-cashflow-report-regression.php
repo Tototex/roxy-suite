@@ -181,6 +181,9 @@ namespace {
   $assert($matched_refund_report['review_exceptions']['square_payment_refunds_without_itemized_returns'] === [],
     'itemized return referencing the completed payment refund clears the unmatched-refund review exception');
   \RoxyGrosses\Square::$daily_orders[0]['refunds'] = [];
+  \RoxyGrosses\Square::$refunds[0]['order_id'] = 'missing-associated-order';
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'),
+    'associated-order read failure aborts Cashflow instead of claiming a refund is unmatched');
   \RoxyGrosses\Square::$refunds[0]['order_id'] = 'sq-return-other-day';
   \RoxyGrosses\Square::$orders_by_id['sq-return-other-day'] = [
     'id' => 'sq-return-other-day', 'state' => 'COMPLETED', 'returns' => [['uid' => 'return-cross-day']],
