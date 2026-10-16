@@ -194,6 +194,10 @@ namespace {
         }
         public function insert($table, $data) { $this->insert_id++; $data['id']=$this->insert_id; $this->rows[$this->insert_id] = $data; $this->outstanding += (int) $data['subscriber_qty']; return 1; }
         public function get_results($sql, $output = null) {
+            if (strpos($sql, 'subscriber_qty') !== false) {
+                if ($this->throw_read) throw new \RuntimeException('fixture read exception');
+                if ($this->read_error) { $this->last_error = 'fixture query error'; return null; }
+            }
             if ($this->list_error) { $this->last_error = 'Fixture list read failed'; return null; }
             $rows = array_values($this->rows);
             if (preg_match('/status IN \\(([^)]+)\\)/', $sql, $match)) {
@@ -397,7 +401,7 @@ namespace {
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 1, 'second distinct pledge respects aggregate outstanding quantity');
     check_fixture($wpdb->release_count === 1 && !$wpdb->is_locked(), 'distinct excess retry is denied before acquiring a subscriber lease');
     reset_fixture([new FixtureSubscription('active', 2)]); $wpdb->read_error = true;
-    check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'aggregate-read error fails closed');
+    check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'subscriber-reservation row read error fails closed');
     check_fixture($wpdb->release_count === 1 && !$wpdb->is_locked(), 'aggregate read error releases verified lease');
     reset_fixture([new FixtureSubscription('active', 2)]); $GLOBALS['fixture_subscription_error'] = true;
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'WCS entitlement exception fails closed');
