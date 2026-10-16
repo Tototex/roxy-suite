@@ -60,8 +60,10 @@ try {
     if (is_wp_error($refund) || !$refund instanceof WC_Order_Refund) throw new RuntimeException('Woo did not create the private amount-only refund.');
     $refund_ids[]=(int)$refund->get_id();
     $after_full = roxy_rs_repo_effective_backing($row);
-    $check($after_full['charge_total']===0 && $after_full['sponsor_amount']===0,
-        'actual Woo amount-only final refund clears retained funding and sponsorship');
+    $check($after_full['charge_total']===0 && $after_full['sponsor_amount']===0
+        && $after_full['general_qty']===0 && $after_full['discount_qty']===0
+        && $after_full['support_qty']===0 && $after_full['sponsor_ticket_qty']===0,
+        'actual Woo amount-only full refund clears paid and sponsorship quantities');
     $check((float)wc_get_order($order_id)->get_total_refunded()===30.0,'Woo persisted both fixture refunds and exposed their cumulative amount');
 
     $plain_order = wc_create_order(['customer_id'=>0]);
