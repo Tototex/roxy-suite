@@ -1021,16 +1021,29 @@ class Store {
         $cursor = $id;
         $processed++;
         $payload = json_decode((string) ($saved_report['payload_json'] ?? ''), true);
-        $rows = is_array($payload['rows'] ?? null) ? $payload['rows'] : [];
+        if (json_last_error() !== JSON_ERROR_NONE || !is_array($payload)
+          || !is_array($payload['rows'] ?? null) || !self::is_list($payload['rows'])) {
+          throw new \RuntimeException('Saved report payload is malformed; history migration stopped for review.');
+        }
+        $rows = $payload['rows'];
         $fresh_rows = [];
         foreach ($rows as $row) {
-          if (!is_array($row)) continue;
+          if (!is_array($row)) throw new \RuntimeException('Saved report contains a malformed history row.');
           $report_date = sanitize_text_field((string) ($row['report_date'] ?? ''));
-          if ($report_date === '') continue;
-          $key = $report_date . '|' . max(0, (int) ($row['showing_id'] ?? 0));
+          $date = \DateTimeImmutable::createFromFormat('!Y-m-d', $report_date, new \DateTimeZone('UTC'));
+          $date_errors = \DateTimeImmutable::getLastErrors();
+          if (!$date || $date->format('Y-m-d') !== $report_date || ($date_errors && ($date_errors['warning_count'] || $date_errors['error_count']))) {
+            throw new \RuntimeException('Saved report contains an invalid history date.');
+          }
+          $film_title = sanitize_text_field((string) ($row['film_title'] ?? $row['movie_title'] ?? ''));
+          $show_time = sanitize_text_field((string) ($row['show_time'] ?? ''));
+          if ($film_title === '') throw new \RuntimeException('Saved report contains a history row without a title.');
+          $showing_id = max(0, (int) ($row['showing_id'] ?? 0));
+          if ($showing_id <= 0) $showing_id = abs(crc32($report_date . '|' . strtolower($film_title) . '|' . strtolower($show_time)));
+          $key = $report_date . '|' . $showing_id;
           if (isset($seen[$key])) continue;
           $seen[$key] = true;
-          $fresh_rows[] = $row;
+          $fresh_rows[] = array_merge($row, ['film_title' => $film_title, 'show_time' => $show_time, 'showing_id' => $showing_id]);
         }
         if ($fresh_rows) self::upsert_history_rows($fresh_rows, (string) ($saved_report['mode'] ?? ''), $id, true);
       }
