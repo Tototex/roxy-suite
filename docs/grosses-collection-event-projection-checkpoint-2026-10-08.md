@@ -26,7 +26,7 @@ Scope: read-only event normalization and live payment-gateway discovery only.
 
 ## Still open under G2
 
-These projections are not yet called by a ledger or report. Still needed: durable provenance/idempotent collection and refund event storage, historical backfill review, exact versus proxy refund completion dating, payment-provider reconciliation, custom/exchange/manual adjustments, original-sale-day movie corrections across all report builders, and read-only end-to-end reconciliation against representative Woo/Square records. Do not treat this checkpoint as G2 resolution or as authorization to rewrite historical reports.
+These projections are consumed by the on-demand, read-only Cashflow report, not by a durable financial ledger. WooCommerce collection values represent paid order totals and are not gateway-confirmed capture/settlement amounts. Still needed: durable idempotent event storage, historical backfill review, provider reconciliation, custom/exchange/manual adjustments, and broader read-only end-to-end reconciliation against representative Woo/Square records. Do not treat this checkpoint as G2 resolution or as authorization to rewrite historical reports.
 
 ## Daily cashflow aggregation follow-up
 

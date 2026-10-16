@@ -14,4 +14,4 @@
 
 ## Remaining
 
-The projection is not yet consumed. A complete financial view still needs a dated collection-event source, cross-source duplicate detection, persistence/idempotency, closed-period reconciliation, provenance, and a reviewed historical backfill. The existing Grosses ticket/studio and concessions totals are unchanged.
+This projection is now consumed by the on-demand, read-only Cashflow report. Its WooCommerce collection basis is the paid order total, not a gateway-confirmed captured amount or bank settlement. A complete financial ledger still needs durable event persistence/idempotency, closed-period/provider reconciliation, and a reviewed historical backfill. The existing Grosses ticket/studio and concessions totals are unchanged.

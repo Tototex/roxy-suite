@@ -20,4 +20,4 @@
 
 ## Remaining
 
-The Cashflow tab and event integration are branch-only and not deployed. No Square webhook subscription has been configured or verified live, `PAYMENTS_READ` scope is unverified, and no provider-day reconciliation or durable financial ledger/backfill has been performed. The event timestamp is not a bank-settlement timestamp.
+The Cashflow tab and event integration are deployed as a read-only on-demand report. A live guarded read on 2026-10-16 verified that the Square refund feed returned 25 completed USD refunds; this verifies feed access and parsing, not agreement to a Square settlement statement. No Square webhook subscription has been configured or delivery verified live, and no durable financial ledger/backfill has been performed. The event timestamp is not a bank-settlement timestamp. Woo/Square provider-day reconciliation and refund-date source coverage remain open.
