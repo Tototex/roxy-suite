@@ -12,6 +12,7 @@
 - The tested candidate was staged and linted before an exact-baseline check and same-filesystem replacement. Installed SHA-256 `b246f8ae346a5b3a79b6ade7ccdfd543e213d074be8e4c5eaea134ad506bc980` matches the branch; live PHP lint passes, the Suite plugin is active under `roxy-suite/roxy-suite`, and the homepage HEAD request returned HTTP 200.
 - No daily pull, report refresh, database write, email, historical correction, or external order was triggered during this verification.
 - The scale regression expansion is committed as `0ae499e` and hosted run [38877267193](https://github.com/Tototex/roxy-suite/actions/runs/38877267193) passed all eight jobs, including the full PHP 8.3 regression suite, PHP 8.0–8.4 syntax, private MySQL, Social browser, and Requested Showings/Woo lifecycle jobs.
+- The disposable-MySQL fixture now combines 1,001 report rows with 100 actual-class Square orders/lines, checks all 100,100 cents are conserved, and retains six bounded update batches. Commit `1abb1f2`; hosted run [38877833369](https://github.com/Tototex/roxy-suite/actions/runs/38877833369) passed all eight jobs, including this private WordPress/MySQL fixture.
 
 ## Remaining scope
 
