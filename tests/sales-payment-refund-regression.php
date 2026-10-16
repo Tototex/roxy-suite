@@ -183,6 +183,15 @@ $GLOBALS['sales_fixture_orders'][42]->meta=[];
 $check($tag_failure && !isset($GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete']),
   'failed legacy order-tag write cannot certify the scan complete');
 
+$GLOBALS['sales_fixture_orders'][42]->meta=[];
+$GLOBALS['sales_fixture_order_save_failure'] = true;
+$order_hook_survives_marker_failure = true;
+try { $sales::mark_order_showings(42); } catch (Throwable $e) { $order_hook_survives_marker_failure = false; }
+unset($GLOBALS['sales_fixture_order_save_failure']);
+$GLOBALS['sales_fixture_orders'][42]->meta=[];
+$check($order_hook_survives_marker_failure && !isset($GLOBALS['sales_fixture_meta'][42]['_roxy_contains_showing_' . $showing_id]),
+  'order status hook does not propagate a marker-save failure or claim the order marker persisted');
+
 $sales::mark_order_showings(42);
 $marker = '_roxy_contains_showing_' . $showing_id;
 $check($GLOBALS['sales_fixture_orders'][42]->get_meta($marker, true)==='1'

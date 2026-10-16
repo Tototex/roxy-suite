@@ -338,7 +338,13 @@ class Sales {
     if (!$showing_ids) return;
 
     foreach ($showing_ids as $showing_id) {
-      self::tag_order_for_showing($order, (int) $order_id, (int) $showing_id);
+      try {
+        self::tag_order_for_showing($order, (int) $order_id, (int) $showing_id);
+      } catch (\Throwable $e) {
+        if (function_exists('error_log')) {
+          error_log('[Roxy Suite Sales] Could not save showing marker for order ' . (int) $order_id . ' and showing ' . (int) $showing_id . '.');
+        }
+      }
     }
   }
 
