@@ -93,6 +93,10 @@ try {
     unlink($private_root_link);
 
     $workbook_link = $fixture_root . DIRECTORY_SEPARATOR . 'content' . DIRECTORY_SEPARATOR . 'roxy-grosses-private' . DIRECTORY_SEPARATOR . 'workbooks';
+    foreach (['index.html', '.htaccess'] as $guard_file) {
+        $guard_path = $workbook_link . DIRECTORY_SEPARATOR . $guard_file;
+        if (is_file($guard_path) && !unlink($guard_path)) throw new RuntimeException('Could not remove private workbook fixture guard file.');
+    }
     if (!rmdir($workbooks_method->invoke(null))) throw new RuntimeException('Could not remove private workbooks fixture directory.');
     if (!symlink($public_target, $workbook_link)) throw new RuntimeException('Could not create child-directory symlink fixture.');
     $child_link_rejected = false;
