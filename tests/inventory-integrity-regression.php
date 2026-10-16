@@ -51,6 +51,15 @@ check(\RoxyInventory\Admin::cost_summary([['product'=>$free_cost,'qty'=>3]])===[
 check(\RoxyInventory\Admin::cost_review_known_flag($free_cost)==='1','order-review UI marks documented Free cost known so quantity edits retain a valid $0 estimate');
 $unknown_cost['unit_cost_status']='unknown';
 check(\RoxyInventory\Admin::cost_review_known_flag($unknown_cost)==='0','order-review UI continues to mark unknown zero cost incomplete');
+$cost_submission = static function(string $checked_at): array {
+    return ['product_rows_complete'=>'1','product_row_count'=>'1','product_rows_json'=>json_encode([
+        '1'=>['vendor'=>'Test vendor','pack_size'=>'12','reorder_point'=>'20','target_stock'=>'60','unit_cost'=>'1.50','unit_cost_status'=>'confirmed','unit_cost_source'=>'supplier quote','unit_cost_checked_at'=>$checked_at,'supplier_sku'=>'','override_qty'=>''],
+    ])];
+};
+check(is_array(\RoxyInventory\Admin::product_rows_from_submission($cost_submission('2026-10-02'))),'confirmed cost accepts a quote checked before today');
+check(is_array(\RoxyInventory\Admin::product_rows_from_submission($cost_submission('2026-10-03'))),'confirmed cost accepts a quote checked today in the site timezone');
+check(\RoxyInventory\Admin::product_rows_from_submission($cost_submission('2026-10-04'))===null,'future quote-check date cannot be submitted as confirmed');
+check(\RoxyInventory\Admin::product_rows_from_submission($cost_submission('2026-02-30'))===null,'impossible quote-check date remains rejected');
 $free_vendor=$vendor; $free_vendor['minimum_amount']=0;
 $free_input=$input; $free_input['review_token']=\RoxyInventory\Admin::review_token($free_vendor,[$free_cost]);
 [$free_lines,$free_total]=\RoxyInventory\Admin::reviewed_lines($free_vendor,[$free_cost],$free_input);

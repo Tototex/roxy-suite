@@ -570,7 +570,12 @@ JS;
                     if ($field==='unit_cost_status' && !in_array($value,['unknown','estimate','confirmed','free'],true)) return null;
                     if ($field==='unit_cost_source' && strlen($value)>190) return null;
                     if ($field==='supplier_sku' && strlen($value)>190) return null;
-                    if ($field==='unit_cost_checked_at' && $value!=='' && (!preg_match('/^\d{4}-\d{2}-\d{2}$/D',$value) || !checkdate((int)substr($value,5,2),(int)substr($value,8,2),(int)substr($value,0,4)))) return null;
+                    if ($field==='unit_cost_checked_at' && $value!=='') {
+                        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/D',$value)
+                            || !checkdate((int)substr($value,5,2),(int)substr($value,8,2),(int)substr($value,0,4))) return null;
+                        $today = substr((string) current_time('Y-m-d'), 0, 10);
+                        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/D', $today) || $value > $today) return null;
+                    }
                     continue;
                 }
                 if (!is_numeric($row[$field]) || !is_finite((float) $row[$field]) || (float) $row[$field] < 0 || (float)$row[$field]>9999999999.99) return null;
