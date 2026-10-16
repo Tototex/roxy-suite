@@ -210,7 +210,8 @@ foreach(['sent_status_failure'] as $case) {
 }
 foreach(['unsent_status_failure','throw_mail_uncertain'] as $case) {
   $result=$run($case); $q=$url_args($result); $message=rawurldecode($q['message']??'');
-  $check(($q['ok']??'')==='0' && ($q['order_id']??'')==='73' && str_contains($message,'delivery could not be confirmed') && str_contains($message,'Do not resubmit') && str_contains($message,'cancel only if the order was not placed'),$case.' warns against retry after uncertain delivery');
+  $safe_recovery=$case==='unsent_status_failure'?str_contains($message,'Do not resubmit or cancel'):str_contains($message,'cancel only if the order was not placed');
+  $check(($q['ok']??'')==='0' && ($q['order_id']??'')==='73' && str_contains($message,'delivery could not be confirmed') && str_contains($message,'Do not resubmit') && $safe_recovery,$case.' warns against retry and follows the correct locked/unlocked recovery path: '.$message);
   $expected_status=$case==='throw_mail_uncertain'?'pending_manager':'email_sending';
   $check($result['mail_calls']===1 && $result['order_status']===$expected_status && in_array(['create_order','email_sending'],$result['store_calls'],true) && !in_array(['status',73,'email_failed'],$result['store_calls'],true),$case.' returns to pending only after failed send resolves, or retains lock if status storage fails');
 }
