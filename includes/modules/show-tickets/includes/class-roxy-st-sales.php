@@ -282,14 +282,7 @@ class Sales {
         }
         $pid = (int) $item->get_product_id();
         if (isset($ticket_type_by_product[$pid])) {
-          $tag_key = '_roxy_contains_showing_' . $showing_id;
-          if (get_post_meta((int) $order_id, $tag_key, true) !== '1'
-            && update_post_meta((int) $order_id, $tag_key, '1') === false) {
-            throw new \RuntimeException('A legacy order could not be tagged for the showing.');
-          }
-          if (get_post_meta((int) $order_id, $tag_key, true) !== '1') {
-            throw new \RuntimeException('A legacy order showing tag could not be verified.');
-          }
+          self::tag_order_for_showing($order, (int) $order_id, $showing_id);
           $matched[] = (int) $order_id;
           break;
         }
@@ -345,7 +338,27 @@ class Sales {
     if (!$showing_ids) return;
 
     foreach ($showing_ids as $showing_id) {
-      update_post_meta((int) $order_id, '_roxy_contains_showing_' . (int) $showing_id, '1');
+      self::tag_order_for_showing($order, (int) $order_id, (int) $showing_id);
+    }
+  }
+
+  /** Persist the discovery marker through WooCommerce's active order data store. */
+  private static function tag_order_for_showing($order, int $order_id, int $showing_id): void {
+    if (!is_object($order) || $order_id <= 0 || $showing_id <= 0
+      || !method_exists($order, 'get_meta') || !method_exists($order, 'update_meta_data')
+      || !method_exists($order, 'save')) {
+      throw new \RuntimeException('A showing sales order marker cannot be written through WooCommerce.');
+    }
+    $key = '_roxy_contains_showing_' . $showing_id;
+    if ((string) $order->get_meta($key, true) === '1') return;
+    $order->update_meta_data($key, '1');
+    $saved_id = $order->save();
+    if ((int) $saved_id !== $order_id) {
+      throw new \RuntimeException('A showing sales order marker could not be saved.');
+    }
+    $fresh = wc_get_order($order_id);
+    if (!$fresh || !method_exists($fresh, 'get_meta') || (string) $fresh->get_meta($key, true) !== '1') {
+      throw new \RuntimeException('A showing sales order marker could not be verified.');
     }
   }
 

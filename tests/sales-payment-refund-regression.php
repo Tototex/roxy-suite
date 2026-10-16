@@ -24,14 +24,17 @@ eval('namespace ' . $namespace . ';
     public function get_total(): float { return $this->total; }
   }
   final class Order {
-    public string $status; public bool $paid; public array $items; public array $refund_qty; public array $refund_total;
-    public function __construct(string $status, bool $paid, array $items, array $refund_qty=[], array $refund_total=[]) { $this->status=$status; $this->paid=$paid; $this->items=$items; $this->refund_qty=$refund_qty; $this->refund_total=$refund_total; }
+    public int $id; public string $status; public bool $paid; public array $items; public array $refund_qty; public array $refund_total; public array $meta=[];
+    public function __construct(string $status, bool $paid, array $items, array $refund_qty=[], array $refund_total=[], int $id=42) { $this->id=$id; $this->status=$status; $this->paid=$paid; $this->items=$items; $this->refund_qty=$refund_qty; $this->refund_total=$refund_total; }
     public function get_status(): string { return $this->status; }
     public function is_paid(): bool { return $this->paid; }
     public function get_items(): array { return $this->items; }
     public function get_qty_refunded_for_item(int $id) { return $this->refund_qty[$id] ?? 0; }
     public function get_total_refunded_for_item(int $id) { return $this->refund_total[$id] ?? 0; }
     public function get_date_created() { return null; }
+    public function get_meta(string $key, bool $single=true) { return $this->meta[$key] ?? ''; }
+    public function update_meta_data(string $key, $value): void { $this->meta[$key]=$value; }
+    public function save(): int { if (!empty($GLOBALS['sales_fixture_order_save_failure'])) return 0; return $this->id; }
   }
   function wc_get_orders(array $args) { $GLOBALS["sales_fixture_query"] = $args; if (!empty($GLOBALS["sales_fixture_query_failure"]) && (empty($GLOBALS["sales_fixture_legacy_failure_only"]) || !isset($args["meta_query"]))) return false; return array_keys(array_filter($GLOBALS["sales_fixture_orders"] ?? [], static fn($order) => in_array($order->get_status(), $args["status"] ?? [], true))); }
   function wc_get_order($id) { return $GLOBALS["sales_fixture_orders"][(int)$id] ?? null; }
@@ -169,14 +172,25 @@ $check(empty($recovered['read_error']) && $recovered['sold_qty']===0
   'successful retry completes the legacy scan and clears the temporary unavailable state');
 $GLOBALS['sales_fixture_orders'] = [42 => new $order('processing',true,[new $item(901,701,1,10.0)])];
 unset($GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete']);
-unset($GLOBALS['sales_fixture_meta'][42]['_roxy_contains_showing_' . $showing_id]);
-$GLOBALS['sales_fixture_tag_write_failure'] = true;
+$GLOBALS['sales_fixture_orders'][42]->meta=[];
+$GLOBALS['sales_fixture_order_save_failure'] = true;
 $legacy_scan = new ReflectionMethod($sales, 'find_and_tag_legacy_orders_for_showing');
 $legacy_scan->setAccessible(true);
 $tag_failure = false;
 try { $legacy_scan->invoke(null, $showing_id, [701=>'adult']); } catch (Throwable $e) { $tag_failure = true; }
-unset($GLOBALS['sales_fixture_tag_write_failure']);
+unset($GLOBALS['sales_fixture_order_save_failure']);
+$GLOBALS['sales_fixture_orders'][42]->meta=[];
 $check($tag_failure && !isset($GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete']),
   'failed legacy order-tag write cannot certify the scan complete');
+
+$sales::mark_order_showings(42);
+$marker = '_roxy_contains_showing_' . $showing_id;
+$check($GLOBALS['sales_fixture_orders'][42]->get_meta($marker, true)==='1'
+  && !isset($GLOBALS['sales_fixture_meta'][42][$marker]),
+  'showing discovery marker is stored on the Woo order object, not order postmeta');
+$GLOBALS['sales_fixture_orders'][42]->meta[$marker]='1';
+$sales::mark_order_showings(42);
+$check($GLOBALS['sales_fixture_orders'][42]->get_meta($marker, true)==='1',
+  'repeated order change preserves an existing showing marker');
 
 echo "Passed {$checks} isolated Sales payment/refund checks. No provider or database access.\n";
