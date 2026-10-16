@@ -433,13 +433,20 @@ function roxy_rs_repo_effective_backing(array $row): array {
     $allocated_refunds = $ticket_refund_amount + $fee_refund;
     if ($allocated_refunds > $refund_total) throw new RuntimeException('Woo refund line allocations exceed the refunded payment total.');
     // Woo permits an amount-only refund without line allocations. A complete
-    // refund unambiguously clears the sponsorship; a partial refund cannot say
-    // whether the ticket or sponsor fee was returned, so fail closed until a
-    // manager resolves the Woo refund with itemized lines.
+    // refund clears the paid backing quantities and sponsorship; a partial
+    // refund cannot say which ticket quantities were returned, so fail closed
+    // until a manager resolves it with itemized lines.
     $unallocated_refund = $refund_total - $allocated_refunds;
-    if ($unallocated_refund > 0 && $out['sponsor_amount'] > 0) {
-        if ($refund_total === $order_total) $fee_refund = $out['sponsor_amount'];
-        else throw new RuntimeException('A partial refund with sponsorship is not itemized and requires manager review.');
+    if ($unallocated_refund > 0) {
+        if ($refund_total === $order_total) {
+            $fee_refund = $out['sponsor_amount'];
+            $out['general_qty'] = 0;
+            $out['discount_qty'] = 0;
+            $out['support_qty'] = 0;
+            $out['sponsor_ticket_qty'] = 0;
+        } else {
+            throw new RuntimeException('A partial amount-only refund is not itemized and requires manager review.');
+        }
     }
     $out['sponsor_amount'] -= $fee_refund;
     return $out;

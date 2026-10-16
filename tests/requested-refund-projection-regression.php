@@ -44,7 +44,10 @@ check_refund_projection($partial['charge_total']===4500 && $partial['sponsor_amo
 check_refund_projection($partial['subscriber_qty']===1 && $partial['sponsor_ticket_qty']===2,'unrefunded free and subscriber tickets remain counted');
 $GLOBALS['refund_projection_order'] = new RefundProjectionOrder(88,60.0,35.0,[$paid_general,$paid_discount,$subscriber,$sponsor_tickets],[$fee],[11=>1,12=>1,14=>1],[11=>10.0,12=>5.0,15=>20.0]);
 $full_sponsor = roxy_rs_repo_effective_backing($backing);
-check_refund_projection($full_sponsor['charge_total']===2500 && $full_sponsor['sponsor_amount']===0 && $full_sponsor['sponsor_ticket_qty']===1,'full sponsorship refund removes sponsor status and only the refunded sponsor ticket');
+check_refund_projection($full_sponsor['charge_total']===2500 && $full_sponsor['sponsor_amount']===0
+    && $full_sponsor['general_qty']===2 && $full_sponsor['discount_qty']===1
+    && $full_sponsor['support_qty']===3 && $full_sponsor['subscriber_qty']===1
+    && $full_sponsor['sponsor_ticket_qty']===1,'itemized sponsorship and ticket refunds remove only their allocated quantities');
 $legacy = $backing;
 $legacy['sponsor_amount']=0; $legacy['sponsor_ticket_qty']=2; $legacy['charge_total']=4000;
 $legacy['agreement_json']=\RoxyRS\Agreement::build($quote,$legacy);
@@ -71,6 +74,19 @@ $GLOBALS['refund_projection_order']=new RefundProjectionOrder(88,60.0,5.0,[$paid
 $amount_only_partial_failed=false;
 try { roxy_rs_repo_effective_backing($backing); } catch (RuntimeException $error) { $amount_only_partial_failed=true; }
 check_refund_projection($amount_only_partial_failed,'partial amount-only refund with sponsorship requires manager review instead of guessing which line was refunded');
+$no_sponsor = $backing;
+$no_sponsor['general_qty']=3; $no_sponsor['discount_qty']=2; $no_sponsor['support_qty']=5;
+$no_sponsor['charge_total']=4000; $no_sponsor['sponsor_amount']=0; $no_sponsor['sponsor_ticket_qty']=0;
+$GLOBALS['refund_projection_order'] = new RefundProjectionOrder(88,40.0,5.0,[$paid_general,$paid_discount,$subscriber],[],[],[]);
+$amount_only_non_sponsor_failed=false;
+try { roxy_rs_repo_effective_backing($no_sponsor); } catch (RuntimeException $error) { $amount_only_non_sponsor_failed=true; }
+check_refund_projection($amount_only_non_sponsor_failed,'partial amount-only ticket refund without sponsorship requires manager review');
+$GLOBALS['refund_projection_order'] = new RefundProjectionOrder(88,40.0,40.0,[$paid_general,$paid_discount,$subscriber],[],[],[]);
+$amount_only_full_non_sponsor = roxy_rs_repo_effective_backing($no_sponsor);
+check_refund_projection($amount_only_full_non_sponsor['charge_total']===0
+    && $amount_only_full_non_sponsor['general_qty']===0 && $amount_only_full_non_sponsor['discount_qty']===0
+    && $amount_only_full_non_sponsor['support_qty']===0 && $amount_only_full_non_sponsor['subscriber_qty']===1,
+    'full amount-only refund clears paid ticket counts for non-sponsorship backing');
 $GLOBALS['refund_projection_order']=new RefundProjectionOrder(88,60.0,60.0,[$paid_general,$paid_discount,$subscriber,$sponsor_tickets],[$fee]);
 $amount_only_full=roxy_rs_repo_effective_backing($backing);
 check_refund_projection($amount_only_full['charge_total']===0 && $amount_only_full['sponsor_amount']===0,'amount-only full Woo refund clears funding and sponsor state');

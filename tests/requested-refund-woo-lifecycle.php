@@ -7,7 +7,7 @@ $check = static function(bool $ok, string $label): void { if (!$ok) throw new Ru
 $suffix = bin2hex(random_bytes(6));
 $request_id = 920000 + random_int(1, 9999);
 $backing_id = 930000 + random_int(1, 9999);
-$product_id = 0; $order_id = 0; $refund_ids = [];
+$product_id = 0; $order_id = 0; $plain_order_id = 0; $refund_ids = [];
 $mail_guard = static function() { return true; };
 add_filter('pre_wp_mail', $mail_guard, PHP_INT_MAX);
 try {
@@ -63,12 +63,41 @@ try {
     $check($after_full['charge_total']===0 && $after_full['sponsor_amount']===0,
         'actual Woo amount-only final refund clears retained funding and sponsorship');
     $check((float)wc_get_order($order_id)->get_total_refunded()===30.0,'Woo persisted both fixture refunds and exposed their cumulative amount');
+
+    $plain_order = wc_create_order(['customer_id'=>0]);
+    if (is_wp_error($plain_order) || !$plain_order instanceof WC_Order) throw new RuntimeException('Could not create the private non-sponsor refund order.');
+    $plain_order->set_created_via('roxy_requested_showings');
+    $plain_order->set_currency(strtoupper((string)get_woocommerce_currency()));
+    $plain_order->add_meta_data('_roxy_rs_request_id', $request_id + 1, true);
+    $plain_order->add_meta_data('_roxy_rs_backing_id', $backing_id + 1, true);
+    if (!$plain_order->add_product(wc_get_product($product_id), 2, ['subtotal'=>20,'total'=>20])) throw new RuntimeException('Could not add non-sponsor fixture ticket line.');
+    $plain_order->calculate_totals(false);
+    $plain_order->save();
+    $plain_order_id = (int)$plain_order->get_id();
+    $plain_row = ['id'=>$backing_id+1,'request_id'=>$request_id+1,'status'=>'charged','woo_order_id'=>$plain_order_id,
+        'general_qty'=>2,'discount_qty'=>0,'support_qty'=>2,'subscriber_qty'=>0,'sponsor_ticket_qty'=>0,
+        'charge_total'=>2000,'sponsor_amount'=>0,'agreement_json'=>''];
+    $refund = wc_create_refund(['order_id'=>$plain_order_id,'amount'=>5,'reason'=>'Private non-sponsor partial amount-only fixture',
+        'line_items'=>[],'refund_payment'=>false,'restock_items'=>false]);
+    if (is_wp_error($refund) || !$refund instanceof WC_Order_Refund) throw new RuntimeException('Woo did not create the private non-sponsor partial refund.');
+    $refund_ids[]=(int)$refund->get_id();
+    $ambiguous_failed = false;
+    try { roxy_rs_repo_effective_backing($plain_row); } catch (RuntimeException $error) { $ambiguous_failed = true; }
+    $check($ambiguous_failed,'actual Woo partial amount-only ticket refund fails closed without sponsorship');
+    $refund = wc_create_refund(['order_id'=>$plain_order_id,'amount'=>15,'reason'=>'Private non-sponsor final amount-only fixture',
+        'line_items'=>[],'refund_payment'=>false,'restock_items'=>false]);
+    if (is_wp_error($refund) || !$refund instanceof WC_Order_Refund) throw new RuntimeException('Woo did not create the private non-sponsor final refund.');
+    $refund_ids[]=(int)$refund->get_id();
+    $plain_full = roxy_rs_repo_effective_backing($plain_row);
+    $check($plain_full['charge_total']===0 && $plain_full['general_qty']===0 && $plain_full['support_qty']===0,
+        'actual Woo full amount-only refund clears non-sponsor paid ticket quantities');
 } finally {
     foreach (array_reverse($refund_ids) as $refund_id) {
         $refund = wc_get_order($refund_id);
         if ($refund instanceof WC_Order_Refund) wp_delete_post($refund_id, true);
     }
     if ($order_id > 0 && wc_get_order($order_id)) wp_delete_post($order_id, true);
+    if ($plain_order_id > 0 && wc_get_order($plain_order_id)) wp_delete_post($plain_order_id, true);
     if ($product_id > 0 && get_post_type($product_id) === 'product' && strpos((string)get_the_title($product_id), 'Private refund fixture ' . $suffix) === 0) wp_delete_post($product_id, true);
     remove_filter('pre_wp_mail', $mail_guard, PHP_INT_MAX);
 }
