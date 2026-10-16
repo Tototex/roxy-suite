@@ -417,6 +417,27 @@ final class Store {
     private static function has_core_attachment_reference(int $attachment_id, string $url): bool {
         global $wpdb;
         if ($attachment_id <= 0 || $url === '') return true;
+        static $yoast_table_exists = null;
+        // Yoast stores attachment IDs outside WordPress core metadata. When the
+        // indexable table exists, include its social-preview image fields; a
+        // schema/read error must preserve the candidate rather than delete it.
+        $yoast_table = $wpdb->prefix . 'yoast_indexable';
+        if (!is_string($yoast_table) || !preg_match('/^[A-Za-z0-9_]+$/D', $yoast_table)) return true;
+        if ($yoast_table_exists === null) {
+            $wpdb->last_error = '';
+            $yoast_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($yoast_table)));
+            if ($wpdb->last_error !== '') return true;
+            $yoast_table_exists = $yoast_exists === $yoast_table;
+        }
+        if ($yoast_table_exists) {
+            $wpdb->last_error = '';
+            $yoast_reference = $wpdb->get_var($wpdb->prepare(
+                'SELECT id FROM ' . $yoast_table . ' WHERE open_graph_image_id = %s OR twitter_image_id = %s LIMIT 1',
+                (string) $attachment_id,
+                (string) $attachment_id
+            ));
+            if ($wpdb->last_error !== '' || $yoast_reference !== null) return true;
+        }
         $patterns = [
             '%' . $wpdb->esc_like($url) . '%',
             '%' . str_replace('/', '%', $wpdb->esc_like($url)) . '%',

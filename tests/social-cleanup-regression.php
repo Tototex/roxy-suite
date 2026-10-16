@@ -22,6 +22,8 @@ final class CleanupWpdb {
     public array $metadata_values = ['wp_usermeta'=>[], 'wp_termmeta'=>[], 'wp_commentmeta'=>[], 'wp_options'=>[]];
     public bool $initial_query_error = false;
     public bool $reference_query_error = false;
+    public bool $yoast_table_exists = false;
+    public array $yoast_reference_ids = [];
     public string $fail_reference_table = '';
     public bool $lock_busy = false;
     public array $busy_lock_names = [];
@@ -117,6 +119,17 @@ final class CleanupWpdb {
     }
     public function get_var(string $query) {
         $this->queries[] = $query;
+        if (strpos($query, 'SHOW TABLES LIKE') !== false && strpos($query, 'wp_yoast_indexable') !== false) {
+            if ($this->reference_query_error) { $this->last_error = 'fixture Yoast table check failed'; return null; }
+            return $this->yoast_table_exists ? 'wp_yoast_indexable' : null;
+        }
+        if (strpos($query, 'FROM wp_yoast_indexable') !== false) {
+            if ($this->reference_query_error) { $this->last_error = 'fixture Yoast reference query failed'; return null; }
+            preg_match("/open_graph_image_id = '(\\d+)'/", $query, $open_graph);
+            preg_match("/twitter_image_id = '(\\d+)'/", $query, $twitter);
+            return in_array((int)($open_graph[1] ?? 0), $this->yoast_reference_ids, true)
+                || in_array((int)($twitter[1] ?? 0), $this->yoast_reference_ids, true) ? 1 : null;
+        }
         if (strpos($query, 'COALESCE(MAX(attachment_id), 0)') !== false) {
             preg_match('/cleanup_after <= \'([^\']+)\'/i', $query, $cutoff);
             $local_cutoff = stripslashes($cutoff[1] ?? '');
@@ -234,6 +247,10 @@ $wpdb->cleanup_rows[42] = ['attachment_id'=>42,'social_post_id'=>88,'cleanup_aft
 check_cleanup(\RoxySocial\Store::cleanup_detached_media_page(0, 42) === 0 && isset($wpdb->attachments[42]) && count($wpdb->queries) === 0,
     'detached-media deletion stays disabled by default without reading or deleting candidates');
 $GLOBALS['cleanup_detached_enabled'] = true;
+
+fixture(); $wpdb->yoast_table_exists = true; $wpdb->yoast_reference_ids = [42];
+check_cleanup(\RoxySocial\Store::cleanup_expired() === 0 && isset($wpdb->attachments[42]) && $wpdb->rows[1]['temporary_attachment_id'] === 42,
+    'Yoast Open Graph or Twitter image ID reference prevents attachment deletion');
 
 fixture();
 $wpdb->rows[2] = ['id'=>2, 'status'=>'posted', 'temporary_attachment_id'=>43, 'cleanup_after'=>'2026-10-06 12:01:00', 'media_url'=>''];
