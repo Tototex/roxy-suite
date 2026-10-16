@@ -3,6 +3,8 @@
 define('ABSPATH', __DIR__);
 function add_action(...$args){}function wp_cache_delete(...$args){}function wp_generate_uuid4(){return 'fixture-token';}
 function wp_json_encode($v){return json_encode($v);}function is_wp_error($v){return $v instanceof WP_Error;}
+function get_option($key,$default=false){if(array_key_exists($key,$GLOBALS['options']??[]))return $GLOBALS['options'][$key];return $GLOBALS['wpdb']->claims[$key]??$default;}
+function update_option($key,$value,...$args){if(($GLOBALS['fail_option_write']??'')===$key)return false;$GLOBALS['options'][$key]=$value;return true;}
 function wc_get_product_id_by_sku($sku){return 1;}function wc_get_product($id){return (object)['ID'=>1];}
 function get_user_by($field,$id){return $id===9 ? (object)['ID'=>9] : false;}
 class WooCommerce {} class WP_Error {}
@@ -26,7 +28,7 @@ class PrizeDatabase {
         $this->updates++;if($this->fail_update||$this->updates===$this->fail_on_update)return false;[$value,$key,$expected]=$params;if(($this->claims[$key]??null)!==$expected)return 0;$this->claims[$key]=$value;return $this->updates===$this->commit_then_fail_on_update?false:1;
     }
 }
-$GLOBALS['wpdb']=new PrizeDatabase;$GLOBALS['created']=0;
+$GLOBALS['wpdb']=new PrizeDatabase;$GLOBALS['created']=0;$GLOBALS['options']=[];
 require ($argv[1]??dirname(__DIR__)).'/includes/modules/arcade/roxy-arcade.php';
 $once=new ReflectionMethod('Roxy_Arcade','award_once');
 function prize_check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS: $label\n";}
@@ -65,3 +67,26 @@ $claim=json_decode($GLOBALS['wpdb']->claims['roxy_arcade_award_claim_2700-08'],t
 prize_check($claim['state']==='completed'&&$claim['subscription_id']===55,'committed completed claim preserves prize identity after lost acknowledgement');
 $GLOBALS['wpdb']->commit_then_fail_on_update=0;
 prize_check($once->invoke(null,'2700-08',9)===0&&$GLOBALS['created']===$created,'completed claim after lost acknowledgement cannot award twice');
+$approve=new ReflectionMethod('Roxy_Arcade','approve_review_candidate');
+$GLOBALS['options']['roxy_arcade_last_review_candidate']=['month'=>'2700-09','user_id'=>9,'name'=>'Fixture Player','score'=>100,'queued_at'=>'fixture'];
+$GLOBALS['fail_option_write']='roxy_arcade_last_awarded_month';$created=$GLOBALS['created'];
+$result=$approve->invoke(null);
+prize_check(empty($result['ok'])&&$GLOBALS['created']===$created+1,'settings reconnect failure reports incomplete summary after one completed prize');
+$claim=json_decode($GLOBALS['wpdb']->claims['roxy_arcade_award_claim_2700-09'],true);
+prize_check($claim['state']==='completed'&&$claim['user_id']===9&&$claim['subscription_id']===55&&$GLOBALS['options']['roxy_arcade_last_review_candidate']['month']==='2700-09','completed claim and candidate remain available for metadata recovery');
+unset($GLOBALS['fail_option_write']);$result=$approve->invoke(null);
+prize_check(!empty($result['ok'])&&$GLOBALS['created']===$created+1,'retry reconciles completed claim without creating another subscription');
+prize_check($GLOBALS['options']['roxy_arcade_last_awarded_month']==='2700-09'&&$GLOBALS['options']['roxy_arcade_last_winner_user_id']===9&&$GLOBALS['options']['roxy_arcade_last_winner_sub_id']===55&&$GLOBALS['options']['roxy_arcade_last_review_candidate']===[],'recovery persists award summary and clears candidate only after verified writes');
+$GLOBALS['options']['roxy_arcade_last_review_candidate']=['month'=>'2700-10','user_id'=>9,'name'=>'Fixture Player','score'=>101,'queued_at'=>'fixture'];
+$GLOBALS['fail_option_write']='roxy_arcade_last_winner_user_id';$created=$GLOBALS['created'];
+$result=$approve->invoke(null);
+prize_check(empty($result['ok'])&&$GLOBALS['created']===$created+1&&$GLOBALS['options']['roxy_arcade_last_awarded_month']==='2700-10','partial summary write leaves completed claim recoverable after month marker saved');
+unset($GLOBALS['fail_option_write']);$result=$approve->invoke(null);
+prize_check(!empty($result['ok'])&&$GLOBALS['created']===$created+1,'retry after month-marker commit reconciles remaining award metadata without duplicate subscription');
+prize_check($GLOBALS['options']['roxy_arcade_last_winner_user_id']===9&&$GLOBALS['options']['roxy_arcade_last_winner_sub_id']===55&&$GLOBALS['options']['roxy_arcade_last_review_candidate']===[],'partial-write recovery finishes winner identity and clears review candidate');
+$GLOBALS['options']['roxy_arcade_last_review_candidate']=['month'=>'2700-11','user_id'=>9,'name'=>'Fixture Player','score'=>102,'queued_at'=>'fixture'];
+$GLOBALS['fail_option_write']='roxy_arcade_last_review_candidate';$created=$GLOBALS['created'];
+$result=$approve->invoke(null);
+prize_check(empty($result['ok'])&&$GLOBALS['created']===$created+1&&$GLOBALS['options']['roxy_arcade_last_review_candidate']['month']==='2700-11','candidate-clear failure keeps the completed claim available for recovery');
+unset($GLOBALS['fail_option_write']);$result=$approve->invoke(null);
+prize_check(!empty($result['ok'])&&$GLOBALS['created']===$created+1&&$GLOBALS['options']['roxy_arcade_last_review_candidate']===[],'retry after candidate-clear failure completes without another subscription');

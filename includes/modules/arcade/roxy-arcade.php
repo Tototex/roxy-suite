@@ -615,30 +615,61 @@ class Roxy_Arcade {
 
     $month = (string) $candidate['month'];
     $last = (string) get_option(self::OPTION_LAST_AWARDED_MONTH, '');
-    if ($last === $month) {
+    $winner_id = (int) $candidate['user_id'];
+    $claim = get_option('roxy_arcade_award_claim_' . $month, []);
+    if (is_string($claim)) $claim = json_decode($claim, true);
+    $claim_matches_candidate = is_array($claim)
+      && ($claim['state'] ?? '') === 'completed'
+      && (int) ($claim['user_id'] ?? 0) === $winner_id
+      && (int) ($claim['subscription_id'] ?? 0) > 0;
+    if ($last === $month && !$claim_matches_candidate) {
       return [
         'ok' => false,
         'message' => 'This month has already been awarded.',
       ];
     }
 
-    $winner_id = (int) $candidate['user_id'];
     $sub_id = self::award_once($month, $winner_id);
     if (!$sub_id) {
+      // The subscription and durable claim may have completed just before a
+      // database reconnect interrupted the settings writes below. Treat that
+      // exact completed claim as the source of truth and reconcile markers;
+      // never call subscription creation again for this recovery path.
+      if (!$claim_matches_candidate) {
+        return [
+          'ok' => false,
+          'message' => 'Prize not issued. Check the monthly claim: an existing or uncertain attempt requires review; it will not be retried automatically.',
+        ];
+      }
+      $sub_id = (int) $claim['subscription_id'];
+    }
+
+    $result_options = [
+      self::OPTION_LAST_AWARDED_MONTH => $month,
+      self::OPTION_LAST_WINNER_USER_ID => $winner_id,
+      self::OPTION_LAST_WINNER_SUB_ID => (int) $sub_id,
+    ];
+    foreach ($result_options as $key => $value) {
+      update_option($key, $value);
+      if (get_option($key) !== $value) {
+        return [
+          'ok' => false,
+          'message' => 'The prize claim is complete, but its admin summary could not be saved. Retry approval to reconcile it without issuing another prize.',
+        ];
+      }
+    }
+    update_option(self::OPTION_LAST_REVIEW_CANDIDATE, [], false);
+    $remaining_candidate = get_option(self::OPTION_LAST_REVIEW_CANDIDATE, []);
+    if (!is_array($remaining_candidate) || !empty($remaining_candidate)) {
       return [
         'ok' => false,
-        'message' => 'Prize not issued. Check the monthly claim: an existing or uncertain attempt requires review; it will not be retried automatically.',
+        'message' => 'The prize claim is complete, but the review queue could not be cleared. Retry approval to reconcile it without issuing another prize.',
       ];
     }
 
-    update_option(self::OPTION_LAST_AWARDED_MONTH, $month);
-    update_option(self::OPTION_LAST_WINNER_USER_ID, $winner_id);
-    update_option(self::OPTION_LAST_WINNER_SUB_ID, (int) $sub_id);
-    update_option(self::OPTION_LAST_REVIEW_CANDIDATE, [], false);
-
     return [
       'ok' => true,
-      'message' => 'Queued review candidate approved and prize issued.',
+      'message' => 'Queued review candidate approved; the completed prize claim and admin summary are synchronized.',
     ];
   }
 
