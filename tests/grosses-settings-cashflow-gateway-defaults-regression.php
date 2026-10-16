@@ -32,9 +32,9 @@ namespace {
     throw new RuntimeException('The exact prior built-in gateway default must normalize to the actual gateway IDs.');
   }
 
-  $GLOBALS['settings_fixture'] = ['cashflow_woo_gateways' => "paypal\nstripe\nstripe_blik\nstripe_link"];
+  $GLOBALS['settings_fixture'] = ['cashflow_woo_gateways' => 'paypal,stripe,stripe_blik,stripe_link'];
   if (\RoxyGrosses\Settings::get('cashflow_woo_gateways') !== "paypal\nstripe") {
-    throw new RuntimeException('Legacy pseudo-gateway defaults for Link/BLIK normalize to Stripe gateway ID.');
+    throw new RuntimeException('Comma-separated legacy pseudo-gateway defaults for Link/BLIK normalize to actual gateway IDs.');
   }
 
   $GLOBALS['settings_fixture'] = ['cashflow_woo_gateways' => '', '_cashflow_woo_gateways_configured' => '1'];

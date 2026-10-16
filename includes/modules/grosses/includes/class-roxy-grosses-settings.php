@@ -87,10 +87,11 @@ class Settings {
     }
     // These exact old defaults represented the full enabled checkout set.
     // Woo stores Stripe Link and BLIK under the Stripe gateway ID.
-    $legacy_gateways = trim((string) ($saved['cashflow_woo_gateways'] ?? ''));
-    if (in_array($legacy_gateways, [
-      "stripe\npaypal",
-      "paypal\nstripe\nstripe_blik\nstripe_link",
+    $legacy_gateway_ids = self::line_list((string) ($saved['cashflow_woo_gateways'] ?? ''));
+    sort($legacy_gateway_ids, SORT_STRING);
+    if (in_array($legacy_gateway_ids, [
+      ['paypal', 'stripe'],
+      ['paypal', 'stripe', 'stripe_blik', 'stripe_link'],
     ], true)) {
       $all['cashflow_woo_gateways'] = self::defaults()['cashflow_woo_gateways'];
     }
