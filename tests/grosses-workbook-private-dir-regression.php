@@ -93,6 +93,9 @@ try {
     unlink($private_root_link);
 
     $workbook_link = $fixture_root . DIRECTORY_SEPARATOR . 'content' . DIRECTORY_SEPARATOR . 'roxy-grosses-private' . DIRECTORY_SEPARATOR . 'workbooks';
+    // Ensure the normal directory and its guard files exist before replacing it
+    // with a symlink. The earlier root-path checks do not create this child.
+    $workbooks_method->invoke(null);
     foreach (['index.html', '.htaccess'] as $guard_file) {
         $guard_path = $workbook_link . DIRECTORY_SEPARATOR . $guard_file;
         if (is_file($guard_path) && !unlink($guard_path)) throw new RuntimeException('Could not remove private workbook fixture guard file.');
