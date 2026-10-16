@@ -130,7 +130,7 @@ eval($vendor_map_code);
     $table_exists = static function (string $table) use ($wpdb): bool {
         return $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table))) === $table;
     };
-    $snapshot = static function () use ($wpdb, $tables): array {
+    $snapshot = static function () use ($wpdb, $tables): string {
         $state = [];
         foreach (['products', 'orders', 'runs'] as $kind) {
             $rows = $wpdb->get_results('SELECT * FROM `' . $tables[$kind] . '` ORDER BY id', ARRAY_A);
