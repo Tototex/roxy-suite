@@ -24,7 +24,7 @@ if (($argv[1] ?? '') === '--worker') {
       public static array $calls=[];
       public static function update_product(int $id,array $data):void { $GLOBALS["inventory_worker_events"][]="product-write"; if($GLOBALS["inventory_worker_case"]==="product_fail") throw new \\RuntimeException("product storage failure"); self::$calls[]=["product",$id,$data]; }
       public static function update_vendor(int $id,array $data):void { $GLOBALS["inventory_worker_events"][]="vendor-write"; if($GLOBALS["inventory_worker_case"]==="vendor_fail") throw new \\RuntimeException("vendor storage failure"); self::$calls[]=["vendor",$id,$data]; }
-      public static function log(string $type,string $status,string $message):bool { self::$calls[]=["log",$type,$status]; return in_array($GLOBALS["inventory_worker_case"],["zero_qty_unknown_cost","direct_send_success"],true); }
+      public static function log(string $type,string $status,string $message):bool { self::$calls[]=["log",$type,$status]; return in_array($GLOBALS["inventory_worker_case"],["zero_qty_unknown_cost","direct_send_success","cancel_during_mail"],true); }
       public static function vendors():array { $delivery_case=in_array($GLOBALS["inventory_worker_case"],["manager_to_vendor","vendor_to_manager","manager_recipient_changed","direct_send_success"],true); return [["name"=>"Fixture Vendor","order_method"=>$delivery_case?"email":"phone","email"=>$delivery_case?"vendor@example.test":"","minimum_amount"=>0.0]]; }
       public static function all_vendors():array { return self::vendors(); }
       public static function products():array {
