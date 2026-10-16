@@ -139,8 +139,8 @@ namespace {
     $GLOBALS['advertiser_mail_result'] = false;
     \RoxyGrosses\EmailOutbox::$finish_failure = true;
     $unrecorded_false_id = '123e4567-e89b-42d3-a456-426614174012';
-    $unrecorded_false = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 7, 'manual-advertiser', 2026, 7, $unrecorded_false_id, true);
-    $unrecorded_retry = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 7, 'scheduled-advertiser', 2026, 7, $unrecorded_false_id, true);
+    $unrecorded_false = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 8, 'manual-advertiser', 2026, 8, $unrecorded_false_id, true);
+    $unrecorded_retry = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 8, 'scheduled-advertiser', 2026, 8, $unrecorded_false_id, true);
     $unrecorded_probe = [
       'first_success' => !empty($unrecorded_false['success']),
       'first_message' => $unrecorded_false['message'] ?? '',
@@ -158,10 +158,10 @@ namespace {
     $check(empty($thrown['success']) && count($GLOBALS['advertiser_mail_calls']) === 5, 'thrown advertiser mail outcome is recorded as uncertain');
     \RoxyGrosses\EmailOutbox::$finish_failure = true;
     $GLOBALS['advertiser_mail_throw'] = true;
-    $unrecorded_throw = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 6, 'manual-advertiser', 2026, 6, '123e4567-e89b-42d3-a456-426614174013', true);
+    $unrecorded_throw = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 8, 'manual-advertiser', 2026, 8, '123e4567-e89b-42d3-a456-426614174013', true);
     unset($GLOBALS['advertiser_mail_throw']);
     $check(empty($unrecorded_throw['success']) && str_contains($unrecorded_throw['message'], 'could not confirm the outcome state')
-      && (\RoxyGrosses\EmailOutbox::$rows['advertiser-resend:2026-06:2026-06:123e4567-e89b-42d3-a456-426614174013']['status'] ?? '') === 'sending',
+      && (\RoxyGrosses\EmailOutbox::$rows['advertiser-resend:2026-08:2026-08:123e4567-e89b-42d3-a456-426614174013']['status'] ?? '') === 'sending',
       'thrown mail plus failed uncertainty write reports unresolved state without clearing the sending claim');
     \RoxyGrosses\EmailOutbox::$throw_once = true;
     $claim_error = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 8, 'manual-advertiser', 2026, 8, '123e4567-e89b-42d3-a456-426614174002', true);
