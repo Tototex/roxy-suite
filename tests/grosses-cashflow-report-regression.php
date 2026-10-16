@@ -158,6 +158,12 @@ namespace {
     'square' => ['square_updated_at_proxy' => 1],
     'woocommerce' => ['woocommerce_refund_creation_proxy' => 4],
   ], 'daily report counts refund date evidence only for refunds assigned to the selected day');
+  $proxy_dated_refunds = $report['review_exceptions']['square_refunds_using_update_time_proxy'];
+  $assert(count($proxy_dated_refunds) === 1 && $proxy_dated_refunds[0]['refund_id'] === 'sq-refund'
+    && $proxy_dated_refunds[0]['payment_id'] === 'sq-payment' && $proxy_dated_refunds[0]['order_id'] === 'sq-order'
+    && $proxy_dated_refunds[0]['refund_date'] === '2026-10-02' && $proxy_dated_refunds[0]['amount_cents'] === 200
+    && str_contains($proxy_dated_refunds[0]['review'], 'not settlement evidence'),
+    'Cashflow exposes each included Square refund whose date relies on mutable updated_at proxy evidence');
   $assert(count($report['review_exceptions']['woocommerce_manual_refunds']) === 1
     && $report['review_exceptions']['woocommerce_manual_refunds'][0]['refund_id'] === 24
     && $report['review_exceptions']['woocommerce_manual_refunds'][0]['amount_cents'] === 750,
@@ -253,7 +259,9 @@ namespace {
 
   \RoxyGrosses\Store::$completion_event = ['event_id' => 'refund-event-1', 'event_created_at' => '2026-10-03 03:15:00'];
   $event_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
-  $assert($event_report['totals']['square_refunded_cents'] === 200 && $event_report['refund_date_bases']['square'] === ['square_refund_completed_event'], 'combined cashflow uses a matched Square refund.updated completion event as its dated refund evidence');
+  $assert($event_report['totals']['square_refunded_cents'] === 200 && $event_report['refund_date_bases']['square'] === ['square_refund_completed_event']
+    && $event_report['review_exceptions']['square_refunds_using_update_time_proxy'] === [],
+    'matched Square refund.updated event dates the included refund without a proxy-date review item');
   \RoxyGrosses\Store::$fail_completion_event_read = true;
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'combined cashflow fails closed when matched Square completion evidence cannot be read');
   \RoxyGrosses\Store::$fail_completion_event_read = false;

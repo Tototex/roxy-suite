@@ -195,6 +195,19 @@ final class CashflowReport {
     ];
     $day_square_refunds = array_values(array_filter($square_refunds, static fn(array $event): bool => ($event['refund_date'] ?? '') === $report_date));
     $day_woo_refunds = array_values(array_filter($woo_refunds, static fn(array $event): bool => ($event['refund_date'] ?? '') === $report_date));
+    $review_exceptions['square_refunds_using_update_time_proxy'] = array_values(array_map(
+      static function (array $event): array {
+        return [
+          'refund_id' => (string) ($event['refund_id'] ?? ''),
+          'payment_id' => (string) ($event['payment_id'] ?? ''),
+          'order_id' => (string) ($event['order_id'] ?? ''),
+          'refund_date' => (string) ($event['refund_date'] ?? ''),
+          'amount_cents' => (int) ($event['amount_cents'] ?? 0),
+          'review' => 'Cashflow uses Square updated_at as a date proxy because no matching refund.updated completion event is available. Confirm the actual refund day; this is not settlement evidence.',
+        ];
+      },
+      array_filter($day_square_refunds, static fn(array $event): bool => ($event['refund_date_basis'] ?? '') === 'square_updated_at_proxy')
+    ));
     $refund_basis_counts = static function (array $events): array {
       $counts = [];
       foreach ($events as $event) {

@@ -365,6 +365,17 @@ class Settings {
       }
       echo '</tbody></table>';
     }
+    $proxy_dated_square_refunds = $exceptions['square_refunds_using_update_time_proxy'] ?? [];
+    echo '<h3>Included Square refunds using a proxy date</h3><p>These refunds remain included in Cashflow on Square’s update date, but the date is not confirmed by a matching refund.updated completion event. Review the provider record if the exact refund day matters; no ticket quantity is inferred here.</p>';
+    if (!$proxy_dated_square_refunds) {
+      echo '<p>No Square refunds on this date rely on the update-time proxy.</p>';
+    } else {
+      echo '<table class="widefat striped" style="max-width:900px"><thead><tr><th>Refund</th><th>Payment</th><th>Associated order</th><th>Cashflow date</th><th>Included amount</th><th>Review note</th></tr></thead><tbody>';
+      foreach ($proxy_dated_square_refunds as $event) {
+        echo '<tr><td>'.esc_html((string) $event['refund_id']).'</td><td>'.esc_html((string) $event['payment_id']).'</td><td>'.esc_html((string) ($event['order_id'] ?: 'Unavailable')).'</td><td>'.esc_html((string) $event['refund_date']).'</td><td>'.esc_html($money((int) $event['amount_cents'])).'</td><td>'.esc_html((string) $event['review']).'</td></tr>';
+      }
+      echo '</tbody></table>';
+    }
     echo '<h3>Included Square refunds with no matched itemized return</h3><p>These completed payment refunds are included in Cashflow, but no matching itemized return was found. If a refund was for tickets, review the related sale day; ticket quantities are not automatically deducted from the refund amount alone.</p>';
     if (!$unmatched_square_refunds) {
       echo '<p>No unmatched completed Square payment refunds were found for this date.</p>';
