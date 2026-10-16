@@ -9,7 +9,8 @@ if (!defined('WP_CLI') || !WP_CLI) exit(1);
 $root = rtrim((string) ($args[0] ?? ''), '/\\');
 if ($root === '' || !is_file($root . '/roxy-suite.php')) throw new RuntimeException('Roxy Suite fixture root is required.');
 if (!class_exists('WooCommerce') || !class_exists('RoxyRS\\Frontend') || !class_exists('RoxyRS\\Conversion')
-    || !class_exists('RoxyRS\\Agreement') || !class_exists('RoxyST\\Capacity') || !class_exists('RoxyST\\Holds')) {
+    || !class_exists('RoxyRS\\Agreement') || !class_exists('RoxyST\\Capacity') || !class_exists('RoxyST\\Holds')
+    || !class_exists('Roxy_Sub_Check') || !method_exists('Roxy_Sub_Check', 'walkup_quantity_for_showing')) {
     throw new RuntimeException('This fixture requires the disposable site with WooCommerce, Requested Showings, and Show Tickets active.');
 }
 if (class_exists('WC_Subscription')) throw new RuntimeException('Do not run this fixture with a real subscription provider installed.');
@@ -113,6 +114,10 @@ try {
     $check($entitlement_check([new RoxyRequestedLifecycleSubscriptionFixture('expired', 2)]) === 0, 'expired membership grants no entitlement');
     $check($entitlement_check([]) === 0, 'nonmember grants no entitlement');
     $GLOBALS['r2_lifecycle_subscriptions'][$user_id] = [new RoxyRequestedLifecycleSubscriptionFixture('active', 2)];
+    // This disposable WordPress/Woo test site must initialize the member-arrival
+    // schema explicitly; production conversion only reads it and fails closed.
+    \Roxy_Sub_Check::maybe_upgrade_schema();
+    if (!\Roxy_Sub_Check::prepare_admission_log()) throw new RuntimeException('Private member-arrival fixture schema was not initialized.');
 
     $target = (new DateTimeImmutable('now', wp_timezone()))->modify('+60 days')->setTime(19, 0);
     // Keep the fixture outside the default Fri/Sat/Sun fixed showtime blocks.
