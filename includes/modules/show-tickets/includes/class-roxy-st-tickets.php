@@ -277,7 +277,12 @@ class Tickets {
   }
 
   private static function refunded_ticket_ids($order, int $item_id, array $ticket_ids): array {
-    $refund_qty = min(count($ticket_ids), (int) ceil(abs((float) $order->get_qty_refunded_for_item($item_id))));
+    $raw_refund_qty = $order->get_qty_refunded_for_item($item_id);
+    if ((!is_int($raw_refund_qty) && !is_float($raw_refund_qty) && !is_string($raw_refund_qty))
+      || !is_numeric($raw_refund_qty) || !is_finite((float) $raw_refund_qty)) {
+      throw new \RuntimeException('Ticket refund quantity could not be verified');
+    }
+    $refund_qty = min(count($ticket_ids), (int) ceil(abs((float) $raw_refund_qty)));
     $allocated = [];
     // Preserve previously allocated identities while the cumulative refund still exists.
     foreach ($ticket_ids as $ticket_id) {

@@ -130,6 +130,15 @@ namespace {
         'Story-only retry completes the unfinished Story without repeating normal Facebook or Instagram posts');
     \RoxySocial\Publisher::process_facebook_story_retry(...$story_retry_args);
     check(\RoxySocial\FacebookStories::$calls===1,'duplicate Story retry callback cannot republish the Story');
+    reset_fixture('both','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['publish_facebook_story']=1;
+    \RoxySocial\Store::$row['facebook_post_id']='123';\RoxySocial\Store::$row['instagram_media_id']='456';
+    \RoxySocial\Store::$row['facebook_story_state']=json_encode(['version'=>1,'expected'=>1,'ids'=>[],'pending_id'=>'ambiguous-story-id']);
+    \RoxySocial\Store::$row['last_error']='Facebook Story: interrupted upload';
+    check(!\RoxySocial\Publisher::queue_facebook_story_retry(1)
+        &&\RoxySocial\Store::$row['status']==='failed'
+        &&count($GLOBALS['scheduled_events'])===0
+        &&\RoxySocial\FacebookStories::$calls===0,
+        'ambiguous pending Story upload is not offered to the retry queue');
     reset_fixture('both','failed');\RoxySocial\Store::$row['facebook_post_id']='123';\RoxySocial\Campaigns::$verified=false;$GLOBALS['responses']=[response(['id'=>'234']),response(['id'=>'345'])];
     check(\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['facebook_post_id']==='123'&&\RoxySocial\Store::$row['status']==='posted'&&count($GLOBALS['calls'])===2,'schedule wording does not block safe retry to only the missing account');
     $decode=new \ReflectionMethod(\RoxySocial\Publisher::class,'decode_response');$decode->setAccessible(true);

@@ -47,6 +47,15 @@ foreach ([101,102,103] as $id) { $GLOBALS['meta'][$id]['_roxy_checked_in']=1; $G
 check(get_post_meta(103,'_roxy_ticket_state') === 'refunded' && get_post_meta(103,'_roxy_ticket_refunded') === '1' && !$can->invoke(null,103), 'T3: undo persists refund allocation discovered from current Woo quantity before cached flag exists');
 $GLOBALS['meta'][101]['_roxy_ticket_state']='valid';
 foreach ([101,102,103] as $id) foreach (['_roxy_checked_in','_roxy_checked_in_at','_roxy_checked_in_by','_roxy_checked_in_source'] as $key) unset($GLOBALS['meta'][$id][$key]);
+$order->refunded = 'malformed';
+$before_malformed_refund_read = $GLOBALS['meta'];
+$malformed_refund_rejected = false;
+try {
+    $sync->invoke(null,$order,10,[101,102,103],'valid');
+} catch (RuntimeException $e) {
+    $malformed_refund_rejected = true;
+}
+check($malformed_refund_rejected && $GLOBALS['meta'] === $before_malformed_refund_read && get_post_meta(103,'_roxy_ticket_refunded') === '1' && !$can->invoke(null,103), 'T3: malformed refund read preserves persisted refunded ticket state');
 $order->refunded = 0; $sync->invoke(null,$order,10,[101,102,103],'valid');
 check($can->invoke(null,102) && $can->invoke(null,103), 'T3: explicit refund removal reconciles allocation on sync');
 $GLOBALS['meta'][101]['_roxy_ticket_order_item_id'] = 999;

@@ -149,6 +149,8 @@ final class Publisher {
             || empty($row['publish_facebook_story'])
             || (string) ($row['media_type'] ?? '') !== 'video'
             || !str_starts_with((string) ($row['last_error'] ?? ''), 'Facebook Story: ')) return false;
+        $story_state = json_decode((string) ($row['facebook_story_state'] ?? ''), true);
+        if (!is_array($story_state) || !empty($story_state['pending_id'])) return false;
         $platform = (string) ($row['platform'] ?? 'both');
         return in_array($platform, ['facebook', 'instagram', 'both'], true)
             && ($platform === 'instagram' || !empty($row['facebook_post_id']))

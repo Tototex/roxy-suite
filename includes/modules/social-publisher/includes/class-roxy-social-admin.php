@@ -151,8 +151,10 @@ final class Admin {
                 echo ' <a class="button button-primary" href="' . esc_url($publish_url) . '" onclick="return confirm(\'Retry publishing the missing social account?\')">Retry publish</a>';
             }
             $story_retry_platform = (string) ($row['platform'] ?? 'both');
+            $story_retry_state = json_decode((string) ($row['facebook_story_state'] ?? ''), true);
             $story_retry_safe = $status === 'failed' && !empty($row['publish_facebook_story'])
                 && (string) ($row['media_type'] ?? '') === 'video'
+                && is_array($story_retry_state) && empty($story_retry_state['pending_id'])
                 && in_array($story_retry_platform, ['facebook', 'instagram', 'both'], true)
                 && str_starts_with((string) ($row['last_error'] ?? ''), 'Facebook Story: ')
                 && ($story_retry_platform === 'instagram' || !empty($row['facebook_post_id']))
