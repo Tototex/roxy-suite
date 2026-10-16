@@ -2437,10 +2437,6 @@ class Reporter {
 
     foreach ($reports as $entry_id => $report) {
       $start_at = $report['_start_at'] ?? null;
-      if (!$start_at instanceof \DateTimeImmutable) {
-        continue;
-      }
-
       $window_start = $report['_window_start'] ?? null;
       $window_end = $report['_window_end'] ?? null;
       if ($window_start instanceof \DateTimeImmutable && $window_end instanceof \DateTimeImmutable && $window_end > $window_start) {
@@ -2457,6 +2453,10 @@ class Reporter {
             $window_matches[] = (int) $entry_id;
           }
         }
+        continue;
+      }
+
+      if (!$start_at instanceof \DateTimeImmutable) {
         continue;
       }
 

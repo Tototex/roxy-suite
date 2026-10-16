@@ -373,6 +373,38 @@ namespace {
   \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$unique_rental_date]));
   $check((float) \RoxyGrosses\Store::$rental[$unique_rental_date][0]['concessions_total'] === 18.75 && (float) \RoxyGrosses\Store::$movie[$unique_rental_date][0]['concessions_total'] === 0.0 && !isset(\RoxyGrosses\Store::$unmatched_concessions[$unique_rental_date]), 'unique rental window receives the sale instead of a nearby public showing');
 
+  // Explicit booking intervals remain authoritative even if a rental's legacy
+  // show-time field is blank and therefore cannot produce _start_at.
+  $missing_rental_time_date = '2038-05-12';
+  \RoxyGrosses\Store::$movie[$missing_rental_time_date] = [['id'=>7040,'show_time'=>'8:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0]];
+  \RoxyGrosses\Store::$rental[$missing_rental_time_date] = [['id'=>7041,'show_time'=>'','reserved_start_at'=>$missing_rental_time_date.' 18:30:00','reserved_end_at'=>$missing_rental_time_date.' 21:00:00','is_locked'=>0,'concessions_total'=>0]];
+  \RoxyGrosses\Square::$orders[$missing_rental_time_date] = [[
+    'id'=>'unique-rental-missing-time-order', 'closed_at'=>$missing_rental_time_date.'T19:00:00-07:00',
+    'line_items'=>[['uid'=>'unique-rental-missing-time-line','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1875,'currency'=>'USD']]],
+  ]];
+  \RoxyGrosses\Store::$updates = [];
+  \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$missing_rental_time_date]));
+  $check((float) \RoxyGrosses\Store::$rental[$missing_rental_time_date][0]['concessions_total'] === 18.75 && (float) \RoxyGrosses\Store::$movie[$missing_rental_time_date][0]['concessions_total'] === 0.0 && !isset(\RoxyGrosses\Store::$unmatched_concessions[$missing_rental_time_date]), 'valid unique rental interval receives the sale even when the rental show time is missing');
+
+  $overlap_missing_time_date = '2038-05-13';
+  \RoxyGrosses\Store::$movie[$overlap_missing_time_date] = [['id'=>7050,'show_time'=>'8:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>7.00]];
+  \RoxyGrosses\Store::$rental[$overlap_missing_time_date] = [
+    ['id'=>7051,'show_time'=>'','reserved_start_at'=>$overlap_missing_time_date.' 19:00:00','reserved_end_at'=>$overlap_missing_time_date.' 21:00:00','is_locked'=>0,'concessions_total'=>3.00],
+    ['id'=>7052,'show_time'=>'','reserved_start_at'=>$overlap_missing_time_date.' 19:30:00','reserved_end_at'=>$overlap_missing_time_date.' 21:30:00','is_locked'=>0,'concessions_total'=>4.00],
+  ];
+  \RoxyGrosses\Square::$orders[$overlap_missing_time_date] = [[
+    'id'=>'overlap-rental-missing-times-order', 'closed_at'=>$overlap_missing_time_date.'T20:00:00-07:00',
+    'line_items'=>[['uid'=>'overlap-rental-missing-times-line','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1875,'currency'=>'USD']]],
+  ]];
+  \RoxyGrosses\Store::$updates = [];
+  $before_missing_time_totals = [(float) \RoxyGrosses\Store::$movie[$overlap_missing_time_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_missing_time_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_missing_time_date][1]['concessions_total']];
+  $overlap_missing_time_failed = false;
+  try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$overlap_missing_time_date])); }
+  catch (Throwable $error) { $overlap_missing_time_failed = str_contains($error->getMessage(), 'could not be matched safely') && str_contains($error->getMessage(), 'review queue'); }
+  $missing_time_queue = \RoxyGrosses\Store::$unmatched_concessions[$overlap_missing_time_date] ?? [];
+  $after_missing_time_totals = [(float) \RoxyGrosses\Store::$movie[$overlap_missing_time_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_missing_time_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_missing_time_date][1]['concessions_total']];
+  $check($overlap_missing_time_failed && count($missing_time_queue) === 1 && ($missing_time_queue[0]['reason'] ?? '') === 'overlapping_rental_windows (1 dated rows: 8:00 PM)' && $after_missing_time_totals === $before_missing_time_totals && \RoxyGrosses\Store::$updates === [], 'overlapping valid rental intervals still fail closed when both rental show times are missing');
+
   $no_rows_date = '2038-05-06';
   \RoxyGrosses\Square::$orders[$no_rows_date] = [[
     'id' => 'unmatched-order-no-rows', 'closed_at' => $no_rows_date . 'T23:30:00-07:00',
