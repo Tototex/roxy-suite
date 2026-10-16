@@ -22,7 +22,7 @@ final class CleanupWpdb {
     public array $metadata_values = ['wp_usermeta'=>[], 'wp_termmeta'=>[], 'wp_commentmeta'=>[], 'wp_options'=>[]];
     public bool $initial_query_error = false;
     public bool $reference_query_error = false;
-    public bool $yoast_table_exists = false;
+    public bool $yoast_table_exists = true;
     public array $yoast_reference_ids = [];
     public string $fail_reference_table = '';
     public bool $lock_busy = false;
