@@ -77,6 +77,8 @@ foreach (['UTC', 'Pacific/Honolulu', 'Asia/Tokyo'] as $process_timezone) {
 date_default_timezone_set('UTC');
 check($schema->invoke(null,'2026-11-07T19:30') === '2026-11-07T19:30:00-08:00', 'T16: local timezone reflects DST');
 check($schema->invoke(null,'not a date') === '', 'T16: malformed schema date safely omitted');
+check($schema->invoke(null,'2026-02-30T19:30') === '', 'T16: impossible calendar date omitted instead of normalized');
+check($schema->invoke(null,'2026-03-08T02:30') === '', 'T16: nonexistent spring DST local time omitted instead of shifted');
 $weekend = new \ReflectionMethod(\RoxyST\CPT::class,'weekend_anchor_from_start'); $weekend->setAccessible(true);
 check($weekend->invoke(null,'2026-10-02T01:00')->format('Y-m-d') === '2026-10-02', 'T16: early Friday remains Friday, not UTC Thursday');
 }

@@ -572,16 +572,11 @@ class Frontend {
   }
 
   private static function schema_start_date(string $start): string {
-    if ($start === '') {
-      return '';
-    }
-
     $tz = function_exists('wp_timezone') ? wp_timezone() : new \DateTimeZone((string) get_option('timezone_string') ?: 'UTC');
-    try {
-      return (new \DateTimeImmutable($start, $tz))->setTimezone($tz)->format('c');
-    } catch (\Exception $e) {
-      return '';
-    }
+    $timestamp = Eligibility::local_datetime_timestamp($start);
+    if ($timestamp === null) return '';
+
+    return (new \DateTimeImmutable('@' . $timestamp))->setTimezone($tz)->format('c');
   }
 
   private static function schema_offers(int $showing_id, string $url, ?int $remaining): array {
