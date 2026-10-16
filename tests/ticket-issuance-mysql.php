@@ -56,7 +56,15 @@ try {
     throw new RuntimeException('Connection-loss operation unexpectedly committed');
   }catch(RuntimeException $e){$check($reconnect_rejected&&$e->getMessage()==='Ticket connection ownership lost','mid-transaction reconnect is detected and refuses stale ticket writes');}
   $check((int)$wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->posts}` WHERE post_title='MUST ROLLBACK AFTER RECONNECT'")===0&&(int)$wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->postmeta}` WHERE meta_key='_roxy_ticket_order_id' AND meta_value='123'")===1,'disconnected ticket transaction rolls back its partial projection');
-  $check((int)$second->get_var($second->prepare('SELECT IS_FREE_LOCK(%s)',$reconnect_key))===1,'disconnect releases the old ticket lock without stale cleanup on the replacement connection');
+  // Server-side disconnect cleanup can land just after mysqli_close returns.
+  // Poll briefly rather than making this integration assertion depend on
+  // network/thread scheduling in the disposable MySQL service.
+  $lock_released=false;$lock_deadline=microtime(true)+2;
+  do {
+    $lock_released=(int)$second->get_var($second->prepare('SELECT IS_FREE_LOCK(%s)',$reconnect_key))===1;
+    if(!$lock_released)usleep(10000);
+  } while(!$lock_released&&microtime(true)<$lock_deadline);
+  $check($lock_released,'disconnect releases the old ticket lock without stale cleanup on the replacement connection');
   $held=new \RoxyST\FixtureIssuance(123);$lock=(new ReflectionProperty($held,'lock'));$lock->setAccessible(true);$key=$lock->getValue($held);
   $check((string)$second->get_var($second->prepare('SELECT GET_LOCK(%s,0)',$key))==='1','second connection acquires competing order lock');
   try{try{$held->run(static fn()=>null);throw new RuntimeException('Contended operation ran');}catch(RuntimeException $e){$check($e->getMessage()==='Ticket issuance is busy','overlapping order operation is blocked');}}
