@@ -57,7 +57,7 @@ namespace {
   } else {
     attachment_assert((fileperms(dirname($a)) & 0777) === 0700 && (fileperms($a) & 0777) === 0600, 'directory and attachment private permissions');
   }
-  $stream = fopen($a, 'r'); $header = fgetcsv($stream); $row = fgetcsv($stream); $total = fgetcsv($stream); fclose($stream);
+  $stream = fopen($a, 'r'); $header = fgetcsv($stream, null, ',', '"', ''); $row = fgetcsv($stream, null, ',', '"', ''); $total = fgetcsv($stream, null, ',', '"', ''); fclose($stream);
   attachment_assert(count($header) === 9 && $row[3] === $report['film_title'], 'original columns and multiline quote escaping preserved');
   attachment_assert($row[7] === '9' && $total[7] === '9' && $total[8] === '$12.34', 'paid attendance and gross totals preserved');
   invoke_attachment('remove_csv_attachment', $a);
@@ -71,7 +71,7 @@ namespace {
   invoke_attachment('remove_csv_attachment', $path);
   foreach ([false, true] as $include) {
     $path = invoke_attachment('write_live_csv', $live, $include);
-    $stream = fopen($path, 'r'); $head = fgetcsv($stream); $row = fgetcsv($stream); fclose($stream);
+    $stream = fopen($path, 'r'); $head = fgetcsv($stream, null, ',', '"', ''); $row = fgetcsv($stream, null, ',', '"', ''); fclose($stream);
     attachment_assert(count($head) === ($include ? 11 : 9) && $row[8] === '$12.34' && (!$include || $row[10] === '$14.84'), 'live concessions option and monetary columns ' . (int)$include);
     invoke_attachment('remove_csv_attachment', $path);
   }

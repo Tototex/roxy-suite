@@ -101,7 +101,6 @@ namespace {
   saved_report_assert($GLOBALS['fixture_mail'] === [] && \RoxyGrosses\Store::$emailed === [] && count(\RoxyGrosses\Store::$logs) === 1, 'stale draft refusal attempts no email and does not mark report emailed');
 
   $projection = new ReflectionMethod(\RoxyGrosses\Reporter::class, 'saved_draft_matches_current');
-  $projection->setAccessible(true);
   $snapshot_row = ['report_date'=>'2026-09-30','showing_id'=>91,'film_title'=>'Refund fixture','show_time'=>'7:00 PM','general_qty'=>3,'general_gross'=>36.00,'discount_qty'=>0,'discount_gross'=>0.0,'group_qty'=>0,'group_gross'=>0.0,'total_tickets'=>3,'gross_total'=>36.0,'concessions_total'=>12.34];
   $snapshot_summary = ['total_tickets'=>3,'gross_total'=>36.0];
   saved_report_assert($projection->invoke(null, [$snapshot_row], $snapshot_summary, [$snapshot_row], $snapshot_summary), 'unchanged saved draft projection matches current report');
