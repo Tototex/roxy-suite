@@ -30,6 +30,11 @@ try {
     $check($rejected,'malformed or fractional order-item quantity is rejected: '.$invalid_quantity);
     $check(\RoxyST\FixtureCapacity::remaining_seats_for_showing($show)===0,'invalid order-item quantity fails closed for public availability: '.$invalid_quantity);
   }
+  $deleted=$wpdb->delete($quantity_table,['order_item_id'=>$item,'meta_key'=>'_qty']);if($deleted!==1||$wpdb->last_error!=='')throw new RuntimeException('Private reservation quantity metadata could not be removed.');
+  $missing_rejected=false;try{$qty();}catch(RuntimeException $error){$missing_rejected=true;}
+  $check($missing_rejected,'missing order-item quantity is rejected instead of undercounting seats');
+  $check(\RoxyST\FixtureCapacity::remaining_seats_for_showing($show)===0,'missing order-item quantity fails closed for public availability');
+  if(!$wpdb->insert($quantity_table,['order_item_id'=>$item,'meta_key'=>'_qty','meta_value'=>'2']))throw new RuntimeException('Private reservation quantity metadata could not be restored.');
   $write_quantity('2.000');$check($qty()===2,'whole-number decimal serialization remains a valid reservation quantity');
   $write_quantity('2');$check($qty()===2,'restored valid order quantity remains reserved');
   $order->update_status('completed');$check($qty()===2,'completed order remains reserved');
