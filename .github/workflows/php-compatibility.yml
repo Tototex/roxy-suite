@@ -136,6 +136,14 @@ jobs:
             echo "::error title=Ticket issuance private Woo fixture failed::$details"
             exit "$status"
           fi
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/reservations-woo.php" "$GITHUB_WORKSPACE" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 50 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Seat reservation quantity fixture failed::$details"
+            exit "$status"
+          fi
           if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/ticket-capacity-store-api-woocommerce.php" >"$output" 2>&1; then
             cat "$output"
           else

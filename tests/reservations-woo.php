@@ -22,6 +22,16 @@ try {
   $check($qty()===2&&\RoxyST\FixtureCapacity::remaining_seats_for_showing($show)===4,'held order blocks seats despite stale zero Sales cache');
   $cache=get_post_meta($show,'_roxy_sales_stats',true);$check($cache['sold_qty']===0,'reservation read does not rewrite financial report cache');
   $order->update_status('processing');$check($qty()===2,'processing order remains reserved');
+  $quantity_table=$wpdb->prefix.'woocommerce_order_itemmeta';
+  $write_quantity=static function(string $quantity)use($wpdb,$quantity_table,$item):void{$wpdb->last_error='';$updated=$wpdb->update($quantity_table,['meta_value'=>$quantity],['order_item_id'=>$item,'meta_key'=>'_qty']);if($updated!==1||$wpdb->last_error!=='')throw new RuntimeException('Private reservation quantity fixture could not be updated.');};
+  foreach(['bad','1.5','-1'] as $invalid_quantity){
+    $write_quantity($invalid_quantity);$rejected=false;
+    try{$qty();}catch(RuntimeException $error){$rejected=true;}
+    $check($rejected,'malformed or fractional order-item quantity is rejected: '.$invalid_quantity);
+    $check(\RoxyST\FixtureCapacity::remaining_seats_for_showing($show)===0,'invalid order-item quantity fails closed for public availability: '.$invalid_quantity);
+  }
+  $write_quantity('2.000');$check($qty()===2,'whole-number decimal serialization remains a valid reservation quantity');
+  $write_quantity('2');$check($qty()===2,'restored valid order quantity remains reserved');
   $order->update_status('completed');$check($qty()===2,'completed order remains reserved');
   update_post_meta($show,'_roxy_sales_stats',['cache_version'=>2,'sold_qty'=>999]);$order->update_status('cancelled');
   $check($qty()===0&&\RoxyST\FixtureCapacity::remaining_seats_for_showing($show)===6,'cancellation frees seats despite stale high Sales cache');
@@ -39,7 +49,7 @@ try {
   $refund=wc_create_refund(['order_id'=>$order->get_id(),'amount'=>0,'reason'=>$label,'refund_payment'=>false,'restock_items'=>false,'line_items'=>[$item=>['qty'=>1,'refund_total'=>0]]]);if(is_wp_error($refund))throw new RuntimeException('Private refund failed');
   $check($qty()===2,'partial refund preserves conservative original-quantity seat policy');
   $operation=new \RoxyST\FixtureIssuance([],'reservation-reader:'.$show);$check($operation->run(static fn($writer)=>$writer->reserved_seats($show))===$qty(),'transactional walk-up authority uses the identical shared reservation reader');
-  $fail=static fn($sql)=>str_contains($sql,'SELECT COALESCE(SUM(CAST(q.meta_value')?'SELECT * FROM roxy_missing_reservation_failure':$sql;
+  $fail=static fn($sql)=>str_contains($sql,'invalid_quantity_count')?'SELECT * FROM roxy_missing_reservation_failure':$sql;
   add_filter('query',$fail);$errors=$wpdb->suppress_errors(true);try{$check(\RoxyST\FixtureCapacity::remaining_seats_for_showing($show)===0,'SQL failure denies public availability without a fatal');}finally{remove_filter('query',$fail);$wpdb->suppress_errors($errors);}
   $check($qty()===2,'read failure leaves reservation rows intact and next read succeeds');
   foreach(['SELECT meta_key,meta_value','SELECT post_id FROM'] as $prefix) {

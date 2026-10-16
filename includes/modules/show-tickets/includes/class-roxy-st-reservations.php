@@ -32,8 +32,13 @@ final class Reservations {
     if($subscriber_user_id>0)$exclude.=$wpdb->prepare(" AND EXISTS (SELECT 1 FROM `{$wpdb->postmeta}` u WHERE u.post_id=o.ID AND u.meta_key='_customer_user' AND u.meta_value=%s)",(string)$subscriber_user_id);
     $statuses="(o.post_status IN ('wc-processing','wc-completed','wc-on-hold') OR (o.post_status IN ('wc-pending','wc-checkout-draft') AND EXISTS (SELECT 1 FROM `{$wpdb->postmeta}` h WHERE h.post_id=o.ID AND h.meta_key='_roxy_seat_hold_until' AND CAST(h.meta_value AS UNSIGNED)>UNIX_TIMESTAMP())))";
     // Preserve original-quantity reservation policy; refunds/financials are not rewritten here.
-    $value=$wpdb->get_var("SELECT COALESCE(SUM(CAST(q.meta_value AS DECIMAL(20,4))),0) FROM `$items` i JOIN `{$wpdb->posts}` o ON o.ID=i.order_id JOIN `$meta` q ON q.order_item_id=i.order_item_id AND q.meta_key='_qty' WHERE i.order_item_type='line_item' AND o.post_type='shop_order' AND $statuses$exclude AND EXISTS (SELECT 1 FROM `$meta` product WHERE product.order_item_id=i.order_item_id AND product.meta_key='_product_id' AND ($mapping))");
-    if($wpdb->last_error || $value===null || !is_numeric($value))throw new \RuntimeException('Seat reservations could not be read');
+    // Never let MySQL's permissive CAST turn malformed/fractional ticket counts
+    // into zero (or partial seats). Validate matched lines in the same query.
+    $valid_quantity="TRIM(q.meta_value) REGEXP '^[0-9]{1,19}([.]0+)?$'";
+    $aggregate=$wpdb->get_row("SELECT COALESCE(SUM(CASE WHEN $valid_quantity THEN CAST(TRIM(q.meta_value) AS DECIMAL(65,0)) ELSE 0 END),0) AS reserved_quantity, COALESCE(SUM(CASE WHEN $valid_quantity THEN 0 ELSE 1 END),0) AS invalid_quantity_count FROM `$items` i JOIN `{$wpdb->posts}` o ON o.ID=i.order_id JOIN `$meta` q ON q.order_item_id=i.order_item_id AND q.meta_key='_qty' WHERE i.order_item_type='line_item' AND o.post_type='shop_order' AND $statuses$exclude AND EXISTS (SELECT 1 FROM `$meta` product WHERE product.order_item_id=i.order_item_id AND product.meta_key='_product_id' AND ($mapping))",ARRAY_A);
+    if($wpdb->last_error || !is_array($aggregate) || !array_key_exists('reserved_quantity',$aggregate) || !array_key_exists('invalid_quantity_count',$aggregate) || !is_numeric($aggregate['reserved_quantity']) || !is_numeric($aggregate['invalid_quantity_count']))throw new \RuntimeException('Seat reservations could not be read');
+    if((float)$aggregate['invalid_quantity_count']>0)throw new \RuntimeException('Seat reservations contain an invalid order quantity');
+    $value=$aggregate['reserved_quantity'];
     if((float)$value>=PHP_INT_MAX)return PHP_INT_MAX;
     return max(0,(int)ceil((float)$value));
   }
