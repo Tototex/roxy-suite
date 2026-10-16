@@ -482,10 +482,12 @@ class Store {
                     if (is_array($receipt) && empty($ambiguous_receipts[$variation_id])
                         && self::receipt_qualifies_for_order($receipt,$order_created_ts)) {
                         $increased = true;
-                        unset($line['square_receipt_review'], $line['square_receipt_review_event_id'], $line['square_receipt_review_created_at']);
+                        $receipt_stock_from = $line['square_receipt_review_stock_from'] ?? $before;
+                        $receipt_stock_to = $line['square_receipt_review_stock_to'] ?? $current[$variation_id];
+                        unset($line['square_receipt_review'], $line['square_receipt_review_event_id'], $line['square_receipt_review_created_at'], $line['square_receipt_review_stock_from'], $line['square_receipt_review_stock_to']);
                         $line['stock_increase_detected_at'] = $receipt_created_at;
-                        $line['stock_increase_from'] = (float) $before;
-                        $line['stock_increase_to'] = $current[$variation_id];
+                        $line['stock_increase_from'] = (float) $receipt_stock_from;
+                        $line['stock_increase_to'] = (float) $receipt_stock_to;
                         $line['square_receipt_event_id'] = (string)$receipt['id'];
                         $line['square_receipt_quantity'] = (float)$receipt['quantity'];
                         $line['square_receipt_created_at'] = $receipt_created_at;
@@ -496,6 +498,8 @@ class Store {
                         $line['square_receipt_review_event_id'] = (string) $receipt['id'];
                         $line['square_receipt_review_created_at'] = $receipt_created_at;
                         $line['square_receipt_review'] = $receipt;
+                        if (!array_key_exists('square_receipt_review_stock_from', $line)) $line['square_receipt_review_stock_from'] = (float) $before;
+                        if (!array_key_exists('square_receipt_review_stock_to', $line)) $line['square_receipt_review_stock_to'] = (float) $current[$variation_id];
                     }
                     $line['last_observed_on_hand'] = $current[$variation_id];
                     $changed = true;

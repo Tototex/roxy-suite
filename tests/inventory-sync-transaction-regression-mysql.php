@@ -296,8 +296,10 @@ eval($vendor_map_code);
             && (float)($first_lines[1]['last_observed_on_hand'] ?? -1) === 9.0
             && ($first_lines[0]['square_receipt_review_event_id'] ?? '') === 'fixture-receipt'
             && ($first_lines[1]['square_receipt_review_event_id'] ?? '') === 'fixture-receipt'
-            && ($first_lines[0]['square_receipt_review']['id'] ?? '') === 'fixture-receipt',
-            'ambiguous receipt pull advances observed stock and durably records the receipt for review on each matching line');
+            && ($first_lines[0]['square_receipt_review']['id'] ?? '') === 'fixture-receipt'
+            && (float)($first_lines[0]['square_receipt_review_stock_from'] ?? -1) === 4.0
+            && (float)($first_lines[0]['square_receipt_review_stock_to'] ?? -1) === 9.0,
+            'ambiguous receipt pull durably records the event and original stock delta for review on each matching line');
         $second_payload_before_cancel = (string)$second_order['payload'];
         $check(\RoxyInventorySyncFixture\Store::update_order_status($second_order_id, 'cancelled'),
             'real Store transition explicitly cancels one ambiguous order');
