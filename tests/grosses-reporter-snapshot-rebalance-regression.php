@@ -355,7 +355,9 @@ namespace {
   catch (Throwable $error) { $overlap_failed = str_contains($error->getMessage(), 'could not be safely attributed') && str_contains($error->getMessage(), 'review queue'); }
   $overlap_queue = \RoxyGrosses\Store::$unmatched_concessions[$overlap_date] ?? [];
   $after_ambiguous_totals = [(float) \RoxyGrosses\Store::$movie[$overlap_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_date][1]['concessions_total']];
-  $check($overlap_failed && count($overlap_queue) === 1 && $overlap_queue[0]['reason'] === 'overlapping_rental_windows (3 dated rows: 8:00 PM, 7:00 PM, 7:30 PM)' && $overlap_queue[0]['amount_cents'] === 1875 && $after_ambiguous_totals === $before_ambiguous_totals && \RoxyGrosses\Store::$updates === [], 'sale within overlapping rentals is queued as ambiguous without allocation or persisted total changes');
+  $check($overlap_failed, 'overlapping rental attribution stops before allocation writes');
+  $check(count($overlap_queue) === 1 && ($overlap_queue[0]['reason'] ?? '') === 'overlapping_rental_windows (3 dated rows: 8:00 PM, 7:00 PM, 7:30 PM)', 'overlapping rental queue has a specific reason and lists all candidate report rows: ' . json_encode(array_column($overlap_queue, 'reason')));
+  $check(($overlap_queue[0]['amount_cents'] ?? 0) === 1875 && $after_ambiguous_totals === $before_ambiguous_totals && \RoxyGrosses\Store::$updates === [], 'ambiguous rental sale amount is retained and no report totals or rows are written');
 
   // A unique rental window remains stronger evidence than a nearby public
   // showtime and receives the complete sale.
