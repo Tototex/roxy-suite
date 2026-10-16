@@ -141,9 +141,16 @@ namespace {
     $unrecorded_false_id = '123e4567-e89b-42d3-a456-426614174012';
     $unrecorded_false = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 7, 'manual-advertiser', 2026, 7, $unrecorded_false_id, true);
     $unrecorded_retry = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 7, 'scheduled-advertiser', 2026, 7, $unrecorded_false_id, true);
+    $unrecorded_probe = [
+      'first_success' => !empty($unrecorded_false['success']),
+      'first_message' => $unrecorded_false['message'] ?? '',
+      'retry_success' => !empty($unrecorded_retry['success']),
+      'retry_message' => $unrecorded_retry['message'] ?? '',
+      'mail_calls' => count($GLOBALS['advertiser_mail_calls']),
+    ];
     $check(empty($unrecorded_false['success']) && str_contains($unrecorded_false['message'], 'could not confirm the outcome state')
       && empty($unrecorded_retry['success']) && count($GLOBALS['advertiser_mail_calls']) === 4,
-      'failed uncertain-state persistence is reported honestly and the still-sending claim blocks retry');
+      'failed uncertain-state persistence is reported honestly and the still-sending claim blocks retry: ' . json_encode($unrecorded_probe));
     $GLOBALS['advertiser_mail_result'] = true;
     $GLOBALS['advertiser_mail_throw'] = true;
     $thrown = \RoxyGrosses\Workbook::send_advertiser_summary(2026, 8, 'manual-advertiser', 2026, 8, '123e4567-e89b-42d3-a456-426614174001', true);
