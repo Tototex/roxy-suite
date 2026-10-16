@@ -865,15 +865,59 @@ class CPT {
           if (is_wp_error($new_post_id) || !$new_post_id) return is_wp_error($new_post_id) ? $new_post_id : new \WP_Error('schedule_child_insert_failed', 'A scheduled showing could not be created.');
 
           $new_post_id = (int) $new_post_id;
-          foreach ($shared_meta as $meta_key => $meta_value) update_post_meta($new_post_id, $meta_key, $meta_value);
-          update_post_meta($new_post_id, '_roxy_start', $row['start']);
-          update_post_meta($new_post_id, '_roxy_pricing_profile', $row['profile']);
-          update_post_meta($new_post_id, '_roxy_schedule_generated', '1');
-          update_post_meta($new_post_id, '_roxy_generated_from_builder', '1');
-          if ((string) get_post_meta($new_post_id, '_roxy_start', true) !== (string) $row['start']) return new \WP_Error('schedule_child_time_write', 'A scheduled showing time could not be verified.');
+          $fail_child = static function (string $code, string $message) use ($new_post_id) {
+            wp_delete_post($new_post_id, true);
+            return new \WP_Error($code, $message);
+          };
+          $child_meta = $shared_meta + [
+            '_roxy_start' => $row['start'],
+            '_roxy_pricing_profile' => $row['profile'],
+            '_roxy_schedule_generated' => '1',
+            '_roxy_generated_from_builder' => '1',
+          ];
+          foreach ($child_meta as $meta_key => $meta_value) {
+            update_post_meta($new_post_id, $meta_key, $meta_value);
+            $saved_value = get_post_meta($new_post_id, $meta_key, true);
+            $matches = is_scalar($meta_value)
+              ? is_scalar($saved_value) && (string) $saved_value === (string) $meta_value
+              : $saved_value === $meta_value;
+            if (!$matches) return $fail_child('schedule_child_meta_write', 'A scheduled showing setting could not be verified.');
+          }
 
-          if (!empty($taxonomy_terms) && !is_wp_error($taxonomy_terms)) wp_set_object_terms($new_post_id, $taxonomy_terms, 'roxy_show_type', false);
-          if ($thumbnail_id) set_post_thumbnail($new_post_id, $thumbnail_id);
+          if (is_wp_error($taxonomy_terms)) return $fail_child('schedule_child_terms_read', 'The scheduled showing categories could not be read.');
+          if (!empty($taxonomy_terms)) {
+            $expected_terms = [];
+            foreach ($taxonomy_terms as $term_id) {
+              if (!is_scalar($term_id) || !ctype_digit((string) $term_id) || (int) $term_id < 1) {
+                return $fail_child('schedule_child_terms_read', 'The scheduled showing categories could not be verified.');
+              }
+              $expected_terms[] = (int) $term_id;
+            }
+            $expected_terms = array_values(array_unique($expected_terms));
+            sort($expected_terms);
+            $assigned = wp_set_object_terms($new_post_id, $taxonomy_terms, 'roxy_show_type', false);
+            $saved_terms = wp_get_object_terms($new_post_id, 'roxy_show_type', ['fields' => 'ids']);
+            $actual_terms = [];
+            if (is_array($saved_terms)) {
+              foreach ($saved_terms as $term_id) {
+                if (!is_scalar($term_id) || !ctype_digit((string) $term_id) || (int) $term_id < 1) {
+                  return $fail_child('schedule_child_terms_write', 'Scheduled showing categories could not be verified.');
+                }
+                $actual_terms[] = (int) $term_id;
+              }
+              $actual_terms = array_values(array_unique($actual_terms));
+              sort($actual_terms);
+            }
+            if (is_wp_error($assigned) || is_wp_error($saved_terms) || !is_array($saved_terms) || $actual_terms !== $expected_terms) {
+              return $fail_child('schedule_child_terms_write', 'Scheduled showing categories could not be verified.');
+            }
+          }
+          if ($thumbnail_id) {
+            $thumbnail_saved = set_post_thumbnail($new_post_id, $thumbnail_id);
+            if (!$thumbnail_saved || (int) get_post_thumbnail_id($new_post_id) !== (int) $thumbnail_id) {
+              return $fail_child('schedule_child_thumbnail_write', 'The scheduled showing image could not be verified.');
+            }
+          }
           return $new_post_id;
         };
         $new_post_id = function_exists('roxy_eb_with_showing_time_lock')

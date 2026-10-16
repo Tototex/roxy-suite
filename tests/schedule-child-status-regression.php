@@ -22,6 +22,12 @@ namespace {
   $GLOBALS['schedule_fail_false'] = false;
   $GLOBALS['schedule_publish_allowed'] = false;
   $GLOBALS['schedule_deleted'] = [];
+  $GLOBALS['schedule_fail_meta_id'] = 0;
+  $GLOBALS['schedule_fail_meta_key'] = '';
+  $GLOBALS['schedule_fail_terms'] = false;
+  $GLOBALS['schedule_fail_thumbnail'] = false;
+  $GLOBALS['schedule_taxonomy_terms'] = [];
+  $GLOBALS['schedule_thumbnail_id'] = 0;
   $GLOBALS['schedule_nested_save_calls'] = 0;
   $GLOBALS['schedule_next_id'] = 8000;
   $GLOBALS['schedule_transients'] = [];
@@ -35,8 +41,14 @@ namespace {
   function is_wp_error($value) { return $value instanceof WP_Error; }
   function check_schedule($condition, $message) { if (!$condition) throw new \RuntimeException($message); }
   function schedule_test($name, $callback) { $callback(); echo "ok - $name\n"; }
-  function wp_get_object_terms($post_id, $taxonomy, $args = []) { return []; }
-  function get_post_thumbnail_id($post_id) { return 0; }
+  function wp_get_object_terms($post_id, $taxonomy, $args = []) {
+    if ($taxonomy === 'roxy_show_type' && !empty($GLOBALS['schedule_taxonomy_terms'])) return $GLOBALS['schedule_taxonomy_terms'];
+    return $GLOBALS['schedule_meta'][$post_id]['_fixture_terms']??[];
+  }
+  function get_post_thumbnail_id($post_id) {
+    if ((int)$post_id===7001) return (int)$GLOBALS['schedule_thumbnail_id'];
+    return (int)($GLOBALS['schedule_meta'][$post_id]['_thumbnail_id']??0);
+  }
   function get_post_type_object($post_type) { return (object)['cap'=>(object)['publish_posts'=>'publish_roxy_showings']]; }
   function current_user_can($capability, ...$args) {
     if ($capability === 'edit_post') return true;
@@ -69,15 +81,26 @@ namespace {
     if ($single && is_array($value)) return $value[0] ?? '';
     return $single?$value:(is_array($value)?$value:[$value]);
   }
-  function update_post_meta($post_id, $key, $value) { $GLOBALS['schedule_meta'][$post_id][$key]=$value; return true; }
+  function update_post_meta($post_id, $key, $value) {
+    if ((int)$post_id === (int)$GLOBALS['schedule_fail_meta_id'] && (string)$key === (string)$GLOBALS['schedule_fail_meta_key']) return false;
+    $GLOBALS['schedule_meta'][$post_id][$key]=$value;
+    return true;
+  }
   function delete_post_meta($post_id, $key) { unset($GLOBALS['schedule_meta'][$post_id][$key]); return true; }
   function add_post_meta($post_id,$key,$value) { $GLOBALS['schedule_meta'][$post_id][$key]=$value; return true; }
   function maybe_unserialize($value) { return $value; }
   function get_post($post_id) { return $GLOBALS['schedule_posts'][$post_id] ?? null; }
   function get_post_type($post_id) { return $GLOBALS['schedule_posts'][$post_id]->post_type ?? ''; }
   function get_post_status($post_id) { return $GLOBALS['schedule_posts'][$post_id]->post_status ?? ''; }
-  function wp_set_object_terms(...$args) { return true; }
-  function set_post_thumbnail(...$args) { return true; }
+  function wp_set_object_terms($post_id, $terms, $taxonomy, $append = false) {
+    if ($GLOBALS['schedule_fail_terms']) return new WP_Error('terms_failed','simulated term assignment failure');
+    $GLOBALS['schedule_meta'][$post_id]['_fixture_terms']=array_map('intval',$terms);
+    return $terms;
+  }
+  function set_post_thumbnail($post_id, $thumbnail_id) {
+    if ($GLOBALS['schedule_fail_thumbnail']) return false;
+    return update_post_meta($post_id,'_thumbnail_id',(int)$thumbnail_id);
+  }
   function wp_delete_post($post_id, $force = false) { $GLOBALS['schedule_deleted'][]=(int)$post_id; unset($GLOBALS['schedule_meta'][$post_id]); return (object)['ID'=>(int)$post_id]; }
   function wp_insert_post($postarr, $wp_error = false) {
     $GLOBALS['schedule_insert_args'][]=$postarr;
@@ -96,6 +119,8 @@ namespace {
   function reset_schedule_fixture($status, $can_publish, $fail_at = 0, $return_false = false) {
     $GLOBALS['schedule_meta']=[]; $GLOBALS['schedule_posts']=[]; $GLOBALS['schedule_insert_args']=[]; $GLOBALS['schedule_fail_at']=$fail_at;
     $GLOBALS['schedule_fail_false']=$return_false; $GLOBALS['schedule_publish_allowed']=$can_publish;
+    $GLOBALS['schedule_fail_meta_id']=0; $GLOBALS['schedule_fail_meta_key']=''; $GLOBALS['schedule_fail_terms']=false; $GLOBALS['schedule_fail_thumbnail']=false;
+    $GLOBALS['schedule_taxonomy_terms']=[]; $GLOBALS['schedule_thumbnail_id']=0;
     $GLOBALS['schedule_deleted']=[]; $GLOBALS['schedule_nested_save_calls']=0; $GLOBALS['schedule_transients']=[]; $_POST=[
       'roxy_showing_nonce'=>'valid', 'roxy_use_schedule_builder'=>'1',
       'roxy_capacity'=>'100', 'roxy_pricing_profile'=>'movie_evening',
@@ -146,6 +171,44 @@ namespace {
       check_schedule(!isset($GLOBALS['schedule_meta'][$source->ID]['_roxy_schedule_generated']),'failed child insert must not mark schedule generated');
       check_schedule(count($GLOBALS['schedule_deleted'])===1,'earlier child from a failed batch should be removed');
       check_schedule($GLOBALS['schedule_nested_save_calls']===1,'recursion guard should prevent child save from generating descendants');
+    }
+  });
+
+  schedule_test('failed child metadata persistence deletes the incomplete child and leaves batch retryable', function() {
+    $source=reset_schedule_fixture('publish',true);
+    $GLOBALS['schedule_meta'][$source->ID]=['_roxy_duration_minutes'=>'60'];
+    $GLOBALS['schedule_fail_meta_id']=8001;
+    $GLOBALS['schedule_fail_meta_key']='_roxy_duration_minutes';
+    \RoxyST\CPT::save($source->ID,$source);
+    check_schedule(count($GLOBALS['schedule_deleted'])===1 && $GLOBALS['schedule_deleted'][0]===8001,'incomplete generated child is deleted after a failed metadata write');
+    check_schedule(!isset($GLOBALS['schedule_meta'][$source->ID]['_roxy_schedule_generated']),'failed child metadata does not mark the schedule batch complete');
+    check_schedule(count($GLOBALS['schedule_insert_args'])===1,'later children are not created after persistence failure');
+  });
+
+  schedule_test('generated child retains verified shared metadata, taxonomy, and thumbnail', function() {
+    $source=reset_schedule_fixture('publish',true);
+    $GLOBALS['schedule_taxonomy_terms']=[41,42];
+    $GLOBALS['schedule_thumbnail_id']=91;
+    \RoxyST\CPT::save($source->ID,$source);
+    $child_id=8001;
+    check_schedule(($GLOBALS['schedule_meta'][$child_id]['_roxy_start']??'')==='2031-06-02T18:00','child showing time persists');
+    check_schedule(($GLOBALS['schedule_meta'][$child_id]['_roxy_pricing_profile']??'')==='movie_evening','child pricing profile persists');
+    check_schedule(($GLOBALS['schedule_meta'][$child_id]['_fixture_terms']??[])===[41,42],'child taxonomy assignments persist');
+    check_schedule((int)($GLOBALS['schedule_meta'][$child_id]['_thumbnail_id']??0)===91,'child thumbnail persists');
+    check_schedule(($GLOBALS['schedule_meta'][$source->ID]['_roxy_schedule_generated']??'')==='1','batch is marked generated only after child verification');
+  });
+
+  schedule_test('failed taxonomy and thumbnail propagation delete incomplete generated children', function() {
+    foreach (['terms','thumbnail'] as $failure) {
+      $source=reset_schedule_fixture('publish',true);
+      // The fixture supplies one taxonomy term and one image only for this case.
+      $GLOBALS['schedule_taxonomy_terms']=[41];
+      $GLOBALS['schedule_thumbnail_id']=91;
+      if ($failure==='terms') $GLOBALS['schedule_fail_terms']=true;
+      else $GLOBALS['schedule_fail_thumbnail']=true;
+      \RoxyST\CPT::save($source->ID,$source);
+      check_schedule(count($GLOBALS['schedule_deleted'])===1,'incomplete child is deleted after '.$failure.' propagation failure');
+      check_schedule(!isset($GLOBALS['schedule_meta'][$source->ID]['_roxy_schedule_generated']),$failure.' failure leaves schedule batch retryable');
     }
   });
 
