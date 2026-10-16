@@ -177,10 +177,11 @@ namespace {
   schedule_test('failed child metadata persistence deletes the incomplete child and leaves batch retryable', function() {
     $source=reset_schedule_fixture('publish',true);
     $GLOBALS['schedule_meta'][$source->ID]=['_roxy_duration_minutes'=>'60'];
-    $GLOBALS['schedule_fail_meta_id']=8001;
+    $child_id=$GLOBALS['schedule_next_id']+1;
+    $GLOBALS['schedule_fail_meta_id']=$child_id;
     $GLOBALS['schedule_fail_meta_key']='_roxy_duration_minutes';
     \RoxyST\CPT::save($source->ID,$source);
-    check_schedule(count($GLOBALS['schedule_deleted'])===1 && $GLOBALS['schedule_deleted'][0]===8001,'incomplete generated child is deleted after a failed metadata write');
+    check_schedule(count($GLOBALS['schedule_deleted'])===1 && $GLOBALS['schedule_deleted'][0]===$child_id,'incomplete generated child is deleted after a failed metadata write');
     check_schedule(!isset($GLOBALS['schedule_meta'][$source->ID]['_roxy_schedule_generated']),'failed child metadata does not mark the schedule batch complete');
     check_schedule(count($GLOBALS['schedule_insert_args'])===1,'later children are not created after persistence failure');
   });
@@ -189,8 +190,8 @@ namespace {
     $source=reset_schedule_fixture('publish',true);
     $GLOBALS['schedule_taxonomy_terms']=[41,42];
     $GLOBALS['schedule_thumbnail_id']=91;
+    $child_id=$GLOBALS['schedule_next_id']+1;
     \RoxyST\CPT::save($source->ID,$source);
-    $child_id=8001;
     check_schedule(($GLOBALS['schedule_meta'][$child_id]['_roxy_start']??'')==='2031-06-02T18:00','child showing time persists');
     check_schedule(($GLOBALS['schedule_meta'][$child_id]['_roxy_pricing_profile']??'')==='movie_evening','child pricing profile persists');
     check_schedule(($GLOBALS['schedule_meta'][$child_id]['_fixture_terms']??[])===[41,42],'child taxonomy assignments persist');
