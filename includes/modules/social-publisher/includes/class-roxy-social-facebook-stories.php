@@ -35,8 +35,17 @@ final class FacebookStories {
         if (count(array_filter($state['ids'])) >= $expected) return ['state' => wp_json_encode($state)];
 
         $dir = trailingslashit(sys_get_temp_dir()) . 'roxy-story-' . $id . '-' . wp_generate_password(10, false, false);
-        if (!wp_mkdir_p($dir)) return ['error' => 'Could not create a temporary folder for Facebook Story processing.'];
-        @chmod($dir, 0700);
+        // Never reuse a pre-existing path here. In particular, wp_mkdir_p()
+        // treats an existing symlink-to-directory as success; cleanup must
+        // not then enumerate files from outside this request's temp folder.
+        if (!@mkdir($dir, 0700)) return ['error' => 'Could not create a private temporary folder for Facebook Story processing.'];
+        $temporary_root = realpath(sys_get_temp_dir());
+        $dir_realpath = realpath($dir);
+        if ($temporary_root === false || $dir_realpath === false || is_link($dir)
+            || dirname($dir_realpath) !== $temporary_root || !@chmod($dir_realpath, 0700)) {
+            if (!is_link($dir) && $dir_realpath !== false && realpath($dir) === $dir_realpath) @rmdir($dir_realpath);
+            return ['error' => 'The Facebook Story temporary folder could not be verified as private.'];
+        }
         $segments = [];
         try {
             $pattern = trailingslashit($dir) . 'segment-%03d.mp4';
@@ -122,9 +131,19 @@ final class FacebookStories {
             }
             return ['state' => wp_json_encode($state)];
         } finally {
-            foreach ($segments as $segment) if (is_file($segment)) @unlink($segment);
-            foreach (glob(trailingslashit($dir) . '*') ?: [] as $file) if (is_file($file)) @unlink($file);
-            @rmdir($dir);
+            // Only remove FFmpeg segment files when the original private
+            // directory still resolves to the exact path created above.
+            $current_dir = realpath($dir);
+            if (!is_link($dir) && $current_dir !== false && $current_dir === $dir_realpath) {
+                foreach (glob(trailingslashit($dir_realpath) . 'segment-*.mp4') ?: [] as $segment) {
+                    if (is_file($segment) && !is_link($segment)
+                        && realpath(dirname($segment)) === $dir_realpath
+                        && preg_match('/^segment-[0-9]{3,}\.mp4$/', basename($segment))) {
+                        @unlink($segment);
+                    }
+                }
+                @rmdir($dir_realpath);
+            }
         }
     }
 

@@ -34,6 +34,8 @@ namespace {
     $GLOBALS['story_fixture_source'] = '';
     $GLOBALS['story_fixture_http'] = [];
     $GLOBALS['story_fixture_requests'] = 0;
+    $GLOBALS['story_fixture_temp_dir'] = '';
+    $GLOBALS['story_fixture_external_target'] = '';
 
     function get_option($name, $default = false) {
         return $name === 'roxy_social_ffmpeg_path' ? $GLOBALS['story_fixture_ffmpeg'] : $default;
@@ -65,6 +67,7 @@ namespace {
     };
     $root = rtrim(sys_get_temp_dir(), '/\\') . DIRECTORY_SEPARATOR . 'roxy-story-fixture-' . bin2hex(random_bytes(5));
     if (!mkdir($root, 0700, true)) throw new \RuntimeException('Could not create the private media fixture directory.');
+    $GLOBALS['story_fixture_temp_dir'] = rtrim(sys_get_temp_dir(), '/\\') . DIRECTORY_SEPARATOR . 'roxy-story-8001-' . str_repeat('a', 10);
     $GLOBALS['story_fixture_source'] = $root . DIRECTORY_SEPARATOR . 'source.mp4';
     $GLOBALS['story_fixture_ffmpeg'] = $root . DIRECTORY_SEPARATOR . 'ffmpeg';
     $ffprobe = $root . DIRECTORY_SEPARATOR . 'ffprobe';
@@ -186,12 +189,35 @@ namespace {
         $assert(!empty($incomplete_retry['ambiguous']) && $GLOBALS['story_fixture_requests'] === $requests_after_incomplete_start
             && $requests_after_incomplete_start === $requests_before_incomplete_start + 1,
             'incomplete Story start retries without creating another remote upload');
+
+        $external_target = $root . DIRECTORY_SEPARATOR . 'external-target';
+        if (!mkdir($external_target, 0700)) throw new \RuntimeException('Could not create external sentinel directory.');
+        $GLOBALS['story_fixture_external_target'] = $external_target;
+        $sentinel = $external_target . DIRECTORY_SEPARATOR . 'preserve-me.mp4';
+        if (file_put_contents($sentinel, 'outside the Story temp directory') === false) throw new \RuntimeException('Could not create external sentinel file.');
+        if (!symlink($external_target, $GLOBALS['story_fixture_temp_dir'])) throw new \RuntimeException('Could not create Story temp-directory symlink fixture.');
+        $requests_before_symlink = $GLOBALS['story_fixture_requests'];
+        $symlink_result = \RoxySocial\FacebookStories::publish($row, $initial);
+        $assert(!empty($symlink_result['error']) && $GLOBALS['story_fixture_requests'] === $requests_before_symlink
+            && file_get_contents($sentinel) === 'outside the Story temp directory',
+            'pre-existing Story temp-directory symlink is rejected without deleting external files or contacting Meta');
         echo 'Passed ' . $checks . ' Facebook Story state checks.' . PHP_EOL;
     } finally {
         foreach (glob($root . DIRECTORY_SEPARATOR . '*') ?: [] as $path) if (is_file($path)) unlink($path);
-        foreach (glob(rtrim(sys_get_temp_dir(), '/\\') . DIRECTORY_SEPARATOR . 'roxy-story-8001-*') ?: [] as $dir) {
-            foreach (glob($dir . DIRECTORY_SEPARATOR . '*') ?: [] as $path) if (is_file($path)) unlink($path);
-            if (is_dir($dir)) rmdir($dir);
+        $temp_dir = $GLOBALS['story_fixture_temp_dir'];
+        if (is_link($temp_dir)) {
+            unlink($temp_dir);
+        } elseif (is_dir($temp_dir)) {
+            foreach (glob($temp_dir . DIRECTORY_SEPARATOR . 'segment-*.mp4') ?: [] as $path) {
+                if (is_file($path) && !is_link($path) && realpath(dirname($path)) === realpath($temp_dir)) unlink($path);
+            }
+            rmdir($temp_dir);
+        }
+        $external_target = $GLOBALS['story_fixture_external_target'];
+        if ($external_target !== '' && is_dir($external_target)) {
+            $sentinel = $external_target . DIRECTORY_SEPARATOR . 'preserve-me.mp4';
+            if (is_file($sentinel) && !is_link($sentinel)) unlink($sentinel);
+            rmdir($external_target);
         }
         rmdir($root);
     }
