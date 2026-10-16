@@ -62,7 +62,16 @@ namespace {
     throw new RuntimeException('A valid Cashflow form must accept its selected date and reach the read-only report calculation.');
   }
 
-  echo "OK: changing the Cashflow report date keeps nonce verification valid\n";
+  $GLOBALS['cashflow_report_date'] = null;
+  $_GET['_wpnonce'] = 'not-a-valid-cashflow-nonce';
+  ob_start();
+  $render->invoke(null, '2026-10-16');
+  $invalid_response = (string) ob_get_clean();
+  if (!str_contains($invalid_response, 'The report request expired.') || $GLOBALS['cashflow_report_date'] !== null) {
+    throw new RuntimeException('Cashflow must reject an invalid nonce without starting a provider read.');
+  }
+
+  echo "OK: Cashflow accepts a selected date and rejects an invalid nonce before provider reads\n";
 }
 
 namespace RoxyGrosses {
