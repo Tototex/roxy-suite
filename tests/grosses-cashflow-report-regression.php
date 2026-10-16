@@ -121,10 +121,10 @@ namespace {
     'shop_order_refund' => [1 => [
       new \RoxyGrosses\FakeRefund(22, 21, '5.00', new \DateTimeImmutable('2026-10-03T04:00:00Z')),
       new \RoxyGrosses\FakeRefund(23, 99, '10.00', new \DateTimeImmutable('2026-10-03T05:00:00Z')),
-      new \RoxyGrosses\FakeRefund(26, 101, '1.00', new \DateTimeImmutable('2026-10-03T05:30:00Z')),
-      new \RoxyGrosses\FakeRefund(27, 102, '2.00', new \DateTimeImmutable('2026-10-03T05:45:00Z')),
       new \RoxyGrosses\FakeRefund(24, 21, '7.50', new \DateTimeImmutable('2026-10-03T06:00:00Z'), false),
       new \RoxyGrosses\FakeRefund(25, 100, '9.00', new \DateTimeImmutable('2026-10-03T06:30:00Z'), false),
+      new \RoxyGrosses\FakeRefund(26, 101, '1.00', new \DateTimeImmutable('2026-10-03T05:30:00Z')),
+      new \RoxyGrosses\FakeRefund(27, 102, '2.00', new \DateTimeImmutable('2026-10-03T05:45:00Z')),
     ]],
   ];
   \RoxyGrosses\Square::$daily_orders = [[
