@@ -274,6 +274,7 @@ jobs:
           }
           run_fixture "$GITHUB_WORKSPACE/tests/social-cleanup-mysql.php" "$GITHUB_WORKSPACE/includes/modules/social-publisher/includes/class-roxy-social-store.php"
           run_fixture "$GITHUB_WORKSPACE/tests/social-publish-store-mysql.php" "$GITHUB_WORKSPACE"
+          run_fixture "$GITHUB_WORKSPACE/tests/social-publisher-concurrency-mysql.php" "$GITHUB_WORKSPACE"
           run_fixture "$GITHUB_WORKSPACE/tests/member-search-mysql.php" "$GITHUB_WORKSPACE"
           run_fixture "$GITHUB_WORKSPACE/tests/member-walkup-undo-mysql.php" "$GITHUB_WORKSPACE"
           ROXY_SUITE_FIXTURE_ROOT="$GITHUB_WORKSPACE" run_fixture "$GITHUB_WORKSPACE/tests/ticket-weekend-duplicate-wordpress.php"
