@@ -140,7 +140,7 @@ namespace {
 
     final class FixtureWpdb {
         public $prefix = 'wp_'; public $last_error = ''; public $insert_id = 0;
-        public $outstanding = 0; public $rows = []; public $lock_busy = false; public $read_error = false; public $throw_read = false; public $lose_lock_after_read = false;
+        public $outstanding = 0; public $rows = []; public $lock_busy = false; public $lock_count = 0; public $read_error = false; public $throw_read = false; public $lose_lock_after_read = false;
         public $connection_error = false; public $owner_mismatch = false; public $release_count = 0; public $guarded_insert_sql = '';
         public bool $list_error = false;
         public bool $final_update_error = false;
@@ -153,7 +153,7 @@ namespace {
             return $sql;
         }
         public function get_var($sql) {
-            if (strpos($sql, 'GET_LOCK(') !== false) { if ($this->lock_busy) return 0; $this->locked = true; return 1; }
+            if (strpos($sql, 'GET_LOCK(') !== false) { if ($this->lock_busy) return 0; $this->lock_count++; $this->locked = true; return 1; }
             if ($sql === 'SELECT CONNECTION_ID()') { if ($this->connection_error) { $this->last_error = 'connection read fault'; $this->connection_error = false; } return (string) $this->connection; }
             if (strpos($sql, 'IS_USED_LOCK(') !== false) return $this->locked ? ($this->owner_mismatch ? '99' : (string) $this->connection) : null;
             if (strpos($sql, 'RELEASE_LOCK(') !== false) { $this->release_count++; $this->locked = false; return 1; }
@@ -402,7 +402,7 @@ namespace {
     check_fixture($wpdb->release_count === 1 && !$wpdb->is_locked(), 'distinct excess retry is denied before acquiring a subscriber lease');
     reset_fixture([new FixtureSubscription('active', 2)]); $wpdb->read_error = true;
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'subscriber-reservation row read error fails closed');
-    check_fixture($wpdb->release_count === 1 && !$wpdb->is_locked(), 'aggregate read error releases verified lease');
+    check_fixture($wpdb->lock_count === 1 && $wpdb->release_count === 1 && !$wpdb->is_locked(), 'subscriber read error releases verified lease');
     reset_fixture([new FixtureSubscription('active', 2)]); $GLOBALS['fixture_subscription_error'] = true;
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'WCS entitlement exception fails closed');
     check_fixture($wpdb->release_count === 0 && !$wpdb->is_locked(), 'entitlement exception acquired no lease');
