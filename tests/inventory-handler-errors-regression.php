@@ -38,7 +38,7 @@ if (($argv[1] ?? '') === '--worker') {
       public static function transaction(callable $callback) { return $callback(); }
       public static function order_for_submission(string $key):?array { $GLOBALS["inventory_worker_events"][]="submission-lookup"; return $GLOBALS["inventory_worker_case"]==="samekey_replay"?["id"=>73]:null; }
       public static function create_order(string $vendor,array $lines,float $total,float $minimum,string $status="pending_manager",?string $key=null):int { $GLOBALS["inventory_worker_created_lines"]=$lines; $GLOBALS["inventory_worker_order_status"]=$status; self::$calls[]=["create_order",$status]; return 73; }
-      public static function order(int $id):?array { return ["id"=>$id,"vendor"=>"Fixture Vendor","status"=>$GLOBALS["inventory_worker_case"]==="cancel_log_failure"?"ordered":$GLOBALS["inventory_worker_order_status"]]; }
+      public static function order(int $id):?array { $status=$GLOBALS["inventory_worker_case"]==="cancel_log_failure"?"ordered":($GLOBALS["inventory_worker_order_status"]?:"approval_emailed"); return ["id"=>$id,"vendor"=>"Fixture Vendor","status"=>$status]; }
       public static function update_order_status(int $id,string $status):bool { if(str_contains($GLOBALS["inventory_worker_case"],"status_failure"))throw new \\RuntimeException("status storage failure"); $GLOBALS["inventory_worker_order_status"]=$status; self::$calls[]=["status",$id,$status]; return true; }
     }
     final class Settings {
