@@ -36,7 +36,9 @@ function get_transient($key){$GLOBALS['cache_reads'][]=$key;return $GLOBALS['cac
 function set_transient($key,$value,$ttl){$GLOBALS['cache'][$key]=$value;}
 function delete_transient($key){}
 function wc_get_product($id){return new class {function get_name(){return 'General';}};}
-function get_posts($args){return array_keys($GLOBALS['meta']);}
+function get_posts($args){$GLOBALS['last_get_posts_args']=$args;return !empty($GLOBALS['get_posts_empty'])?[]:array_keys($GLOBALS['meta']);}
+function wp_date($format){return '2026-10-03';}
+function esc_html($value){return (string)$value;}
 function roxy_suite_user_can_access_admin(){return true;}
 function sanitize_text_field($value){return (string)$value;}
 function wp_unslash($value){return $value;} function wp_verify_nonce(...$args){return true;}
@@ -82,6 +84,14 @@ $root=$argv[1]??dirname(__DIR__);
 require __DIR__.'/ticket-atomic-test-double.php';
 require $root.'/includes/modules/show-tickets/includes/class-roxy-st-tickets.php';
 require $root.'/includes/modules/will-call/roxy-will-call.php';
+$GLOBALS['get_posts_empty']=true;
+roxy_will_call_showing_dropdown(0,false);
+$upcoming_args=$GLOBALS['last_get_posts_args'];
+check(($upcoming_args['meta_query'][0]['key']??'')==='_roxy_start'&&($upcoming_args['meta_query'][0]['compare']??'')==='>='&&($upcoming_args['meta_query'][0]['value']??'')==='2026-10-03','upcoming Will Call showing filter uses the site-local current date');
+roxy_will_call_showing_dropdown(0,true,1);
+$archive_args=$GLOBALS['last_get_posts_args'];
+check(($archive_args['meta_query'][0]['compare']??'')==='EXISTS'&&!array_key_exists('value',$archive_args['meta_query'][0])&&($archive_args['offset']??-1)===200,'archived Will Call showing filter omits a value for EXISTS and preserves bounded paging');
+$GLOBALS['get_posts_empty']=false;
 check(roxy_will_call_parse_showing_start('2028-02-29T19:30') instanceof DateTimeImmutable,'valid local leap-day showing parses');
 check(roxy_will_call_parse_showing_start('2026-02-30T19:30')===null,'impossible showing date is rejected without normalization');
 check(roxy_will_call_parse_showing_start('2026-03-08T02:30')===null,'nonexistent spring DST local time is rejected');

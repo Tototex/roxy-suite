@@ -760,6 +760,8 @@ function roxy_will_call_product_dropdown($selected) {
 function roxy_will_call_showing_dropdown($selected, bool $show_archived = false, int $archive_page = 0) {
   $archive_page = max(0, min(1000, $archive_page));
   $page_size = 200;
+  $start_clause = ['key' => '_roxy_start', 'compare' => $show_archived ? 'EXISTS' : '>='];
+  if (!$show_archived) $start_clause['value'] = wp_date('Y-m-d');
   $posts = get_posts([
     'post_type' => 'roxy_showing',
     'post_status' => ['publish', 'private', 'draft', 'future'],
@@ -768,11 +770,7 @@ function roxy_will_call_showing_dropdown($selected, bool $show_archived = false,
     'orderby' => ['meta_value' => $show_archived ? 'DESC' : 'ASC', 'ID' => $show_archived ? 'DESC' : 'ASC'],
     'meta_key' => '_roxy_start',
     'order' => $show_archived ? 'DESC' : 'ASC',
-    'meta_query' => [[
-      'key' => '_roxy_start',
-      'compare' => $show_archived ? 'EXISTS' : '>=',
-      'value' => $show_archived ? '' : wp_date('Y-m-d'),
-    ]],
+    'meta_query' => [$start_clause],
   ]);
   $has_next_page = $show_archived && count($posts) > $page_size;
   if ($has_next_page) $posts = array_slice($posts, 0, $page_size);
