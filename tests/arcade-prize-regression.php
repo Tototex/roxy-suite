@@ -10,7 +10,7 @@ function get_user_by($field,$id){return $id===9 ? (object)['ID'=>9] : false;}
 class WooCommerce {} class WP_Error {}
 class WC_Subscriptions_Product {static function is_subscription($p){return true;}static function get_period($p){return $GLOBALS['period']??'month';}static function get_interval($p){return 1;}}
 class WC_Order_Item_Product {public $subtotal,$total,$taxes;function set_product($p){}function set_quantity($n){}function set_subtotal($v){$this->subtotal=$v;}function set_total($v){$this->total=$v;}function set_taxes($v){$this->taxes=$v;}}
-function wcs_create_subscription($args){$GLOBALS['created']++;$GLOBALS['create_args']=$args;return $GLOBALS['create_error']??new PrizeSubscription;}
+function wcs_create_subscription($args){$GLOBALS['created']++;$GLOBALS['create_args']=$args;$GLOBALS['create_calls'][]=$args;return $GLOBALS['create_error']??new PrizeSubscription;}
 function wcs_add_time($interval,$period,$start){if($interval!==1||$period!=='month')throw new RuntimeException('Wrong time argument order');return $start+30*86400;}
 class PrizeSubscription {
     public $item;function get_id(){return 55;}function get_time($key){return 1791212400;}
@@ -28,7 +28,7 @@ class PrizeDatabase {
         $this->updates++;if($this->fail_update||$this->updates===$this->fail_on_update)return false;[$value,$key,$expected]=$params;if(($this->claims[$key]??null)!==$expected)return 0;$this->claims[$key]=$value;return $this->updates===$this->commit_then_fail_on_update?false:1;
     }
 }
-$GLOBALS['wpdb']=new PrizeDatabase;$GLOBALS['created']=0;$GLOBALS['options']=[];
+$GLOBALS['wpdb']=new PrizeDatabase;$GLOBALS['created']=0;$GLOBALS['create_calls']=[];$GLOBALS['options']=[];
 require ($argv[1]??dirname(__DIR__)).'/includes/modules/arcade/roxy-arcade.php';
 $once=new ReflectionMethod('Roxy_Arcade','award_once');
 function prize_check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS: $label\n";}
@@ -71,12 +71,12 @@ $approve=new ReflectionMethod('Roxy_Arcade','approve_review_candidate');
 $GLOBALS['options']['roxy_arcade_last_review_candidate']=['month'=>'2700-09','user_id'=>9,'name'=>'Fixture Player','score'=>100,'queued_at'=>'fixture'];
 $reconnect_claim_key='roxy_arcade_award_claim_2700-09';
 $reconnect_claim_before=get_option($reconnect_claim_key,[]);
-$GLOBALS['fail_option_write']='roxy_arcade_last_awarded_month';$created=$GLOBALS['created'];
+$GLOBALS['fail_option_write']='roxy_arcade_last_awarded_month';$created=$GLOBALS['created'];$create_calls=count($GLOBALS['create_calls']);
 $result=$approve->invoke(null);
 prize_check(empty($result['ok']),'settings reconnect failure returns incomplete summary; result='.json_encode($result));
 prize_check($reconnect_claim_before===[],'settings reconnect fixture starts with no prior month claim; prior='.json_encode($reconnect_claim_before));
 $claim=json_decode($GLOBALS['wpdb']->claims[$reconnect_claim_key]??'',true);
-prize_check($GLOBALS['created']===$created+1&&$claim['state']==='completed','settings reconnect failure completes exactly one new prize; before='.$created.', after='.$GLOBALS['created'].', claim='.json_encode($claim));
+prize_check(count($GLOBALS['create_calls'])===$create_calls+1&&$claim['state']==='completed','settings reconnect failure completes exactly one new prize; calls_before='.$create_calls.', calls_after='.count($GLOBALS['create_calls']).', counter_before='.$created.', counter_after='.$GLOBALS['created'].', args='.json_encode(end($GLOBALS['create_calls'])).', claim='.json_encode($claim));
 prize_check($claim['state']==='completed'&&$claim['user_id']===9&&$claim['subscription_id']===55&&$GLOBALS['options']['roxy_arcade_last_review_candidate']['month']==='2700-09','completed claim and candidate remain available for metadata recovery');
 unset($GLOBALS['fail_option_write']);$result=$approve->invoke(null);
 prize_check(!empty($result['ok'])&&$GLOBALS['created']===$created+1,'retry reconciles completed claim without creating another subscription');
