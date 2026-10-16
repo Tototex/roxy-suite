@@ -96,8 +96,17 @@ namespace {
   $GLOBALS['fixture_mail'] = [];
   $GLOBALS['fixture_mail_result'] = true;
   $result = \RoxyGrosses\Reporter::send_saved_report(41);
-  saved_report_assert(empty($result['success']) && str_contains($result['message'], 'out of date'), 'draft with changed current Square figures is refused as stale');
+  saved_report_assert(empty($result['success']) && str_contains($result['message'], 'out of date'), 'draft is refused when current report rows cannot be verified');
   saved_report_assert($GLOBALS['fixture_mail'] === [] && \RoxyGrosses\Store::$emailed === [] && count(\RoxyGrosses\Store::$logs) === 1, 'stale draft refusal attempts no email and does not mark report emailed');
+
+  $projection = new ReflectionMethod(\RoxyGrosses\Reporter::class, 'saved_draft_matches_current');
+  $projection->setAccessible(true);
+  $snapshot_row = ['report_date'=>'2026-09-30','showing_id'=>91,'film_title'=>'Refund fixture','show_time'=>'7:00 PM','general_qty'=>3,'general_gross'=>36.00,'discount_qty'=>0,'discount_gross'=>0.0,'group_qty'=>0,'group_gross'=>0.0,'total_tickets'=>3,'gross_total'=>36.0,'concessions_total'=>12.34];
+  $snapshot_summary = ['total_tickets'=>3,'gross_total'=>36.0];
+  saved_report_assert($projection->invoke(null, [$snapshot_row], $snapshot_summary, [$snapshot_row], $snapshot_summary), 'unchanged saved draft projection matches current report');
+  $refunded_row = array_replace($snapshot_row, ['general_qty'=>2,'general_gross'=>24.0,'total_tickets'=>2,'gross_total'=>24.0,'refund_adjusted'=>true]);
+  $refunded_summary = ['total_tickets'=>2,'gross_total'=>24.0];
+  saved_report_assert(!$projection->invoke(null, [$snapshot_row], $snapshot_summary, [$refunded_row], $refunded_summary), 'later Square refund quantity and gross changes make the saved draft stale');
 
   echo $GLOBALS['fixture_checks'] . " saved-report read-only checks passed; all mail is intercepted locally.\n";
 }
