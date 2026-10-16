@@ -375,7 +375,7 @@ class Store {
         return self::transaction(static function () use ($id,$status,$wpdb) {
         $allowed = [
             'pending_manager' => ['approval_emailed', 'ordered', 'email_failed', 'cancelled'],
-            'email_sending' => ['approval_emailed', 'ordered', 'pending_manager'],
+            'email_sending' => ['approval_emailed', 'ordered', 'pending_manager', 'email_failed'],
             'approval_emailed' => ['ordered', 'rejected', 'cancelled'],
             'ordered' => ['stock_increased', 'cancelled'],
         ];

@@ -24,7 +24,7 @@ if (($argv[1] ?? '') === '--worker') {
       public static array $calls=[];
       public static function update_product(int $id,array $data):void { $GLOBALS["inventory_worker_events"][]="product-write"; if($GLOBALS["inventory_worker_case"]==="product_fail") throw new \\RuntimeException("product storage failure"); self::$calls[]=["product",$id,$data]; }
       public static function update_vendor(int $id,array $data):void { $GLOBALS["inventory_worker_events"][]="vendor-write"; if($GLOBALS["inventory_worker_case"]==="vendor_fail") throw new \\RuntimeException("vendor storage failure"); self::$calls[]=["vendor",$id,$data]; }
-      public static function log(string $type,string $status,string $message):bool { self::$calls[]=["log",$type,$status]; return in_array($GLOBALS["inventory_worker_case"],["zero_qty_unknown_cost","direct_send_success","cancel_during_mail"],true); }
+      public static function log(string $type,string $status,string $message):bool { self::$calls[]=["log",$type,$status]; return in_array($GLOBALS["inventory_worker_case"],["zero_qty_unknown_cost","direct_send_success","cancel_during_mail","reconcile_manager","reconcile_vendor","reconcile_not_delivered"],true); }
       public static function vendors():array { $delivery_case=in_array($GLOBALS["inventory_worker_case"],["manager_to_vendor","vendor_to_manager","manager_recipient_changed","direct_send_success"],true); return [["name"=>"Fixture Vendor","order_method"=>$delivery_case?"email":"phone","email"=>$delivery_case?"vendor@example.test":"","minimum_amount"=>0.0]]; }
       public static function all_vendors():array { return self::vendors(); }
       public static function products():array {
@@ -38,7 +38,7 @@ if (($argv[1] ?? '') === '--worker') {
       public static function transaction(callable $callback) { return $callback(); }
       public static function order_for_submission(string $key):?array { $GLOBALS["inventory_worker_events"][]="submission-lookup"; return $GLOBALS["inventory_worker_case"]==="samekey_replay"?["id"=>73]:null; }
       public static function create_order(string $vendor,array $lines,float $total,float $minimum,string $status="pending_manager",?string $key=null):int { $GLOBALS["inventory_worker_created_lines"]=$lines; $GLOBALS["inventory_worker_order_status"]=$status; self::$calls[]=["create_order",$status]; return 73; }
-      public static function order(int $id):?array { $status=$GLOBALS["inventory_worker_case"]==="cancel_log_failure"?"ordered":($GLOBALS["inventory_worker_order_status"]?:"approval_emailed"); return ["id"=>$id,"vendor"=>"Fixture Vendor","status"=>$status]; }
+      public static function order(int $id):?array { $case=$GLOBALS["inventory_worker_case"]; $status=$case==="cancel_log_failure"?"ordered":(str_starts_with($case,"reconcile_")?"email_sending":($GLOBALS["inventory_worker_order_status"]?:"approval_emailed")); $created_at=$case==="reconcile_too_young"?date("Y-m-d H:i:s"):($case==="reconcile_malformed"?"not-a-date":"2000-01-01 00:00:00"); return ["id"=>$id,"vendor"=>"Fixture Vendor","status"=>$status,"created_at"=>$created_at]; }
       public static function update_order_status(int $id,string $status):bool { if(str_contains($GLOBALS["inventory_worker_case"],"status_failure"))throw new \\RuntimeException("status storage failure"); $GLOBALS["inventory_worker_order_status"]=$status; self::$calls[]=["status",$id,$status]; return true; }
     }
     final class Settings {
@@ -63,6 +63,8 @@ if (($argv[1] ?? '') === '--worker') {
   function sanitize_key($value):string { return preg_replace('/[^a-z0-9_\-]/','',strtolower((string)$value)); }
   function wp_unslash($value) { return $value; }
   function current_time($type):string { return '2039-01-02 03:04:05'; }
+  function wp_timezone():DateTimeZone { return new DateTimeZone('UTC'); }
+  function get_current_user_id():int { return 7; }
   function is_email($value):bool { return filter_var($value,FILTER_VALIDATE_EMAIL)!==false; }
   function wp_json_encode($value):string { return json_encode($value); }
   function wp_salt($scheme='auth'):string { return 'fixture-hmac-key'; }
@@ -135,6 +137,9 @@ if (($argv[1] ?? '') === '--worker') {
       if($case==='zero_qty_unknown_cost')$_POST['order_qty']['5']='0';
       $call=static fn()=>$admin::send_draft(); break;
     case 'cancel_log_failure': $_POST=['order_id'=>73]; $call=static fn()=>$admin::cancel_order(); break;
+    case 'reconcile_manager': case 'reconcile_vendor': case 'reconcile_not_delivered': case 'reconcile_no_attestation': case 'reconcile_too_young': case 'reconcile_malformed': case 'reconcile_invalid':
+      $_POST=['order_id'=>73,'checked_inbox'=>$case==='reconcile_no_attestation'?'':'1','delivery_outcome'=>match($case){'reconcile_manager'=>'manager_received','reconcile_vendor'=>'vendor_received','reconcile_not_delivered'=>'not_delivered','reconcile_invalid'=>'other',default=>'vendor_received'}];
+      $call=static fn()=>$admin::reconcile_email_send(); break;
     case 'decision_log_failure':
       $expires=time()+600; $decision_method=new ReflectionMethod($admin,'decision_token'); $decision_method->setAccessible(true); $token=$decision_method->invoke(null,73,'ordered',$expires);
       $_POST=['order_id'=>73,'decision'=>'ordered','expires'=>$expires,'token'=>$token,'_wpnonce'=>'fixture'];
@@ -148,7 +153,7 @@ if (($argv[1] ?? '') === '--worker') {
   exit;
 }
 
-$cases=['product_fail','vendor_fail','settings_unchanged','settings_not_saved','settings_schedule_failure','settings_missing_tail','settings_missing_marker','settings_array_required','settings_array_alert','settings_array_checkbox','settings_bad_email','settings_bad_alert_email','settings_bad_timezone','settings_timezone_offset','settings_bad_time','settings_checkboxes_absent','settings_checkboxes_on','send_log_failure','cancel_log_failure','decision_log_failure'];
+$cases=['product_fail','vendor_fail','settings_unchanged','settings_not_saved','settings_schedule_failure','settings_missing_tail','settings_missing_marker','settings_array_required','settings_array_alert','settings_array_checkbox','settings_bad_email','settings_bad_alert_email','settings_bad_timezone','settings_timezone_offset','settings_bad_time','settings_checkboxes_absent','settings_checkboxes_on','send_log_failure','cancel_log_failure','decision_log_failure','reconcile_manager','reconcile_vendor','reconcile_not_delivered','reconcile_no_attestation','reconcile_too_young','reconcile_malformed','reconcile_invalid'];
 $checks=0;
 $check=static function(bool $ok,string $label)use(&$checks):void{if(!$ok)throw new RuntimeException('FAIL: '.$label);echo 'PASS: '.$label."\n";$checks++;};
 $run=static function(string $case)use($candidate):array{
@@ -188,6 +193,15 @@ foreach(['send_log_failure','cancel_log_failure','decision_log_failure'] as $cas
   if($case==='send_log_failure')$check($result['mail_calls']===1&&$result['order_status']==='approval_emailed','mail-log failure reports the already-sent email and persisted order state');
   if($case==='cancel_log_failure')$check($result['order_status']==='cancelled','cancel-log failure reports the already-completed cancellation');
   if($case==='decision_log_failure')$check($result['order_status']==='ordered','decision-log failure reports the already-completed vendor decision');
+}
+foreach(['reconcile_manager'=>'approval_emailed','reconcile_vendor'=>'ordered','reconcile_not_delivered'=>'email_failed'] as $case=>$status){
+  $result=$run($case);$q=$url_args($result);$events=$result['events'];
+  $check(($q['ok']??'')==='1'&&$result['order_status']===$status&&in_array(['status',73,$status],$result['store_calls'],true),'stale send reconciles '.$case.' into '.$status);
+  $check(array_slice($events,0,2)===['guard','nonce:roxy_inventory_reconcile_email_send']&&in_array(['log','email_delivery_reconciled','success'],$result['store_calls'],true)&&$result['mail_calls']===0,'reconciliation '.$case.' is authorized, audited, and never sends email');
+}
+foreach(['reconcile_no_attestation','reconcile_too_young','reconcile_malformed','reconcile_invalid'] as $case){
+  $result=$run($case);$q=$url_args($result);
+  $check(($q['ok']??'')==='0'&&!array_filter($result['store_calls'],static fn($call)=>($call[0]??'')==='status')&&$result['mail_calls']===0,$case.' refuses unsafe recovery without changing state or sending email');
 }
 foreach(['unknown_cost','malformed_cost','overflowing_cost'] as $case) {
   $invalid_cost=$run($case);$q=$url_args($invalid_cost);

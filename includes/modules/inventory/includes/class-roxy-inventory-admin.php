@@ -4,7 +4,7 @@ if (!defined('ABSPATH')) exit;
 
 class Admin {
     public static function init(): void {
-        add_action('admin_menu', [__CLASS__, 'menu'], 11); add_action('admin_post_roxy_inventory_pull', [__CLASS__, 'pull']); add_action('admin_post_roxy_inventory_save_product', [__CLASS__, 'save_product']); add_action('admin_post_roxy_inventory_bulk_save', [__CLASS__, 'bulk_save']); add_action('admin_post_roxy_inventory_products_bulk_save', [__CLASS__, 'products_bulk_save']); add_action('admin_post_roxy_inventory_save_vendor', [__CLASS__, 'save_vendor']); add_action('admin_post_roxy_inventory_send_draft', [__CLASS__, 'send_draft']); add_action('admin_post_roxy_inventory_order_decision', [__CLASS__, 'order_decision']); add_action('admin_post_nopriv_roxy_inventory_order_decision', [__CLASS__, 'order_decision']); add_action('admin_post_roxy_inventory_save_order_items', [__CLASS__, 'save_order_items']); add_action('admin_post_roxy_inventory_cancel_order', [__CLASS__, 'cancel_order']); add_action('admin_post_roxy_inventory_save_settings', [__CLASS__, 'save_settings']);
+        add_action('admin_menu', [__CLASS__, 'menu'], 11); add_action('admin_post_roxy_inventory_pull', [__CLASS__, 'pull']); add_action('admin_post_roxy_inventory_save_product', [__CLASS__, 'save_product']); add_action('admin_post_roxy_inventory_bulk_save', [__CLASS__, 'bulk_save']); add_action('admin_post_roxy_inventory_products_bulk_save', [__CLASS__, 'products_bulk_save']); add_action('admin_post_roxy_inventory_save_vendor', [__CLASS__, 'save_vendor']); add_action('admin_post_roxy_inventory_send_draft', [__CLASS__, 'send_draft']); add_action('admin_post_roxy_inventory_order_decision', [__CLASS__, 'order_decision']); add_action('admin_post_nopriv_roxy_inventory_order_decision', [__CLASS__, 'order_decision']); add_action('admin_post_roxy_inventory_save_order_items', [__CLASS__, 'save_order_items']); add_action('admin_post_roxy_inventory_cancel_order', [__CLASS__, 'cancel_order']); add_action('admin_post_roxy_inventory_reconcile_email_send', [__CLASS__, 'reconcile_email_send']); add_action('admin_post_roxy_inventory_save_settings', [__CLASS__, 'save_settings']);
     }
     public static function menu(): void { if (roxy_suite_module_enabled('inventory')) add_submenu_page('roxy-suite','Inventory','Inventory',roxy_suite_admin_capability(),'roxy-inventory',[__CLASS__,'page']); }
     private static function guard(): void { if (!roxy_suite_user_can_access_admin()) wp_die('You do not have permission to access Inventory.'); }
@@ -93,7 +93,7 @@ class Admin {
         echo '<table class="widefat striped"><thead><tr><th>Date</th><th>Vendor</th><th>Status</th><th>Items</th><th>Total</th><th>Action</th></tr></thead><tbody>';
         foreach (Store::orders($page,$search) as $o) {
             $status = (string) $o['status'];
-            $label = $status === 'email_sending' ? 'Email being sent — order locked' : ($status === 'pending_manager' ? 'Submission awaiting review' : ($status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'stock_increased' ? 'Stock increase detected' : ucfirst(str_replace('_', ' ', $status)))));
+            $label = $status === 'email_sending' ? 'Email being sent — order locked' : ($status === 'email_failed' ? 'Email not delivered — vendor released' : ($status === 'pending_manager' ? 'Submission awaiting review' : ($status === 'approval_emailed' ? 'Submitted to manager' : ($status === 'stock_increased' ? 'Stock increase detected' : ucfirst(str_replace('_', ' ', $status))))));
             $view_url = add_query_arg(['tab' => 'history', 'order_id' => (int) $o['id']], self::url('history'));
             $action = '<a class="button" href="' . esc_url($view_url) . '">View items</a>';
             if ($status === 'approval_emailed') $action .= ' <a class="button" href="' . esc_url(self::decision_url((int)$o['id'], 'ordered')) . '">Ordered</a> <a class="button" href="' . esc_url(self::decision_url((int)$o['id'], 'rejected')) . '">Rejected</a>';
@@ -113,7 +113,14 @@ class Admin {
         if (!is_array($lines)) $lines = [];
         $selected_estimate = self::cost_summary($lines);
         echo '<h2>Order #' . esc_html((string) $selected['id']) . ' — ' . esc_html($selected['vendor']) . '</h2>';
-        if ((string) $selected['status'] === 'email_sending') echo '<div class="notice notice-warning inline"><p>The order email is currently being sent. This vendor is locked while delivery is in progress; do not retry or cancel.</p></div>';
+        if ((string) $selected['status'] === 'email_sending') {
+            echo '<div class="notice notice-warning inline"><p>The order email is marked as sending. This vendor is locked while delivery is in progress; do not retry or cancel. If unresolved for at least 15 minutes, check the recipient inbox and use the audited recovery below to record what actually happened. Recovery never sends email.</p></div>';
+            if (self::email_send_is_stale($selected)) {
+                echo '<h3>Reconcile unresolved email</h3><p>Choose an outcome only after checking the destination inbox. “Not delivered” releases the vendor; use it only when you have confirmed the message did not arrive.</p>';
+                echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" onsubmit="return confirm(\'This records the delivery outcome and does not send or resend email. Have you checked the destination inbox?\');">' . wp_nonce_field('roxy_inventory_reconcile_email_send', '_wpnonce', true, false);
+                echo '<input type="hidden" name="action" value="roxy_inventory_reconcile_email_send"><input type="hidden" name="order_id" value="' . esc_attr((int) $selected['id']) . '"><label><input type="checkbox" name="checked_inbox" value="1" required> I checked the recipient inbox and am recording the actual delivery outcome.</label><p><label for="roxy-email-delivery-outcome">Delivery outcome </label><select id="roxy-email-delivery-outcome" name="delivery_outcome" required><option value="">Choose…</option><option value="manager_received">Manager received — awaiting vendor approval</option><option value="vendor_received">Vendor received — mark Ordered</option><option value="not_delivered">Confirmed not delivered — release vendor</option></select></p>' . get_submit_button('Record delivery outcome', 'secondary', 'submit', false) . '</form>';
+            }
+        }
         if ((string) $selected['status'] === 'pending_manager') echo '<div class="notice notice-warning inline"><p>Email delivery for this submission may be unconfirmed. Check the manager/vendor inbox before retrying; cancel only if the order was not placed.</p></div>';
         echo '<p>Check each item as you add it to the vendor cart, then save your progress.</p>';
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">' . wp_nonce_field('roxy_inventory_save_order_items', '_wpnonce', true, false);
@@ -456,6 +463,31 @@ class Admin {
             self::redirect('history', 'Order #' . $order_id . ' was cancelled, but the activity log could not be saved. Do not repeat this action.', false, $order_id);
         }
         self::redirect('history', 'Order cancelled and vendor unlocked.', true, $order_id);
+    }
+    public static function email_send_is_stale(array $order): bool {
+        if ((string) ($order['status'] ?? '') !== 'email_sending' || empty($order['created_at']) || !function_exists('wp_timezone')) return false;
+        $created = (string) $order['created_at'];
+        $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $created, wp_timezone());
+        $errors = \DateTimeImmutable::getLastErrors();
+        if (!$parsed || ($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0)) || $parsed->format('Y-m-d H:i:s') !== $created) return false;
+        return $parsed->getTimestamp() <= time() - 900;
+    }
+    public static function reconcile_email_send(): void {
+        self::guard();
+        check_admin_referer('roxy_inventory_reconcile_email_send');
+        $order_id = absint($_POST['order_id'] ?? 0);
+        $order = Store::order($order_id);
+        if (!$order || (string) ($order['status'] ?? '') !== 'email_sending') self::redirect('history', 'This order is no longer awaiting email reconciliation.', false, $order_id);
+        if (!self::email_send_is_stale($order)) self::redirect('history', 'The send is not yet eligible for recovery. Wait 15 minutes and refresh; no email was sent.', false, $order_id);
+        if ((string) ($_POST['checked_inbox'] ?? '') !== '1') self::redirect('history', 'Confirm that you checked the recipient inbox before recording delivery.', false, $order_id);
+        $outcome = sanitize_key(wp_unslash($_POST['delivery_outcome'] ?? ''));
+        $map = ['manager_received' => ['approval_emailed', 'manager received; awaiting vendor approval'], 'vendor_received' => ['ordered', 'vendor received; marked Ordered'], 'not_delivered' => ['email_failed', 'confirmed not delivered; vendor released']];
+        if (!isset($map[$outcome])) self::redirect('history', 'Choose a valid delivery outcome.', false, $order_id);
+        [$status, $description] = $map[$outcome];
+        try { $saved = Store::update_order_status($order_id, $status); } catch (\Throwable $e) { $saved = false; }
+        if (!$saved) self::redirect('history', 'The order changed while you were reconciling it. Refresh before taking any further action.', false, $order_id);
+        if (!Store::log('email_delivery_reconciled', 'success', 'Order #' . $order_id . ' email ' . $description . ' by user #' . get_current_user_id() . '. No email was sent.')) self::redirect('history', 'Delivery outcome was recorded, but the audit log could not be saved. Do not repeat this action.', false, $order_id);
+        self::redirect('history', 'Email delivery outcome recorded: ' . $description . '. No email was sent.', true, $order_id);
     }
     private static function decision_url(int $order_id, string $decision): string {
         $expires = time() + 30 * DAY_IN_SECONDS;
