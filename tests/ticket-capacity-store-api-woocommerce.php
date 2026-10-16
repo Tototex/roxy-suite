@@ -107,6 +107,7 @@ try {
     // MySQL GET_LOCK contention, not just a mocked unavailable-lock result.
     $primary_db = $wpdb;
     $contender_db = new wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
+    $contender_db->set_prefix($primary_db->prefix);
     $lease_owner = new RoxyST\Issuance([], 'walkup:' . $showing_id);
     $lease_owner->acquire_lease();
     try {
