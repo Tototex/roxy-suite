@@ -265,14 +265,14 @@ jobs:
           mkdir -p "$wp_path"
           php "$RUNNER_TEMP/wp-cli.phar" core download --path="$wp_path" --skip-content
           php "$RUNNER_TEMP/wp-cli.phar" config create --path="$wp_path" --dbname=roxy_hpos_test --dbuser=root --dbpass=root --dbhost=127.0.0.1 --skip-check
-          php "$RUNNER_TEMP/wp-cli.phar" core install --path="$wp_path" --url=http://roxy-hpos-test.invalid --title='Private Roxy HPOS fixture' --admin_user=fixture --admin_password=fixture-password --admin_email=fixture@example.invalid
+          php "$RUNNER_TEMP/wp-cli.phar" core install --path="$wp_path" --url=http://roxy-hpos-test.invalid --title='Private Roxy HPOS fixture' --admin_user=fixture --admin_password=fixture-password --admin_email=fixture@example.invalid --skip-email
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin install woocommerce --version=11.2.1 --activate
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" option update woocommerce_custom_orders_table_enabled no
           mkdir -p "$wp_path/wp-content/plugins"
           ln -s "$GITHUB_WORKSPACE" "$wp_path/wp-content/plugins/roxy-suite"
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" eval '$flags = array_fill_keys(["arcade","sub_check","will_call","show_tickets","requested_showings","event_booking","grosses","inventory","social_publisher"], false); $flags["show_tickets"] = true; update_option("roxy_suite_modules", $flags);'
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin activate roxy-suite/roxy-suite.php
-          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" wc hpos enable --for-new-shop --ignore-plugin-compatibility
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" wc hpos enable --ignore-plugin-compatibility
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" eval '$u="\\Automattic\\WooCommerce\\Utilities\\OrderUtil"; if (!class_exists($u) || !$u::custom_orders_table_usage_is_enabled()) throw new RuntimeException("HPOS did not become authoritative in the isolated fixture."); global $wpdb; foreach (["wc_orders","wc_orders_meta"] as $n) { $t=$wpdb->prefix.$n; if ($wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s",$t)) !== $t) throw new RuntimeException("Required HPOS table missing: ".$t); }'
           echo "HPOS_WP_PATH=$wp_path" >> "$GITHUB_ENV"
       - name: Run private HPOS order-marker contract
