@@ -98,6 +98,28 @@ $single_order('processing', true, 3, 30.0, [901=>-1], [901=>-10.0]);
 $stats = $calculate();
 $check($stats['sold_qty']===2 && $stats['paid_qty']===2 && $stats['ticket_types']['adult']['qty']===2, 'partial signed item refund reduces current item and paid quantities');
 $check($stats['gross_revenue']===30.0 && $stats['refunded_revenue']===10.0 && $stats['net_revenue']===20.0, 'eligible-order original line value is preserved with separate itemized refund and net values; not a dated cash ledger');
+// Malformed provider values must not be silently cast to zero and overstate sales/net revenue.
+$single_order('processing', true, 3, 30.0, [901=>'malformed'], [901=>-10.0]);
+$malformed_qty_failed_closed = false;
+try { $calculate(); } catch (RuntimeException $e) { $malformed_qty_failed_closed = true; }
+$check($malformed_qty_failed_closed, 'malformed refunded quantity rejects the complete ticket-sales projection');
+$single_order('processing', true, 3, 30.0, [901=>-1], [901=>'malformed']);
+$malformed_total_failed_closed = false;
+try { $calculate(); } catch (RuntimeException $e) { $malformed_total_failed_closed = true; }
+$check($malformed_total_failed_closed, 'malformed refunded amount rejects the complete ticket-sales projection');
+$GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats'] = [
+  'cache_version'=>3, 'sold_qty'=>2, 'paid_qty'=>2, 'gross_revenue'=>30.0,
+  'refunded_revenue'=>10.0, 'net_revenue'=>20.0, 'order_count'=>1,
+];
+$refresh_with_bad_refund = $sales::refresh_showing_stats($showing_id);
+$check(!empty($refresh_with_bad_refund['read_error']) && $refresh_with_bad_refund['sold_qty']===2
+  && $refresh_with_bad_refund['net_revenue']===20.0
+  && $GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats']['net_revenue']===20.0,
+  'malformed refund data preserves last-known-good historical totals and marks refresh unavailable');
+$single_order('processing', true, 3, 30.0, [901=>-1.5], [901=>-10.0]);
+$fractional_qty_failed_closed = false;
+try { $calculate(); } catch (RuntimeException $e) { $fractional_qty_failed_closed = true; }
+$check($fractional_qty_failed_closed, 'fractional refunded ticket quantity is not truncated into a plausible count');
 $single_order('processing', true, 3, 30.0, [901=>-3], [901=>-30.0]);
 $stats = $calculate();
 $check($stats['sold_qty']===0 && $stats['paid_qty']===0 && $stats['ticket_types']['adult']['qty']===0, 'fully item-refunded processing order has no remaining sold tickets');

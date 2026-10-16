@@ -182,18 +182,29 @@ class Sales {
         $matched_order = true;
         $qty = max(0, (int) $item->get_quantity());
         $item_id = method_exists($item, 'get_id') ? (int) $item->get_id() : 0;
-        $refunded_qty = $item_id > 0 && method_exists($order, 'get_qty_refunded_for_item')
-          ? abs((int) $order->get_qty_refunded_for_item($item_id))
+        $raw_refunded_qty = $item_id > 0 && method_exists($order, 'get_qty_refunded_for_item')
+          ? $order->get_qty_refunded_for_item($item_id)
           : 0;
+        if ((!is_int($raw_refunded_qty) && !is_float($raw_refunded_qty) && !is_string($raw_refunded_qty))
+          || !is_numeric($raw_refunded_qty) || !is_finite((float) $raw_refunded_qty)
+          || floor(abs((float) $raw_refunded_qty)) !== abs((float) $raw_refunded_qty)) {
+          throw new \RuntimeException('A showing ticket refund quantity could not be read completely.');
+        }
+        $refunded_qty = (int) min($qty, abs((float) $raw_refunded_qty));
         $qty = max(0, $qty - min($qty, $refunded_qty));
         $type = $ticket_type_by_product[$pid];
         // These are eligible-order line values, not a dated cash ledger. Keep
         // the legacy gross field compatible; never move a later cash refund to
         // the showing/sale date by subtracting it here.
         $line_total = (float) $item->get_total();
-        $refunded_total = $item_id > 0 && method_exists($order, 'get_total_refunded_for_item')
-          ? abs((float) $order->get_total_refunded_for_item($item_id))
-          : 0.0;
+        $raw_refunded_total = $item_id > 0 && method_exists($order, 'get_total_refunded_for_item')
+          ? $order->get_total_refunded_for_item($item_id)
+          : 0;
+        if ((!is_int($raw_refunded_total) && !is_float($raw_refunded_total) && !is_string($raw_refunded_total))
+          || !is_numeric($raw_refunded_total) || !is_finite((float) $raw_refunded_total)) {
+          throw new \RuntimeException('A showing ticket refund amount could not be read completely.');
+        }
+        $refunded_total = abs((float) $raw_refunded_total);
 
         $stats['sold_qty'] += $qty;
         $stats['gross_revenue'] += $line_total;
