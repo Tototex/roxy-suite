@@ -2128,7 +2128,7 @@ class Reporter {
         ? sprintf(' There were %d dated report row(s): %s%s.', $dated_row_count, implode(', ', $visible_times), count($report_times) > count($visible_times) ? ', ...' : '')
         : ' No report rows with usable show times were available.';
       throw new \RuntimeException(sprintf(
-        '%d eligible Square concession line(s), totaling $%s, could not be safely attributed to a report row.%s They were saved to the Grosses Logs unmatched-sales review queue; review this date before refreshing.',
+        '%d eligible Square concession line(s), totaling $%s, could not be matched safely to a report row.%s They were saved to the Grosses Logs unmatched-sales review queue; review this date before refreshing.',
         $unmatched_lines,
         number_format($unmatched_cents / 100, 2, '.', ','),
         $row_context

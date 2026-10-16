@@ -353,7 +353,7 @@ namespace {
   $before_ambiguous_totals = [(float) \RoxyGrosses\Store::$movie[$overlap_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_date][1]['concessions_total']];
   $overlap_failed = false;
   try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$overlap_date])); }
-  catch (Throwable $error) { $overlap_failed = str_contains($error->getMessage(), 'could not be safely attributed') && str_contains($error->getMessage(), 'review queue'); }
+  catch (Throwable $error) { $overlap_failed = str_contains($error->getMessage(), 'could not be matched safely') && str_contains($error->getMessage(), 'review queue'); }
   $overlap_queue = \RoxyGrosses\Store::$unmatched_concessions[$overlap_date] ?? [];
   $after_ambiguous_totals = [(float) \RoxyGrosses\Store::$movie[$overlap_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_date][1]['concessions_total']];
   $check($overlap_failed, 'overlapping rental attribution stops before allocation writes');
