@@ -7,7 +7,10 @@ function wp_date($format,$timestamp=null,$timezone=null) { return (new DateTimeI
 function wp_next_scheduled($hook) { return false; }
 function wp_schedule_single_event(...$args) { $GLOBALS['scheduled'][]=$args; return true; }
 function get_option($key,$default=false) { return $GLOBALS['options'][$key]??$default; }
-function update_option($key,$value,...$args) { $GLOBALS['options'][$key]=$value; return true; }
+function update_option($key,$value,...$args) {
+    if (($GLOBALS['fail_update_option']??'')===$key) return false;
+    $GLOBALS['options'][$key]=$value; return true;
+}
 function add_option($key,$value,...$args) { if(array_key_exists($key,$GLOBALS['options']))return false; $GLOBALS['options'][$key]=$value; return true; }
 function get_user_by(...$args) { return (object)['ID'=>9,'display_name'=>'Fixture Player','user_login'=>'fixture']; }
 function get_user_meta(...$args) { return ''; }
@@ -42,6 +45,12 @@ Roxy_Arcade::award_monthly_winner_snapshot();
 Roxy_Arcade::award_monthly_winner_snapshot();
 $notice_key='roxy_arcade_review_mail_'.hash('sha256',wp_date('Y-m').':9:1234');
 $check(count($GLOBALS['mail'])===1 && ($GLOBALS['options'][$notice_key]['state']??'')==='sent','repeated worker run sends one review notice for the same candidate');
+$GLOBALS['options']['roxy_arcade_last_review_candidate']=['month'=>wp_date('Y-m'),'user_id'=>8,'name'=>'Older Candidate','score'=>88,'queued_at'=>'earlier'];
+$GLOBALS['fail_update_option']='roxy_arcade_last_review_candidate';
+$GLOBALS['mail']=[]; $GLOBALS['leaders']=[['user_id'=>9,'name'=>'Fixture Player','total'=>1236]];
+Roxy_Arcade::award_monthly_winner_snapshot();
+$check(!$GLOBALS['mail'] && $GLOBALS['options']['roxy_arcade_last_review_candidate']['user_id']===8,'candidate persistence failure sends no notice for an unqueued candidate');
+unset($GLOBALS['fail_update_option']);
 $GLOBALS['mail']=[]; $GLOBALS['mail_result']=false; $GLOBALS['leaders']=[['user_id'=>9,'name'=>'Fixture Player','total'=>1235]];
 Roxy_Arcade::award_monthly_winner_snapshot();
 $uncertain_key='roxy_arcade_review_mail_'.hash('sha256',wp_date('Y-m').':9:1235');

@@ -13,32 +13,100 @@ const script = (name) => {
   const segment = source.split(`      - name: ${name}\n`)[1]?.split('\n      - name: ')[0];
   assert.ok(segment, `Missing step ${name}`);
   return segment.split('          script: |\n')[1].split('\n').map(line => line.slice(12)).join('\n')
-    .replaceAll('${{ steps.version.outputs.tag }}', 'v1.2.3');
+    .replaceAll('${{ steps.version.outputs.tag }}', 'v1.2.3')
+    .replaceAll('${{ steps.version.outputs.zip_name }}', 'roxy-suite-1.2.3.zip')
+    .replaceAll('${{ steps.version.outputs.manifest_name }}', 'roxy-suite-1.2.3.manifest.json');
 };
 (async () => {
-  for (const name of ['Reject an already-used version tag', 'Create Git tag']) {
-    const program = new AsyncFunction('github', 'context', script(name));
+  {
+    const program = new AsyncFunction('github', 'context', 'core', script('Check target release assets'));
+    const context = { repo: { owner: 'fixture', repo: 'private' } };
+    const outputs = {};
+    const core = { setOutput: (key, value) => { outputs[key] = value; } };
+    const github = { rest: { repos: { getReleaseByTag: async () => ({ data: { assets: [
+      { name: 'roxy-suite-1.2.3.zip' }, { name: 'roxy-suite-1.2.3.manifest.json' }
+    ] } }) } } };
+    await program(github, context, core);
+    check(outputs.complete === 'true', 'target release is complete only when both versioned assets exist');
+    github.rest.repos.getReleaseByTag = async () => ({ data: { assets: [{ name: 'roxy-suite-1.2.3.zip' }] } });
+    await program(github, context, core);
+    check(outputs.complete === 'false', 'partially uploaded target release remains retryable');
+    github.rest.repos.getReleaseByTag = async () => { const error = new Error('not found'); error.status = 404; throw error; };
+    await program(github, context, core);
+    check(outputs.complete === 'false', 'missing target release is eligible for creation');
+    github.rest.repos.getReleaseByTag = async () => { const error = new Error('forbidden'); error.status = 403; throw error; };
+    await assert.rejects(program(github, context, core), /forbidden/);
+    check(true, 'release lookup authorization errors fail closed');
+  }
+  {
+    const segment = source.split('      - name: Decide whether to release\n')[1]?.split('\n      - name: ')[0];
+    assert.ok(segment, 'Missing version comparison step');
+    const shell = segment.split('        run: |\n')[1].split('\n').map(line => line.slice(10)).join('\n')
+      .replaceAll('${{ steps.version.outputs.tag }}', 'v1.2.3')
+      .replaceAll('${{ steps.latest.outputs.tag }}', '$LATEST_TAG_FIXTURE')
+      .replaceAll('${{ steps.target_release.outputs.complete }}', '$TARGET_COMPLETE_FIXTURE');
+    const bashAvailable = spawnSync('bash', ['-c', 'true'], { encoding: 'utf8' }).status === 0;
+    const decide = (latest, complete) => {
+      const output = path.join(os.tmpdir(), `roxy-release-decision-${process.pid}-${Math.random()}`);
+      const result = spawnSync('bash', ['-c', shell], { encoding: 'utf8', env: {
+        ...process.env,
+        GITHUB_OUTPUT: output,
+        LATEST_TAG_FIXTURE: latest,
+        TARGET_COMPLETE_FIXTURE: complete
+      } });
+      const value = fs.existsSync(output) ? fs.readFileSync(output, 'utf8') : '';
+      if (fs.existsSync(output)) fs.unlinkSync(output);
+      assert.equal(result.status, 0, result.stderr);
+      return value.trim();
+    };
+    if (bashAvailable) {
+      check(decide('v1.2.3', 'false') === 'should_release=true', 'same-version incomplete release is retried');
+      check(decide('v1.2.3', 'true') === 'should_release=false', 'same-version complete release is skipped');
+      check(decide('v1.2.2', 'false') === 'should_release=true', 'newer version release proceeds');
+      check(decide('v1.2.4', 'false') === 'should_release=false', 'older version never replaces a newer release');
+    } else {
+      check(shell.includes('TARGET_RELEASE_COMPLETE') && shell.includes('should_release=true'), 'release decision script includes incomplete-release retry guard (shell unavailable locally)');
+    }
+  }
+  for (const name of ['Validate an existing version tag', 'Create Git tag when missing']) {
+    const program = new AsyncFunction('github', 'context', 'core', script(name));
     let creates = 0;
     const context = { repo: { owner: 'fixture', repo: 'private' }, sha: 'a'.repeat(40) };
     const github = { rest: { git: {
-      getRef: async () => ({ data: {} }),
+      getRef: async () => ({ data: { object: { sha: context.sha } } }),
       createRef: async () => { creates++; }
     } } };
-    await assert.rejects(program(github, context), /Refusing to reuse/);
-    check(creates === 0, `${name} refuses existing tag without mutation`);
+    await program(github, context, { info: () => {} });
+    check(creates === 0, `${name} accepts existing tag for same commit without mutation`);
+    github.rest.git.getRef = async () => ({ data: { object: { sha: 'b'.repeat(40) } } });
+    await assert.rejects(program(github, context, { info: () => {} }), /different commit/);
+    check(creates === 0, `${name} refuses existing tag for different commit`);
     github.rest.git.getRef = async () => { const error = new Error('not found'); error.status = 404; throw error; };
-    await program(github, context);
-    check(creates === (name === 'Create Git tag' ? 1 : 0), `${name} handles absent tag`);
+    await program(github, context, { info: () => {} });
+    check(creates === (name === 'Create Git tag when missing' ? 1 : 0), `${name} handles absent tag`);
     github.rest.git.getRef = async () => { const error = new Error('auth unavailable'); error.status = 403; throw error; };
-    await assert.rejects(program(github, context), /auth unavailable/);
+    await assert.rejects(program(github, context, { info: () => {} }), /auth unavailable/);
     check(true, `${name} does not treat authorization failure as missing tag`);
-    if (name === 'Create Git tag') {
+    if (name === 'Create Git tag when missing') {
       github.rest.git.getRef = async () => { const error = new Error('not found'); error.status = 404; throw error; };
       github.rest.git.createRef = async () => { const error = new Error('tag created concurrently'); error.status = 422; throw error; };
-      await assert.rejects(program(github, context), /tag created concurrently/);
-      check(true, 'tag-creation race fails before release publishing');
+      await assert.rejects(program(github, context, { info: () => {} }), /tag created concurrently/);
+      check(true, 'tag-creation race fails when the racing tag points elsewhere or cannot be verified');
+      let raceReads = 0;
+      github.rest.git.getRef = async () => {
+        raceReads++;
+        if (raceReads === 1) { const error = new Error('not found'); error.status = 404; throw error; }
+        return { data: { object: { sha: context.sha } } };
+      };
+      github.rest.git.createRef = async () => {
+        const error = new Error('tag created concurrently'); error.status = 422; throw error;
+      };
+      const beforeRace = creates;
+      await program(github, context, { info: () => {} });
+      check(creates === beforeRace, 'tag-creation race is accepted only after exact same-commit ref verification');
     }
   }
+  check(source.includes('overwrite_files: true'), 'release retry can replace partially uploaded assets');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'roxy-release-fixture-'));
   check(source.includes("--exclude='/tools/'"), 'maintenance/conversion tools are excluded from public runtime releases');
   check(source.includes("--exclude='/.gitignore'"), 'repository ignore metadata is excluded from public runtime releases');

@@ -551,6 +551,14 @@ class Roxy_Arcade {
       'queued_at' => wp_date('Y-m-d H:i:s T', null, wp_timezone()),
     ];
     update_option(self::OPTION_LAST_REVIEW_CANDIDATE, $candidate, false);
+    $saved_candidate = get_option(self::OPTION_LAST_REVIEW_CANDIDATE, []);
+    if (!is_array($saved_candidate)
+      || (string) ($saved_candidate['month'] ?? '') !== $candidate['month']
+      || (int) ($saved_candidate['user_id'] ?? 0) !== $candidate['user_id']
+      || (int) ($saved_candidate['score'] ?? -1) !== $candidate['score']
+      || (string) ($saved_candidate['queued_at'] ?? '') !== $candidate['queued_at']) {
+      return;
+    }
     self::notify_review_candidate($candidate);
   }
 

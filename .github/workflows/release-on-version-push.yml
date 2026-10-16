@@ -74,6 +74,32 @@ jobs:
               throw error;
             }
 
+      - name: Check target release assets
+        id: target_release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = "${{ steps.version.outputs.tag }}";
+            const required = new Set([
+              "${{ steps.version.outputs.zip_name }}",
+              "${{ steps.version.outputs.manifest_name }}"
+            ]);
+            try {
+              const response = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag
+              });
+              const assets = new Set((response.data.assets || []).map(asset => asset.name));
+              core.setOutput('complete', [...required].every(name => assets.has(name)) ? 'true' : 'false');
+            } catch (error) {
+              if (error.status === 404) {
+                core.setOutput('complete', 'false');
+                return;
+              }
+              throw error;
+            }
+
       - name: Decide whether to release
         id: compare
         shell: bash
@@ -82,6 +108,12 @@ jobs:
 
           NEW_TAG="${{ steps.version.outputs.tag }}"
           LATEST_TAG="${{ steps.latest.outputs.tag }}"
+          TARGET_RELEASE_COMPLETE="${{ steps.target_release.outputs.complete }}"
+
+          if [[ "$TARGET_RELEASE_COMPLETE" == "true" ]]; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if [[ -z "$LATEST_TAG" ]]; then
             echo "should_release=true" >> "$GITHUB_OUTPUT"
@@ -92,7 +124,7 @@ jobs:
           LATEST_VERSION="${LATEST_TAG#v}"
 
           if [[ "$NEW_VERSION" == "$LATEST_VERSION" ]]; then
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -109,19 +141,22 @@ jobs:
         run: |
           echo "No release created. Plugin version was not higher than the latest GitHub release."
 
-      - name: Reject an already-used version tag
+      - name: Validate an existing version tag
         if: steps.compare.outputs.should_release == 'true'
         uses: actions/github-script@v7
         with:
           script: |
             const tag = "${{ steps.version.outputs.tag }}";
             try {
-              await github.rest.git.getRef({
+              const response = await github.rest.git.getRef({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 ref: `tags/${tag}`
               });
-              throw new Error(`Refusing to reuse existing release tag ${tag}.`);
+              if (response.data.object.sha !== context.sha) {
+                throw new Error(`Refusing to reuse release tag ${tag} for a different commit.`);
+              }
+              core.info(`Release tag ${tag} already points to this commit; continuing an interrupted release.`);
             } catch (error) {
               if (error.status !== 404) throw error;
             }
@@ -202,7 +237,7 @@ jobs:
           fs.writeFileSync(path.resolve('build', process.env.MANIFEST_NAME), JSON.stringify(manifest, null, 2) + '\n');
           NODE
 
-      - name: Create Git tag
+      - name: Create Git tag when missing
         if: steps.compare.outputs.should_release == 'true'
         uses: actions/github-script@v7
         with:
@@ -211,21 +246,54 @@ jobs:
             const sha = context.sha;
 
             try {
-              await github.rest.git.getRef({
+              const response = await github.rest.git.getRef({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 ref: `tags/${tag}`
               });
-              throw new Error(`Refusing to reuse existing release tag ${tag}.`);
+              if (response.data.object.sha !== sha) {
+                throw new Error(`Refusing to reuse release tag ${tag} for a different commit.`);
+              }
+              core.info(`Release tag ${tag} already points to this commit.`);
             } catch (error) {
-              if (error.status !== 404) throw error;
-
-              await github.rest.git.createRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: `refs/tags/${tag}`,
-                sha
-              });
+              if (error.status === 404) {
+                try {
+                  await github.rest.git.createRef({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    ref: `refs/tags/${tag}`,
+                    sha
+                  });
+                  return;
+                } catch (createError) {
+                  if (createError.status !== 422) throw createError;
+                  // Another run may have created the tag after our read.
+                  let response;
+                  try {
+                    response = await github.rest.git.getRef({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      ref: `tags/${tag}`
+                    });
+                  } catch (verifyError) {
+                    if (verifyError.status === 404) throw createError;
+                    throw verifyError;
+                  }
+                  if (response.data.object.sha === sha) return;
+                  throw createError;
+                }
+              }
+              if (error.status === 422) {
+                // Another run may have created the tag after our read. Accept
+                // only when that racing ref points to this exact commit.
+                const response = await github.rest.git.getRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `tags/${tag}`
+                });
+                if (response.data.object.sha === sha) return;
+              }
+              throw error;
             }
 
       - name: Create GitHub release
@@ -238,4 +306,5 @@ jobs:
             build/${{ steps.version.outputs.zip_name }}
             build/${{ steps.version.outputs.manifest_name }}
           generate_release_notes: true
+          overwrite_files: true
           fail_on_unmatched_files: true
