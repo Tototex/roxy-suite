@@ -42,12 +42,26 @@ final class CashflowReport {
         'order' => 'ASC',
       ]);
       if (function_exists('is_wp_error') && is_wp_error($result)) throw new \RuntimeException('WooCommerce could not read the selected day.');
-      if (!is_object($result) || !isset($result->orders, $result->total_pages)
-        || !is_array($result->orders) || !self::is_list($result->orders)
-        || !is_numeric($result->total_pages) || (int) $result->total_pages < 0 || (int) $result->total_pages > self::MAX_PAGES) {
+      if (!is_object($result) || !isset($result->orders)
+        || !is_array($result->orders) || !self::is_list($result->orders)) {
         throw new \RuntimeException('WooCommerce returned an incomplete or invalid page of financial records.');
       }
-      $total_pages = (int) $result->total_pages;
+      // WC_Order_Query's paginated result uses max_num_pages. Some compatible
+      // stores/adapters expose total_pages instead; accept either, but never
+      // guess when both are present and disagree.
+      $has_max_num_pages = property_exists($result, 'max_num_pages');
+      $has_total_pages = property_exists($result, 'total_pages');
+      if (!$has_max_num_pages && !$has_total_pages) {
+        throw new \RuntimeException('WooCommerce returned an incomplete or invalid page of financial records.');
+      }
+      $max_num_pages = $has_max_num_pages ? $result->max_num_pages : null;
+      $legacy_total_pages = $has_total_pages ? $result->total_pages : null;
+      if (($has_max_num_pages && (!is_int($max_num_pages) || $max_num_pages < 0 || $max_num_pages > self::MAX_PAGES))
+        || ($has_total_pages && (!is_int($legacy_total_pages) || $legacy_total_pages < 0 || $legacy_total_pages > self::MAX_PAGES))
+        || ($has_max_num_pages && $has_total_pages && $max_num_pages !== $legacy_total_pages)) {
+        throw new \RuntimeException('WooCommerce returned an incomplete or invalid page of financial records.');
+      }
+      $total_pages = $has_max_num_pages ? $max_num_pages : $legacy_total_pages;
       if ($total_pages === 0 && $result->orders) throw new \RuntimeException('WooCommerce returned records with an invalid zero-page summary.');
       if ($last_page !== null && $last_page !== $total_pages) throw new \RuntimeException('WooCommerce result changed during pagination; retry the read-only report.');
       $last_page = $total_pages;

@@ -88,7 +88,13 @@ namespace {
     $type = (string) ($args['type'] ?? '');
     $rows = $GLOBALS['wc_pages'][$type][$page] ?? [];
     $pages = $GLOBALS['wc_page_counts'][$type] ?? 1;
-    return (object) ['orders' => $rows, 'total_pages' => $pages];
+    switch ($GLOBALS['wc_page_result_shape'] ?? 'total_pages') {
+      case 'max_num_pages': return (object) ['orders' => $rows, 'max_num_pages' => $pages];
+      case 'both': return (object) ['orders' => $rows, 'max_num_pages' => $pages, 'total_pages' => $pages];
+      case 'contradictory': return (object) ['orders' => $rows, 'max_num_pages' => $pages, 'total_pages' => $pages + 1];
+      case 'string': return (object) ['orders' => $rows, 'max_num_pages' => (string) $pages];
+      default: return (object) ['orders' => $rows, 'total_pages' => $pages];
+    }
   }
   function wc_get_order(int $id) { return $GLOBALS['wc_parent_orders'][$id] ?? false; }
   function is_wp_error($value): bool { return false; }
@@ -142,6 +148,17 @@ namespace {
     && $report['review_exceptions']['square_returns_and_exchanges'][0]['order_id'] === 'sq-exchange'
     && $report['review_exceptions']['square_returns_and_exchanges'][0]['tender_cents'] === 1250,
     'completed Square return/exchange is visible with its tender amount for review');
+  $GLOBALS['wc_page_result_shape'] = 'max_num_pages';
+  $max_num_pages_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $assert($max_num_pages_report['totals'] === $report['totals'], 'WooCommerce documented max_num_pages pagination produces complete daily totals');
+  $GLOBALS['wc_page_result_shape'] = 'both';
+  $both_page_counts_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $assert($both_page_counts_report['totals'] === $report['totals'], 'matching WooCommerce page-count properties are accepted');
+  $GLOBALS['wc_page_result_shape'] = 'contradictory';
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'contradictory WooCommerce page-count properties fail closed');
+  $GLOBALS['wc_page_result_shape'] = 'string';
+  $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'), 'malformed WooCommerce page-count type fails closed');
+  unset($GLOBALS['wc_page_result_shape']);
   \RoxyGrosses\Square::$daily_orders = [[
     'id' => 'sq-return-no-tenders', 'state' => 'COMPLETED', 'closed_at' => '2026-10-03T06:30:00Z',
     'returns' => [['uid' => 'return-no-tenders']],
