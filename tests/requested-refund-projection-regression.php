@@ -77,6 +77,7 @@ check_refund_projection($amount_only_partial_failed,'partial amount-only refund 
 $no_sponsor = $backing;
 $no_sponsor['general_qty']=3; $no_sponsor['discount_qty']=2; $no_sponsor['support_qty']=5;
 $no_sponsor['charge_total']=4000; $no_sponsor['sponsor_amount']=0; $no_sponsor['sponsor_ticket_qty']=0;
+$no_sponsor['agreement_json']='';
 $GLOBALS['refund_projection_order'] = new RefundProjectionOrder(88,40.0,5.0,[$paid_general,$paid_discount,$subscriber],[],[],[]);
 $amount_only_non_sponsor_failed=false;
 try { roxy_rs_repo_effective_backing($no_sponsor); } catch (RuntimeException $error) { $amount_only_non_sponsor_failed=true; }
