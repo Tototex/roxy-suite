@@ -147,7 +147,15 @@ namespace {
   function sanitize_text_field($value) { return trim((string) $value); }
   function get_option($key, $default = false) { return ''; }
   function sanitize_email($value) { return (string)$value; }
-  function post_type_exists($type) { return false; }
+  function post_type_exists($type) { return $type === 'roxy_showing' && !empty($GLOBALS['grosses_fixture_enable_showings']); }
+  function get_posts($args) {
+    $GLOBALS['grosses_fixture_get_posts_calls'] = ($GLOBALS['grosses_fixture_get_posts_calls'] ?? 0) + 1;
+    return $GLOBALS['grosses_fixture_showing_ids'] ?? [];
+  }
+  function get_post_meta($post_id, $key, $single = true) {
+    return $GLOBALS['grosses_fixture_showing_meta'][$post_id][$key] ?? '';
+  }
+  function get_the_title($post_id) { return 'Grosses performance fixture'; }
   function wp_mail(...$args) { throw new RuntimeException('Network/mail is forbidden in this fixture.'); }
 
   $candidate = $argv[1] ?? (dirname(__DIR__) . '/includes/modules/grosses/includes/class-roxy-grosses-reporter.php');
@@ -301,6 +309,35 @@ namespace {
   \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$single_show_date]));
   $single_show_concessions = (float) (\RoxyGrosses\Store::$movie[$single_show_date][0]['concessions_total'] ?? 0);
   $check($single_show_concessions === 25.14 && !isset(\RoxyGrosses\Store::$unmatched_concessions[$single_show_date]), 'single-show date attributes morning concessions to its only report row');
+
+  // Current show metadata is constant for this allocation. Do not repeat the
+  // same date query once for each Square concession line.
+  $bounded_lookup_date = '2038-05-12';
+  $bounded_showing_id = 9901;
+  $GLOBALS['grosses_fixture_enable_showings'] = true;
+  $GLOBALS['grosses_fixture_get_posts_calls'] = 0;
+  $GLOBALS['grosses_fixture_showing_ids'] = [$bounded_showing_id];
+  $GLOBALS['grosses_fixture_showing_meta'] = [$bounded_showing_id => [
+    '_roxy_pricing_profile' => 'movie_evening',
+    '_roxy_start' => $bounded_lookup_date . 'T19:00',
+  ]];
+  \RoxyGrosses\Store::$movie[$bounded_lookup_date] = [[
+    'id'=>9902,'showing_id'=>$bounded_showing_id,'show_time'=>'7:00 PM','general_qty'=>0,'discount_qty'=>0,
+    'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0,
+  ]];
+  $many_lines = [];
+  for ($line = 0; $line < 25; $line++) $many_lines[] = [
+    'uid'=>'bounded-show-line-' . $line,'item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1',
+    'total_money'=>['amount'=>100,'currency'=>'USD'],
+  ];
+  \RoxyGrosses\Square::$orders[$bounded_lookup_date] = [[
+    'id'=>'bounded-show-lookup-order','closed_at'=>$bounded_lookup_date . 'T19:00:00-07:00','line_items'=>$many_lines,
+  ]];
+  \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$bounded_lookup_date]));
+  $check($GLOBALS['grosses_fixture_get_posts_calls'] === 5
+    && (float) \RoxyGrosses\Store::$movie[$bounded_lookup_date][0]['concessions_total'] === 25.0,
+    '25 eligible Square lines preserve their allocation while same-day showing queries stay constant');
+  $GLOBALS['grosses_fixture_enable_showings'] = false;
 
   // The production allocator must include rows past the old 1,000-row cap.
   $large_date = '2038-05-03';

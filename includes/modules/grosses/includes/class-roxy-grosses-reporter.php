@@ -2075,6 +2075,22 @@ class Reporter {
     }
     $category_map = Square::concession_reporting_categories($catalog_object_ids);
 
+    // These inputs are invariant for the whole day allocation. In particular,
+    // showings_for_date() performs a WordPress query, so keep its cost bounded
+    // by the allocation rather than multiplying it by every Square line item.
+    $dated_report_count = 0;
+    foreach ($reports as $candidate_report) {
+      if (($candidate_report['_start_at'] ?? null) instanceof \DateTimeImmutable) $dated_report_count++;
+    }
+    $current_showing_ids = [];
+    foreach (['movie', 'live'] as $mode) {
+      foreach (self::showings_for_date($report_date, $mode) as $current_showing) {
+        $showing_id = (int) ($current_showing['id'] ?? 0);
+        if ($showing_id > 0) $current_showing_ids[$showing_id] = true;
+      }
+    }
+    $single_show_day = $dated_report_count === 1 && count($current_showing_ids) <= 1;
+
     foreach ($orders as $order) {
       $order_closed_at = self::order_closed_at($order);
       foreach ((array) ($order['line_items'] ?? []) as $line_index => $line_item) {
@@ -2090,11 +2106,6 @@ class Reporter {
         // Concession orders may be rung well before showtime. The single-row
         // fallback is valid only when the complete day has one show, not when
         // this movie/live builder happens to contain only one type-specific row.
-        $dated_report_count = 0;
-        foreach ($reports as $candidate_report) if (($candidate_report['_start_at'] ?? null) instanceof \DateTimeImmutable) $dated_report_count++;
-        $current_showing_ids = [];
-        foreach (['movie', 'live'] as $mode) foreach (self::showings_for_date($report_date, $mode) as $current_showing) $current_showing_ids[(int) $current_showing['id']] = true;
-        $single_show_day = $dated_report_count === 1 && count($current_showing_ids) <= 1;
         $ambiguous_rental_window = false;
         $candidate_ids = $order_closed_at ? self::matching_entry_ids_for_order_time($order_closed_at, $reports, $single_show_day, $ambiguous_rental_window) : [];
         if (!$candidate_ids) {
