@@ -447,13 +447,10 @@ namespace {
     'line_items'=>[['uid'=>'overlap-rental-missing-times-line','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1875,'currency'=>'USD']]],
   ]];
   \RoxyGrosses\Store::$updates = [];
-  $before_missing_time_totals = [(float) \RoxyGrosses\Store::$movie[$overlap_missing_time_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_missing_time_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_missing_time_date][1]['concessions_total']];
-  $overlap_missing_time_failed = false;
-  try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$overlap_missing_time_date])); }
-  catch (Throwable $error) { $overlap_missing_time_failed = str_contains($error->getMessage(), 'could not be matched safely') && str_contains($error->getMessage(), 'review queue'); }
+  \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$overlap_missing_time_date]));
   $missing_time_queue = \RoxyGrosses\Store::$unmatched_concessions[$overlap_missing_time_date] ?? [];
   $after_missing_time_totals = [(float) \RoxyGrosses\Store::$movie[$overlap_missing_time_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_missing_time_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_missing_time_date][1]['concessions_total']];
-  $check($overlap_missing_time_failed && count($missing_time_queue) === 1 && ($missing_time_queue[0]['reason'] ?? '') === 'overlapping_rental_windows (1 dated rows: 8:00 PM)' && $after_missing_time_totals === $before_missing_time_totals && \RoxyGrosses\Store::$updates === [], 'overlapping valid rental intervals still fail closed when both rental show times are missing');
+  $check($after_missing_time_totals === [0.0, 18.75, 0.0] && !$missing_time_queue && \RoxyGrosses\Store::$updates !== [], 'closest valid reservation midpoint attributes the sale even when both rental show-time labels are missing');
 
   $no_rows_date = '2038-05-06';
   \RoxyGrosses\Square::$orders[$no_rows_date] = [[
