@@ -137,5 +137,7 @@ try {
 }
 $remaining_rows = $ids ? (int) $wpdb->get_var("SELECT COUNT(*) FROM `$table` WHERE order_id IN (" . implode(',', array_map('intval', $ids)) . ')') : 0;
 $remaining_orders = (int) $wpdb->get_var("SELECT COUNT(*) FROM " . ($using_hpos ? $wpdb->prefix . 'wc_orders' : $wpdb->posts) . ($using_hpos ? " WHERE type='shop_order'" : " WHERE post_type='shop_order'"));
-if ($remaining_rows !== 0 || $remaining_orders !== $original_orders) throw new RuntimeException('Private Woo order/payment-attempt fixture cleanup did not restore its baseline.');
+if ($remaining_rows !== 0 || $remaining_orders !== $original_orders) {
+    throw new RuntimeException('Private Woo order/payment-attempt fixture cleanup did not restore its baseline (attempt rows=' . $remaining_rows . ', orders=' . $remaining_orders . ', expected orders=' . $original_orders . ').');
+}
 echo 'PASS: private fixture rows and orders are fully cleaned up.' . PHP_EOL;
