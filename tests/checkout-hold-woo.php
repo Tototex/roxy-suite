@@ -16,7 +16,7 @@ $label='PRIVATE CHECKOUT HOLD FIXTURE 2026-10-05';$created=[];$orders=[];$worker
 $check=static function($ok,$label){if(!$ok)throw new RuntimeException($label);echo 'PASS: '.$label.PHP_EOL;};
 $digest=static fn()=>hash('sha256',wp_json_encode([$wpdb->get_results("SELECT * FROM `{$wpdb->prefix}roxy_member_scans` ORDER BY id",ARRAY_A),$wpdb->get_results("SELECT * FROM `{$wpdb->posts}` WHERE post_type='roxy_ticket' ORDER BY ID",ARRAY_A),$wpdb->get_results("SELECT m.* FROM `{$wpdb->postmeta}` m JOIN `{$wpdb->posts}` p ON p.ID=m.post_id WHERE p.post_type='roxy_ticket' ORDER BY m.meta_id",ARRAY_A)]));$before=$digest();
 try {
- $show=wp_insert_post(['post_type'=>'roxy_showing','post_status'=>'draft','post_title'=>$label],true);if(is_wp_error($show))throw new RuntimeException('Private showing failed');$created[]=$show;update_post_meta($show,'_roxy_capacity',1);
+ $show=wp_insert_post(['post_type'=>'roxy_showing','post_status'=>'draft','post_title'=>$label],true);if(is_wp_error($show))throw new RuntimeException('Private showing failed');$created[]=$show;update_post_meta($show,'_roxy_capacity',1);update_post_meta($show,'_roxy_start',wp_date('Y-m-d\\TH:i',time()+7200));update_post_meta($show,'_roxy_duration_minutes','60');
  $p=new WC_Product_Simple();$p->set_name($label);$p->set_status('draft');$p->set_catalog_visibility('hidden');$p->set_regular_price('0');$pid=$p->save();$created[]=$pid;update_post_meta($pid,ROXY_ST_META_SHOWING_ID,$show);update_post_meta($pid,ROXY_ST_META_TICKET_TYPE,'adult');
  $make=static function($customer=0)use($p,$label,&$orders){$o=wc_create_order(['status'=>'pending','customer_id'=>$customer,'customer_note'=>$label]);if(is_wp_error($o))throw new RuntimeException('Private order failed');$orders[]=$o;$o->add_product($p,1);$o->calculate_totals();$o->save();return $o;};
  $a=$make();$b=$make();$qty=static fn()=>\RoxyST\FixtureReservations::quantity_for_showing($show);
@@ -97,6 +97,13 @@ try {
  update_post_meta($showings[5],'_roxy_capacity',1);\RoxyST\FixtureHolds::claim($multi);
  $check((float)$multi->get_total()===45.0&&count($showings)===6&&array_sum(array_map(static fn($sid)=>\RoxyST\FixtureReservations::quantity_for_showing($sid),$showings))===6,'one $45 Woo order durably reserves one seat at each of six showings');
  $multi->update_status('cancelled');$check(array_sum(array_map(static fn($sid)=>\RoxyST\FixtureReservations::quantity_for_showing($sid),$showings))===0,'cancelling a six-showing pass releases all six reservations');
+ $late=$make();\RoxyST\FixtureHolds::claim($late);$late->set_transaction_id('PRIVATE-LATE-CUTOFF');$late->set_date_paid(time());$late->save();
+ update_post_meta($show,'_roxy_start',wp_date('Y-m-d\\TH:i',time()-7200));$late->update_status('processing');$late=wc_get_order($late->get_id());
+ $check($late->get_status()==='on-hold'&&(int)$late->get_meta('_roxy_seat_review',true)===1&&$late->get_transaction_id()==='PRIVATE-LATE-CUTOFF'&&$late->get_date_paid()!==null,'payment confirmed after the showing cutoff is preserved for manager review, not auto-confirmed');
+ ob_start();\RoxyST\FixtureHolds::review_notice($late);$late_notice=(string)ob_get_clean();
+ $check(str_contains($late_notice,'after online ticket sales ended')&&str_contains($late_notice,'Do not issue tickets after the cutoff')&&!str_contains($late_notice,'Resolve availability'),'late-cutoff payment shows specific guidance instead of a misleading seat-availability message');
+ $check(\RoxyST\HoldFixtureTickets::sync_order_tickets($late->get_id()),'late-cutoff review order projection saves safely');$late_ticket_ids=\RoxyST\HoldFixtureTickets::get_order_ticket_ids($late->get_id());
+ $check(count($late_ticket_ids)===1&&!\RoxyST\HoldFixtureTickets::ticket_is_eligible($late_ticket_ids[0]),'late-cutoff payment cannot create an eligible admission');
  echo 'CHECKOUT_HOLD_WOO_OK'.PHP_EOL;
 } finally {
  foreach($workers as $w){if(proc_get_status($w['process'])['running'])proc_terminate($w['process']);fclose($w['pipes'][1]);fclose($w['pipes'][2]);proc_close($w['process']);}
