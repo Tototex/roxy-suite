@@ -124,8 +124,9 @@ class Conversion {
         if (!$order instanceof \WC_Order || (int) $order->get_id() !== $order_id
             || $order->get_created_via() !== 'roxy_requested_showings') return;
 
-        $attempt_raw = $order->get_meta('_roxy_rs_payment_attempt', true);
-        $result_raw = $order->get_meta('_roxy_rs_payment_result', true);
+        $payment_review = class_exists(PaymentAttempts::class) ? PaymentAttempts::review_data($order) : [];
+        $attempt_raw = $payment_review['attempt'] ?? $order->get_meta('_roxy_rs_payment_attempt', true);
+        $result_raw = $payment_review['result'] ?? $order->get_meta('_roxy_rs_payment_result', true);
         $review = (string) $order->get_meta('_roxy_seat_review', true) === '1';
         if (!$review && $attempt_raw === '' && $result_raw === '') return;
 

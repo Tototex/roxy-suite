@@ -11,7 +11,7 @@ if (!defined('ABSPATH')) {
 }
 
 define('ROXY_RS_VERSION', '0.2.0');
-define('ROXY_RS_SCHEMA_VERSION', '2');
+define('ROXY_RS_SCHEMA_VERSION', '3');
 define('ROXY_RS_PATH', plugin_dir_path(__FILE__));
 define('ROXY_RS_URL', plugin_dir_url(__FILE__));
 define('ROXY_RS_CRON_HOOK', 'roxy_rs_daily_review');
@@ -40,7 +40,27 @@ try {
         $wpdb_table = roxy_rs_table_backings();
         $wpdb->last_error = '';
         $agreement_column = $wpdb->get_var("SHOW COLUMNS FROM `$wpdb_table` LIKE 'agreement_json'");
-        if ($wpdb->last_error !== '' || $agreement_column !== 'agreement_json') {
+        $schema_error = $wpdb->last_error !== '';
+        $attempts_table = roxy_rs_table_payment_attempts();
+        $wpdb->last_error = '';
+        $attempt_engine = $wpdb->get_var($wpdb->prepare(
+            'SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s',
+            $attempts_table
+        ));
+        $attempt_schema_error = $wpdb->last_error !== '';
+        $wpdb->last_error = '';
+        $attempt_primary = $wpdb->get_results("SHOW INDEX FROM `$attempts_table` WHERE Key_name='PRIMARY'", ARRAY_A);
+        $attempt_primary_valid = $wpdb->last_error === '' && is_array($attempt_primary) && count($attempt_primary) === 1
+            && (string) ($attempt_primary[0]['Column_name'] ?? '') === 'order_id'
+            && (int) ($attempt_primary[0]['Non_unique'] ?? 1) === 0
+            && (int) ($attempt_primary[0]['Seq_in_index'] ?? 0) === 1;
+        $attempt_columns_valid = true;
+        foreach (['order_id', 'attempt_json', 'result_json', 'created_at', 'updated_at'] as $column) {
+            $wpdb->last_error = '';
+            $found = $wpdb->get_var($wpdb->prepare("SHOW COLUMNS FROM `$attempts_table` LIKE %s", $column));
+            if ($wpdb->last_error !== '' || $found !== $column) $attempt_columns_valid = false;
+        }
+        if ($schema_error || $attempt_schema_error || !$attempt_columns_valid || !$attempt_primary_valid || $agreement_column !== 'agreement_json' || $attempt_engine !== 'InnoDB') {
             roxy_rs_install_schema();
             update_option('roxy_rs_db_version', ROXY_RS_VERSION);
             update_option('roxy_rs_db_schema_version', ROXY_RS_SCHEMA_VERSION);

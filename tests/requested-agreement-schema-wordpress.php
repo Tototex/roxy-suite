@@ -10,6 +10,7 @@ $old_prefix = $wpdb->prefix;
 $suffix = 'rsagr' . bin2hex(random_bytes(4)) . '_';
 $wpdb->prefix = $old_prefix . $suffix;
 $table = $wpdb->prefix . 'roxy_requested_showing_backings';
+$attempts_table = $wpdb->prefix . 'roxy_rs_payment_attempts';
 $namespace = 'RequestedAgreementSchemaFixture' . bin2hex(random_bytes(4));
 $source = file_get_contents($schema_path);
 $source = str_replace('function roxy_rs_table_backings', 'function roxy_rs_table_backings_fixture', $source);
@@ -38,6 +39,7 @@ try {
     $check(is_array($row) && is_array($before) && array_diff_assoc($before, $row) === [], 'existing backing row survives the additive upgrade unchanged');
 } finally {
     $wpdb->query('DROP TABLE IF EXISTS `' . $table . '`');
+    $wpdb->query('DROP TABLE IF EXISTS `' . $attempts_table . '`');
     $wpdb->prefix = $old_prefix;
 }
 echo "OK: $checks installed WordPress agreement schema checks passed\n";
