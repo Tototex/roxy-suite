@@ -142,7 +142,7 @@ namespace {
     $wpdb = $GLOBALS['wpdb'];
 
     $empty = $totals();
-    $check($empty === ['support_qty'=>0,'subscriber_qty'=>0,'charge_total'=>0,'sponsor_amount'=>0,'sponsor_ticket_qty'=>0,'has_sponsor'=>false], 'valid empty backing rows normalize to zero funding');
+    $check($empty === ['support_qty'=>0,'subscriber_qty'=>0,'charge_total'=>0,'sponsor_amount'=>0,'sponsor_ticket_qty'=>0,'has_sponsor'=>false,'refund_reviews'=>[]], 'valid empty backing rows normalize to zero funding with an empty review list');
     $row = ['id'=>1,'request_id'=>41,'status'=>'pending','general_qty'=>'3','discount_qty'=>'0','support_qty'=>'3','subscriber_qty'=>'2','charge_total'=>'3600','sponsor_amount'=>'0','sponsor_ticket_qty'=>'0','woo_order_id'=>null,'agreement_json'=>null,'approved_showing_id'=>null];
     $wpdb->rows = [$row];
     $valid = $totals();

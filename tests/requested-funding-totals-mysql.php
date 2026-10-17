@@ -46,7 +46,7 @@ try {
  $created=true;
  $wpdb->prefix=$private_prefix;
  $empty=$read(41);
- $check($empty===['support_qty'=>0,'subscriber_qty'=>0,'charge_total'=>0,'sponsor_amount'=>0,'sponsor_ticket_qty'=>0,'has_sponsor'=>false],'real empty aggregate is valid zero funding');
+ $check($empty===['support_qty'=>0,'subscriber_qty'=>0,'charge_total'=>0,'sponsor_amount'=>0,'sponsor_ticket_qty'=>0,'has_sponsor'=>false,'refund_reviews'=>[]],'real empty aggregate is valid zero funding with an empty review list');
  foreach ([
   ['status'=>'pending','general_qty'=>3,'support_qty'=>3,'charge_total'=>300],
   ['status'=>'approved','subscriber_qty'=>2],
@@ -57,7 +57,7 @@ try {
   if ($wpdb->insert($table,$row)===false) throw new RuntimeException('Private seed failed.');
  }
  $totals=$read(41);
- $check($totals===['support_qty'=>3,'subscriber_qty'=>2,'charge_total'=>800,'sponsor_amount'=>500,'sponsor_ticket_qty'=>2,'has_sponsor'=>true],'real pending/approved/threshold sums exclude failed rows');
+ $check($totals===['support_qty'=>3,'subscriber_qty'=>2,'charge_total'=>800,'sponsor_amount'=>500,'sponsor_ticket_qty'=>2,'has_sponsor'=>true,'refund_reviews'=>[]],'real pending/approved/threshold sums exclude failed rows and have no converted refunds to review');
  $check($read(42)===$empty,'another request cannot inherit totals');
  $force_failure=true;
  $thrown=false;
