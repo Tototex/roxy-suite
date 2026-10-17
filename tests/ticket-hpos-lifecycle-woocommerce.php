@@ -28,7 +28,8 @@ try {
   $first=$make_order($token.' HOLD TEST');
   $check(\RoxyST\Holds::claim($first),'HPOS pending ticket order claims a transactional seat hold');
   $fresh=wc_get_order($first->get_id());$until=(int)$fresh->get_meta('_roxy_seat_hold_until',true);
-  $check((int)$fresh->get_meta('_roxy_seat_hold_managed',true)===1&&$until>time(),'guarded HPOS hold metadata is visible through Woo CRUD after commit');
+  $raw_markers=$wpdb->get_results($wpdb->prepare("SELECT meta_key,meta_value FROM `$meta_table` WHERE order_id=%d AND meta_key IN (%s,%s) ORDER BY meta_key",(int)$first->get_id(),'_roxy_seat_hold_managed','_roxy_seat_hold_until'),ARRAY_A);
+  $check((int)$fresh->get_meta('_roxy_seat_hold_managed',true)===1&&$until>time(),'guarded HPOS hold metadata visible through Woo CRUD after commit (crud_managed='.(string)$fresh->get_meta('_roxy_seat_hold_managed',true).', crud_until='.$until.', raw='.wp_json_encode($raw_markers).', sql_error='.(string)$wpdb->last_error.')');
   $check(\RoxyST\Reservations::quantity_for_showing((int)$show)===1,'unexpired HPOS hold counts as a reserved seat');
 
   (new \RoxyST\Issuance((int)$first->get_id()))->run(static fn($writer)=>$writer->transactional_order_meta((int)$first->get_id(),'_roxy_seat_hold_until',time()-1));
@@ -100,6 +101,6 @@ try {
   echo "Passed private Show Tickets HPOS lifecycle checks. No gateway or external mail transport was used.\n";
 } finally {
   $secondary->close();
-  foreach(array_reverse($created_orders) as $id){$order=wc_get_order($id);if($order&&str_contains((string)$order->get_customer_note(),$token))wc_delete_order($id,true);}
+  foreach(array_reverse($created_orders) as $id){$order=wc_get_order($id);if($order&&str_contains((string)$order->get_customer_note(),$token))$order->delete(true);}
   foreach(array_reverse($created_posts) as $id){$post=get_post($id);if($post&&str_contains((string)$post->post_title,$token))wp_delete_post($id,true);}
 }
