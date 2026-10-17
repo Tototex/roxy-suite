@@ -37,6 +37,7 @@ final class RefundProjectionDatabase {
 }
 require dirname(__DIR__) . '/includes/modules/requested-showings/includes/repository.php';
 require dirname(__DIR__) . '/includes/modules/requested-showings/includes/class-roxy-rs-agreement.php';
+require dirname(__DIR__) . '/includes/modules/requested-showings/includes/class-roxy-rs-cpt.php';
 $backing = ['id'=>7,'request_id'=>41,'status'=>'charged','woo_order_id'=>88,'general_qty'=>3,'discount_qty'=>2,'support_qty'=>5,'subscriber_qty'=>1,'sponsor_ticket_qty'=>2,'charge_total'=>6000,'sponsor_amount'=>2000];
 $quote=\RoxyRS\Agreement::quote(41,'movie_evening',['general'=>1000,'discount'=>500,'matinee'=>0],'USD');
 $backing['agreement_json']=\RoxyRS\Agreement::build($quote,$backing);
@@ -142,3 +143,11 @@ $GLOBALS['refund_projection_order']=new class extends RefundProjectionOrder {
 };
 try { roxy_rs_repo_effective_backing($backing); } catch (RuntimeException $error) { $bad=true; }
 check_refund_projection($bad,'a Woo order linked to a different backing is rejected');
+$GLOBALS['refund_projection_order'] = new class {
+    public function get_id(): int { return 88; }
+    public function get_edit_order_url(): string { return 'https://example.test/wp-admin/admin.php?page=wc-orders&action=edit&id=88'; }
+};
+check_refund_projection(\RoxyRS\CPT::refund_review_order_url(88) === 'https://example.test/wp-admin/admin.php?page=wc-orders&action=edit&id=88',
+    'exceptional-refund review uses WooCommerce’s HPOS-compatible order editor URL');
+check_refund_projection(\RoxyRS\CPT::refund_review_order_url(89) === '',
+    'exceptional-refund review does not link to a Woo order with a mismatched ID');

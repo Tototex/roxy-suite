@@ -29,6 +29,20 @@ class CPT {
     public const META_DISCOUNT_PRICE = '_roxy_rs_discount_price';
     public const META_MATINEE_PRICE = '_roxy_rs_matinee_price';
 
+    /** Return WooCommerce's order editor URL (HPOS-aware), or an empty string. */
+    public static function refund_review_order_url(int $order_id): string {
+        if ($order_id <= 0 || !function_exists('wc_get_order')) {
+            return '';
+        }
+        $order = wc_get_order($order_id);
+        if (!$order || !method_exists($order, 'get_id') || (int)$order->get_id() !== $order_id
+            || !method_exists($order, 'get_edit_order_url')) {
+            return '';
+        }
+        $url = $order->get_edit_order_url();
+        return is_string($url) ? $url : '';
+    }
+
     public static function init(): void {
         if (did_action('init')) {
             self::register();
@@ -290,7 +304,7 @@ class CPT {
         } else {
             foreach ($refund_reviews as $refund_review) {
                 $order_id = (int)($refund_review['order_id'] ?? 0);
-                $order_link = $order_id > 0 ? get_edit_post_link($order_id, '') : '';
+                $order_link = self::refund_review_order_url($order_id);
                 echo '<div class="notice notice-warning inline"><p><strong>Exceptional refund requires manager review.</strong> ';
                 if (!empty($refund_review['verified'])) {
                     echo 'Backing #' . esc_html((string)(int)$refund_review['backing_id']) . ', Woo order #' . esc_html((string)$order_id)
