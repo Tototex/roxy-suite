@@ -35,7 +35,8 @@ final class Reservations {
       foreach($orders as $order) {
         if(!$order instanceof \WC_Order || $order->get_type()!=='shop_order')throw new \RuntimeException('Seat order identity could not be verified');
         $id=(int)$order->get_id();
-        if($id<=0 || !in_array($id,$batch,true) || isset($found[$id]))throw new \RuntimeException('Seat order identity is ambiguous');
+        if($id<=0 || !in_array($id,$batch,true))throw new \RuntimeException('Seat order query returned an unexpected identity');
+        if(isset($found[$id]))throw new \RuntimeException('Seat order query returned a duplicate identity');
         $found[$id]=$order;
       }
       foreach($batch as $id) {
