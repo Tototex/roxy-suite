@@ -119,24 +119,22 @@ final class Issuance {
   /** Clear both Woo's order-object and HPOS raw-meta caches after guarded direct writes. */
   private static function clear_order_meta_cache(int $id): void {
     if ($id<=0 || !function_exists('wc_get_order')) return;
-    $order=wc_get_order($id);
-    if (!$order || !is_object($order)) return;
-    if (method_exists($order,'get_data_store')) {
-      $store=$order->get_data_store();
-      // HPOS stores its raw metadata in a separate cache group from the order object.
-      if (is_object($store) && method_exists($store,'clear_cached_data')) $store->clear_cached_data([$id]);
-    }
-    // Woo 11.x only clears `orders_meta` from clear_cached_data() when an `orders_data`
-    // entry existed. A cached metadata-only snapshot otherwise survives the transaction.
+    // HPOS keeps order data and raw metadata in distinct cache groups. Clear both
+    // independently before constructing a Woo object, so stale snapshots cannot hydrate it.
     $cache_engine_class='\\Automattic\\WooCommerce\\Caching\\WPCacheEngine';
     if (function_exists('wc_get_container') && class_exists($cache_engine_class)) {
       try {
         $cache_engine=wc_get_container()->get($cache_engine_class);
-        if (is_object($cache_engine) && method_exists($cache_engine,'delete_cached_object')) $cache_engine->delete_cached_object((string)$id,'orders_meta');
+        if (is_object($cache_engine) && method_exists($cache_engine,'delete_cached_object')) {
+          $cache_engine->delete_cached_object((string)$id,'orders_data');
+          $cache_engine->delete_cached_object((string)$id,'orders_meta');
+        }
       } catch (\Throwable $ignored) {}
     }
     // Woo also caches the order object by ID in this group when the HPOS datastore cache is off.
     wp_cache_delete($id,'orders');
+    $order=wc_get_order($id);
+    if (!$order || !is_object($order)) return;
     if (method_exists($order,'delete_meta_cache')) $order->delete_meta_cache();
     elseif (class_exists('WC_Order') && method_exists('\\WC_Order','generate_meta_cache_key')) wp_cache_delete(\WC_Order::generate_meta_cache_key($id,'orders'),'orders');
     // Force the post-commit read to replace any pre-transaction empty snapshot cached in this request.

@@ -36,7 +36,10 @@ try {
   $raw_markers=$wpdb->get_results($wpdb->prepare("SELECT meta_key,meta_value FROM `$meta_table` WHERE order_id=%d AND meta_key IN (%s,%s) ORDER BY meta_key",(int)$first->get_id(),'_roxy_seat_hold_managed','_roxy_seat_hold_until'),ARRAY_A);
   $raw_meta_cache=$cache->get_cached_object((string)$first->get_id(),'orders_meta');
   $order_meta_cache=wp_cache_get($fresh->get_meta_cache_key(),'orders');
-  $check((int)$fresh->get_meta('_roxy_seat_hold_managed',true)===1&&$until>time(),'guarded HPOS hold metadata visible through Woo CRUD after commit (crud_managed='.(string)$fresh->get_meta('_roxy_seat_hold_managed',true).', crud_until='.$until.', raw='.wp_json_encode($raw_markers).', hpos_cache='.wp_json_encode($raw_meta_cache).', object_cache='.wp_json_encode($order_meta_cache).', sql_error='.(string)$wpdb->last_error.')');
+  $fresh_meta=array_map(static fn($meta)=>['key'=>$meta->key,'value'=>$meta->value],$fresh->get_meta_data());
+  $check((int)$fresh->get_meta('_roxy_seat_hold_managed',true)===1&&$until>time(),'guarded HPOS hold metadata visible through a fresh Woo CRUD read after commit (crud_managed='.(string)$fresh->get_meta('_roxy_seat_hold_managed',true).', crud_until='.$until.', hydrated_meta='.wp_json_encode($fresh_meta).', raw='.wp_json_encode($raw_markers).', hpos_cache='.wp_json_encode($raw_meta_cache).', object_cache='.wp_json_encode($order_meta_cache).', sql_error='.(string)$wpdb->last_error.')');
+  $fresh->read_meta_data(true);
+  $check((int)$fresh->get_meta('_roxy_seat_hold_managed',true)===1&&(int)$fresh->get_meta('_roxy_seat_hold_until',true)>time(),'fresh HPOS CRUD order remains correct after explicit metadata refresh');
   $check(\RoxyST\Reservations::quantity_for_showing((int)$show)===1,'unexpired HPOS hold counts as a reserved seat');
 
   (new \RoxyST\Issuance((int)$first->get_id()))->run(static fn($writer)=>$writer->transactional_order_meta((int)$first->get_id(),'_roxy_seat_hold_until',time()-1));
