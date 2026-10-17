@@ -287,6 +287,59 @@ function roxy_rs_repo_list_backings_for_request(int $request_id, array $statuses
     return $rows;
 }
 
+/** Return manager-review entries for refunds against already converted backings. */
+function roxy_rs_repo_converted_refund_review_entry(array $row): ?array {
+    if ((string)($row['status'] ?? '') !== 'charged'
+        || roxy_rs_repo_canonical_quantity($row['approved_showing_id'] ?? null) === null
+        || (int)$row['approved_showing_id'] <= 0) return null;
+
+    $backing_id = roxy_rs_repo_canonical_quantity($row['id'] ?? null);
+    $request_id = roxy_rs_repo_canonical_quantity($row['request_id'] ?? null);
+    $order_id = roxy_rs_repo_canonical_quantity($row['woo_order_id'] ?? null);
+    $showing_id = roxy_rs_repo_canonical_quantity($row['approved_showing_id'] ?? null);
+    $entry = [
+        'backing_id' => $backing_id ?? 0,
+        'request_id' => $request_id ?? 0,
+        'order_id' => $order_id ?? 0,
+        'showing_id' => $showing_id ?? 0,
+        'verified' => false,
+        'refund_total_cents' => null,
+    ];
+    try {
+        if ($backing_id === null || $backing_id <= 0 || $request_id === null || $request_id <= 0
+            || $order_id === null || $order_id <= 0 || $showing_id === null || $showing_id <= 0
+            || !function_exists('wc_get_order')) throw new \RuntimeException('Converted backing identity is unavailable.');
+        $order = wc_get_order($order_id);
+        if (!$order || !method_exists($order, 'get_id') || (int)$order->get_id() !== $order_id
+            || !method_exists($order, 'get_meta')
+            || (int)$order->get_meta('_roxy_rs_request_id', true) !== $request_id
+            || (int)$order->get_meta('_roxy_rs_backing_id', true) !== $backing_id
+            || !method_exists($order, 'get_total') || !method_exists($order, 'get_total_refunded')) {
+            throw new \RuntimeException('Converted backing order could not be verified.');
+        }
+        $total = roxy_rs_repo_money_cents($order->get_total());
+        $refunded = roxy_rs_repo_money_cents($order->get_total_refunded());
+        if ($refunded > $total) throw new \RuntimeException('Converted backing refund exceeds its order total.');
+        $entry['verified'] = true;
+        $entry['refund_total_cents'] = $refunded;
+        return $refunded > 0 ? $entry : null;
+    } catch (\Throwable $error) {
+        // Do not let a failed refund/order read look like a clean converted backing.
+        return $entry;
+    }
+}
+
+/** Read-only refund review queue for the admin request editor. */
+function roxy_rs_repo_converted_refund_reviews(int $request_id): array {
+    $rows = roxy_rs_repo_list_backings_for_request($request_id);
+    $reviews = [];
+    foreach ($rows as $row) {
+        $entry = roxy_rs_repo_converted_refund_review_entry($row);
+        if ($entry !== null) $reviews[] = $entry;
+    }
+    return $reviews;
+}
+
 function roxy_rs_repo_list_backings_for_user(int $user_id): array {
     global $wpdb;
     $table = roxy_rs_table_backings();
@@ -305,10 +358,21 @@ function roxy_rs_repo_backing_totals(int $request_id): array {
     ), ARRAY_A);
     if ($wpdb->last_error !== '' || !is_array($rows)) throw new RuntimeException('Requested-showing backing totals could not be read.');
 
-    $totals = ['support_qty'=>0,'subscriber_qty'=>0,'charge_total'=>0,'sponsor_amount'=>0,'sponsor_ticket_qty'=>0,'has_sponsor'=>false];
+    $totals = ['support_qty'=>0,'subscriber_qty'=>0,'charge_total'=>0,'sponsor_amount'=>0,'sponsor_ticket_qty'=>0,'has_sponsor'=>false,'refund_reviews'=>[]];
     foreach ($rows as $row) {
         if (!in_array((string)($row['status'] ?? ''), ['pending','threshold_met','approved','charged'], true)) continue;
         $effective = roxy_rs_repo_effective_backing($row);
+        if ((string)($row['status'] ?? '') === 'charged' && (int)($row['approved_showing_id'] ?? 0) > 0
+            && (int)($effective['refund_total_cents'] ?? 0) > 0) {
+            $totals['refund_reviews'][] = [
+                'backing_id' => (int)$row['id'],
+                'request_id' => (int)$row['request_id'],
+                'order_id' => (int)$row['woo_order_id'],
+                'showing_id' => (int)$row['approved_showing_id'],
+                'verified' => true,
+                'refund_total_cents' => (int)$effective['refund_total_cents'],
+            ];
+        }
         foreach (['support_qty','subscriber_qty','charge_total','sponsor_amount','sponsor_ticket_qty'] as $key) {
             if ($effective[$key] > PHP_INT_MAX - $totals[$key]) throw new RuntimeException('Requested-showing backing totals exceed the supported range.');
             $totals[$key] += $effective[$key];
@@ -331,6 +395,7 @@ function roxy_rs_repo_effective_backing(array $row): array {
         throw new RuntimeException('Requested-showing backing ticket quantities are inconsistent.');
     }
     $status = (string)($row['status'] ?? '');
+    $out['refund_total_cents'] = 0;
     if ($status !== 'charged') return $out;
     $order_id = roxy_rs_repo_canonical_quantity($row['woo_order_id'] ?? null);
     if ($order_id === null || $order_id <= 0 || !function_exists('wc_get_order')) throw new RuntimeException('A charged backing order could not be verified.');
@@ -354,6 +419,7 @@ function roxy_rs_repo_effective_backing(array $row): array {
     $order_total = roxy_rs_repo_money_cents($order->get_total());
     $refund_total = roxy_rs_repo_money_cents($order->get_total_refunded());
     if ($order_total !== $out['charge_total'] || $refund_total > $order_total) throw new RuntimeException('A charged backing payment total does not match its agreement.');
+    $out['refund_total_cents'] = $refund_total;
     $out['charge_total'] -= $refund_total;
 
     $unit_prices = $agreement['unit_prices_cents'] ?? [];

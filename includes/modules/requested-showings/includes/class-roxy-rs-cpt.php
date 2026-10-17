@@ -268,11 +268,40 @@ class CPT {
         } catch (\Throwable $error) {
             $totals = null;
         }
+        $refund_review_read_failed = false;
+        if (is_array($totals)) {
+            $refund_reviews = (array)($totals['refund_reviews'] ?? []);
+        } else {
+            try {
+                $refund_reviews = roxy_rs_repo_converted_refund_reviews((int) $post->ID);
+            } catch (\Throwable $error) {
+                $refund_reviews = [];
+                $refund_review_read_failed = true;
+            }
+        }
 
         echo '<style>.roxy-rs-grid{display:grid;grid-template-columns:200px 1fr;gap:10px;align-items:center;max-width:920px}.roxy-rs-grid input[type=text],.roxy-rs-grid input[type=url],.roxy-rs-grid input[type=number],.roxy-rs-grid input[type=datetime-local],.roxy-rs-grid select{width:100%}.roxy-rs-help{grid-column:1/-1;color:#666;font-size:12px}.roxy-rs-actions-panel{grid-column:1/-1;padding:14px 16px;border:1px solid #dcdcde;border-radius:8px;background:#f6f7f7;margin-top:8px}.roxy-rs-action-buttons{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 8px}</style>';
         echo '<div class="roxy-rs-grid">';
         if ($amount_error) {
             echo '<div class="roxy-rs-help"><strong>Funding review required:</strong> ' . esc_html($amount_error->get_error_message()) . ' Backing and automatic readiness are disabled until corrected.</div>';
+        }
+        if ($refund_review_read_failed) {
+            echo '<div class="notice notice-error inline"><p><strong>Converted backing refund status could not be verified.</strong> Review the linked WooCommerce orders and their refund allocations before relying on this request\'s funding or ticket totals.</p></div>';
+        } else {
+            foreach ($refund_reviews as $refund_review) {
+                $order_id = (int)($refund_review['order_id'] ?? 0);
+                $order_link = $order_id > 0 ? get_edit_post_link($order_id, '') : '';
+                echo '<div class="notice notice-warning inline"><p><strong>Exceptional refund requires manager review.</strong> ';
+                if (!empty($refund_review['verified'])) {
+                    echo 'Backing #' . esc_html((string)(int)$refund_review['backing_id']) . ', Woo order #' . esc_html((string)$order_id)
+                        . ' has a verified refund of ' . wp_kses_post(wc_price(((int)$refund_review['refund_total_cents']) / 100)) . '. ';
+                } else {
+                    echo 'A converted backing\'s order/refund status could not be verified. ';
+                    if ($order_id > 0) echo 'Check Woo order #' . esc_html((string)$order_id) . '. ';
+                }
+                if ($order_link) echo '<a href="' . esc_url($order_link) . '">Review Woo order</a>. ';
+                echo 'Refunds are not expected after scheduling; verify any exception and its ticket allocation.</p></div>';
+            }
         }
 
         echo '<label for="roxy-rs-status"><strong>Status</strong></label>';

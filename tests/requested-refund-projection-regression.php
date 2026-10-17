@@ -1,5 +1,6 @@
 <?php
 define('ABSPATH', __DIR__);
+if (!defined('ARRAY_A')) define('ARRAY_A', 'ARRAY_A');
 $GLOBALS['refund_projection_order'] = null;
 $GLOBALS['refund_projection_types'] = [];
 function wc_get_order($id) { return $GLOBALS['refund_projection_order']; }
@@ -26,6 +27,12 @@ class RefundProjectionOrder {
     public function get_items($type = 'line_item'): array { return $type === 'fee' ? $this->fees : ($type === 'line_item' ? $this->lines : []); }
     public function get_qty_refunded_for_item($id): float { return $this->qty_refunds[$id] ?? 0.0; }
     public function get_total_refunded_for_item($id): float { return $this->amount_refunds[$id] ?? 0.0; }
+}
+final class RefundProjectionDatabase {
+    public string $prefix = 'wp_';
+    public string $last_error = '';
+    public function prepare(string $query, ...$args): string { return $query; }
+    public function get_results(string $query, $output = null): array { return [$GLOBALS['refund_projection_backing_row']]; }
 }
 require dirname(__DIR__) . '/includes/modules/requested-showings/includes/repository.php';
 require dirname(__DIR__) . '/includes/modules/requested-showings/includes/class-roxy-rs-agreement.php';
@@ -91,6 +98,38 @@ check_refund_projection($amount_only_full_non_sponsor['charge_total']===0
 $GLOBALS['refund_projection_order']=new RefundProjectionOrder(88,60.0,60.0,[$paid_general,$paid_discount,$subscriber,$sponsor_tickets],[$fee]);
 $amount_only_full=roxy_rs_repo_effective_backing($backing);
 check_refund_projection($amount_only_full['charge_total']===0 && $amount_only_full['sponsor_amount']===0,'amount-only full Woo refund clears funding and sponsor state');
+$converted = $backing + ['approved_showing_id'=>901];
+$GLOBALS['refund_projection_order'] = new RefundProjectionOrder(88,60.0,15.0,[$paid_general,$paid_discount,$subscriber,$sponsor_tickets],[$fee],[11=>1,12=>1],[11=>10.0,12=>5.0]);
+$refund_review = roxy_rs_repo_converted_refund_review_entry($converted);
+check_refund_projection(is_array($refund_review) && $refund_review['verified'] === true
+    && $refund_review['order_id'] === 88 && $refund_review['showing_id'] === 901
+    && $refund_review['refund_total_cents'] === 1500,
+    'verified post-conversion refund is returned for manager review with the exact order/showing and refund amount');
+$GLOBALS['refund_projection_backing_row'] = $converted + ['approved_showing_id'=>901];
+$GLOBALS['wpdb'] = new RefundProjectionDatabase();
+$refund_totals = roxy_rs_repo_backing_totals(41);
+check_refund_projection(count($refund_totals['refund_reviews']) === 1
+    && $refund_totals['refund_reviews'][0]['order_id'] === 88
+    && $refund_totals['charge_total'] === 4500,
+    'admin request totals include the post-conversion refund review entry while applying the verified net refund');
+$GLOBALS['refund_projection_order'] = new RefundProjectionOrder(88,60.0,5.0,[$paid_general,$paid_discount,$subscriber,$sponsor_tickets],[$fee]);
+$amount_only_review = roxy_rs_repo_converted_refund_review_entry($converted);
+check_refund_projection(is_array($amount_only_review) && $amount_only_review['verified'] === true
+    && $amount_only_review['refund_total_cents'] === 500,
+    'ambiguous amount-only refund still appears in the post-conversion manager review queue');
+$pre_conversion = $converted; $pre_conversion['approved_showing_id'] = null;
+check_refund_projection(roxy_rs_repo_converted_refund_review_entry($pre_conversion) === null,
+    'refund review queue excludes a backing not yet moved to an approved event');
+$GLOBALS['refund_projection_order'] = new RefundProjectionOrder(88,60.0,0.0,[$paid_general,$paid_discount,$subscriber,$sponsor_tickets],[$fee]);
+check_refund_projection(roxy_rs_repo_converted_refund_review_entry($converted) === null,
+    'converted backing without refunds does not raise an exceptional-refund review');
+$GLOBALS['refund_projection_order'] = new class extends RefundProjectionOrder {
+    public function __construct() { parent::__construct(88,60.0,0.0,[],[]); }
+    public function get_meta($key, $single = true): int { return 0; }
+};
+$unverified_review = roxy_rs_repo_converted_refund_review_entry($converted);
+check_refund_projection(is_array($unverified_review) && $unverified_review['verified'] === false,
+    'unverifiable converted-order identity fails visibly into manager review instead of looking like no refund');
 $bad=false;
 $GLOBALS['refund_projection_order']=new RefundProjectionOrder(88,60.0,1.0,[$paid_general],[$fee],[11=>0.5],[11=>1.0]);
 try { roxy_rs_repo_effective_backing($backing); } catch (RuntimeException $error) { $bad=true; }
