@@ -105,18 +105,36 @@ final class Reservations {
     $valid_quantity="TRIM(q.meta_value) REGEXP '^[0-9]{1,19}([.]0+)?$'";
     if($hpos) {
       // Order-item tables are shared with HPOS; first restrict to matching Roxy
-      // ticket lines, then let Woo CRUD verify order status, customer, and holds.
-      $candidate_sql="SELECT DISTINCT i.order_id FROM `$items` i WHERE i.order_item_type='line_item' AND EXISTS (SELECT 1 FROM `$meta` product WHERE product.order_item_id=i.order_item_id AND product.meta_key='_product_id' AND ($mapping))";
-      if($exclude_order_id>0)$candidate_sql.=$wpdb->prepare(' AND i.order_id<>%d',$exclude_order_id);
-      $candidate_ids=$wpdb->get_col($candidate_sql);
-      if($wpdb->last_error || !is_array($candidate_ids))throw new \RuntimeException('Seat order candidates could not be read');
+      // ticket lines, then page by order ID so neither PHP memory nor the
+      // aggregate's IN() list grows with a showing's lifetime sales history.
       $now=$wpdb->get_var('SELECT UNIX_TIMESTAMP()');
       if($wpdb->last_error || !is_numeric($now) || (int)$now<=0)throw new \RuntimeException('Seat hold expiry could not be verified');
-      $order_ids=self::hpos_reservation_order_ids($candidate_ids,$exclude_order_id,$subscriber_user_id,(int)$now);
-      if(!$order_ids)return 0;
-      $order_list=implode(',',array_map('intval',$order_ids));
-      $exclude_items=$exclude_order_id>0 ? $wpdb->prepare(' AND i.order_id<>%d',$exclude_order_id) : '';
-      $aggregate=$wpdb->get_row("SELECT COALESCE(SUM(CASE WHEN $valid_quantity THEN CAST(TRIM(q.meta_value) AS DECIMAL(65,0)) ELSE 0 END),0) AS reserved_quantity, COALESCE(SUM(CASE WHEN $valid_quantity THEN 0 ELSE 1 END),0) AS invalid_quantity_count FROM `$items` i LEFT JOIN `$meta` q ON q.order_item_id=i.order_item_id AND q.meta_key='_qty' WHERE i.order_item_type='line_item' AND i.order_id IN ($order_list)$exclude_items AND EXISTS (SELECT 1 FROM `$meta` product WHERE product.order_item_id=i.order_item_id AND product.meta_key='_product_id' AND ($mapping))",ARRAY_A);
+      $cursor=0;$reserved=0;
+      do {
+        $candidate_sql="SELECT DISTINCT i.order_id FROM `$items` i WHERE i.order_item_type='line_item' AND i.order_id>%d";
+        if($exclude_order_id>0)$candidate_sql.=$wpdb->prepare(' AND i.order_id<>%d',$exclude_order_id);
+        $candidate_sql.=" AND EXISTS (SELECT 1 FROM `$meta` product WHERE product.order_item_id=i.order_item_id AND product.meta_key='_product_id' AND ($mapping)) ORDER BY i.order_id ASC LIMIT 100";
+        $candidate_ids=$wpdb->get_col($wpdb->prepare($candidate_sql,$cursor));
+        if($wpdb->last_error || !is_array($candidate_ids))throw new \RuntimeException('Seat order candidates could not be read');
+        if(!$candidate_ids)break;
+        $candidate_ids=array_map('intval',$candidate_ids);
+        if(min($candidate_ids)<=$cursor || count($candidate_ids)!==count(array_unique($candidate_ids)))throw new \RuntimeException('Seat order candidate page is invalid');
+        $cursor=max($candidate_ids);
+        $order_ids=self::hpos_reservation_order_ids($candidate_ids,$exclude_order_id,$subscriber_user_id,(int)$now);
+        if(!$order_ids)continue;
+        $order_list=implode(',',array_map('intval',$order_ids));
+        $batch=$wpdb->get_row("SELECT COALESCE(SUM(CASE WHEN $valid_quantity THEN CAST(TRIM(q.meta_value) AS DECIMAL(65,0)) ELSE 0 END),0) AS reserved_quantity, COALESCE(SUM(CASE WHEN $valid_quantity THEN 0 ELSE 1 END),0) AS invalid_quantity_count FROM `$items` i LEFT JOIN `$meta` q ON q.order_item_id=i.order_item_id AND q.meta_key='_qty' WHERE i.order_item_type='line_item' AND i.order_id IN ($order_list) AND EXISTS (SELECT 1 FROM `$meta` product WHERE product.order_item_id=i.order_item_id AND product.meta_key='_product_id' AND ($mapping))",ARRAY_A);
+        if($wpdb->last_error || !is_array($batch) || !is_numeric($batch['reserved_quantity']??null) || !is_numeric($batch['invalid_quantity_count']??null))throw new \RuntimeException('Seat reservations could not be read');
+        if((float)$batch['invalid_quantity_count']>0)throw new \RuntimeException('Seat reservations contain an invalid order quantity');
+        $batch_quantity=(string)$batch['reserved_quantity'];
+        if(!preg_match('/^[0-9]+$/D',$batch_quantity))throw new \RuntimeException('Seat reservations contain an invalid total');
+        if($reserved<PHP_INT_MAX) {
+          $remaining=(string)(PHP_INT_MAX-$reserved);
+          if(strlen($batch_quantity)>strlen($remaining) || (strlen($batch_quantity)===strlen($remaining) && strcmp($batch_quantity,$remaining)>=0))$reserved=PHP_INT_MAX;
+          else $reserved=min(PHP_INT_MAX,$reserved+(int)$batch_quantity);
+        }
+      } while(count($candidate_ids)===100);
+      $aggregate=['reserved_quantity'=>$reserved,'invalid_quantity_count'=>0];
     } else {
       $aggregate=$wpdb->get_row("SELECT COALESCE(SUM(CASE WHEN $valid_quantity THEN CAST(TRIM(q.meta_value) AS DECIMAL(65,0)) ELSE 0 END),0) AS reserved_quantity, COALESCE(SUM(CASE WHEN $valid_quantity THEN 0 ELSE 1 END),0) AS invalid_quantity_count FROM `$items` i JOIN `{$wpdb->posts}` o ON o.ID=i.order_id LEFT JOIN `$meta` q ON q.order_item_id=i.order_item_id AND q.meta_key='_qty' WHERE i.order_item_type='line_item' AND o.post_type='shop_order' AND $statuses$exclude AND EXISTS (SELECT 1 FROM `$meta` product WHERE product.order_item_id=i.order_item_id AND product.meta_key='_product_id' AND ($mapping))",ARRAY_A);
     }
