@@ -128,6 +128,8 @@ final class Issuance {
     }
     if (method_exists($order,'delete_meta_cache')) $order->delete_meta_cache();
     elseif (class_exists('WC_Order') && method_exists('\\WC_Order','generate_meta_cache_key')) wp_cache_delete(\WC_Order::generate_meta_cache_key($id,'orders'),'orders');
+    // Force the post-commit read to replace any pre-transaction empty snapshot cached in this request.
+    if (method_exists($order,'read_meta_data')) $order->read_meta_data(true);
   }
   private static function custom_orders_table_is_authoritative(): bool {
     $utility='\\Automattic\\WooCommerce\\Utilities\\OrderUtil';
