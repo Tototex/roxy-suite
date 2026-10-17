@@ -220,6 +220,10 @@ class Tickets {
     if (self::$issuance !== null) self::$issuance->post_meta($id, $key, null, true);
     else delete_post_meta($id, $key);
   }
+  private static function order_meta_value($order, string $key) {
+    if (is_object($order) && method_exists($order, 'get_meta')) return $order->get_meta($key, true);
+    return is_object($order) && method_exists($order, 'get_id') ? get_post_meta((int)$order->get_id(), $key, true) : '';
+  }
 
   private static function create_ticket_record($order, $item, int $showing_id, string $ticket_type, string $state, int $sequence): int {
     $order_id = (int) $order->get_id();
@@ -660,7 +664,7 @@ class Tickets {
     $order_id = (int) $order->get_id();
     if (isset($rendered[$order_id])) return;
     $rendered[$order_id] = true;
-    if((int)$order->get_meta('_roxy_seat_review',true)===1) {
+    if((int)self::order_meta_value($order,'_roxy_seat_review')===1) {
       echo '<section class="woocommerce-order-details roxy-st-tickets"><h2>Your Tickets</h2><p>Your order requires a seat availability review. Please contact the theater. Payment records are preserved; no automatic refund was made. Tickets are not valid for admission until this is resolved.</p></section>';
       return;
     }
@@ -1844,7 +1848,7 @@ class Tickets {
     // Do not trust stale ticket metadata after payment/order state changes.
     $order = wc_get_order((int) self::read_ticket_meta($ticket_id, self::META_ORDER_ID));
     if (!$order || self::state_for_order_status((string) $order->get_status()) !== 'valid') return false;
-    if((int)$order->get_meta('_roxy_seat_review',true)===1)return false;
+    if((int)self::order_meta_value($order,'_roxy_seat_review')===1)return false;
     $item_id = (int) self::read_ticket_meta($ticket_id, self::META_ORDER_ITEM_ID);
     $item = $order->get_item($item_id);
     if (!$item) return false;
