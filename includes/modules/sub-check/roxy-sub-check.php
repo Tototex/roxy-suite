@@ -428,6 +428,9 @@ class Roxy_Sub_Check {
   }
 
   private static function search_member_subscription_ids(string $term, int $limit): array {
+    if (function_exists('wcs_is_custom_order_tables_usage_enabled') && wcs_is_custom_order_tables_usage_enabled()) {
+      return self::search_member_subscription_ids_hpos($term, $limit);
+    }
     global $wpdb;
     if (!isset($wpdb->posts, $wpdb->postmeta, $wpdb->users, $wpdb->usermeta)
       || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'get_col') || !method_exists($wpdb, 'esc_like')) {
@@ -496,6 +499,101 @@ class Roxy_Sub_Check {
       throw new \RuntimeException('Member search returned duplicate subscription identities.');
     }
     return $matches;
+  }
+
+  /** Search subscriptions through Woo APIs when HPOS is authoritative. */
+  private static function search_member_subscription_ids_hpos(string $term, int $limit): array {
+    global $wpdb;
+    if (!class_exists('WP_User_Query') || !function_exists('wcs_get_subscriptions')) {
+      throw new \RuntimeException('Member search APIs are unavailable.');
+    }
+    $limit = max(1, min(50, $limit));
+    $user_limit = min(100, max(20, $limit * 4));
+    $user_ids = [];
+    $queries = [[
+      'search' => '*' . esc_attr($term) . '*',
+      'search_columns' => ['user_email', 'display_name'],
+    ]];
+    $parts = preg_split('/\s+/', trim($term), -1, PREG_SPLIT_NO_EMPTY);
+    if (count($parts) > 1) {
+      $queries[] = ['meta_query' => [
+        'relation' => 'AND',
+        ['key' => 'first_name', 'value' => $parts[0], 'compare' => 'LIKE'],
+        ['key' => 'last_name', 'value' => $parts[count($parts) - 1], 'compare' => 'LIKE'],
+      ]];
+    } else {
+      $queries[] = ['meta_query' => [
+        'relation' => 'OR',
+        ['key' => 'first_name', 'value' => $term, 'compare' => 'LIKE'],
+        ['key' => 'last_name', 'value' => $term, 'compare' => 'LIKE'],
+      ]];
+    }
+
+    foreach ($queries as $query_args) {
+      $wpdb->last_error = '';
+      $query = new \WP_User_Query(array_merge($query_args, [
+        'fields' => 'ID',
+        'number' => $user_limit,
+        'count_total' => false,
+      ]));
+      $results = $query->get_results();
+      if ($wpdb->last_error !== '' || !is_array($results)
+        || (function_exists('is_wp_error') && is_wp_error($results))) {
+        throw new \RuntimeException('Member search could not read matching customers.');
+      }
+      foreach ($results as $result) {
+        $id = is_object($result) ? (int) ($result->ID ?? 0) : (is_numeric($result) ? (int) $result : 0);
+        if ($id > 0) $user_ids[$id] = $id;
+      }
+    }
+
+    $ids = [];
+    $per_user_limit = min(50, max(20, $limit * 2));
+    foreach (array_slice(array_values($user_ids), 0, $user_limit) as $user_id) {
+      $wpdb->last_error = '';
+      $subscriptions = wcs_get_subscriptions([
+        'customer_id' => $user_id,
+        'subscription_status' => ['active', 'pending-cancel'],
+        'subscriptions_per_page' => $per_user_limit,
+        'orderby' => 'start_date',
+        'order' => 'DESC',
+      ]);
+      if ($wpdb->last_error !== '' || !is_array($subscriptions)
+        || (function_exists('is_wp_error') && is_wp_error($subscriptions))) {
+        throw new \RuntimeException('Member search could not read customer subscriptions.');
+      }
+      foreach ($subscriptions as $subscription) {
+        if (!is_object($subscription) || !method_exists($subscription, 'get_id')
+          || !method_exists($subscription, 'get_status') || !method_exists($subscription, 'get_customer_id')) {
+          throw new \RuntimeException('Member search returned an invalid subscription record.');
+        }
+        $id = (int) $subscription->get_id();
+        if ($id > 0 && (int) $subscription->get_customer_id() === $user_id
+          && in_array($subscription->get_status(), ['active', 'pending-cancel'], true)) {
+          $ids[$id] = $id;
+        }
+      }
+    }
+
+    // Numeric input is also commonly an exact subscription ID. Resolve it
+    // through Subscriptions instead of assuming its row lives in wp_posts.
+    if (ctype_digit(trim($term)) && function_exists('wcs_get_subscription')) {
+      $id = (int) trim($term);
+      if ($id > 0) {
+        $wpdb->last_error = '';
+        $subscription = wcs_get_subscription($id);
+        if ($wpdb->last_error !== '') throw new \RuntimeException('Member search could not read the requested subscription.');
+        if (is_object($subscription) && method_exists($subscription, 'get_id')
+          && method_exists($subscription, 'get_status') && (int) $subscription->get_id() === $id
+          && in_array($subscription->get_status(), ['active', 'pending-cancel'], true)) {
+          $ids[$id] = $id;
+        }
+      }
+    }
+
+    $ids = array_values($ids);
+    rsort($ids, SORT_NUMERIC);
+    return array_slice($ids, 0, $limit);
   }
 
   public static function showing_admit_rows(int $showing_id): array {

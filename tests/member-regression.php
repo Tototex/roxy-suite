@@ -15,7 +15,8 @@ function get_user_meta($id,$key,$single=true){return $key==='first_name'?'Fixtur
 function wp_verify_nonce($nonce,$action){return $nonce==='fixture';}function current_user_can(...$args){return true;}
 function wp_get_attachment_image_src($id,$size){return ['https://example.test/photo/'.$id];}
 function wcs_get_subscription($id){return new TestSubscription($id);}
-function wcs_get_subscriptions($args){$GLOBALS['member_search_queries'][]=$args;return [];}
+function wcs_is_custom_order_tables_usage_enabled(){return !empty($GLOBALS['member_hpos']);}
+function wcs_get_subscriptions($args){$GLOBALS['member_search_queries'][]=$args;if(!empty($GLOBALS['member_hpos_query_fail'])){$GLOBALS['wpdb']->last_error='fixture subscription query failure';return null;}return $GLOBALS['member_hpos_subscriptions'][(int)($args['customer_id']??0)]??[];}
 function home_url($path=''){return 'https://example.test'.$path;}
 function admin_url($path=''){return 'https://example.test/wp-admin/'.$path;}
 function wp_nonce_url($url,$action){return $url.'&_wpnonce=test';}
@@ -25,8 +26,9 @@ function sanitize_key($v){return (string)$v;}function sanitize_text_field($v){re
 function roxy_suite_user_can_access_admin(){return true;}
 function get_the_author_meta(...$args){return 'Fixture staff';}
 class TestSubscription {
-    private $id;private $pending=[];function __construct($id){$this->id=$id;$this->pending=$GLOBALS['test_sub_meta'][(int)$id]??[];}
+    private $id;private $customer_id;private $pending=[];function __construct($id,$customer_id=8){$this->id=$id;$this->customer_id=$customer_id;$this->pending=$GLOBALS['test_sub_meta'][(int)$id]??[];}
     function get_id(){return (int)$this->id;}
+    function get_customer_id(){return (int)$this->customer_id;}
     function get_user(){return (object)['ID'=>8,'user_email'=>'fixture'.$this->id.'@example.test','display_name'=>'Fixture Member'];}
     function get_status(){return $this->id===2?'cancelled':($this->id===3?'expired':'active');}
     function get_billing_email(){return 'billing'.$this->id.'@example.test';}
@@ -36,6 +38,10 @@ class TestSubscription {
     function save(){if(!empty($GLOBALS['test_sub_save_fail']))return false;$GLOBALS['test_sub_meta'][(int)$this->id]=$this->pending;return $this->id;}
     function get_items(){return [new class {function get_quantity(){return 3;}}];}
     function get_date($key){return '';}
+}
+class WP_User_Query {
+    private $args;function __construct($args){$this->args=$args;$GLOBALS['member_hpos_user_queries'][]=$args;}
+    function get_results(){if(!empty($GLOBALS['member_hpos_user_query_fail'])){$GLOBALS['wpdb']->last_error='fixture user query failure';return null;}return $GLOBALS['member_hpos_user_results']??[];}
 }
 class TestDatabase {
     public $prefix='test_';public $posts='wp_posts';public $postmeta='wp_postmeta';public $users='wp_users';public $usermeta='wp_usermeta';public $last_error='';public $queries=[];public $inserts=[];public $fail=false;public $prepared_args=[];public $last_col_query='';public $last_col_args=[];
@@ -59,6 +65,21 @@ check(count($found)===1&&$found[0]['subscription_id']===1&&count($GLOBALS['membe
 $search_sql=$GLOBALS['wpdb']->last_col_query;
 check(str_contains($search_sql,"p.post_status IN ('wc-active', 'wc-pending-cancel')")&&str_contains($search_sql,'ORDER BY p.ID DESC')&&str_contains($search_sql,'LIMIT %d')&&str_contains($search_sql,'EXISTS ('),'member search applies identity, active-status and result-limit filters in SQL');
 check(count($GLOBALS['wpdb']->last_col_args)===7&&$GLOBALS['wpdb']->last_col_args[0]==='%fixture1@%','member search safely binds the search term and bounded result count');
+$GLOBALS['member_hpos']=true;$GLOBALS['member_hpos_user_results']=[8,8];$GLOBALS['member_hpos_user_queries']=[];$GLOBALS['member_search_queries']=[];
+$GLOBALS['member_hpos_subscriptions']=[8=>[new TestSubscription(4,8),new TestSubscription(2,8),new TestSubscription(3,8)]];
+$hpos_found=Roxy_Sub_Check::search_members('fixture1@',5);
+check(count($hpos_found)===1&&$hpos_found[0]['subscription_id']===4,'HPOS member search uses matching customer and active subscription APIs');
+check(count($GLOBALS['member_hpos_user_queries'])===2&&$GLOBALS['member_hpos_user_queries'][0]['search_columns']===['user_email','display_name']&&$GLOBALS['member_hpos_user_queries'][1]['meta_query']['relation']==='OR','HPOS member search covers customer contact and first/last-name fields');
+check(count($GLOBALS['member_search_queries'])===1&&$GLOBALS['member_search_queries'][0]['customer_id']===8&&$GLOBALS['member_search_queries'][0]['subscription_status']===['active','pending-cancel'],'HPOS subscription lookup is customer-scoped and excludes inactive memberships');
+$GLOBALS['member_hpos_subscriptions'][8]=[];$GLOBALS['member_hpos_user_results']=[];
+$exact_hpos=Roxy_Sub_Check::search_members('9',5);
+check(count($exact_hpos)===1&&$exact_hpos[0]['subscription_id']===9,'HPOS member search resolves an exact subscription ID via Woo Subscriptions');
+$GLOBALS['member_hpos_user_query_fail']=true;$hpos_search_failed=false;try{Roxy_Sub_Check::search_members('fixture1@',5);}catch(RuntimeException $error){$hpos_search_failed=true;}unset($GLOBALS['member_hpos_user_query_fail']);
+check($hpos_search_failed,'HPOS customer-query failure is reported instead of shown as no match');
+$GLOBALS['member_hpos_user_results']=[8];
+$GLOBALS['member_hpos_query_fail']=true;$hpos_search_failed=false;try{Roxy_Sub_Check::search_members('fixture1@',5);}catch(RuntimeException $error){$hpos_search_failed=true;}unset($GLOBALS['member_hpos_query_fail']);
+check($hpos_search_failed,'HPOS subscription-query failure is reported instead of shown as no match');
+$GLOBALS['member_hpos']=false;
 $GLOBALS['wpdb']->fail=true;
 $search_failed=false;try{Roxy_Sub_Check::search_members('fixture1@',5);}catch(RuntimeException $error){$search_failed=true;}
 check($search_failed,'subscription query failure is surfaced instead of misreported as no subscribers');
