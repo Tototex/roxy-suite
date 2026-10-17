@@ -112,6 +112,9 @@ try {
     try{$rejected=false;try{$qty();}catch(RuntimeException $error){$rejected=true;}}
     finally{remove_filter('query',$candidate_query_fail);$wpdb->suppress_errors($errors);}
     $check($rejected,'HPOS ticket-order candidate query failure is not treated as zero reservations');
+    // CRUD reads above intentionally populated Woo's order object cache; clear
+    // this disposable site's cache so the following failure hook reaches HPOS.
+    wp_cache_flush();
     $order_query_fail=static fn($sql)=>str_contains($sql,$wpdb->prefix.'wc_orders')?'SELECT * FROM roxy_missing_hpos_order_query_failure':$sql;
     add_filter('query',$order_query_fail);$errors=$wpdb->suppress_errors(true);
     try{$rejected=false;try{$qty();}catch(RuntimeException $error){$rejected=true;}}
