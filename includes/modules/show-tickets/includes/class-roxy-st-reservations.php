@@ -4,67 +4,48 @@ if (!defined('ABSPATH')) exit;
 
 /** Read-only seat authority, separate from cached financial/reporting projections. */
 final class Reservations {
-  /** Resolve only ticket-matching orders through bounded WooCommerce CRUD batches. */
+  /** Resolve only ticket-matching order IDs through bounded WooCommerce CRUD reads. */
   private static function hpos_reservation_order_ids(array $candidate_ids, int $exclude_order_id, int $subscriber_user_id, int $now): array {
     global $wpdb;
-    if(!function_exists('wc_get_orders') || !function_exists('wc_get_order_statuses') || !function_exists('wc_get_order'))throw new \RuntimeException('WooCommerce order query is unavailable');
+    if(!function_exists('wc_get_order'))throw new \RuntimeException('WooCommerce order query is unavailable');
     $candidate_ids=array_values(array_unique(array_map('intval',$candidate_ids)));
     if(!$candidate_ids)return [];
     if(min($candidate_ids)<=0)throw new \RuntimeException('Seat order identities could not be verified');
-    $statuses=[];
-    foreach(array_keys(wc_get_order_statuses()) as $status) {
-      $status=preg_replace('/^wc-/','',(string)$status);
-      if($status!=='')$statuses[]=$status;
-    }
-    foreach(['pending','checkout-draft','processing','completed','on-hold'] as $status)$statuses[]=$status;
-    $statuses=array_values(array_unique($statuses));
     $eligible=[];
-    foreach(array_chunk($candidate_ids,100) as $batch) {
-      $previous_error=$wpdb->last_error;
+    foreach($candidate_ids as $id) {
+      $previous_error=(string)$wpdb->last_error;
       $wpdb->last_error='';
       try {
-        $orders=wc_get_orders(['type'=>'shop_order','status'=>$statuses,'include'=>$batch,'limit'=>count($batch),'orderby'=>'ID','order'=>'ASC','return'=>'objects']);
+        // WooCommerce does not document a portable include-by-ID query var.
+        // Resolve the bounded candidate IDs individually through CRUD rather
+        // than accepting unrelated rows from a broad order query.
+        $order=wc_get_order($id);
         $query_error=$wpdb->last_error;
       } catch(\Throwable $error) {
         $wpdb->last_error=$previous_error;
-        throw new \RuntimeException('Seat orders could not be read',0,$error);
+        throw new \RuntimeException('Seat order could not be read',0,$error);
       }
       $wpdb->last_error=$previous_error;
-      if($query_error!=='' || !is_array($orders))throw new \RuntimeException('Seat orders could not be read');
-      $found=[];
-      foreach($orders as $order) {
-        if(!$order instanceof \WC_Order || $order->get_type()!=='shop_order')throw new \RuntimeException('Seat order identity could not be verified');
-        $id=(int)$order->get_id();
-        if($id<=0 || !in_array($id,$batch,true))throw new \RuntimeException('Seat order query returned an unexpected identity');
-        if(isset($found[$id]))throw new \RuntimeException('Seat order query returned a duplicate identity');
-        $found[$id]=$order;
+      if($query_error!=='')throw new \RuntimeException('Seat order could not be read');
+      // Refund line items share WooCommerce's item tables. They and orphaned
+      // item owners were excluded by the legacy order join.
+      if(!$order instanceof \WC_Order || $order->get_type()!=='shop_order')continue;
+      if((int)$order->get_id()!==$id)throw new \RuntimeException('Seat order identity could not be verified');
+      if($id===$exclude_order_id || ($subscriber_user_id>0 && (int)$order->get_customer_id()!==$subscriber_user_id))continue;
+      $status=$order->get_status();
+      if(in_array($status,['processing','completed','on-hold'],true)) {
+        $eligible[]=$id;
+        continue;
       }
-      foreach($batch as $id) {
-        if(isset($found[$id]))continue;
-        // Refund line items share Woo's order-item tables. They are not seat
-        // reservations and the legacy query excluded their post type. Deleted
-        // and other non-order item owners are outside that query too.
-        $omitted=wc_get_order($id);
-        if(!$omitted instanceof \WC_Order || $omitted->get_type()!=='shop_order')continue;
-        $found[$id]=$omitted;
+      if(!in_array($status,['pending','checkout-draft'],true))continue;
+      $holds=[];
+      foreach($order->get_meta_data() as $meta) {
+        $data=is_object($meta) && method_exists($meta,'get_data') ? $meta->get_data() : [];
+        if(($data['key']??null)==='_roxy_seat_hold_until')$holds[]=$data['value']??null;
       }
-      foreach($found as $id=>$order) {
-        if($id===$exclude_order_id || ($subscriber_user_id>0 && (int)$order->get_customer_id()!==$subscriber_user_id))continue;
-        $status=$order->get_status();
-        if(in_array($status,['processing','completed','on-hold'],true)) {
-          $eligible[]=$id;
-          continue;
-        }
-        if(!in_array($status,['pending','checkout-draft'],true))continue;
-        $holds=[];
-        foreach($order->get_meta_data() as $meta) {
-          $data=is_object($meta) && method_exists($meta,'get_data') ? $meta->get_data() : [];
-          if(($data['key']??null)==='_roxy_seat_hold_until')$holds[]=$data['value']??null;
-        }
-        if(!$holds)continue;
-        if(count($holds)!==1 || !(is_int($holds[0]) || (is_string($holds[0]) && preg_match('/^[0-9]{1,19}$/D',$holds[0]))))throw new \RuntimeException('Seat hold expiry is ambiguous or invalid');
-        if((int)$holds[0]>$now)$eligible[]=$id;
-      }
+      if(!$holds)continue;
+      if(count($holds)!==1 || !(is_int($holds[0]) || (is_string($holds[0]) && preg_match('/^[0-9]{1,19}$/D',$holds[0]))))throw new \RuntimeException('Seat hold expiry is ambiguous or invalid');
+      if((int)$holds[0]>$now)$eligible[]=$id;
     }
     return array_values(array_unique($eligible));
   }
