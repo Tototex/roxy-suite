@@ -49,6 +49,8 @@ $set_template_method = new ReflectionMethod($namespace . '\\Workbook', 'set_uplo
 $set_template_method->setAccessible(true);
 $ensure_template_method = new ReflectionMethod($namespace . '\\Workbook', 'ensure_uploaded_template_private');
 $ensure_template_method->setAccessible(true);
+$is_private_method = new ReflectionMethod($namespace . '\\Workbook', 'is_private_path');
+$is_private_method->setAccessible(true);
 $checks = 0;
 $check = static function (bool $condition, string $label) use (&$checks): void {
     if (!$condition) throw new RuntimeException('FAIL: ' . $label);
@@ -58,6 +60,9 @@ $check = static function (bool $condition, string $label) use (&$checks): void {
 
 try {
     $private_dir = $root_method->invoke(null);
+    $check($is_private_method->invoke(null, $private_dir), 'private root itself is recognized using an exact path boundary');
+    $check($is_private_method->invoke(null, $private_dir . '/templates/book.xlsx'), 'private descendants are recognized');
+    $check(!$is_private_method->invoke(null, $private_dir . '-public/book.xlsx'), 'a sibling with a shared lexical prefix is not misclassified as private');
     $index = $private_dir . DIRECTORY_SEPARATOR . 'index.html';
     $rules_path = $private_dir . DIRECTORY_SEPARATOR . '.htaccess';
     $rules = file_get_contents($rules_path);

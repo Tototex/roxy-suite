@@ -1411,8 +1411,10 @@ class Workbook {
 
   private static function is_private_path(string $path): bool {
     $normalized_path = wp_normalize_path($path);
-    $private_root = wp_normalize_path(self::private_root_dir());
-    return $normalized_path !== '' && str_starts_with($normalized_path, $private_root);
+    $private_root = rtrim(wp_normalize_path(self::private_root_dir()), '/');
+    if ($normalized_path === '' || $private_root === '' || $private_root === '/') return false;
+
+    return $normalized_path === $private_root || str_starts_with($normalized_path, $private_root . '/');
   }
 
   private static function cell_ref(int $column, int $row): string {
