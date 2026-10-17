@@ -75,10 +75,7 @@ final class Issuance {
       }
       foreach ($this->posts as $id) { wp_cache_delete($id, 'posts'); wp_cache_delete($id, 'post_meta'); }
       foreach ($this->items as $id) { wp_cache_delete($id, 'order_item_meta'); wp_cache_delete('item-'.$id, 'order-items'); }
-      foreach ($this->order_meta as $id) {
-        if (class_exists('WC_Order') && method_exists('\\WC_Order', 'generate_meta_cache_key')) wp_cache_delete(\WC_Order::generate_meta_cache_key($id, 'orders'), 'orders');
-        wp_cache_delete($id, 'orders');
-      }
+      foreach ($this->order_meta as $id) self::clear_order_meta_cache($id);
       if ($this->items && class_exists('WC_Cache_Helper')) \WC_Cache_Helper::invalidate_cache_group('order-items');
     }
   }
@@ -118,6 +115,19 @@ final class Issuance {
     $checks = [$wpdb->prepare('CONNECTION_ID()=%d', $this->owner)];
     foreach ($this->locks as $lock) $checks[] = $wpdb->prepare('IS_USED_LOCK(%s)=%d', $lock, $this->owner);
     return '('.implode(' AND ', $checks).')';
+  }
+  /** Clear both Woo's order-object and HPOS raw-meta caches after guarded direct writes. */
+  private static function clear_order_meta_cache(int $id): void {
+    if ($id<=0 || !function_exists('wc_get_order')) return;
+    $order=wc_get_order($id);
+    if (!$order || !is_object($order)) return;
+    if (method_exists($order,'get_data_store')) {
+      $store=$order->get_data_store();
+      // HPOS stores its raw metadata in a separate cache group from the order object.
+      if (is_object($store) && method_exists($store,'clear_cached_data')) $store->clear_cached_data([$id]);
+    }
+    if (method_exists($order,'delete_meta_cache')) $order->delete_meta_cache();
+    elseif (class_exists('WC_Order') && method_exists('\\WC_Order','generate_meta_cache_key')) wp_cache_delete(\WC_Order::generate_meta_cache_key($id,'orders'),'orders');
   }
   private static function custom_orders_table_is_authoritative(): bool {
     $utility='\\Automattic\\WooCommerce\\Utilities\\OrderUtil';
@@ -291,7 +301,7 @@ final class Issuance {
     if (!$this->hpos_order_storage) { $this->post_meta($id,$key,$value,$remove); return; }
     $this->order_meta[$id]=$id;
     $this->metadata($wpdb->prefix.'wc_orders_meta','order_id',$id,$key,$value,$remove);
-    if (class_exists('WC_Order') && method_exists('\\WC_Order','generate_meta_cache_key')) wp_cache_delete(\WC_Order::generate_meta_cache_key($id,'orders'),'orders');
+    self::clear_order_meta_cache($id);
   }
   public function is_ticket(int $id): bool {
     global $wpdb;
