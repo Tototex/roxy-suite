@@ -188,6 +188,11 @@ class CPT {
         return self::remaining_gap_cents($base_amount, max(0, $existing_pledged_cents) + max(0, $pending_paid_cents));
     }
 
+    public static function converted_pledge_refund_policy_notice(int $approved_showing_id): string {
+        if ($approved_showing_id <= 0) return '';
+        return '<div class="notice notice-warning inline"><p><strong>Refund policy:</strong> Do not refund a pledge after it has been converted to a showing. If a manager approves an exceptional refund, itemize the refund in WooCommerce when possible. The request will be flagged for review, and any unclear partial refund requires reconciliation.</p></div>';
+    }
+
     public static function format_currency_input(int $cents): string {
         $cents = max(0, $cents);
         return intdiv($cents, 100) . '.' . str_pad((string) ($cents % 100), 2, '0', STR_PAD_LEFT);
@@ -316,6 +321,9 @@ class CPT {
                 if ($order_link) echo '<a href="' . esc_url($order_link) . '">Review Woo order</a>. ';
                 echo 'Refunds are not expected after scheduling; verify any exception and its ticket allocation.</p></div>';
             }
+        }
+        if ($approved_showing_id > 0) {
+            echo self::converted_pledge_refund_policy_notice($approved_showing_id); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
         }
 
         echo '<label for="roxy-rs-status"><strong>Status</strong></label>';

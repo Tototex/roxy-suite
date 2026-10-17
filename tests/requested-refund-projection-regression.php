@@ -101,6 +101,11 @@ $GLOBALS['refund_projection_order']=new RefundProjectionOrder(88,60.0,60.0,[$pai
 $amount_only_full=roxy_rs_repo_effective_backing($backing);
 check_refund_projection($amount_only_full['charge_total']===0 && $amount_only_full['sponsor_amount']===0,'amount-only full Woo refund clears funding and sponsor state');
 $converted = $backing + ['approved_showing_id'=>901];
+$policy_notice = \RoxyRS\CPT::converted_pledge_refund_policy_notice(901);
+check_refund_projection(str_contains($policy_notice, 'Do not refund a pledge after it has been converted to a showing')
+    && str_contains($policy_notice, 'itemize the refund in WooCommerce')
+    && \RoxyRS\CPT::converted_pledge_refund_policy_notice(0) === '',
+    'converted pledges show the no-refund policy and the manager-reviewed exception procedure');
 $GLOBALS['refund_projection_order'] = new RefundProjectionOrder(88,60.0,15.0,[$paid_general,$paid_discount,$subscriber,$sponsor_tickets],[$fee],[11=>1,12=>1],[11=>10.0,12=>5.0]);
 $refund_review = roxy_rs_repo_converted_refund_review_entry($converted);
 check_refund_projection(is_array($refund_review) && $refund_review['verified'] === true

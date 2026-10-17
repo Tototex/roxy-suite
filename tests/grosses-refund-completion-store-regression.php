@@ -40,13 +40,15 @@ $GLOBALS['wpdb']->results = [
   ['event_id'=>'evt-new','refund_id'=>'refund-1','payment_id'=>'payment-1','location_id'=>'location-1','amount_cents'=>'1234','currency'=>'USD','event_created_at'=>'2026-10-08 19:50:00','refund_updated_at'=>'2026-10-08 19:00:00'],
   ['event_id'=>'evt-old','refund_id'=>'refund-1','payment_id'=>'payment-1','location_id'=>'location-1','amount_cents'=>'1234','currency'=>'USD','event_created_at'=>'2026-10-08 19:30:00','refund_updated_at'=>'2026-10-08 19:00:00'],
 ];
-$events = \RoxyGrosses\Store::completed_refund_events_created_between('2026-10-08 07:00:00', '2026-10-09 07:00:00');
+$events = \RoxyGrosses\Store::completed_refund_events_created_between('2026-10-08 07:00:00', '2026-10-09 07:00:00', ['location-1']);
 $check(count($events) === 1 && $events[0]['event_id'] === 'evt-new', 'event-day query deduplicates a refund to its newest matching completion event');
-$check($GLOBALS['wpdb']->prepared_args === ['2026-10-08 07:00:00', '2026-10-09 07:00:00'] && str_contains($GLOBALS['wpdb']->results_query, 'event_created_at >= %s') && str_contains($GLOBALS['wpdb']->results_query, "status = 'COMPLETED'") && str_contains($GLOBALS['wpdb']->results_query, 'LIMIT 101'), 'event-day discovery uses half-open UTC bounds and a bounded completed-USD query');
-$throws(static fn() => \RoxyGrosses\Store::completed_refund_events_created_between('2026-02-30 00:00:00', '2026-03-01 00:00:00'), 'invalid event-day window fails before query');
+$check($GLOBALS['wpdb']->prepared_args === ['2026-10-08 07:00:00', '2026-10-09 07:00:00', 'location-1'] && str_contains($GLOBALS['wpdb']->results_query, 'event_created_at >= %s') && str_contains($GLOBALS['wpdb']->results_query, 'location_id IN (%s)') && str_contains($GLOBALS['wpdb']->results_query, "status = 'COMPLETED'") && str_contains($GLOBALS['wpdb']->results_query, 'LIMIT 101'), 'event-day discovery uses half-open UTC bounds, the configured Square location, and a bounded completed-USD query');
+$throws(static fn() => \RoxyGrosses\Store::completed_refund_events_created_between('2026-02-30 00:00:00', '2026-03-01 00:00:00', ['location-1']), 'invalid event-day window fails before query');
+$throws(static fn() => \RoxyGrosses\Store::completed_refund_events_created_between('2026-10-08 07:00:00', '2026-10-09 07:00:00', []), 'missing configured locations fail before query');
+$throws(static fn() => \RoxyGrosses\Store::completed_refund_events_created_between('2026-10-08 07:00:00', '2026-10-09 07:00:00', [' location-1']), 'malformed configured location fails before query');
 $GLOBALS['wpdb']->last_error = 'simulated candidate read failure';
-$throws(static fn() => \RoxyGrosses\Store::completed_refund_events_created_between('2026-10-08 07:00:00', '2026-10-09 07:00:00'), 'event-day database failure fails closed');
+$throws(static fn() => \RoxyGrosses\Store::completed_refund_events_created_between('2026-10-08 07:00:00', '2026-10-09 07:00:00', ['location-1']), 'event-day database failure fails closed');
 $GLOBALS['wpdb']->last_error = '';
 $GLOBALS['wpdb']->results = array_fill(0, 101, $events[0]);
-$throws(static fn() => \RoxyGrosses\Store::completed_refund_events_created_between('2026-10-08 07:00:00', '2026-10-09 07:00:00'), 'event-day read beyond the 100-event cap fails closed');
+$throws(static fn() => \RoxyGrosses\Store::completed_refund_events_created_between('2026-10-08 07:00:00', '2026-10-09 07:00:00', ['location-1']), 'event-day read beyond the 100-event cap fails closed');
 echo "Passed {$checks} Square refund evidence-store assertions.\n";

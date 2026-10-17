@@ -114,9 +114,13 @@ final class CashflowReport {
     if (!method_exists(Store::class, 'completed_refund_events_created_between') || !method_exists(Store::class, 'refund_completion_event')) {
       throw new \RuntimeException('Square refund completion-event history is unavailable.');
     }
+    $square_settings = Settings::get_all();
+    $square_location_ids = Settings::line_list((string) ($square_settings['square_location_ids'] ?? ''));
+    if (!$square_location_ids) throw new \RuntimeException('Square report locations are unavailable for refund-event discovery.');
     $completion_events = Store::completed_refund_events_created_between(
       $utc_start->format('Y-m-d H:i:s'),
-      $utc_end->format('Y-m-d H:i:s')
+      $utc_end->format('Y-m-d H:i:s'),
+      $square_location_ids
     );
     if (!is_array($completion_events) || !self::is_list($completion_events) || count($completion_events) > 100) {
       throw new \RuntimeException('Square refund completion-event history is incomplete.');

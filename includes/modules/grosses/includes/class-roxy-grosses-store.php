@@ -508,7 +508,7 @@ class Store {
   }
 
   /** Find bounded signed completion events by their event-created day, not the refund object's update day. */
-  public static function completed_refund_events_created_between(string $start_utc, string $end_utc): array {
+  public static function completed_refund_events_created_between(string $start_utc, string $end_utc, array $location_ids): array {
     global $wpdb;
     $utc = new \DateTimeZone('UTC');
     $start = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $start_utc, $utc);
@@ -523,11 +523,21 @@ class Store {
       throw new \RuntimeException('Invalid Square refund-event discovery window.');
     }
 
+    if (!self::is_list($location_ids) || !$location_ids || count($location_ids) > 10) {
+      throw new \RuntimeException('Square refund-event discovery requires the configured report locations.');
+    }
+    foreach ($location_ids as $location_id) {
+      if (!is_string($location_id) || $location_id === '' || strlen($location_id) > 255 || trim($location_id) !== $location_id) {
+        throw new \RuntimeException('Square refund-event discovery contains an invalid report location.');
+      }
+    }
+    $location_ids = array_values(array_unique($location_ids));
+
     $table = self::refund_webhook_table_name();
-    $rows = $wpdb->get_results($wpdb->prepare(
-      "SELECT event_id,refund_id,payment_id,location_id,amount_cents,currency,event_created_at,refund_updated_at FROM {$table} WHERE status = 'COMPLETED' AND currency = 'USD' AND event_created_at >= %s AND event_created_at < %s ORDER BY event_created_at DESC,id DESC LIMIT 101",
-      $start_utc, $end_utc
-    ), ARRAY_A);
+    $location_placeholders = implode(',', array_fill(0, count($location_ids), '%s'));
+    $query = "SELECT event_id,refund_id,payment_id,location_id,amount_cents,currency,event_created_at,refund_updated_at FROM {$table} WHERE status = 'COMPLETED' AND currency = 'USD' AND event_created_at >= %s AND event_created_at < %s AND location_id IN ({$location_placeholders}) ORDER BY event_created_at DESC,id DESC LIMIT 101";
+    $query_args = array_merge([$start_utc, $end_utc], $location_ids);
+    $rows = $wpdb->get_results($wpdb->prepare($query, ...$query_args), ARRAY_A);
     if ($wpdb->last_error !== '' || !is_array($rows) || !self::is_list($rows)) {
       throw new \RuntimeException('Square refund completion events could not be read.');
     }
