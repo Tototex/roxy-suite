@@ -410,6 +410,21 @@ namespace {
   $after_tied_totals = [(float) \RoxyGrosses\Store::$movie[$tied_rental_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$tied_rental_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$tied_rental_date][1]['concessions_total']];
   $check($tie_failed && count($tie_queue) === 1 && ($tie_queue[0]['reason'] ?? '') === 'overlapping_rental_windows (3 dated rows: 8:15 PM, 7:00 PM, 7:30 PM)' && ($tie_queue[0]['amount_cents'] ?? 0) === 1875 && $after_tied_totals === $before_tied_totals && \RoxyGrosses\Store::$updates === [], 'equidistant rental windows remain unverified with original report totals untouched');
 
+  $fractional_midpoint_date = '2038-05-16';
+  \RoxyGrosses\Store::$movie[$fractional_midpoint_date] = [['id'=>7070,'show_time'=>'8:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0.0]];
+  \RoxyGrosses\Store::$rental[$fractional_midpoint_date] = [
+    ['id'=>7071,'show_time'=>'','reserved_start_at'=>$fractional_midpoint_date.' 19:00:00','reserved_end_at'=>$fractional_midpoint_date.' 21:00:01','is_locked'=>0,'concessions_total'=>0.0],
+    ['id'=>7072,'show_time'=>'','reserved_start_at'=>$fractional_midpoint_date.' 19:00:00','reserved_end_at'=>$fractional_midpoint_date.' 21:00:00','is_locked'=>0,'concessions_total'=>0.0],
+  ];
+  \RoxyGrosses\Square::$orders[$fractional_midpoint_date] = [[
+    'id'=>'fractional-midpoint-order', 'closed_at'=>$fractional_midpoint_date.'T20:00:00-07:00',
+    'line_items'=>[['uid'=>'fractional-midpoint-line','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1875,'currency'=>'USD']]],
+  ]];
+  \RoxyGrosses\Store::$updates = [];
+  \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$fractional_midpoint_date]));
+  $fractional_queue = \RoxyGrosses\Store::$unmatched_concessions[$fractional_midpoint_date] ?? [];
+  $check((float) \RoxyGrosses\Store::$rental[$fractional_midpoint_date][0]['concessions_total'] === 0.0 && (float) \RoxyGrosses\Store::$rental[$fractional_midpoint_date][1]['concessions_total'] === 18.75 && !$fractional_queue, 'half-second reservation midpoint precision selects the exact nearest interval instead of producing a false tie');
+
   // A unique rental window remains stronger evidence than a nearby public
   // showtime and receives the complete sale.
   $unique_rental_date = '2038-05-11';

@@ -2507,7 +2507,9 @@ class Reporter {
         if ($order_local >= $window_start && $order_local < $window_end) {
           // When an exact private-event reservation window contains the sale,
           // it is stronger evidence than a nearby movie/live showtime window.
-          $distance = abs($order_local->getTimestamp() - (int) (($window_start->getTimestamp() + $window_end->getTimestamp()) / 2));
+          // Compare doubled seconds so odd-length reservation windows retain
+          // their half-second midpoint instead of rounding into a false tie.
+          $distance = abs(2 * $order_local->getTimestamp() - ($window_start->getTimestamp() + $window_end->getTimestamp()));
           if (($report['_entry_kind'] ?? '') === 'rental') {
             $rental_id = (int) $entry_id;
             $containing_rental_windows[] = $rental_id;
