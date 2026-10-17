@@ -10,6 +10,7 @@ remove_action('woocommerce_refund_created',[\RoxyST\Tickets::class,'on_refund_cr
 remove_action('woocommerce_refund_deleted',[\RoxyST\Tickets::class,'on_refund_deleted'],30);
 global $wpdb;
 $created=[];$orders=[];$refund=null;$check=static function($ok,$label){if(!$ok)throw new RuntimeException($label);echo 'PASS: '.$label.PHP_EOL;};
+$check(\Fixture_Roxy_Sub_Check::prepare_admission_log(),'private capacity fixture initializes its admission-log dependency');
 $label='PRIVATE RESERVATION AUTHORITY FIXTURE 2026-10-05';
 try {
   $show=wp_insert_post(['post_type'=>'roxy_showing','post_status'=>'draft','post_title'=>$label],true);if(is_wp_error($show))throw new RuntimeException('Private showing failed');$created[]=$show;update_post_meta($show,'_roxy_capacity',6);
