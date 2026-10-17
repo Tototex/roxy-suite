@@ -18,6 +18,17 @@ try {
   $order=wc_create_order(['status'=>'pending','customer_note'=>$label]);if(is_wp_error($order))throw new RuntimeException('Private order failed');$orders[]=$order;$item=$order->add_product($p,2);$order->calculate_totals();$order->save();
   $qty=static fn()=>\RoxyST\FixtureReservations::quantity_for_showing($show);
   $check($qty()===0,'pending unpaid order does not silently change existing reservation policy');
+  $order->update_meta_data('_roxy_seat_hold_until',time()+1200);$order->save();
+  $check($qty()===2,'pending order with an unexpired hold reserves its seats');
+  $check(\RoxyST\FixtureReservations::quantity_for_showing($show,$order->get_id())===0,'current order can be excluded from reservation totals');
+  $order->update_meta_data('_roxy_seat_hold_until',time()-10);$order->save();
+  $check($qty()===0,'expired pending hold releases its seats');
+  $order->delete_meta_data('_roxy_seat_hold_until');$order->save();
+  $order->update_status('checkout-draft');$order->update_meta_data('_roxy_seat_hold_until',time()+1200);$order->save();
+  $check($qty()===2,'checkout-draft order with an unexpired hold reserves its seats');
+  $order->update_meta_data('_roxy_seat_hold_until',time()-10);$order->save();
+  $check($qty()===0,'expired checkout-draft hold releases its seats');
+  $order->delete_meta_data('_roxy_seat_hold_until');$order->save();$order->update_status('pending');
   update_post_meta($show,'_roxy_sales_stats',['cache_version'=>2,'sold_qty'=>0]);$order->update_status('on-hold');
   $check($qty()===2&&\RoxyST\FixtureCapacity::remaining_seats_for_showing($show)===4,'held order blocks seats despite stale zero Sales cache');
   $cache=get_post_meta($show,'_roxy_sales_stats',true);$check($cache['sold_qty']===0,'reservation read does not rewrite financial report cache');
@@ -51,17 +62,36 @@ try {
   update_post_meta($show,'_roxy_legacy_product_ids',"$pid,$pid\n");$check($qty()===2,'comma and newline historical mapping remains supported');
   delete_post_meta($show,'_roxy_legacy_product_ids');update_post_meta($pid,ROXY_ST_META_SHOWING_ID,$show);
   $check($qty()===2,'product identity alone counts a reservation without current showing product IDs');
+  $subscriber_user=71234567;
+  $subscriber_product=new WC_Product_Simple();$subscriber_product->set_name($label.' subscriber');$subscriber_product->set_status('draft');$subscriber_product->set_catalog_visibility('hidden');$subscriber_product->set_regular_price('0');$subscriber_product_id=$subscriber_product->save();$created[]=$subscriber_product_id;
+  update_post_meta($subscriber_product_id,ROXY_ST_META_SHOWING_ID,$show);update_post_meta($subscriber_product_id,ROXY_ST_META_TICKET_TYPE,'subscriber');update_post_meta($show,'_roxy_pid_subscriber',$subscriber_product_id);
+  $subscriber_order=wc_create_order(['status'=>'processing','customer_id'=>$subscriber_user,'customer_note'=>$label]);if(is_wp_error($subscriber_order))throw new RuntimeException('Private subscriber reservation order failed');$orders[]=$subscriber_order;
+  if($subscriber_order->add_product($subscriber_product,3)<=0)throw new RuntimeException('Private subscriber ticket line failed.');$subscriber_order->calculate_totals();$subscriber_order->save();
+  $check($qty()===5,'all customers and ticket types contribute to the general reservation total');
+  $check(\RoxyST\FixtureReservations::quantity_for_showing($show,0,$subscriber_user)===3,'subscriber-specific totals count only that customer’s subscriber tickets');
   $refund=wc_create_refund(['order_id'=>$order->get_id(),'amount'=>0,'reason'=>$label,'refund_payment'=>false,'restock_items'=>false,'line_items'=>[$item=>['qty'=>1,'refund_total'=>0]]]);if(is_wp_error($refund))throw new RuntimeException('Private refund failed');
-  $check($qty()===2,'partial refund preserves conservative original-quantity seat policy');
+  $check($qty()===5,'partial refund preserves conservative original-quantity seat policy');
   $operation=new \RoxyST\FixtureIssuance([],'reservation-reader:'.$show);$check($operation->run(static fn($writer)=>$writer->reserved_seats($show))===$qty(),'transactional walk-up authority uses the identical shared reservation reader');
   $fail=static fn($sql)=>str_contains($sql,'invalid_quantity_count')?'SELECT * FROM roxy_missing_reservation_failure':$sql;
   add_filter('query',$fail);$errors=$wpdb->suppress_errors(true);try{$check(\RoxyST\FixtureCapacity::remaining_seats_for_showing($show)===0,'SQL failure denies public availability without a fatal');}finally{remove_filter('query',$fail);$wpdb->suppress_errors($errors);}
-  $check($qty()===2,'read failure leaves reservation rows intact and next read succeeds');
+  $check($qty()===5,'read failure leaves reservation rows intact and next read succeeds');
   foreach(['SELECT meta_key,meta_value','SELECT post_id FROM'] as $prefix) {
     $mapping_fail=static fn($sql)=>str_starts_with($sql,$prefix)?'SELECT * FROM roxy_missing_mapping_failure':$sql;
     add_filter('query',$mapping_fail);$errors=$wpdb->suppress_errors(true);
     try{$check(\RoxyST\FixtureCapacity::remaining_seats_for_showing($show)===0,'failed '.$prefix.' mapping read cannot grant availability');}
     finally{remove_filter('query',$mapping_fail);$wpdb->suppress_errors($errors);}
+  }
+  if(class_exists('\\Automattic\\WooCommerce\\Utilities\\OrderUtil') && \\Automattic\\WooCommerce\\Utilities\\OrderUtil::custom_orders_table_usage_is_enabled()) {
+    $candidate_query_fail=static fn($sql)=>str_contains($sql,'woocommerce_order_items') && str_contains($sql,"meta_key='_product_id'")?'SELECT * FROM roxy_missing_hpos_candidate_failure':$sql;
+    add_filter('query',$candidate_query_fail);$errors=$wpdb->suppress_errors(true);
+    try{$rejected=false;try{$qty();}catch(RuntimeException $error){$rejected=true;}}
+    finally{remove_filter('query',$candidate_query_fail);$wpdb->suppress_errors($errors);}
+    $check($rejected,'HPOS ticket-order candidate query failure is not treated as zero reservations');
+    $order_query_fail=static fn($sql)=>str_contains($sql,$wpdb->prefix.'wc_orders')?'SELECT * FROM roxy_missing_hpos_order_query_failure':$sql;
+    add_filter('query',$order_query_fail);$errors=$wpdb->suppress_errors(true);
+    try{$rejected=false;try{$qty();}catch(RuntimeException $error){$rejected=true;}}
+    finally{remove_filter('query',$order_query_fail);$wpdb->suppress_errors($errors);}
+    $check($rejected,'HPOS Woo order query failure is not treated as zero reservations');
   }
   echo 'RESERVATIONS_WOO_OK'.PHP_EOL;
 } finally {
