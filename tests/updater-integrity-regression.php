@@ -29,7 +29,7 @@ namespace {
     function add_filter($hook, $callback, $priority = 10, $accepted_args = 1) { $GLOBALS['registered_filters'][$hook] = [$callback, $accepted_args]; }
     function add_action($hook, $callback, $priority = 10, $accepted_args = 1) {}
     function get_site_transient($key) { return $GLOBALS['transients'][$key] ?? false; }
-    function set_site_transient($key, $value, $ttl = 0) { $GLOBALS['transients'][$key] = $value; }
+    function set_site_transient($key, $value, $ttl = 0) { $GLOBALS['transients'][$key] = $value; $GLOBALS['transient_ttls'][$key] = $ttl; }
     function delete_site_transient($key) { unset($GLOBALS['transients'][$key]); }
     function wp_remote_get($url, $args = []) {
         $GLOBALS['remote_calls']++;
@@ -216,5 +216,15 @@ namespace {
     $blocked_mixed = \RoxySuite\Updater::filter_upgrader_pre_download(false, 'https://github.com/Tototex/roxy-suite/releases/download/v1.0.61/roxy-suite-1.0.61.zip', null, ['action' => 'update', 'type' => 'plugin', 'plugins' => $mixed_plugins]);
     check_updater(is_wp_error($blocked_mixed), 'unverified Suite package in mixed bulk list fails closed');
     $other_mixed = \RoxySuite\Updater::filter_upgrader_pre_download(false, 'https://example.test/other.zip', null, ['action' => 'update', 'type' => 'plugin', 'plugins' => $mixed_plugins]);
+    $GLOBALS['transients'] = [];
+    $GLOBALS['transient_ttls'] = [];
+    $GLOBALS['remote_calls'] = 0;
+    $GLOBALS['release_response'] = new WP_Error('fixture_outage', 'Synthetic provider outage');
+    $release->setValue(null, null);
+    \RoxySuite\Updater::filter_update_plugins((object) ['response' => [], 'no_update' => []]);
+    check_updater($GLOBALS['remote_calls'] === 1 && ($GLOBALS['transients'][$cache_key . '_failed'] ?? false) === 1, 'provider failure is cached after one update lookup');
+    check_updater(($GLOBALS['transient_ttls'][$cache_key . '_failed'] ?? 0) === 5 * MINUTE_IN_SECONDS, 'provider failure cache has a bounded five-minute lifetime');
+    \RoxySuite\Updater::filter_update_plugins((object) ['response' => [], 'no_update' => []]);
+    check_updater($GLOBALS['remote_calls'] === 1, 'repeated update lookup during outage does not call the provider again');
     check_updater($other_mixed === false, 'unrelated package in mixed bulk list remains untouched during outage');
 }
