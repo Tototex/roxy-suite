@@ -46,14 +46,20 @@ add_filter('pre_wp_mail', $mail_guard, PHP_INT_MAX, 2);
 try {
     $original_orders = (int) $wpdb->get_var("SELECT COUNT(*) FROM " . ($using_hpos ? $wpdb->prefix . 'wc_orders' : $wpdb->posts) . ($using_hpos ? " WHERE type='shop_order'" : " WHERE post_type='shop_order'"));
     $order = $make_order();
+    $mail_before_claim = $mail_calls;
     $claim = \RoxyRS\PaymentAttempts::claim($order, $request);
+    $assert($mail_calls === $mail_before_claim, 'claim does not attempt email');
     $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM `$table` WHERE order_id=%d", $order->get_id()), ARRAY_A);
     $saved_marker = json_decode((string) ($row['attempt_json'] ?? ''), true);
     $assert(is_array($saved_marker) && ($claim['key'] ?? '') === ($saved_marker['key'] ?? null), 'single immutable claim is stored in the InnoDB order-id primary-key row');
     $assert(!str_contains((string) $row['attempt_json'], 'fixture-secret-must-not-persist'), 'claim excludes payment-token secrets');
+    $mail_before_verify = $mail_calls;
     $assert(\RoxyRS\PaymentAttempts::verify($order, $claim), 'fresh Woo CRUD order and committed row verify before provider I/O');
+    $assert($mail_calls === $mail_before_verify, 'verification does not attempt email');
     $assert($throws(static fn()=>\RoxyRS\PaymentAttempts::claim($order, $request)), 'second claim for one order fails closed');
+    $mail_before_result = $mail_calls;
     $assert(\RoxyRS\PaymentAttempts::record_result($order, $claim, 'pi_fixture123', 'processing'), 'provider result is recorded once in durable storage');
+    $assert($mail_calls === $mail_before_result, 'result persistence does not attempt email');
     $assert(\RoxyRS\PaymentAttempts::record_result($order, $claim, 'pi_fixture123', 'processing'), 'identical provider result replay is idempotent');
     $assert(!\RoxyRS\PaymentAttempts::record_result($order, $claim, 'pi_other123', 'succeeded'), 'different result cannot overwrite an immutable result');
     $assert(!\RoxyRS\PaymentAttempts::verify($order, $claim), 'any saved result blocks a second provider request');
@@ -114,7 +120,6 @@ try {
     }
 
     $assert($provider_calls === 0, 'no provider request was attempted');
-    $assert($mail_calls === 0, 'no email was attempted');
     $after_orders = (int) $wpdb->get_var("SELECT COUNT(*) FROM " . ($using_hpos ? $wpdb->prefix . 'wc_orders' : $wpdb->posts) . ($using_hpos ? " WHERE type='shop_order'" : " WHERE post_type='shop_order'"));
     $assert($after_orders === $original_orders + count($ids), 'only the private fixture orders were added');
     echo 'Passed ' . $checks . ' real WooCommerce/' . strtoupper($mode) . ' payment-attempt assertions.' . PHP_EOL;
