@@ -301,7 +301,6 @@ final class Issuance {
     if (!$this->hpos_order_storage) { $this->post_meta($id,$key,$value,$remove); return; }
     $this->order_meta[$id]=$id;
     $this->metadata($wpdb->prefix.'wc_orders_meta','order_id',$id,$key,$value,$remove);
-    self::clear_order_meta_cache($id);
   }
   public function is_ticket(int $id): bool {
     global $wpdb;
