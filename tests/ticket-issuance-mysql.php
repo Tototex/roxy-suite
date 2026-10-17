@@ -78,7 +78,7 @@ try {
   finally {$free=true;foreach(array_slice($keys,0,-1) as $owned)$free=$free&&(int)$wpdb->get_var($wpdb->prepare('SELECT IS_FREE_LOCK(%s)',$owned))===1;$check($free,'partial acquisition failure releases all earlier owned locks');$second->get_var($second->prepare('SELECT RELEASE_LOCK(%s)',$blocked));}
   $check($group->run(static fn()=>true)===true,'group succeeds after contention clears');
   (new \RoxyST\FixtureIssuance(123))->run(static function($operation){$operation->transactional_order_meta(123,'_roxy_seat_hold_managed',1);});
-  $check(maybe_unserialize($wpdb->get_var("SELECT meta_value FROM `{$wpdb->postmeta}` WHERE post_id=123 AND meta_key='_roxy_seat_hold_managed'"))===1,'legacy transactional order metadata remains on the verified postmeta path');
+  $check((int)maybe_unserialize($wpdb->get_var("SELECT meta_value FROM `{$wpdb->postmeta}` WHERE post_id=123 AND meta_key='_roxy_seat_hold_managed'"))===1,'legacy transactional order metadata remains on the verified postmeta path');
   (new \RoxyST\FixtureIssuance(123))->run(static function($operation)use($second,$wpdb,$check){
     $predicate=new ReflectionMethod($operation,'predicate');$predicate->setAccessible(true);
     $guard=$predicate->invoke($operation);
