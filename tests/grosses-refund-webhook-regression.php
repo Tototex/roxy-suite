@@ -3,6 +3,9 @@ define('ABSPATH', __DIR__);
 
 function rest_url($path = '') { return 'https://example.com/wp-json/' . ltrim($path, '/'); }
 class WP_REST_Response { public $data; public $status; public function __construct($data = null, $status = 200) { $this->data = $data; $this->status = $status; } }
+function add_action($hook, $callback, $priority = 10, $accepted_args = 1) { $GLOBALS['refund_webhook_actions'][$hook][] = $callback; }
+function register_rest_route($namespace, $route, $args) { $GLOBALS['refund_webhook_routes'][] = compact('namespace', 'route', 'args'); return true; }
+function __return_true() { return true; }
 eval('namespace RoxyGrosses; class Settings { static $key = "secret"; static function get($name, $default = "") { return self::$key; } } class Store { static function refund_webhook_table_name() { return "wp_refund_events"; } }');
 
 class FixtureWpdb {
@@ -33,12 +36,23 @@ $GLOBALS['wpdb'] = new FixtureWpdb();
 require dirname(__DIR__) . '/includes/modules/grosses/includes/class-roxy-grosses-refund-webhook.php';
 $checks = 0;
 $check = static function ($condition, string $message) use (&$checks): void { if (!$condition) throw new RuntimeException($message); echo "PASS: {$message}\n"; $checks++; };
+$GLOBALS['refund_webhook_actions'] = [];
+$GLOBALS['refund_webhook_routes'] = [];
+\RoxyGrosses\RefundWebhook::init();
+$init_callback = $GLOBALS['refund_webhook_actions']['rest_api_init'][0] ?? null;
+$check($init_callback === [\RoxyGrosses\RefundWebhook::class, 'register_route'], 'webhook initialization attaches the route registrar to WordPress REST initialization');
+call_user_func($init_callback);
+$route = $GLOBALS['refund_webhook_routes'][0] ?? [];
+$check(($route['namespace'] ?? '') === 'roxy/v1' && ($route['route'] ?? '') === '/square-refund-events', 'webhook registers the documented Square refund route');
+$check(($route['args']['methods'] ?? '') === 'POST'
+  && ($route['args']['callback'] ?? null) === [\RoxyGrosses\RefundWebhook::class, 'receive']
+  && ($route['args']['permission_callback'] ?? null) === '__return_true', 'refund route is POST-only and dispatches to the signed receiver');
 $url = rest_url('roxy/v1/square-refund-events');
 $check(\RoxyGrosses\RefundWebhook::expected_signature('{"hello":"world"}', 'asdf1234', 'https://example.com/webhook') === '2kRE5qRU2tR+tBGlDwMEw2avJ7QM4ikPYD/PJ3bd9Og=', 'Square HMAC matches official validation example');
 $event = ['event_id' => 'evt-1', 'type' => 'refund.updated', 'created_at' => '2026-10-08T19:00:00Z', 'data' => ['object' => ['refund' => ['id' => 'rf-1', 'payment_id' => 'pay-1', 'order_id' => 'ord-1', 'location_id' => 'loc-1', 'status' => 'COMPLETED', 'amount_money' => ['amount' => 1234, 'currency' => 'USD'], 'created_at' => '2026-10-08T18:58:00Z', 'updated_at' => '2026-10-08T19:00:00Z']]]];
 $body = json_encode($event);
 $signature = \RoxyGrosses\RefundWebhook::expected_signature($body, 'secret', $url);
-$response = \RoxyGrosses\RefundWebhook::receive(new FixtureRequest($body, $signature));
+$response = call_user_func($route['args']['callback'], new FixtureRequest($body, $signature));
 $check($response->status === 200 && count($GLOBALS['wpdb']->rows) === 1, 'valid refund event is durably recorded');
 $stored = $GLOBALS['wpdb']->rows['evt-1'];
 $check($stored['amount_cents'] === 1234 && $stored['event_created_at'] === '2026-10-08 19:00:00' && $stored['status'] === 'COMPLETED', 'refund cents and provider event time are normalized as UTC metadata');
