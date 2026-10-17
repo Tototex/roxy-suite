@@ -95,7 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/checkout-hold-output.txt"
-          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/checkout-hold-woo.php" "$GITHUB_WORKSPACE" >"$output" 2>&1; then
+          if ROXY_WP_CLI="$RUNNER_TEMP/wp-cli.phar" php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/checkout-hold-woo.php" "$GITHUB_WORKSPACE" >"$output" 2>&1; then
             cat "$output"
           else
             status=$?

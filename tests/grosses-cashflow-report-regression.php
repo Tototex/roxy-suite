@@ -55,14 +55,16 @@ namespace RoxyGrosses {
     }
   }
   final class FakeOrder {
-    public function __construct(private int $id, private string $gateway, private string $amount, private string $transaction, private \DateTimeImmutable $paid) {}
+    public function __construct(private int $id, private string $gateway, private string $amount, private string $transaction, private \DateTimeImmutable $paid, private bool $paid_status = true, private array $meta = [], private string $status = 'processing') {}
     public function get_id(): int { return $this->id; }
     public function get_payment_method(): string { return $this->gateway; }
-    public function is_paid(): bool { return true; }
+    public function is_paid(): bool { return $this->paid_status; }
     public function get_currency(): string { return 'USD'; }
     public function get_total(): string { return $this->amount; }
     public function get_date_paid(): \DateTimeImmutable { return $this->paid; }
     public function get_transaction_id(): string { return $this->transaction; }
+    public function get_status(): string { return $this->status; }
+    public function get_meta(string $key, bool $single = true) { return $this->meta[$key] ?? ''; }
   }
   final class FakeRefund {
     public function __construct(private int $id, private int $parent, private string $amount, private \DateTimeImmutable $created, private bool $processed = true) {}
@@ -151,6 +153,13 @@ namespace {
   ];
   $GLOBALS['wc_page_counts'] = ['shop_order' => 1, 'shop_order_refund' => 1];
   $report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $late_review_order = new \RoxyGrosses\FakeOrder(28, 'stripe', '17.00', 'late-cutoff-charge', new \DateTimeImmutable('2026-10-03T01:30:00Z'), false, ['_roxy_seat_review'=>'1','_roxy_seat_review_reason'=>'sales_cutoff'], 'on-hold');
+  $late_review_events = \RoxyGrosses\WooCollectionEvents::from_orders([$late_review_order], ['stripe']);
+  $assert(count($late_review_events) === 1 && $late_review_events[0]['order_id'] === 28 && $late_review_events[0]['amount_cents'] === 1700,
+    'captured payment held for Show Tickets manager review remains visible in Cashflow using its paid time and transaction evidence');
+  $unverified_review_order = new \RoxyGrosses\FakeOrder(29, 'stripe', '17.00', '', new \DateTimeImmutable('2026-10-03T01:30:00Z'), false, ['_roxy_seat_review'=>'1','_roxy_seat_review_reason'=>'sales_cutoff'], 'on-hold');
+  $assert(\RoxyGrosses\WooCollectionEvents::from_orders([$unverified_review_order], ['stripe']) === [],
+    'on-hold seat-review order without a stable transaction identity is not counted as collected');
   $assert($report['totals']['square_collected_cents'] === 1500 && $report['totals']['woocommerce_collected_cents'] === 6800, 'daily cashflow includes PayPal and all Stripe gateway checkouts (including Link/BLIK) while excluding non-completed payments');
   $assert($report['totals']['square_refunded_cents'] === 200 && $report['totals']['woocommerce_refunded_cents'] === 1800 && $report['totals']['net_cents'] === 6300, 'daily cashflow subtracts refund-day events for PayPal and Stripe gateway checkouts and omits offline gateway refunds');
   $assert($report['counts'] === ['square_collections'=>1,'woocommerce_collections'=>4,'square_refunds'=>1,'woocommerce_refunds'=>4], 'daily report counts only events from approved provider gateway IDs attributed to selected local date');
