@@ -27,6 +27,10 @@ try {
   $make_order=static function(string $note)use($product,&$created_orders){$order=wc_create_order(['status'=>'pending','customer_note'=>$note]);if(is_wp_error($order)||!$order instanceof WC_Order)throw new RuntimeException('Could not create private HPOS order.');$created_orders[]=(int)$order->get_id();if($order->add_product($product,1)<=0)throw new RuntimeException('Could not add the private ticket line.');$order->calculate_totals();$order->save();return wc_get_order($order->get_id());};
   $first=$make_order($token.' HOLD TEST');
   $check($first->get_meta('_roxy_seat_hold_managed',true)==='','synthetic order primes its initially empty HPOS meta cache');
+  $cache=wc_get_container()->get('\\Automattic\\WooCommerce\\Caching\\WPCacheEngine');
+  $cache->cache_object((string)$first->get_id(),[],0,'orders_meta');
+  $cache->delete_cached_object((string)$first->get_id(),'orders_data');
+  $check($cache->is_cached((string)$first->get_id(),'orders_meta')&&!$cache->is_cached((string)$first->get_id(),'orders_data'),'HPOS fixture reproduces metadata-only cache without an order-data cache entry');
   $check(\RoxyST\Holds::claim($first),'HPOS pending ticket order claims a transactional seat hold');
   $fresh=wc_get_order($first->get_id());$until=(int)$fresh->get_meta('_roxy_seat_hold_until',true);
   $raw_markers=$wpdb->get_results($wpdb->prepare("SELECT meta_key,meta_value FROM `$meta_table` WHERE order_id=%d AND meta_key IN (%s,%s) ORDER BY meta_key",(int)$first->get_id(),'_roxy_seat_hold_managed','_roxy_seat_hold_until'),ARRAY_A);

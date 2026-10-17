@@ -126,6 +126,15 @@ final class Issuance {
       // HPOS stores its raw metadata in a separate cache group from the order object.
       if (is_object($store) && method_exists($store,'clear_cached_data')) $store->clear_cached_data([$id]);
     }
+    // Woo 11.x only clears `orders_meta` from clear_cached_data() when an `orders_data`
+    // entry existed. A cached metadata-only snapshot otherwise survives the transaction.
+    $cache_engine_class='\\Automattic\\WooCommerce\\Caching\\WPCacheEngine';
+    if (function_exists('wc_get_container') && class_exists($cache_engine_class)) {
+      try {
+        $cache_engine=wc_get_container()->get($cache_engine_class);
+        if (is_object($cache_engine) && method_exists($cache_engine,'delete_cached_object')) $cache_engine->delete_cached_object((string)$id,'orders_meta');
+      } catch (\Throwable $ignored) {}
+    }
     // Woo also caches the order object by ID in this group when the HPOS datastore cache is off.
     wp_cache_delete($id,'orders');
     if (method_exists($order,'delete_meta_cache')) $order->delete_meta_cache();
