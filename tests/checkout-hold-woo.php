@@ -71,6 +71,9 @@ try {
  $check($wins===1&&$qty()===1,'independent checkouts competing for the last seat produce exactly one durable hold');
  foreach($workers as $w){fclose($w['pipes'][1]);fclose($w['pipes'][2]);proc_close($w['process']);}$workers=[];
  foreach([$a,$b] as $o)\RoxyST\FixtureHolds::release($o);
+ // Subscriber lifecycle coverage requires the separately licensed WooCommerce
+ // Subscriptions extension, which is not installed in the disposable baseline.
+ if(function_exists('wcs_create_subscription')&&class_exists('WC_Subscriptions_Product')) {
  // Subscriber entitlement is protected even when showing capacity is unlimited.
  delete_post_meta($show,'_roxy_capacity');update_post_meta($pid,ROXY_ST_META_TICKET_TYPE,'subscriber');
  $u=wp_insert_user(['user_login'=>'roxy-hold-fixture-'.bin2hex(random_bytes(6)),'user_pass'=>wp_generate_password(32),'user_email'=>'fixture-'.bin2hex(random_bytes(6)).'@example.test','role'=>'customer']);if(is_wp_error($u))throw new RuntimeException('Private user failed');$users[]=$u;
@@ -84,6 +87,7 @@ try {
  $arrivals=Fixture_Roxy_Sub_Check::walkup_quantity_for_showing($show);$check($wins===1&&$qty()+$arrivals===1,'checkout and member walk-up competing for last seat share exactly one winner');
  foreach($workers as $w){fclose($w['pipes'][1]);fclose($w['pipes'][2]);proc_close($w['process']);}$workers=[];
  \RoxyST\FixtureHolds::release($e);$wpdb->delete($wpdb->prefix.'roxy_member_scans',['subscription_id'=>$sub->get_id(),'showing_id'=>$show]);
+ } else { echo 'SKIP: subscriber entitlement and walk-up lifecycle require WooCommerce Subscriptions'.PHP_EOL; }
  $showings=[$show];$products=[$p];
  for($i=1;$i<6;$i++){
   $sid=wp_insert_post(['post_type'=>'roxy_showing','post_status'=>'draft','post_title'=>$label.' '.$i],true);if(is_wp_error($sid))throw new RuntimeException('Private marathon showing failed');$created[]=$sid;update_post_meta($sid,'_roxy_capacity',1);$showings[]=$sid;
