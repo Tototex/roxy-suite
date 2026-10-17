@@ -126,6 +126,8 @@ final class Issuance {
       // HPOS stores its raw metadata in a separate cache group from the order object.
       if (is_object($store) && method_exists($store,'clear_cached_data')) $store->clear_cached_data([$id]);
     }
+    // Woo also caches the order object by ID in this group when the HPOS datastore cache is off.
+    wp_cache_delete($id,'orders');
     if (method_exists($order,'delete_meta_cache')) $order->delete_meta_cache();
     elseif (class_exists('WC_Order') && method_exists('\\WC_Order','generate_meta_cache_key')) wp_cache_delete(\WC_Order::generate_meta_cache_key($id,'orders'),'orders');
     // Force the post-commit read to replace any pre-transaction empty snapshot cached in this request.
