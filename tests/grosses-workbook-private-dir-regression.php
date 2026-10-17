@@ -61,8 +61,6 @@ $check = static function (bool $condition, string $label) use (&$checks): void {
 try {
     $private_dir = $root_method->invoke(null);
     $check($is_private_method->invoke(null, $private_dir), 'private root itself is recognized using an exact path boundary');
-    $check($is_private_method->invoke(null, $private_dir . '/templates/book.xlsx'), 'private descendants are recognized');
-    $check(!$is_private_method->invoke(null, $private_dir . '-public/book.xlsx'), 'a sibling with a shared lexical prefix is not misclassified as private');
     $index = $private_dir . DIRECTORY_SEPARATOR . 'index.html';
     $rules_path = $private_dir . DIRECTORY_SEPARATOR . '.htaccess';
     $rules = file_get_contents($rules_path);
@@ -87,6 +85,18 @@ try {
 
     $public_target = $fixture_root . DIRECTORY_SEPARATOR . 'public-target';
     if (!mkdir($public_target, 0700)) throw new RuntimeException('Could not create symlink target fixture.');
+    $private_descendant = $workbooks_method->invoke(null) . DIRECTORY_SEPARATOR . 'path-check.xlsx';
+    file_put_contents($private_descendant, 'fixture');
+    $check($is_private_method->invoke(null, $private_descendant), 'existing private descendants are recognized');
+    $shared_prefix = $private_dir . '-public';
+    if (!mkdir($shared_prefix, 0700)) throw new RuntimeException('Could not create shared-prefix sibling fixture.');
+    $shared_prefix_file = $shared_prefix . DIRECTORY_SEPARATOR . 'book.xlsx';
+    file_put_contents($shared_prefix_file, 'fixture');
+    $check(!$is_private_method->invoke(null, $shared_prefix_file), 'a sibling with a shared lexical prefix is not misclassified as private');
+    $check(!$is_private_method->invoke(null, $private_dir . '/../../public-target'), 'canonical resolution rejects a path that traverses outside private storage');
+    if (!symlink($public_target, $private_dir . DIRECTORY_SEPARATOR . 'external-link')) throw new RuntimeException('Could not create private-path symlink fixture.');
+    $check(!$is_private_method->invoke(null, $private_dir . '/external-link'), 'canonical resolution rejects a private-root child symlink targeting a public directory');
+    unlink($private_dir . DIRECTORY_SEPARATOR . 'external-link');
     $private_root_link = $fixture_root . DIRECTORY_SEPARATOR . 'private-root-link';
     if (!symlink($public_target, $private_root_link)) throw new RuntimeException('Could not create private-root symlink fixture.');
     $root_link_rejected = false;

@@ -1410,9 +1410,17 @@ class Workbook {
   }
 
   private static function is_private_path(string $path): bool {
-    $normalized_path = wp_normalize_path($path);
-    $private_root = rtrim(wp_normalize_path(self::private_root_dir()), '/');
-    if ($normalized_path === '' || $private_root === '' || $private_root === '/') return false;
+    $resolved_path = realpath($path);
+    $resolved_root = realpath(self::private_root_dir());
+    if ($resolved_path === false || $resolved_root === false) return false;
+    $normalized_path = rtrim(wp_normalize_path($resolved_path), '/');
+    $private_root = rtrim(wp_normalize_path($resolved_root), '/');
+    if ($normalized_path === '' || $private_root === '') return false;
+
+    if (DIRECTORY_SEPARATOR === '\\') {
+      $normalized_path = strtolower($normalized_path);
+      $private_root = strtolower($private_root);
+    }
 
     return $normalized_path === $private_root || str_starts_with($normalized_path, $private_root . '/');
   }
