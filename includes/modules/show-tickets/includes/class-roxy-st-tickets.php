@@ -536,7 +536,7 @@ class Tickets {
       if (!self::$issuance || (int)self::read_ticket_meta($ticket_id,self::META_CHECKED_IN) !== 1) return false;
       $order_id=(int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID);
       $order=wc_get_order($order_id);
-      if(!$order || (int)$order->get_id()!==$order_id)return false;
+      if(!$order || (method_exists($order,'get_id') && (int)$order->get_id()!==$order_id))return false;
       if ($expected_source !== '' && self::read_ticket_meta($ticket_id,'_roxy_checked_in_source') !== $expected_source) return false;
       if(self::read_ticket_meta($ticket_id,'_roxy_checked_in_source')==='member') {
         $visit_id=(int)self::read_ticket_meta($ticket_id,'_roxy_member_visit_id');
