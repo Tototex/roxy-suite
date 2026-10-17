@@ -67,7 +67,7 @@ check(str_contains($search_sql,"p.post_status IN ('wc-active', 'wc-pending-cance
 check(count($GLOBALS['wpdb']->last_col_args)===7&&$GLOBALS['wpdb']->last_col_args[0]==='%fixture1@%','member search safely binds the search term and bounded result count');
 $GLOBALS['member_hpos']=true;$GLOBALS['member_hpos_user_results']=[8,8];$GLOBALS['member_hpos_user_queries']=[];$GLOBALS['member_search_queries']=[];
 $GLOBALS['member_hpos_subscriptions']=[8=>[new TestSubscription(4,8),new TestSubscription(2,8),new TestSubscription(3,8)]];
-$hpos_found=Roxy_Sub_Check::search_members('fixture1@',5);
+$hpos_found=Roxy_Sub_Check::search_members('fixture4@',5);
 check(count($hpos_found)===1&&$hpos_found[0]['subscription_id']===4,'HPOS member search uses matching customer and active subscription APIs');
 check(count($GLOBALS['member_hpos_user_queries'])===2&&$GLOBALS['member_hpos_user_queries'][0]['search_columns']===['user_email','display_name']&&$GLOBALS['member_hpos_user_queries'][1]['meta_query']['relation']==='OR','HPOS member search covers customer contact and first/last-name fields');
 check(count($GLOBALS['member_search_queries'])===1&&$GLOBALS['member_search_queries'][0]['customer_id']===8&&$GLOBALS['member_search_queries'][0]['subscription_status']===['active','pending-cancel'],'HPOS subscription lookup is customer-scoped and excludes inactive memberships');
