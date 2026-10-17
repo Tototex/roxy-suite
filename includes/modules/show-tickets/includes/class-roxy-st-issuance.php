@@ -133,6 +133,14 @@ final class Issuance {
     }
     // Woo also caches the order object by ID in this group when the HPOS datastore cache is off.
     wp_cache_delete($id,'orders');
+    // Woo 11.x can return the same hydrated WC_Order instance from its OrderCache.
+    $order_cache_class='\\Automattic\\WooCommerce\\Caches\\OrderCache';
+    if (function_exists('wc_get_container') && class_exists($order_cache_class)) {
+      try {
+        $order_cache=wc_get_container()->get($order_cache_class);
+        if (is_object($order_cache) && method_exists($order_cache,'remove')) $order_cache->remove($id);
+      } catch (\Throwable $ignored) {}
+    }
     $order=wc_get_order($id);
     if (!$order || !is_object($order)) return;
     if (method_exists($order,'delete_meta_cache')) $order->delete_meta_cache();
