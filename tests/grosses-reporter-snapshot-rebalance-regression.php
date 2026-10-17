@@ -374,8 +374,8 @@ namespace {
   $queued = \RoxyGrosses\Store::$unmatched_concessions[$unmatched_date] ?? [];
   $check($unmatched_failed && count($queued) === 1 && $queued[0]['amount_cents'] === 1250 && $queued[0]['square_order_id'] === 'unmatched-order-fixture' && $queued[0]['square_line_uid'] === 'unmatched-line-fixture' && $queued[0]['reason'] === 'outside_showtime_window (2 dated rows: 7:00 PM, 9:00 PM)' && preg_match('/^[a-f0-9]{64}$/D', $queued[0]['fingerprint']) === 1 && count(\RoxyGrosses\Store::$updates) === $before_unmatched_writes && (float) \RoxyGrosses\Store::$movie[$unmatched_date][0]['concessions_total'] === 0.0, 'outside-window line records the candidate show times and stops before allocation writes');
 
-  // Overlapping private rental windows do not prove which booking a Square
-  // concession belongs to. Queue the line and leave persisted totals intact.
+  // When private rental windows overlap, allocate to a uniquely closest
+  // reserved-window midpoint; keep exact ties in review without changing totals.
   $overlap_date = '2038-05-10';
   \RoxyGrosses\Store::$movie[$overlap_date] = [['id'=>7020,'show_time'=>'8:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>7.00]];
   \RoxyGrosses\Store::$rental[$overlap_date] = [
@@ -387,15 +387,28 @@ namespace {
     'line_items'=>[['uid'=>'overlapping-rental-line','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1875,'currency'=>'USD']]],
   ]];
   \RoxyGrosses\Store::$updates = [];
-  $before_ambiguous_totals = [(float) \RoxyGrosses\Store::$movie[$overlap_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_date][1]['concessions_total']];
-  $overlap_failed = false;
-  try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$overlap_date])); }
-  catch (Throwable $error) { $overlap_failed = str_contains($error->getMessage(), 'could not be matched safely') && str_contains($error->getMessage(), 'review queue'); }
+  \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$overlap_date]));
   $overlap_queue = \RoxyGrosses\Store::$unmatched_concessions[$overlap_date] ?? [];
-  $after_ambiguous_totals = [(float) \RoxyGrosses\Store::$movie[$overlap_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$overlap_date][1]['concessions_total']];
-  $check($overlap_failed, 'overlapping rental attribution stops before allocation writes');
-  $check(count($overlap_queue) === 1 && ($overlap_queue[0]['reason'] ?? '') === 'overlapping_rental_windows (3 dated rows: 8:00 PM, 7:00 PM, 7:30 PM)', 'overlapping rental queue has a specific reason and lists all candidate report rows: ' . json_encode(array_column($overlap_queue, 'reason')));
-  $check(($overlap_queue[0]['amount_cents'] ?? 0) === 1875 && $after_ambiguous_totals === $before_ambiguous_totals && \RoxyGrosses\Store::$updates === [], 'ambiguous rental sale amount is retained and no report totals or rows are written');
+  $check((float) \RoxyGrosses\Store::$rental[$overlap_date][0]['concessions_total'] === 18.75 && (float) \RoxyGrosses\Store::$rental[$overlap_date][1]['concessions_total'] === 0.0 && (float) \RoxyGrosses\Store::$movie[$overlap_date][0]['concessions_total'] === 0.0 && !$overlap_queue, 'overlapping rental sale goes to the uniquely closest reserved-window midpoint, ahead of a matching public-show time');
+
+  $tied_rental_date = '2038-05-15';
+  \RoxyGrosses\Store::$movie[$tied_rental_date] = [['id'=>7060,'show_time'=>'8:15 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>7.00]];
+  \RoxyGrosses\Store::$rental[$tied_rental_date] = [
+    ['id'=>7061,'show_time'=>'7:00 PM','reserved_start_at'=>$tied_rental_date.' 19:00:00','reserved_end_at'=>$tied_rental_date.' 21:00:00','is_locked'=>0,'concessions_total'=>3.00],
+    ['id'=>7062,'show_time'=>'7:30 PM','reserved_start_at'=>$tied_rental_date.' 19:30:00','reserved_end_at'=>$tied_rental_date.' 21:30:00','is_locked'=>0,'concessions_total'=>4.00],
+  ];
+  \RoxyGrosses\Square::$orders[$tied_rental_date] = [[
+    'id'=>'tied-rental-order', 'closed_at'=>$tied_rental_date.'T20:15:00-07:00',
+    'line_items'=>[['uid'=>'tied-rental-line','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1875,'currency'=>'USD']]],
+  ]];
+  \RoxyGrosses\Store::$updates = [];
+  $before_tied_totals = [(float) \RoxyGrosses\Store::$movie[$tied_rental_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$tied_rental_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$tied_rental_date][1]['concessions_total']];
+  $tie_failed = false;
+  try { \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$tied_rental_date])); }
+  catch (Throwable $error) { $tie_failed = str_contains($error->getMessage(), 'could not be matched safely') && str_contains($error->getMessage(), 'review queue'); }
+  $tie_queue = \RoxyGrosses\Store::$unmatched_concessions[$tied_rental_date] ?? [];
+  $after_tied_totals = [(float) \RoxyGrosses\Store::$movie[$tied_rental_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$tied_rental_date][0]['concessions_total'], (float) \RoxyGrosses\Store::$rental[$tied_rental_date][1]['concessions_total']];
+  $check($tie_failed && count($tie_queue) === 1 && ($tie_queue[0]['reason'] ?? '') === 'overlapping_rental_windows (3 dated rows: 8:15 PM, 7:00 PM, 7:30 PM)' && ($tie_queue[0]['amount_cents'] ?? 0) === 1875 && $after_tied_totals === $before_tied_totals && \RoxyGrosses\Store::$updates === [], 'equidistant rental windows remain unverified with original report totals untouched');
 
   // A unique rental window remains stronger evidence than a nearby public
   // showtime and receives the complete sale.

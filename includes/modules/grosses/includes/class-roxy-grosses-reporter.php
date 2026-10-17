@@ -2495,6 +2495,8 @@ class Reporter {
     $window_matches = [];
     $best_window_distance = null;
     $containing_rental_windows = [];
+    $best_rental_distance = null;
+    $closest_rental_windows = [];
 
     foreach ($reports as $entry_id => $report) {
       $start_at = $report['_start_at'] ?? null;
@@ -2506,7 +2508,16 @@ class Reporter {
           // When an exact private-event reservation window contains the sale,
           // it is stronger evidence than a nearby movie/live showtime window.
           $distance = abs($order_local->getTimestamp() - (int) (($window_start->getTimestamp() + $window_end->getTimestamp()) / 2));
-          if (($report['_entry_kind'] ?? '') === 'rental') $containing_rental_windows[] = (int) $entry_id;
+          if (($report['_entry_kind'] ?? '') === 'rental') {
+            $rental_id = (int) $entry_id;
+            $containing_rental_windows[] = $rental_id;
+            if ($best_rental_distance === null || $distance < $best_rental_distance) {
+              $best_rental_distance = $distance;
+              $closest_rental_windows = [$rental_id];
+            } elseif ($distance === $best_rental_distance) {
+              $closest_rental_windows[] = $rental_id;
+            }
+          }
           if ($best_window_distance === null || $distance < $best_window_distance) {
             $best_window_distance = $distance;
             $window_matches = [(int) $entry_id];
@@ -2538,11 +2549,11 @@ class Reporter {
     }
 
     $containing_rental_windows = array_values(array_unique($containing_rental_windows));
-    if (count($containing_rental_windows) > 1) {
+    if (count($containing_rental_windows) > 1 && count(array_unique($closest_rental_windows)) > 1) {
       $ambiguous_rental_window = true;
       return [];
     }
-    if ($containing_rental_windows) return $containing_rental_windows;
+    if ($containing_rental_windows) return array_values(array_unique($closest_rental_windows));
     if ($window_matches) return array_values(array_unique($window_matches));
 
     if ($matches) {
