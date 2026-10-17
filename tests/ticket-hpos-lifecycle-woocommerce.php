@@ -30,7 +30,7 @@ try {
   $cache=wc_get_container()->get('\\Automattic\\WooCommerce\\Caching\\WPCacheEngine');
   $order_cache=wc_get_container()->get('\\Automattic\\WooCommerce\\Caches\\OrderCache');
   $order_cache->set($first,(int)$first->get_id());
-  $check($order_cache->get((int)$first->get_id()) instanceof WC_Order&&$order_cache->get((int)$first->get_id())->get_meta('_roxy_seat_hold_managed',true)==='','HPOS fixture primes Woo's stale order-object cache');
+  $check($order_cache->get((int)$first->get_id()) instanceof WC_Order&&$order_cache->get((int)$first->get_id())->get_meta('_roxy_seat_hold_managed',true)==='','HPOS fixture primes the stale Woo order-object cache');
   $cache->cache_object((string)$first->get_id(),[],0,'orders_meta');
   $cache->delete_cached_object((string)$first->get_id(),'orders_data');
   $check($cache->is_cached((string)$first->get_id(),'orders_meta')&&!$cache->is_cached((string)$first->get_id(),'orders_data'),'HPOS fixture reproduces metadata-only cache without an order-data cache entry');
