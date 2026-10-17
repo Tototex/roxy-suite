@@ -129,7 +129,10 @@ try {
     foreach (array_reverse($ids) as $id) {
         $wpdb->delete($table, ['order_id'=>$id]);
         $wpdb->delete($wpdb->postmeta, ['post_id'=>$id]);
-        if (function_exists('wc_delete_order')) wc_delete_order($id, true);
+        $order = wc_get_order($id);
+        if ($order instanceof WC_Order) {
+            $order->delete(true);
+        }
     }
     foreach (['roxy_rs_payment_attempts'] as $suffix) {
         $wpdb->query('DELETE FROM `' . $table . '` WHERE order_id IN (' . implode(',', array_map('intval', $ids ?: [0])) . ')');
