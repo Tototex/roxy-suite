@@ -24,8 +24,12 @@ final class Compatibility {
             return ['status' => 'warn', 'value' => 'Unknown', 'message' => 'WooCommerce order storage could not be verified. Roxy Suite does not support HPOS yet.'];
         }
         try {
-            if ($utility::custom_orders_table_usage_is_enabled()) {
+            $enabled = $utility::custom_orders_table_usage_is_enabled();
+            if ($enabled === true) {
                 return ['status' => 'fail', 'value' => 'HPOS enabled — unsupported', 'message' => 'Roxy Suite requires post-based WooCommerce order storage. Contact the administrator before using ticket, membership or booking workflows. Do not switch storage without a verified backup and migration plan.'];
+            }
+            if ($enabled !== false) {
+                return ['status' => 'warn', 'value' => 'Unknown', 'message' => 'WooCommerce order storage could not be verified. Review storage configuration before changing it.'];
             }
             return ['status' => 'pass', 'value' => 'Post-based storage', 'message' => 'Required by current Roxy Suite order and membership workflows. HPOS compatibility has not been certified.'];
         } catch (\Throwable $error) {

@@ -5,9 +5,9 @@ namespace Automattic\WooCommerce\Utilities {
         public static function declare_compatibility($feature, $file, $supported): bool { self::$calls[] = [$feature, $file, $supported]; return true; }
     }
     final class OrderUtil {
-        public static bool $enabled = false;
+        public static $result = false;
         public static bool $fail = false;
-        public static function custom_orders_table_usage_is_enabled(): bool { if (self::$fail) throw new \RuntimeException('fixture read failure'); return self::$enabled; }
+        public static function custom_orders_table_usage_is_enabled() { if (self::$fail) throw new \RuntimeException('fixture read failure'); return self::$result; }
     }
 }
 namespace {
@@ -24,9 +24,12 @@ namespace {
     storage_check(\Automattic\WooCommerce\Utilities\FeaturesUtil::$calls === [['custom_order_tables', $root . '/roxy-suite.php', false]], 'HPOS explicitly declared unsupported for the actual plugin file');
     $status = \RoxySuite\Compatibility::order_storage_status();
     storage_check($status['status'] === 'pass' && $status['value'] === 'Post-based storage', 'legacy order storage remains supported');
-    \Automattic\WooCommerce\Utilities\OrderUtil::$enabled = true;
+    \Automattic\WooCommerce\Utilities\OrderUtil::$result = true;
     $status = \RoxySuite\Compatibility::order_storage_status();
     storage_check($status['status'] === 'fail' && strpos($status['message'], 'backup') !== false, 'unsupported active HPOS is a failed diagnostic with safe recovery guidance');
+    \Automattic\WooCommerce\Utilities\OrderUtil::$result = '0';
+    storage_check(\RoxySuite\Compatibility::order_storage_status()['status'] === 'warn', 'non-boolean storage detector result fails closed as unknown');
+    \Automattic\WooCommerce\Utilities\OrderUtil::$result = false;
     \Automattic\WooCommerce\Utilities\OrderUtil::$fail = true;
     storage_check(\RoxySuite\Compatibility::order_storage_status()['status'] === 'warn', 'storage read exception does not break diagnostics or falsely pass');
     echo 'Passed ' . $checks . ' isolated storage checks; no storage setting changed.' . PHP_EOL;
