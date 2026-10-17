@@ -610,7 +610,7 @@ class Store {
     $source = $wpdb->prefix . 'roxy_event_bookings';
     $found = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($source)));
     if ($wpdb->last_error !== '') throw new \RuntimeException('Could not check the Roxy Event Booking source table.');
-    if ((string) $found !== $source) return [];
+    if ((string) $found !== $source) throw new \RuntimeException('The Roxy Event Booking source table is unavailable; rental synchronization cannot be verified.');
     $site_timezone = wp_timezone();
     $range_start = (new \DateTimeImmutable($date_from . ' 00:00:00', $report_timezone))->setTimezone($site_timezone)->format('Y-m-d H:i:s');
     $range_end = (new \DateTimeImmutable($date_to . ' 00:00:00', $report_timezone))->modify('+1 day')->setTimezone($site_timezone)->format('Y-m-d H:i:s');
@@ -651,7 +651,7 @@ class Store {
     $source = $wpdb->prefix . 'roxy_event_bookings';
     $found = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($source)));
     if ($wpdb->last_error !== '') throw new \RuntimeException('Could not check the Roxy Event Booking source table.');
-    if ((string) $found !== $source) return ['created' => 0, 'updated' => 0, 'skipped' => 0, 'dates' => []];
+    if ((string) $found !== $source) throw new \RuntimeException('The Roxy Event Booking source table is unavailable; rental synchronization cannot continue.');
 
     $site_timezone = wp_timezone();
     $range_start = (new \DateTimeImmutable($date_from . ' 00:00:00', $report_timezone))->setTimezone($site_timezone)->format('Y-m-d H:i:s');
@@ -720,7 +720,25 @@ class Store {
       $was_in_requested_range = $existing_report_date >= $date_from && $existing_report_date <= $date_to;
       if (!$within_requested_range && !$was_in_requested_range && !$is_cancelled) continue;
       if ($existing) {
-        if (!empty($existing['is_locked'])) { $skipped++; continue; }
+        if (!empty($existing['is_locked'])) {
+          // A manager lock protects manual rental details, not source-of-truth
+          // cancellation accounting. Keep the row and concessions, but never
+          // leave a cancelled booking's invoice in Grosses.
+          if ($is_cancelled && ((string) ($existing['status'] ?? '') !== 'Cancelled'
+              || (int) round((float) ($existing['invoice_amount'] ?? 0) * 100) !== 0)) {
+            $updated_locked = $wpdb->update($table, [
+              'updated_at' => current_time('mysql'),
+              'status' => 'Cancelled',
+              'invoice_amount' => 0.0,
+            ], ['id' => (int) $existing['id'], 'is_locked' => 1]);
+            if ($updated_locked === false) throw new \RuntimeException('Could not clear the invoice for a cancelled, manager-locked rental.');
+            $updated++;
+            if ($was_in_requested_range) $dates[$existing_report_date] = true;
+          } else {
+            $skipped++;
+          }
+          continue;
+        }
         $same = true;
         foreach ($payload as $column => $value) {
           if ($column === 'updated_at') continue;

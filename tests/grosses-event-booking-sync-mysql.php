@@ -193,6 +193,38 @@ try {
   $check($report_window_start instanceof DateTimeImmutable && $report_window_start->format('Y-m-d H:i:s e') === '2026-06-11 06:30:00 UTC',
     'rental attribution parses persisted wall time in the WordPress timezone before converting to report timezone');
 
+  $wpdb->insert($bookings, [
+    'id' => 900006, 'visibility' => 'private', 'status' => 'confirmed', 'invoice_status' => 'paid',
+    'reserved_start_at' => '2026-06-12 16:00:00', 'reserved_end_at' => '2026-06-12 20:00:00',
+    'doors_open_at' => '2026-06-12 16:30:00', 'business_name' => 'Locked Cancellation Fixture', 'total_price' => '300.00',
+  ]);
+  $store::sync_event_bookings_to_rentals('2026-06-01', '2026-06-30');
+  $locked_cancel_row = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $store::rental_entries_table_name() . ' WHERE source_ref = %s', 'booking:900006'), ARRAY_A);
+  $wpdb->update($store::rental_entries_table_name(), [
+    'is_locked' => 1, 'rental_title' => 'Manager-edited rental title', 'concessions_total' => '87.65',
+  ], ['id' => (int) $locked_cancel_row['id']]);
+  $wpdb->update($bookings, ['status' => 'cancelled', 'invoice_status' => 'void'], ['id' => 900006]);
+  $locked_cancel_sync = $store::sync_event_bookings_to_rentals('2026-06-01', '2026-06-30');
+  $locked_cancel_after = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . $store::rental_entries_table_name() . ' WHERE id = %d', (int) $locked_cancel_row['id']), ARRAY_A);
+  $check($locked_cancel_sync['updated'] === 1 && $locked_cancel_after['status'] === 'Cancelled'
+      && (float) $locked_cancel_after['invoice_amount'] === 0.0 && (float) $locked_cancel_after['concessions_total'] === 87.65
+      && (int) $locked_cancel_after['is_locked'] === 1 && $locked_cancel_after['rental_title'] === 'Manager-edited rental title',
+    'source cancellation clears locked rental invoice while preserving manager edits, lock, row and recorded concessions');
+
+  if ($wpdb->query("DROP TABLE `{$bookings}`") === false) throw new RuntimeException('Could not remove the private source fixture for the unavailable-source test.');
+  foreach ([
+    static function () use ($store): void { $store::event_booking_sync_preview_dates('2026-06-01', '2026-06-30'); },
+    static function () use ($store): void { $store::sync_event_bookings_to_rentals('2026-06-01', '2026-06-30'); },
+  ] as $unavailable_call) {
+    try {
+      $unavailable_call();
+      $check(false, 'missing Event Booking source must not silently appear as zero rentals');
+    } catch (RuntimeException $error) {
+      $check(strpos($error->getMessage(), 'source table is unavailable') !== false,
+        'missing Event Booking source is reported as an explicit availability error');
+    }
+  }
+
   echo "PASS: {$check_count} private booking synchronization checks\n";
 } finally {
   foreach ($created_tables as $table) $wpdb->query("DROP TABLE IF EXISTS `{$table}`");
