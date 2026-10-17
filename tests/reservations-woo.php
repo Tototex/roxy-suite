@@ -37,8 +37,10 @@ try {
   $order->delete_meta_data('_roxy_seat_hold_until');$order->save();$order->update_status('pending');
   update_post_meta($show,'_roxy_sales_stats',['cache_version'=>2,'sold_qty'=>0]);$order->update_status('on-hold');
   $held_qty=$qty();
+  $held_walkups=\Roxy_Sub_Check::walkup_quantity_for_showing($show);
   $held_remaining=\RoxyST\FixtureCapacity::remaining_seats_for_showing($show);
   $check($held_qty===2,'held order remains in the reservation reader after status change');
+  $check($held_walkups===0,'isolated reservation fixture has no walk-up admissions (walkups='.$held_walkups.')');
   $check($held_remaining===4,'held order blocks seats despite stale zero Sales cache (remaining='.$held_remaining.')');
   $cache=get_post_meta($show,'_roxy_sales_stats',true);$check($cache['sold_qty']===0,'reservation read does not rewrite financial report cache');
   $order->update_status('processing');$check($qty()===2,'processing order remains reserved');
