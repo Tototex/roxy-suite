@@ -88,6 +88,7 @@ try {
     $private_descendant = $workbooks_method->invoke(null) . DIRECTORY_SEPARATOR . 'path-check.xlsx';
     file_put_contents($private_descendant, 'fixture');
     $check($is_private_method->invoke(null, $private_descendant), 'existing private descendants are recognized');
+    unlink($private_descendant);
     $shared_prefix = $private_dir . '-public';
     if (!mkdir($shared_prefix, 0700)) throw new RuntimeException('Could not create shared-prefix sibling fixture.');
     $shared_prefix_file = $shared_prefix . DIRECTORY_SEPARATOR . 'book.xlsx';
