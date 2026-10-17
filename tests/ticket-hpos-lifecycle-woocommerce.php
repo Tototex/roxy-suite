@@ -34,7 +34,9 @@ try {
   $check(\RoxyST\Holds::claim($first),'HPOS pending ticket order claims a transactional seat hold');
   $fresh=wc_get_order($first->get_id());$until=(int)$fresh->get_meta('_roxy_seat_hold_until',true);
   $raw_markers=$wpdb->get_results($wpdb->prepare("SELECT meta_key,meta_value FROM `$meta_table` WHERE order_id=%d AND meta_key IN (%s,%s) ORDER BY meta_key",(int)$first->get_id(),'_roxy_seat_hold_managed','_roxy_seat_hold_until'),ARRAY_A);
-  $check((int)$fresh->get_meta('_roxy_seat_hold_managed',true)===1&&$until>time(),'guarded HPOS hold metadata visible through Woo CRUD after commit (crud_managed='.(string)$fresh->get_meta('_roxy_seat_hold_managed',true).', crud_until='.$until.', raw='.wp_json_encode($raw_markers).', sql_error='.(string)$wpdb->last_error.')');
+  $raw_meta_cache=$cache->get_cached_object((string)$first->get_id(),'orders_meta');
+  $order_meta_cache=wp_cache_get($fresh->get_meta_cache_key(),'orders');
+  $check((int)$fresh->get_meta('_roxy_seat_hold_managed',true)===1&&$until>time(),'guarded HPOS hold metadata visible through Woo CRUD after commit (crud_managed='.(string)$fresh->get_meta('_roxy_seat_hold_managed',true).', crud_until='.$until.', raw='.wp_json_encode($raw_markers).', hpos_cache='.wp_json_encode($raw_meta_cache).', object_cache='.wp_json_encode($order_meta_cache).', sql_error='.(string)$wpdb->last_error.')');
   $check(\RoxyST\Reservations::quantity_for_showing((int)$show)===1,'unexpired HPOS hold counts as a reserved seat');
 
   (new \RoxyST\Issuance((int)$first->get_id()))->run(static fn($writer)=>$writer->transactional_order_meta((int)$first->get_id(),'_roxy_seat_hold_until',time()-1));
