@@ -425,6 +425,26 @@ namespace {
   $fractional_queue = \RoxyGrosses\Store::$unmatched_concessions[$fractional_midpoint_date] ?? [];
   $check((float) \RoxyGrosses\Store::$rental[$fractional_midpoint_date][0]['concessions_total'] === 0.0 && (float) \RoxyGrosses\Store::$rental[$fractional_midpoint_date][1]['concessions_total'] === 18.75 && !$fractional_queue, 'half-second reservation midpoint precision selects the exact nearest interval instead of producing a false tie');
 
+  $rental_start_date = '2038-05-17';
+  \RoxyGrosses\Store::$movie[$rental_start_date] = [['id'=>7080,'show_time'=>'10:30 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0.0]];
+  \RoxyGrosses\Store::$rental[$rental_start_date] = [['id'=>7081,'show_time'=>'','reserved_start_at'=>$rental_start_date.' 19:00:00','reserved_end_at'=>$rental_start_date.' 21:00:00','is_locked'=>0,'concessions_total'=>0.0]];
+  \RoxyGrosses\Square::$orders[$rental_start_date] = [[
+    'id'=>'rental-start-boundary-order', 'closed_at'=>$rental_start_date.'T19:00:00-07:00',
+    'line_items'=>[['uid'=>'rental-start-boundary-line','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1875,'currency'=>'USD']]],
+  ]];
+  \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$rental_start_date]));
+  $check((float) \RoxyGrosses\Store::$rental[$rental_start_date][0]['concessions_total'] === 18.75 && (float) \RoxyGrosses\Store::$movie[$rental_start_date][0]['concessions_total'] === 0.0, 'reservation start boundary is inclusive');
+
+  $rental_end_date = '2038-05-18';
+  \RoxyGrosses\Store::$movie[$rental_end_date] = [['id'=>7090,'show_time'=>'7:00 PM','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'is_locked'=>0,'concessions_total'=>0.0]];
+  \RoxyGrosses\Store::$rental[$rental_end_date] = [['id'=>7091,'show_time'=>'','reserved_start_at'=>$rental_end_date.' 19:00:00','reserved_end_at'=>$rental_end_date.' 21:00:00','is_locked'=>0,'concessions_total'=>0.0]];
+  \RoxyGrosses\Square::$orders[$rental_end_date] = [[
+    'id'=>'rental-end-boundary-order', 'closed_at'=>$rental_end_date.'T21:00:00-07:00',
+    'line_items'=>[['uid'=>'rental-end-boundary-line','item_type'=>'ITEM','catalog_object_id'=>'snack','name'=>'Snack','quantity'=>'1','total_money'=>['amount'=>1875,'currency'=>'USD']]],
+  ]];
+  \RoxyGrosses\Square::with_sale_snapshot(static fn() => $call('rebalance_concessions_for_date', [$rental_end_date]));
+  $check((float) \RoxyGrosses\Store::$rental[$rental_end_date][0]['concessions_total'] === 0.0 && (float) \RoxyGrosses\Store::$movie[$rental_end_date][0]['concessions_total'] === 18.75, 'reservation end boundary is exclusive and the exact-boundary public showing remains eligible');
+
   // A unique rental window remains stronger evidence than a nearby public
   // showtime and receives the complete sale.
   $unique_rental_date = '2038-05-11';
