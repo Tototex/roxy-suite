@@ -340,6 +340,19 @@ jobs:
             echo "::error title=Show Tickets HPOS reservation reader contract failed::$details"
             exit "$status"
           fi
+      - name: Run Show Tickets transactional lifecycle contract on authoritative HPOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/hpos-ticket-lifecycle-output.txt"
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$HPOS_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/ticket-hpos-lifecycle-woocommerce.php" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 70 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Show Tickets HPOS transactional lifecycle failed::$details"
+            exit "$status"
+          fi
 
   social-database-fixtures:
     name: Cross-module private-MySQL lifecycle fixtures

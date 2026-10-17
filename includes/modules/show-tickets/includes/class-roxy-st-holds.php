@@ -33,7 +33,7 @@ final class Holds {
     if(!function_exists('WC') || !WC()->session || !WC()->cart)return 0;
     $id=(int)WC()->session->get('order_awaiting_payment');if($id<=0)return 0;
     $order=wc_get_order($id);
-    if(!$order || !in_array($order->get_status(),['pending','failed','checkout-draft'],true) || (int)$order->get_customer_id()!==get_current_user_id() || (int)get_post_meta($id,'_roxy_seat_hold_managed',true)!==1)return 0;
+    if(!$order || !in_array($order->get_status(),['pending','failed','checkout-draft'],true) || (int)$order->get_customer_id()!==get_current_user_id() || (int)$order->get_meta('_roxy_seat_hold_managed',true)!==1)return 0;
     return $id;
   }
 
@@ -69,7 +69,7 @@ final class Holds {
     $id=(int)$order->get_id();if($id<=0)return false;
     $captured=self::snapshot($id);
     if(!$captured['shows']) {
-      if((int)get_post_meta($id,'_roxy_seat_hold_managed',true)===1)throw new \RuntimeException('The ticket mapping changed. Contact the theater.');
+      if((int)$order->get_meta('_roxy_seat_hold_managed',true)===1)throw new \RuntimeException('The ticket mapping changed. Contact the theater.');
       return false;
     }
     if(count($captured['shows'])>32)throw new \RuntimeException('Please order tickets for no more than 32 showings at once.');
@@ -83,13 +83,13 @@ final class Holds {
         $item=$order->get_item($item_id);
         if(!$item || (int)$item->get_product_id()!==$pid || (int)$item->get_quantity()!==$qty)throw new \RuntimeException('Save ticket quantity changes before confirming payment.');
       }
-      $status=$wpdb->get_var($wpdb->prepare("SELECT post_status FROM `{$wpdb->posts}` WHERE ID=%d AND post_type='shop_order'",$id));
-      if($wpdb->last_error || !in_array($status,['wc-pending','wc-checkout-draft','wc-on-hold','wc-processing','wc-completed','wc-failed','wc-cancelled'],true))throw new \RuntimeException('This order cannot reserve seats.');
+      $fresh_order=wc_get_order($id);
+      if(!$fresh_order || $fresh_order->get_type()!=='shop_order' || (int)$fresh_order->get_id()!==$id || !in_array($fresh_order->get_status(),['pending','checkout-draft','on-hold','processing','completed','failed','cancelled'],true))throw new \RuntimeException('This order cannot reserve seats.');
       foreach($fresh['shows'] as $sid=>$qty) {
         $subscriber=0;
         foreach($fresh['lines'] as [$pid,$units,$line_show])if($line_show===$sid && $writer->post_meta_value($pid,ROXY_ST_META_TICKET_TYPE)==='subscriber')$subscriber+=$units;
         if($subscriber>0) {
-          $user=(int)$writer->post_meta_value($id,'_customer_user');
+          $user=(int)$fresh_order->get_customer_id();
           if($user<=0 || $user!==(int)$order->get_customer_id())throw new \RuntimeException('Subscriber account could not be verified');
           $entitlement=Capacity::subscription_entitlement_count($user);
           $used=Reservations::quantity_for_showing($sid,$id,$user);
@@ -109,8 +109,8 @@ final class Holds {
       if($minutes<=0)throw new \RuntimeException('Ticket checkout requires a positive WooCommerce hold duration.');
       $now=(int)$wpdb->get_var('SELECT UNIX_TIMESTAMP()');
       if($wpdb->last_error || $now<=0 || $minutes>525600)throw new \RuntimeException('Ticket hold expiry could not be verified.');
-      $writer->post_meta($id,'_roxy_seat_hold_managed',1);
-      $writer->post_meta($id,'_roxy_seat_hold_until',$now+$minutes*60);
+      $writer->transactional_order_meta($id,'_roxy_seat_hold_managed',1);
+      $writer->transactional_order_meta($id,'_roxy_seat_hold_until',$now+$minutes*60);
     });
     return true;
   }
@@ -122,10 +122,10 @@ final class Holds {
     try {
       (new Issuance($id))->run(static function(Issuance $writer)use($id):void {
         global $wpdb;
-        $status=$wpdb->get_var($wpdb->prepare("SELECT post_status FROM `{$wpdb->posts}` WHERE ID=%d",$id));
-        if($wpdb->last_error || !$status)throw new \RuntimeException('Order status could not be read');
-        if(in_array($status,['wc-processing','wc-completed','wc-on-hold'],true))return;
-        $writer->post_meta($id,'_roxy_seat_hold_until',null,true);
+        $current=wc_get_order($id);
+        if(!$current || (int)$current->get_id()!==$id)throw new \RuntimeException('Order status could not be read');
+        if(in_array($current->get_status(),['processing','completed','on-hold'],true))return;
+        $writer->transactional_order_meta($id,'_roxy_seat_hold_until',null,true);
       });
     } catch(\Throwable $e){Log::error('Ticket hold release incomplete; expiry remains the fallback',['order_id'=>$id]);}
   }
@@ -138,9 +138,10 @@ final class Holds {
     $changes=$order->get_changes();if(!isset($changes['status']))return;
     $lease=null;
     try {
-      $old=$wpdb->get_var($wpdb->prepare("SELECT post_status FROM `{$wpdb->posts}` WHERE ID=%d",(int)$order->get_id()));
-      if($wpdb->last_error || !$old)throw new \RuntimeException('Order status unavailable');
-      if(in_array($old,['wc-processing','wc-completed'],true) && (int)get_post_meta($order->get_id(),'_roxy_seat_review',true)!==1)return;
+      $stored=wc_get_order((int)$order->get_id());
+      if(!$stored || (int)$stored->get_id()!==(int)$order->get_id())throw new \RuntimeException('Order status unavailable');
+      $old=$stored->get_status();
+      if(in_array($old,['processing','completed'],true) && (int)$stored->get_meta('_roxy_seat_review',true)!==1)return;
       $captured=self::snapshot((int)$order->get_id());
       if($captured['shows']) {
         $lease=new Issuance((int)$order->get_id(),array_map(static fn($sid)=>'walkup:'.$sid,array_keys($captured['shows'])));
@@ -191,7 +192,7 @@ final class Holds {
   public static function hold_notice($order_id): void {
     $order=wc_get_order((int)$order_id);
     if(!$order || !in_array($order->get_status(),['pending','checkout-draft'],true))return;
-    $until=(int)get_post_meta((int)$order_id,'_roxy_seat_hold_until',true);if($until<=0)return;
+    $order=wc_get_order((int)$order_id);$until=$order?(int)$order->get_meta('_roxy_seat_hold_until',true):0;if($until<=0)return;
     echo '<p class="woocommerce-info">Your unpaid ticket seat hold expires '.esc_html(wp_date('M j, Y g:i a T',$until)).'. After expiry, seat availability is checked again before confirmation.</p>';
   }
 }

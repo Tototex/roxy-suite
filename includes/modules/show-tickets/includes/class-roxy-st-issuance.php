@@ -7,8 +7,10 @@ final class Issuance {
   private string $lock;
   private array $locks = [];
   private int $owner = 0;
+  private bool $hpos_order_storage = false;
   private array $posts = [];
   private array $items = [];
+  private array $order_meta = [];
   private array $leased = [];
   private int $visit_id = 0;
 
@@ -26,9 +28,8 @@ final class Issuance {
 
   public function run(callable $callback) {
     global $wpdb;
-    if (!class_exists('\\RoxySuite\\Compatibility') || !\RoxySuite\Compatibility::supports_legacy_order_storage()) {
-      throw new \RuntimeException('Ticket, booking, and admission actions require verified post-based WooCommerce order storage.');
-    }
+    $this->hpos_order_storage = self::custom_orders_table_is_authoritative();
+    if (!$this->hpos_order_storage && (!class_exists('\\RoxySuite\\Compatibility') || !\RoxySuite\Compatibility::supports_legacy_order_storage())) throw new \RuntimeException('Ticket transaction requires verified WooCommerce order storage.');
     $this->owner = (int)$wpdb->get_var('SELECT CONNECTION_ID()');
     $started = false;
     $acquired = [];
@@ -39,10 +40,13 @@ final class Issuance {
         $acquired[] = $lock;
       }
       $this->assert_owner();
-      foreach ([$wpdb->posts, $wpdb->postmeta, $wpdb->prefix.'woocommerce_order_items', $wpdb->prefix.'woocommerce_order_itemmeta'] as $table) {
+      $tables = [$wpdb->posts, $wpdb->postmeta, $wpdb->prefix.'woocommerce_order_items', $wpdb->prefix.'woocommerce_order_itemmeta'];
+      if ($this->hpos_order_storage) $tables[] = $wpdb->prefix.'wc_orders_meta';
+      foreach ($tables as $table) {
         $engine = $wpdb->get_var($wpdb->prepare('SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s', $table));
         if ($engine !== 'InnoDB') throw new \RuntimeException('Transactional ticket storage required');
       }
+      if ($this->hpos_order_storage) $this->assert_hpos_meta_schema();
       // Never implicitly commit a transaction owned by WooCommerce/another module.
       if ((string)$wpdb->get_var('SELECT @@SESSION.autocommit') !== '1') throw new \RuntimeException('External transaction active');
       $probe = 'roxy_ticket_probe_' . bin2hex(random_bytes(8));
@@ -71,6 +75,10 @@ final class Issuance {
       }
       foreach ($this->posts as $id) { wp_cache_delete($id, 'posts'); wp_cache_delete($id, 'post_meta'); }
       foreach ($this->items as $id) { wp_cache_delete($id, 'order_item_meta'); wp_cache_delete('item-'.$id, 'order-items'); }
+      foreach ($this->order_meta as $id) {
+        if (class_exists('WC_Order') && method_exists('\\WC_Order', 'generate_meta_cache_key')) wp_cache_delete(\WC_Order::generate_meta_cache_key($id, 'orders'), 'orders');
+        wp_cache_delete($id, 'orders');
+      }
       if ($this->items && class_exists('WC_Cache_Helper')) \WC_Cache_Helper::invalidate_cache_group('order-items');
     }
   }
@@ -110,6 +118,19 @@ final class Issuance {
     $checks = [$wpdb->prepare('CONNECTION_ID()=%d', $this->owner)];
     foreach ($this->locks as $lock) $checks[] = $wpdb->prepare('IS_USED_LOCK(%s)=%d', $lock, $this->owner);
     return '('.implode(' AND ', $checks).')';
+  }
+  private static function custom_orders_table_is_authoritative(): bool {
+    $utility='\\Automattic\\WooCommerce\\Utilities\\OrderUtil';
+    if (!class_exists($utility) || !method_exists($utility, 'custom_orders_table_usage_is_enabled')) return false;
+    try { return $utility::custom_orders_table_usage_is_enabled() === true; }
+    catch (\Throwable $error) { throw new \RuntimeException('WooCommerce order storage could not be verified', 0, $error); }
+  }
+  private function assert_hpos_meta_schema(): void {
+    global $wpdb;
+    $table=$wpdb->prefix.'wc_orders_meta';
+    $columns=$wpdb->get_col("SHOW COLUMNS FROM `$table`",0);
+    if ($wpdb->last_error || !is_array($columns) || array_diff(['id','order_id','meta_key','meta_value'],$columns)) throw new \RuntimeException('WooCommerce order metadata schema is unsupported');
+    $this->assert_owner();
   }
   public function will_call_quantity(int $context_id, string $customer_key): int {
     global $wpdb;
@@ -262,6 +283,15 @@ final class Issuance {
     global $wpdb;
     $values=$this->read_values($wpdb->postmeta,'post_id',$id,$key);
     return $values?maybe_unserialize($values[0]):'';
+  }
+  /** Transactional HPOS order writes are limited to Roxy's durable seat-hold markers. */
+  public function transactional_order_meta(int $id, string $key, $value, bool $remove = false): void {
+    global $wpdb;
+    if ($id<=0 || !in_array($key,['_roxy_seat_hold_managed','_roxy_seat_hold_until'],true)) throw new \RuntimeException('Unsupported transactional order metadata');
+    if (!$this->hpos_order_storage) { $this->post_meta($id,$key,$value,$remove); return; }
+    $this->order_meta[$id]=$id;
+    $this->metadata($wpdb->prefix.'wc_orders_meta','order_id',$id,$key,$value,$remove);
+    if (class_exists('WC_Order') && method_exists('\\WC_Order','generate_meta_cache_key')) wp_cache_delete(\WC_Order::generate_meta_cache_key($id,'orders'),'orders');
   }
   public function is_ticket(int $id): bool {
     global $wpdb;

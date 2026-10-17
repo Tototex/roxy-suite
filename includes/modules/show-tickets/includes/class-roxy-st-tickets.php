@@ -153,7 +153,7 @@ class Tickets {
 
     $order_status = (string) $order->get_status();
     $state_for_order = self::state_for_order_status($order_status);
-    if((int)self::read_ticket_meta($order_id,'_roxy_seat_review')===1)$state_for_order='pending';
+    if((int)$order->get_meta('_roxy_seat_review',true)===1)$state_for_order='pending';
 
     foreach ($order->get_items() as $item_id => $item) {
       $product_id = (int) $item->get_product_id();
@@ -531,13 +531,15 @@ class Tickets {
   private static function apply_undo(int $ticket_id, string $expected_source): bool {
       if (!self::$issuance || (int)self::read_ticket_meta($ticket_id,self::META_CHECKED_IN) !== 1) return false;
       $order_id=(int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID);
+      $order=wc_get_order($order_id);
+      if(!$order || (int)$order->get_id()!==$order_id)return false;
       if ($expected_source !== '' && self::read_ticket_meta($ticket_id,'_roxy_checked_in_source') !== $expected_source) return false;
       if(self::read_ticket_meta($ticket_id,'_roxy_checked_in_source')==='member') {
         $visit_id=(int)self::read_ticket_meta($ticket_id,'_roxy_member_visit_id');
         $sub_id=(int)self::read_ticket_meta($ticket_id,'_roxy_member_visit_subscription_id');
         // No guessing by name/time: historical unlinked arrivals require review.
         if($visit_id<=0 || $sub_id<=0 || self::read_ticket_meta($ticket_id,self::META_TICKET_TYPE)!=='subscriber')return false;
-        $user_id=(int)self::$issuance->post_meta_value($order_id,'_customer_user');
+        $user_id=(int)$order->get_customer_id();
         $audit=self::$issuance->undo_member_visit($visit_id,$sub_id,(int)self::read_ticket_meta($ticket_id,self::META_SHOWING_ID),$user_id);
         $history=self::read_ticket_meta($ticket_id,'_roxy_member_visit_undo_history');
         if($history!=='' && !is_array($history))throw new \RuntimeException('Member undo history requires review');
@@ -547,7 +549,6 @@ class Tickets {
         self::remove_ticket_meta($ticket_id,'_roxy_member_visit_subscription_id');
       }
       foreach ([self::META_CHECKED_IN,self::META_CHECKED_IN_AT,self::META_CHECKED_IN_BY,'_roxy_checked_in_source'] as $key) self::remove_ticket_meta($ticket_id,$key);
-      $order = wc_get_order($order_id);
       if ($order) {
         $item_id=(int)self::read_ticket_meta($ticket_id,self::META_ORDER_ITEM_ID);
         $ticket_ids=self::$issuance->tickets_for_item($order_id,$item_id);
@@ -659,7 +660,7 @@ class Tickets {
     $order_id = (int) $order->get_id();
     if (isset($rendered[$order_id])) return;
     $rendered[$order_id] = true;
-    if((int)get_post_meta($order_id,'_roxy_seat_review',true)===1) {
+    if((int)$order->get_meta('_roxy_seat_review',true)===1) {
       echo '<section class="woocommerce-order-details roxy-st-tickets"><h2>Your Tickets</h2><p>Your order requires a seat availability review. Please contact the theater. Payment records are preserved; no automatic refund was made. Tickets are not valid for admission until this is resolved.</p></section>';
       return;
     }
@@ -1843,7 +1844,7 @@ class Tickets {
     // Do not trust stale ticket metadata after payment/order state changes.
     $order = wc_get_order((int) self::read_ticket_meta($ticket_id, self::META_ORDER_ID));
     if (!$order || self::state_for_order_status((string) $order->get_status()) !== 'valid') return false;
-    if((int)self::read_ticket_meta((int)self::read_ticket_meta($ticket_id,self::META_ORDER_ID),'_roxy_seat_review')===1)return false;
+    if((int)$order->get_meta('_roxy_seat_review',true)===1)return false;
     $item_id = (int) self::read_ticket_meta($ticket_id, self::META_ORDER_ITEM_ID);
     $item = $order->get_item($item_id);
     if (!$item) return false;
