@@ -594,7 +594,7 @@ final class WooCollectionEvents {
     $seen_orders = [];
     $seen_transactions = [];
     foreach ($orders as $order) {
-      $methods = ['get_id','get_payment_method','is_paid','get_currency','get_total','get_date_paid','get_transaction_id','get_status'];
+      $methods = ['get_id','get_payment_method','is_paid','get_currency','get_total','get_date_paid','get_transaction_id'];
       if (!is_object($order)) throw new \RuntimeException('WooCommerce returned a malformed collection order.');
       foreach ($methods as $method) if (!method_exists($order, $method)) throw new \RuntimeException('WooCommerce collection order lacks required payment evidence.');
       $id = $order->get_id();
@@ -609,7 +609,7 @@ final class WooCollectionEvents {
         $review_reason = $order->get_meta('_roxy_seat_review_reason', true);
         $paid_at = $order->get_date_paid();
         $transaction_id = $order->get_transaction_id();
-        $is_paid = $order->get_status() === 'on-hold'
+        $is_paid = method_exists($order, 'get_status') && $order->get_status() === 'on-hold'
           && in_array($seat_review, [1, '1'], true)
           && in_array($review_reason, ['sales_cutoff', 'seat_availability'], true)
           && $paid_at instanceof \DateTimeInterface
