@@ -1,6 +1,7 @@
 <?php
 define('ABSPATH', __DIR__);
 if (!defined('ARRAY_A')) define('ARRAY_A', 'ARRAY_A');
+function roxy_rs_table_backings(): string { return 'wp_roxy_requested_showing_backings'; }
 $GLOBALS['refund_projection_order'] = null;
 $GLOBALS['refund_projection_types'] = [];
 function wc_get_order($id) { return $GLOBALS['refund_projection_order']; }
