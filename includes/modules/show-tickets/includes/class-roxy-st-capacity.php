@@ -93,6 +93,14 @@ class Capacity {
     // or an earlier validation callback.
     if (!$passed) return false;
 
+    if (!class_exists('\\RoxySuite\\Compatibility') || !\RoxySuite\Compatibility::supports_legacy_order_storage()) {
+      $showing_id = (int) get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true);
+      if ($showing_id > 0) {
+        wc_add_notice('Ticket checkout is temporarily unavailable while WooCommerce order storage is being verified.', 'error');
+        return false;
+      }
+    }
+
     $sid = (int) get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true);
     if (!$sid) return $passed;
 
@@ -170,6 +178,10 @@ class Capacity {
       if (!$pid) continue;
       $sid = (int) get_post_meta($pid, ROXY_ST_META_SHOWING_ID, true);
       if (!$sid) continue;
+      if (!class_exists('\\RoxySuite\\Compatibility') || !\RoxySuite\Compatibility::supports_legacy_order_storage()) {
+        wc_add_notice('Ticket checkout is temporarily unavailable while WooCommerce order storage is being verified.', 'error');
+        return;
+      }
       $qty = (int) ($item['quantity'] ?? 0);
       $by_showing[$sid] = ($by_showing[$sid] ?? 0) + $qty;
 

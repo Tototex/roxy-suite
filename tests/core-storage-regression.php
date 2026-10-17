@@ -24,11 +24,14 @@ namespace {
     storage_check(\Automattic\WooCommerce\Utilities\FeaturesUtil::$calls === [['custom_order_tables', $root . '/roxy-suite.php', false]], 'HPOS explicitly declared unsupported for the actual plugin file');
     $status = \RoxySuite\Compatibility::order_storage_status();
     storage_check($status['status'] === 'pass' && $status['value'] === 'Post-based storage', 'legacy order storage remains supported');
+    storage_check(\RoxySuite\Compatibility::supports_legacy_order_storage(), 'runtime guard allows workflows only when post-based storage is positively verified');
     \Automattic\WooCommerce\Utilities\OrderUtil::$result = true;
     $status = \RoxySuite\Compatibility::order_storage_status();
     storage_check($status['status'] === 'fail' && strpos($status['message'], 'backup') !== false, 'unsupported active HPOS is a failed diagnostic with safe recovery guidance');
+    storage_check(!\RoxySuite\Compatibility::supports_legacy_order_storage(), 'runtime guard blocks workflows when HPOS is active');
     \Automattic\WooCommerce\Utilities\OrderUtil::$result = '0';
     storage_check(\RoxySuite\Compatibility::order_storage_status()['status'] === 'warn', 'non-boolean storage detector result fails closed as unknown');
+    storage_check(!\RoxySuite\Compatibility::supports_legacy_order_storage(), 'runtime guard blocks workflows when storage mode is unknown');
     \Automattic\WooCommerce\Utilities\OrderUtil::$result = false;
     \Automattic\WooCommerce\Utilities\OrderUtil::$fail = true;
     storage_check(\RoxySuite\Compatibility::order_storage_status()['status'] === 'warn', 'storage read exception does not break diagnostics or falsely pass');

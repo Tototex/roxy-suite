@@ -1,6 +1,14 @@
 <?php
 // WP-CLI private fixtures only: evaluate the selected staged/live source, not an old loaded class.
 if (!defined('WP_CLI') || !WP_CLI) exit;
+// These private fixture workers run against a disposable legacy-storage test DB.
+// Keep production's fail-closed gate exercised without relying on load order.
+if (!class_exists('RoxySuite\\Compatibility')) {
+    class RoxyFixtureCompatibility {
+        public static function supports_legacy_order_storage(): bool { return true; }
+    }
+    class_alias('RoxyFixtureCompatibility', 'RoxySuite\\Compatibility');
+}
 function roxy_fixture_reservations(string $root): void {
     if(class_exists('RoxyST\\FixtureReservations'))return;
     $code=preg_replace('/^<\?php\s*/','',file_get_contents($root.'/includes/modules/show-tickets/includes/class-roxy-st-reservations.php'),1);

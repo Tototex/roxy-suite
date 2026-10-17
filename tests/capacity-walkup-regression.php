@@ -19,6 +19,7 @@ class TestCart {
   function set_quantity($key,$qty){$this->rows[$key]['quantity']=$qty;}
 }
 class Roxy_Sub_Check{static function walkup_quantity_for_showing($show,$user=0){if(!empty($GLOBALS['log_fail']))throw new RuntimeException('Fixture read failure');return (int)($GLOBALS[$user>0?'user_walkups':'walkups']??0);}}
+eval('namespace RoxySuite;class Compatibility{static function supports_legacy_order_storage():bool{return true;}}');
 eval('namespace RoxyST;class Reservations{static function quantity_for_showing($id){if(!empty($GLOBALS["reservation_fail"]))throw new \\RuntimeException("Fixture failure");return (int)($GLOBALS["sold"]??0);}}');
 $root=$argv[1]??dirname(__DIR__);require $root.'/includes/modules/show-tickets/includes/class-roxy-st-capacity.php';
 $GLOBALS['wpdb']=(object)['last_error'=>''];

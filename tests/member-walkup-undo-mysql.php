@@ -2,6 +2,14 @@
 // Exercises the production admission transaction against private disposable MySQL tables.
 if (!defined('WP_CLI') || !WP_CLI) exit;
 $root=$args[0]??dirname(__DIR__);
+// This disposable WordPress fixture has no WooCommerce plugin; model the
+// post-based order store that its manually created private tables exercise.
+if (!class_exists('RoxySuite\\Compatibility')) {
+  class RoxyWalkupFixtureCompatibility {
+    public static function supports_legacy_order_storage(): bool { return true; }
+  }
+  class_alias('RoxyWalkupFixtureCompatibility', 'RoxySuite\\Compatibility');
+}
 require $root.'/includes/modules/show-tickets/includes/class-roxy-st-issuance.php';
 global $wpdb;
 $scan=$wpdb->prefix.'roxy_member_scans';

@@ -36,4 +36,10 @@ final class Compatibility {
             return ['status' => 'warn', 'value' => 'Unknown', 'message' => 'WooCommerce order storage could not be verified. Review storage configuration before changing it.'];
         }
     }
+
+    /** True only when legacy post-based order storage is positively verified. */
+    public static function supports_legacy_order_storage(): bool {
+        $status = self::order_storage_status();
+        return is_array($status) && ($status['status'] ?? '') === 'pass';
+    }
 }

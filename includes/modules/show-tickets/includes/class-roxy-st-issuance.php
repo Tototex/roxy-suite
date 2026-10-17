@@ -26,6 +26,9 @@ final class Issuance {
 
   public function run(callable $callback) {
     global $wpdb;
+    if (!class_exists('\\RoxySuite\\Compatibility') || !\RoxySuite\Compatibility::supports_legacy_order_storage()) {
+      throw new \RuntimeException('Ticket, booking, and admission actions require verified post-based WooCommerce order storage.');
+    }
     $this->owner = (int)$wpdb->get_var('SELECT CONNECTION_ID()');
     $started = false;
     $acquired = [];
