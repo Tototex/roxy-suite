@@ -34,7 +34,9 @@ add_filter('pre_wp_mail',$mail_guard,PHP_INT_MAX,2);
 try {
     $product=new WC_Product_Simple();
     $product->set_name('Private HPOS Event Booking Fixture');
-    $product->set_status('private');
+    // This fixture runs only on a disposable CI site. Keep the product hidden
+    // from listings, but published so WooCommerce will accept it in a cart.
+    $product->set_status('publish');
     $product->set_catalog_visibility('hidden');
     $product->set_virtual(true);
     $product->set_regular_price('0');
