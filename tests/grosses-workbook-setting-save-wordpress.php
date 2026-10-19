@@ -27,6 +27,11 @@ $workbook_class = $namespace . '\\Workbook';
 $settings_class::register_settings();
 $option_key = $settings_class::OPTION_KEY;
 global $wpdb;
+$prior_engine = strtoupper((string) $wpdb->get_var($wpdb->prepare(
+    'SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s',
+    $wpdb->options
+)));
+if (!in_array($prior_engine, ['INNODB', 'MYISAM'], true)) throw new RuntimeException('Could not verify disposable WordPress options-table engine.');
 $prior_row = $wpdb->get_row($wpdb->prepare("SELECT option_value, autoload FROM {$wpdb->options} WHERE option_name = %s", $option_key), ARRAY_A);
 $prior_row = is_array($prior_row) ? $prior_row : null;
 $root_path = trailingslashit(WP_CONTENT_DIR) . 'roxy-grosses-private';
@@ -44,6 +49,15 @@ $check = static function (bool $condition, string $label) use (&$checks): void {
 };
 
 try {
+    if ($prior_engine !== 'MYISAM' && $wpdb->query("ALTER TABLE {$wpdb->options} ENGINE=MyISAM") === false) {
+        throw new RuntimeException('Could not switch the disposable options table to MyISAM.');
+    }
+    $active_engine = strtoupper((string) $wpdb->get_var($wpdb->prepare(
+        'SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s',
+        $wpdb->options
+    )));
+    $check($active_engine === 'MYISAM', 'fixture exercises the production MyISAM options-table engine');
+
     $private_dir = $private_dir_method->invoke(null);
     $file_path = trailingslashit($private_dir) . 'settings-save-' . bin2hex(random_bytes(8)) . '.xlsx';
     if (file_put_contents($file_path, 'private synthetic workbook fixture') === false) {
@@ -77,6 +91,9 @@ try {
     wp_cache_delete($option_key, 'options');
     wp_cache_delete('alloptions', 'options');
     wp_cache_delete('notoptions', 'options');
+    if ($prior_engine !== 'MYISAM') {
+        $wpdb->query("ALTER TABLE {$wpdb->options} ENGINE=InnoDB");
+    }
     if (!$templates_existed && is_dir($templates_path)) {
         foreach (['.htaccess', 'index.html'] as $name) {
             $path = trailingslashit($templates_path) . $name;
