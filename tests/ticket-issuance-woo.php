@@ -19,7 +19,7 @@ $check=static function($ok,$label){if(!$ok)throw new RuntimeException($label);ec
 try{
   $show=wp_insert_post(['post_type'=>'roxy_showing','post_status'=>'draft','post_title'=>'PRIVATE ISSUANCE FIXTURE 2026-10-05'],true);if(is_wp_error($show))throw new RuntimeException('Cannot create fixture');$created[]=$show;
   $product=new WC_Product_Simple();$product->set_name('PRIVATE ISSUANCE FIXTURE 2026-10-05');$product->set_status('draft');$product->set_catalog_visibility('hidden');$product->set_regular_price('0');$pid=$product->save();$created[]=$pid;
-  update_post_meta($pid,ROXY_ST_META_SHOWING_ID,$show);update_post_meta($pid,ROXY_ST_META_TICKET_TYPE,'general');update_post_meta($show,'_roxy_pid_adult',$pid);update_post_meta($show,'_roxy_start',wp_date('Y-m-d').' 23:00');
+  update_post_meta($pid,ROXY_ST_META_SHOWING_ID,$show);update_post_meta($pid,ROXY_ST_META_TICKET_TYPE,'general');update_post_meta($show,'_roxy_pid_adult',$pid);update_post_meta($show,'_roxy_start',wp_date('Y-m-d',time()+DAY_IN_SECONDS).' 23:00');
   $order=wc_create_order(['status'=>'pending','customer_note'=>'PRIVATE ISSUANCE FIXTURE 2026-10-05 — no payment or fulfillment']);if(is_wp_error($order))throw new RuntimeException('Cannot create private order');
   $item_id=$order->add_product($product,3);$order->calculate_totals();$order->save();
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'actual Woo order issues complete ticket set');
