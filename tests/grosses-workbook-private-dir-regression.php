@@ -119,6 +119,23 @@ try {
     $rechecked = file_get_contents($rules_path);
     $check($rechecked === $canonical_rules, 'repeated verification leaves the canonical policy unchanged');
 
+    $outside_guard_target = $fixture_root . DIRECTORY_SEPARATOR . 'outside-guard-target.txt';
+    file_put_contents($outside_guard_target, 'preserve-outside-guard-target');
+    if (!unlink($rules_path) || !symlink($outside_guard_target, $rules_path)) throw new RuntimeException('Could not create symlinked access-rules fixture.');
+    $rules_link_rejected = false;
+    try { $root_method->invoke(null); } catch (RuntimeException $error) { $rules_link_rejected = true; }
+    $check($rules_link_rejected && file_get_contents($outside_guard_target) === 'preserve-outside-guard-target', 'symlinked access rules are rejected without overwriting their target');
+    unlink($rules_path);
+    $root_method->invoke(null);
+
+    $dangling_index_target = $fixture_root . DIRECTORY_SEPARATOR . 'absent-index-target.html';
+    if (!unlink($index) || !symlink($dangling_index_target, $index)) throw new RuntimeException('Could not create dangling index symlink fixture.');
+    $index_link_rejected = false;
+    try { $root_method->invoke(null); } catch (RuntimeException $error) { $index_link_rejected = true; }
+    $check($index_link_rejected && !file_exists($dangling_index_target), 'dangling index symlinks are rejected without creating their targets');
+    unlink($index);
+    $root_method->invoke(null);
+
     $public_target = $fixture_root . DIRECTORY_SEPARATOR . 'public-target';
     if (!mkdir($public_target, 0700)) throw new RuntimeException('Could not create symlink target fixture.');
     $private_descendant = $templates_method->invoke(null) . DIRECTORY_SEPARATOR . 'path-check.xlsx';

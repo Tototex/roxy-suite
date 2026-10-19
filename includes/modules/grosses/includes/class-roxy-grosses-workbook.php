@@ -1266,24 +1266,114 @@ class Workbook {
 
   private static function protect_directory(string $dir): void {
     $index = trailingslashit($dir) . 'index.html';
-    if (!is_file($index) && @file_put_contents($index, '') === false) {
-      throw new \RuntimeException('Could not create the private workbook directory index.');
+    if (is_link($index)) {
+      throw new \RuntimeException('The private workbook directory index cannot be a symbolic link.');
     }
-    if (!is_file($index) || !is_readable($index)) {
+    if (!file_exists($index)) {
+      $handle = @fopen($index, 'x+b');
+      if ($handle === false) {
+        clearstatcache(true, $index);
+        if (is_link($index) || !self::is_regular_guard_file($index)) {
+          throw new \RuntimeException('Could not create the private workbook directory index.');
+        }
+      } elseif (!@fclose($handle)) {
+        throw new \RuntimeException('Could not close the private workbook directory index.');
+      }
+    }
+    if (!self::is_regular_guard_file($index) || !is_readable($index)) {
       throw new \RuntimeException('The private workbook directory index could not be verified.');
     }
 
     $htaccess = trailingslashit($dir) . '.htaccess';
     $rules = "<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n";
-    $contents = is_file($htaccess) ? @file_get_contents($htaccess) : false;
-    if (!is_string($contents) || $contents !== $rules) {
-      if (@file_put_contents($htaccess, $rules) === false) {
-        throw new \RuntimeException('Could not write private workbook directory access rules.');
-      }
-      $contents = @file_get_contents($htaccess);
+    if (is_link($htaccess) || (file_exists($htaccess) && !self::is_regular_guard_file($htaccess))) {
+      throw new \RuntimeException('The private workbook directory access rules must be a regular file.');
     }
-    if (!is_file($htaccess) || !is_readable($htaccess) || !is_string($contents) || $contents !== $rules) {
+    $contents = file_exists($htaccess) ? self::read_guard_file($htaccess) : false;
+    if (!is_string($contents) || $contents !== $rules) {
+      self::write_guard_file_atomically($dir, $htaccess, $rules);
+      $contents = self::read_guard_file($htaccess);
+    }
+    if (!self::is_regular_guard_file($htaccess) || !is_readable($htaccess) || !is_string($contents) || $contents !== $rules) {
       throw new \RuntimeException('Private workbook directory access rules could not be verified.');
+    }
+  }
+
+  private static function is_regular_guard_file(string $path): bool {
+    clearstatcache(true, $path);
+    if (is_link($path)) return false;
+    $stat = @lstat($path);
+    return is_array($stat) && (($stat['mode'] & 0170000) === 0100000);
+  }
+
+  /** Read guard files only when the opened descriptor still matches a regular path. */
+  private static function read_guard_file(string $path) {
+    if (!self::is_regular_guard_file($path)) return false;
+    $handle = @fopen($path, 'rb');
+    if (!is_resource($handle)) return false;
+    $opened = @fstat($handle);
+    clearstatcache(true, $path);
+    $current = @lstat($path);
+    $same_file = is_array($opened) && is_array($current)
+      && (($opened['mode'] & 0170000) === 0100000)
+      && (($current['mode'] & 0170000) === 0100000)
+      && ($opened['dev'] ?? null) === ($current['dev'] ?? null)
+      && ($opened['ino'] ?? null) === ($current['ino'] ?? null);
+    $contents = $same_file ? @stream_get_contents($handle) : false;
+    @fclose($handle);
+    return is_string($contents) ? $contents : false;
+  }
+
+  /** Replace weak access rules without ever opening the target path for writing. */
+  private static function write_guard_file_atomically(string $dir, string $path, string $contents): void {
+    $temporary = '';
+    $handle = false;
+    for ($attempt = 0; $attempt < 8; $attempt++) {
+      $candidate = trailingslashit($dir) . '.roxy-grosses-guard-' . bin2hex(random_bytes(8));
+      $handle = @fopen($candidate, 'x+b');
+      if (is_resource($handle)) {
+        $temporary = $candidate;
+        break;
+      }
+    }
+    if (!is_resource($handle) || $temporary === '') {
+      throw new \RuntimeException('Could not reserve a private workbook access-rules file.');
+    }
+
+    $offset = 0;
+    $length = strlen($contents);
+    $written_ok = true;
+    while ($offset < $length) {
+      $written = @fwrite($handle, substr($contents, $offset));
+      if (!is_int($written) || $written <= 0) {
+        $written_ok = false;
+        break;
+      }
+      $offset += $written;
+    }
+    $written_ok = $written_ok && $offset === $length && @fflush($handle);
+    $opened = @fstat($handle);
+    clearstatcache(true, $temporary);
+    $current = @lstat($temporary);
+    $same_file = is_array($opened) && is_array($current)
+      && (($opened['mode'] & 0170000) === 0100000)
+      && (($current['mode'] & 0170000) === 0100000)
+      && ($opened['dev'] ?? null) === ($current['dev'] ?? null)
+      && ($opened['ino'] ?? null) === ($current['ino'] ?? null);
+    $closed = @fclose($handle);
+    if (!$written_ok || !$same_file || !$closed || !self::is_regular_guard_file($temporary)) {
+      if (file_exists($temporary) && !@unlink($temporary)) error_log('Roxy Grosses: unable to remove an incomplete private access-rules file.');
+      throw new \RuntimeException('Could not write private workbook directory access rules.');
+    }
+
+    clearstatcache(true, $path);
+    if (is_link($path) || (file_exists($path) && !self::is_regular_guard_file($path)) || !@rename($temporary, $path)) {
+      if (file_exists($temporary) && !@unlink($temporary)) error_log('Roxy Grosses: unable to remove a rejected private access-rules file.');
+      throw new \RuntimeException('Could not safely replace private workbook directory access rules.');
+    }
+    $verified = self::read_guard_file($path);
+    if (!is_string($verified) || $verified !== $contents) {
+      throw new \RuntimeException('Private workbook directory access rules could not be verified after replacement.');
     }
   }
 
