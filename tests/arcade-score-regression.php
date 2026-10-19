@@ -34,6 +34,8 @@ $GLOBALS['wpdb']->readResults=[false];$response=Roxy_Arcade::rest_get_leaderboar
 check($response->status===503&&$response->data['ok']===false,'combined leaderboard query failure returns controlled REST error');
 $GLOBALS['wpdb']->readResults=[[],null];$response=Roxy_Arcade::rest_get_leaderboards(new WP_REST_Request);
 check($response->status===503&&$response->data['ok']===false,'per-game leaderboard query failure returns controlled REST error');
+$GLOBALS['wpdb']->readResults=[['malformed-row']];$response=Roxy_Arcade::rest_get_leaderboards(new WP_REST_Request);
+check($response->status===503&&$response->data['ok']===false,'malformed database row returns controlled REST error');
 $GLOBALS['wpdb']->readResults=[false];$response=Roxy_Arcade::rest_post_score(new WP_REST_Request);
 check($response->status===200&&$response->data['ok']===true&&!empty($response->data['leaderboardUnavailable'])&&!isset($response->data['leaderboards']),'saved score is not represented as failed when follow-up read fails');
 $response=Roxy_Arcade::rest_post_score(new WP_REST_Request(10,'marquee','bad'));check($response->status===403,'nonce guard retained');
