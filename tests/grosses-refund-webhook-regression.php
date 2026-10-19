@@ -6,7 +6,7 @@ class WP_REST_Response { public $data; public $status; public function __constru
 function add_action($hook, $callback, $priority = 10, $accepted_args = 1) { $GLOBALS['refund_webhook_actions'][$hook][] = $callback; }
 function register_rest_route($namespace, $route, $args) { $GLOBALS['refund_webhook_routes'][] = compact('namespace', 'route', 'args'); return true; }
 function __return_true() { return true; }
-eval('namespace RoxyGrosses; class Settings { static $key = "secret"; static function get($name, $default = "") { return self::$key; } } class Store { static function refund_webhook_table_name() { return "wp_refund_events"; } }');
+eval('namespace RoxyGrosses; class Settings { static $key = "secret"; static $locations = "loc-1"; static function get($name, $default = "") { return $name === "square_webhook_signature_key" ? self::$key : ($name === "square_location_ids" ? self::$locations : $default); } static function line_list($value) { return array_values(array_filter(array_map("trim", preg_split("/\\r\\n|\\r|\\n/", $value)))); } } class Store { static function refund_webhook_table_name() { return "wp_refund_events"; } }');
 
 class FixtureWpdb {
   public $last_error = '';
@@ -56,6 +56,14 @@ $response = call_user_func($route['args']['callback'], new FixtureRequest($body,
 $check($response->status === 200 && count($GLOBALS['wpdb']->rows) === 1, 'valid refund event is durably recorded');
 $stored = $GLOBALS['wpdb']->rows['evt-1'];
 $check($stored['amount_cents'] === 1234 && $stored['event_created_at'] === '2026-10-08 19:00:00' && $stored['status'] === 'COMPLETED', 'refund cents and provider event time are normalized as UTC metadata');
+$outside_location = $event;
+$outside_location['event_id'] = 'evt-outside';
+$outside_location['data']['object']['refund']['id'] = 'rf-outside';
+$outside_location['data']['object']['refund']['location_id'] = 'loc-2';
+$outside_body = json_encode($outside_location);
+$outside_sig = \RoxyGrosses\RefundWebhook::expected_signature($outside_body, 'secret', $url);
+$response = \RoxyGrosses\RefundWebhook::receive(new FixtureRequest($outside_body, $outside_sig));
+$check($response->status === 200 && count($GLOBALS['wpdb']->rows) === 1, 'valid refunds from locations outside the configured report allowlist are acknowledged but not stored');
 $response = \RoxyGrosses\RefundWebhook::receive(new FixtureRequest($body, $signature));
 $check($response->status === 200 && !empty($response->data['duplicate']) && count($GLOBALS['wpdb']->rows) === 1, 'identical Square retry is idempotent');
 $event['data']['object']['refund']['amount_money']['amount'] = 999;
@@ -75,4 +83,8 @@ $check($response->status === 400, 'signed malformed JSON is rejected');
 \RoxyGrosses\Settings::$key = '';
 $response = \RoxyGrosses\RefundWebhook::receive(new FixtureRequest($body, $signature));
 $check($response->status === 503, 'webhook fails closed until signature key configured');
+\RoxyGrosses\Settings::$key = 'secret';
+\RoxyGrosses\Settings::$locations = '';
+$response = \RoxyGrosses\RefundWebhook::receive(new FixtureRequest($body, $signature));
+$check($response->status === 200 && count($GLOBALS['wpdb']->rows) === 1, 'an empty configured location list fails closed without storing refund events');
 echo "Passed {$checks} Square refund webhook assertions.\n";

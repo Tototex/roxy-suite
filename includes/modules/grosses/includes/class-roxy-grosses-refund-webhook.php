@@ -58,6 +58,11 @@ final class RefundWebhook {
     if (!is_array($event) || json_last_error() !== JSON_ERROR_NONE) return new \WP_REST_Response(['error' => 'Invalid webhook JSON.'], 400);
     if (($event['type'] ?? '') !== 'refund.updated') return new \WP_REST_Response(['received' => true], 200);
 
+    // Square webhook subscriptions are application-wide and cannot be scoped to
+    // seller locations. Enforce the same explicit allowlist used by Cashflow
+    // before persisting any refund event; an empty list therefore stores none.
+    $configured_locations = Settings::line_list((string) Settings::get('square_location_ids', ''));
+
     try {
       $event_id = $event['event_id'] ?? null;
       $refund = $event['data']['object']['refund'] ?? null;
@@ -78,6 +83,9 @@ final class RefundWebhook {
       }
       foreach (['payment_id' => $payment_id, 'order_id' => $order_id, 'location_id' => $location_id] as $field => $value) {
         if (!is_string($value) || strlen($value) > 191) throw new \UnexpectedValueException('Refund reference is invalid.');
+      }
+      if ($location_id === '' || !in_array($location_id, $configured_locations, true)) {
+        return new \WP_REST_Response(['received' => true], 200);
       }
       $event_created_at = self::utc_datetime($event['created_at'] ?? null, true);
       $refund_created_at = self::utc_datetime($refund['created_at'] ?? null);
