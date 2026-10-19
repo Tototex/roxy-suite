@@ -12,6 +12,7 @@ function add_settings_field(...$args){}
 // Simulate core invoking the callback installed by the admin_init registration.
 function update_option($key,$value,$autoload=null){if($key!=='roxy_grosses_settings')return false;$callback=$GLOBALS['option_sanitizers'][$key]??null;if(is_callable($callback))$value=call_user_func($callback,$value);$GLOBALS['saved']=$value;return true;}
 function sanitize_text_field($v){return trim($v);}function sanitize_file_name($v){return trim($v);}function sanitize_email($v){return $v;}function sanitize_textarea_field($v){return $v;}
+function esc_attr($v){return htmlspecialchars((string)$v,ENT_QUOTES);}
 function wc_format_decimal($v){return $v;}function wp_parse_args($a,$b){return array_merge($b,$a);}
 function add_settings_error(...$args){$GLOBALS['settings_error']=true;}
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS: $label\n";}
@@ -50,3 +51,6 @@ eval('namespace RoxyGrosses; class Store {static function dashboard_snapshot(...
 ob_start(); \RoxyGrosses\Settings::render_dashboard_panel(); echo 'Other admin content remains available'; $html=ob_get_clean();
 check(str_contains($html,'Grosses dashboard data is unavailable') && str_contains($html,'Other admin content remains available'),'analytics read failure renders a notice and returns without breaking other admin content');
 check(!str_contains($html,'Movies Ticket Gross') && !str_contains($html,'private database diagnostic'),'failed analytics renders no incomplete totals or internal database diagnostic');
+ob_start(); \RoxyGrosses\Settings::render_field(['key'=>'square_access_token']); $token_field=ob_get_clean();
+check(str_contains($token_field,'ORDERS_READ') && str_contains($token_field,'PAYMENTS_READ') && str_contains($token_field,'ITEMS_READ'),
+  'Square credential guidance lists the read permissions used by orders, cashflow and catalog lookups');

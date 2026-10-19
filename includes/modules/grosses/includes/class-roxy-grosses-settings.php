@@ -259,7 +259,7 @@ class Settings {
       case 'square_access_token':
         $saved=get_option(self::OPTION_KEY,[]);
         if (!empty($saved['square_access_token']) && self::decrypt_secret((string)$saved['square_access_token'])==='') echo '<p class="description" style="color:#b32d2e">The saved Square token could not be read. Re-enter the token; the saved value has not been erased.</p>';
-        echo '<input type="password" class="regular-text code" name="'.esc_attr($name).'" value="" autocomplete="off"'.(self::has_square_access_token() ? ' placeholder="Token saved - leave blank to keep current token"' : '').'><p class="description">Personal access token or OAuth token with Orders read access. Leave blank to keep the current token.</p>'; return;
+        echo '<input type="password" class="regular-text code" name="'.esc_attr($name).'" value="" autocomplete="off"'.(self::has_square_access_token() ? ' placeholder="Token saved - leave blank to keep current token"' : '').'><p class="description">Personal access token, or OAuth token with Orders read (ORDERS_READ), Payments read (PAYMENTS_READ), and Items read (ITEMS_READ) permissions. Payments access is needed for Cashflow; Items access is used for catalog/category lookups. Leave blank to keep the current token.</p>'; return;
       case 'square_webhook_signature_key':
         $saved=get_option(self::OPTION_KEY,[]);
         $has_key=is_array($saved) && !empty($saved['square_webhook_signature_key']);
