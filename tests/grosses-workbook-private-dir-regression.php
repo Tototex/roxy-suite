@@ -73,6 +73,8 @@ eval('?>' . $source);
 
 $root_method = new ReflectionMethod($namespace . '\\Workbook', 'private_root_dir');
 $root_method->setAccessible(true);
+$templates_method = new ReflectionMethod($namespace . '\\Workbook', 'private_templates_dir');
+$templates_method->setAccessible(true);
 $workbooks_method = new ReflectionMethod($namespace . '\\Workbook', 'private_workbooks_dir');
 $workbooks_method->setAccessible(true);
 $move_method = new ReflectionMethod($namespace . '\\Workbook', 'move_file_to_private_storage');
@@ -119,11 +121,15 @@ try {
 
     $public_target = $fixture_root . DIRECTORY_SEPARATOR . 'public-target';
     if (!mkdir($public_target, 0700)) throw new RuntimeException('Could not create symlink target fixture.');
-    $private_descendant = $workbooks_method->invoke(null) . DIRECTORY_SEPARATOR . 'path-check.xlsx';
+    $private_descendant = $templates_method->invoke(null) . DIRECTORY_SEPARATOR . 'path-check.xlsx';
     file_put_contents($private_descendant, 'fixture');
     $check($is_private_method->invoke(null, $private_descendant), 'existing private descendants are recognized');
     $check($safe_template_method->invoke(null, $private_descendant), 'readable template files inside private storage pass the upload metadata guard');
     unlink($private_descendant);
+    $private_output = $workbooks_method->invoke(null) . DIRECTORY_SEPARATOR . 'not-a-template.xlsx';
+    file_put_contents($private_output, 'fixture');
+    $check(!$safe_template_method->invoke(null, $private_output), 'private workbook output files cannot be saved as uploaded template metadata');
+    unlink($private_output);
     $shared_prefix = $private_dir . '-public';
     if (!mkdir($shared_prefix, 0700)) throw new RuntimeException('Could not create shared-prefix sibling fixture.');
     $shared_prefix_file = $shared_prefix . DIRECTORY_SEPARATOR . 'book.xlsx';

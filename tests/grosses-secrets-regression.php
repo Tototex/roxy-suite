@@ -4,8 +4,13 @@ function wp_salt($scheme){return $GLOBALS['salt']??'grosses-isolated-salt';}
 function wp_timezone_string(){return 'America/Los_Angeles';}
 function wp_date($format,...$args){return $format==='Y' ? '2026' : '2026-10-05';}
 function get_option($key,$default=false){return $key==='roxy_grosses_settings' ? ($GLOBALS['saved']??$default) : $default;}
-// Simulate update_option() running the sanitize callback registered during admin_init.
-function update_option($key,$value,$autoload=null){if($key!=='roxy_grosses_settings')return false;$GLOBALS['saved']=\RoxyGrosses\Settings::sanitize($value);return true;}
+function add_action($hook,$callback,$priority=10,$accepted_args=1){$GLOBALS['test_actions'][$hook][$priority][]=$callback;}
+function do_action($hook){$groups=$GLOBALS['test_actions'][$hook]??[];ksort($groups);foreach($groups as $callbacks)foreach($callbacks as $callback)call_user_func($callback);}
+function register_setting($group,$option,$args=[]){if(is_callable($args['sanitize_callback']??null))$GLOBALS['option_sanitizers'][$option]=$args['sanitize_callback'];}
+function add_settings_section(...$args){}
+function add_settings_field(...$args){}
+// Simulate core invoking the callback installed by the admin_init registration.
+function update_option($key,$value,$autoload=null){if($key!=='roxy_grosses_settings')return false;$callback=$GLOBALS['option_sanitizers'][$key]??null;if(is_callable($callback))$value=call_user_func($callback,$value);$GLOBALS['saved']=$value;return true;}
 function sanitize_text_field($v){return trim($v);}function sanitize_file_name($v){return trim($v);}function sanitize_email($v){return $v;}function sanitize_textarea_field($v){return $v;}
 function wc_format_decimal($v){return $v;}function wp_parse_args($a,$b){return array_merge($b,$a);}
 function add_settings_error(...$args){$GLOBALS['settings_error']=true;}
@@ -29,6 +34,9 @@ check(str_starts_with($result['square_webhook_signature_key'],'gcm:v2:')&&$decry
 $GLOBALS['saved']['square_access_token']=$cipher;$result=\RoxyGrosses\Settings::sanitize(['square_access_token'=>'']);check($result['square_access_token']===$cipher,'blank save preserves existing encrypted value byte-for-byte');
 $template=['path'=>'/private/test-template.xlsx','name'=>'test-template.xlsx','uploaded_at'=>'2026-10-19 12:00:00'];
 $GLOBALS['workbook_private_path_ok']=true;
+\RoxyGrosses\Settings::init();do_action('admin_init');
+check(($GLOBALS['option_sanitizers']['roxy_grosses_settings']??null)===[\RoxyGrosses\Settings::class,'sanitize'],
+  'admin_init registers the actual Grosses settings sanitizer callback');
 check(\RoxyGrosses\Settings::save_workbook_template($template)===true
   && ($GLOBALS['saved']['workbook_template_upload']??null)===$template,
   'internal private-template write survives the registered settings sanitizer and verifies after read-back');

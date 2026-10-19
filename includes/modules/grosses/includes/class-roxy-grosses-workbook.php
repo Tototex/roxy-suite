@@ -1413,7 +1413,18 @@ class Workbook {
   }
 
   public static function is_safe_uploaded_template_file(string $path): bool {
-    return is_file($path) && is_readable($path) && self::is_private_path($path);
+    if (!is_file($path) || !is_readable($path) || !self::is_private_path($path)) return false;
+    $resolved_path = realpath($path);
+    $resolved_templates = realpath(self::private_templates_dir());
+    if ($resolved_path === false || $resolved_templates === false) return false;
+    $normalized_path = rtrim(wp_normalize_path($resolved_path), '/');
+    $templates_dir = rtrim(wp_normalize_path($resolved_templates), '/');
+    if ($normalized_path === '' || $templates_dir === '') return false;
+    if (DIRECTORY_SEPARATOR === '\\') {
+      $normalized_path = strtolower($normalized_path);
+      $templates_dir = strtolower($templates_dir);
+    }
+    return str_starts_with($normalized_path, $templates_dir . '/');
   }
 
   private static function cell_ref(int $column, int $row): string {
