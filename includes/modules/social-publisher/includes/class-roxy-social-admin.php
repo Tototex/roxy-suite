@@ -261,14 +261,17 @@ final class Admin {
         $media_url = $media_urls[0] ?? esc_url_raw((string) ($_POST['media_url'] ?? ''));
         $media_type = count($media_urls) > 1 ? 'image' : self::media_type_from_url($media_url);
         if ($text === '' || !$scheduled) wp_safe_redirect(self::drafts_url(['manual_error' => 'missing']));
-        else { Store::create_manual(['post_text' => $text, 'scheduled_for' => $scheduled->format('Y-m-d H:i:s'), 'platform' => sanitize_key((string) ($_POST['platform'] ?? 'both')), 'media_url' => $media_url, 'media_urls' => $media_urls, 'media_type' => $media_type, 'publish_facebook_story' => isset($_POST['publish_facebook_story'])]); wp_safe_redirect(self::drafts_url(['manual_created' => '1'])); }
+        else {
+            $created = Store::create_manual(['post_text' => $text, 'scheduled_for' => $scheduled->format('Y-m-d H:i:s'), 'platform' => sanitize_key((string) ($_POST['platform'] ?? 'both')), 'media_url' => $media_url, 'media_urls' => $media_urls, 'media_type' => $media_type, 'publish_facebook_story' => isset($_POST['publish_facebook_story'])]);
+            wp_safe_redirect(self::drafts_url($created > 0 ? ['manual_created' => '1'] : ['manual_error' => 'media']));
+        }
         exit;
     }
 
     private static function render_manual_form(): void {
         $default_time = wp_date('Y-m-d\\TH:i', current_time('timestamp') + 600, wp_timezone());
         if (isset($_GET['manual_created'])) echo '<div class="notice notice-success is-dismissible"><p>Manual post draft created. Review it below, then approve it when ready.</p></div>';
-        if (isset($_GET['manual_error'])) echo '<div class="notice notice-error is-dismissible"><p>Enter post text and a valid scheduled time.</p></div>';
+        if (isset($_GET['manual_error'])) echo '<div class="notice notice-error is-dismissible"><p>' . esc_html(sanitize_key((string) $_GET['manual_error']) === 'media' ? 'The selected media is no longer available or could not be safely saved. Choose it again and retry.' : 'Enter post text and a valid scheduled time.') . '</p></div>';
         echo '<details style="margin:16px 0 22px;max-width:900px"><summary class="button button-primary">Create Manual Post</summary><form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:14px;padding:14px;border:1px solid #c3c4c7;background:#fff">';
         echo '<input type="hidden" name="action" value="roxy_social_create_manual">' . wp_nonce_field('roxy_social_create_manual', '_wpnonce', true, false);
         echo '<p><label><strong>Post text</strong><br><textarea name="post_text" rows="5" style="width:100%;max-width:760px" required placeholder="Write the post caption..."></textarea></label></p>';

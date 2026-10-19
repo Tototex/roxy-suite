@@ -223,8 +223,10 @@ final class Store {
             $attachment_id = (int) ($row['attachment_id'] ?? 0);
             $social_post_id = (int) ($row['social_post_id'] ?? 0);
             if ($attachment_id <= 0 || $social_post_id <= 0) continue;
+            $media_claim = self::acquire_media_reference_lock();
+            if (!$media_claim) continue;
             $claim = self::acquire_publish_lock($social_post_id);
-            if (!$claim) continue;
+            if (!$claim) { self::release_publish_lock($media_claim); continue; }
             try {
                 $wpdb->last_error = '';
                 $queued = $wpdb->get_row($wpdb->prepare('SELECT attachment_id, social_post_id, cleanup_after FROM ' . $table . ' WHERE attachment_id = %d', $attachment_id), ARRAY_A);
@@ -262,6 +264,7 @@ final class Store {
                 error_log('Roxy Social detached-media cleanup could not complete for attachment #' . $attachment_id . '. Tracking was retained for retry.');
             } finally {
                 self::release_publish_lock($claim);
+                self::release_publish_lock($media_claim);
             }
         }
         if (count($rows) === 100 && $next_cursor < $upper_id) {
@@ -359,8 +362,10 @@ final class Store {
                 $id = (int) ($row['id'] ?? 0);
                 $attachment_id = (int) ($row['temporary_attachment_id'] ?? 0);
                 if ($id <= 0 || $attachment_id <= 0) continue;
+                $media_claim = self::acquire_media_reference_lock();
+                if (!$media_claim) continue;
                 $claim = self::acquire_publish_lock($id);
-                if (!$claim) continue;
+                if (!$claim) { self::release_publish_lock($media_claim); continue; }
                 try {
                     $fresh = self::find($id);
                     if (!$fresh || !in_array((string) ($fresh['status'] ?? ''), ['posted', 'skipped'], true)
@@ -372,7 +377,7 @@ final class Store {
                     $attachment = get_post($attachment_id);
                     if ($wpdb->last_error !== '') continue;
                     if (!$attachment) {
-                        if (self::owns_publish_lock($claim)) self::save_publish_values($id, ['temporary_attachment_id' => null, 'cleanup_after' => null, 'updated_at' => current_time('mysql')], $claim);
+                        if (self::owns_publish_lock($claim)) self::save_publish_values($id, ['temporary_attachment_id' => null, 'cleanup_after' => null, 'updated_at' => current_time('mysql')], $claim, $media_claim);
                         continue;
                     }
                     if (($attachment->post_type ?? '') !== 'attachment'
@@ -394,12 +399,13 @@ final class Store {
                     if (!wp_delete_attachment($attachment_id, true)) continue;
                     $deleted++;
                     if (!self::owns_publish_lock($claim)) continue;
-                    self::save_publish_values($id, ['temporary_attachment_id' => null, 'cleanup_after' => null, 'updated_at' => current_time('mysql')], $claim);
+                    self::save_publish_values($id, ['temporary_attachment_id' => null, 'cleanup_after' => null, 'updated_at' => current_time('mysql')], $claim, $media_claim);
                 } catch (\Throwable $error) {
                     // Keep the row pointer for later review/retry after uncertain cleanup.
                     error_log('Roxy Social cleanup could not complete for row #' . $id . '. Tracking was retained for review.');
                 } finally {
                     self::release_publish_lock($claim);
+                    self::release_publish_lock($media_claim);
                 }
         }
         if (count($rows) === 100 && $cursor < $upper_id) {
@@ -557,13 +563,18 @@ final class Store {
     }
 
     public static function clear_media(int $id): ?int {
+        $media_claim = self::acquire_media_reference_lock();
+        if (!$media_claim) return null;
         $claim = self::acquire_publish_lock($id);
-        if (!$claim) return null;
-        try { return self::clear_media_owned($id, $claim); }
-        finally { self::release_publish_lock($claim); }
+        if (!$claim) { self::release_publish_lock($media_claim); return null; }
+        try { return self::clear_media_owned($id, $claim, $media_claim); }
+        finally {
+            self::release_publish_lock($claim);
+            self::release_publish_lock($media_claim);
+        }
     }
 
-    private static function clear_media_owned(int $id, array $claim): ?int {
+    private static function clear_media_owned(int $id, array $claim, array $media_claim): ?int {
         global $wpdb;
         $row = self::find($id);
         if (!$row || $row['status'] !== 'draft' || !empty($row['facebook_post_id']) || !empty($row['instagram_media_id']) || !empty($row['instagram_container_id'])) return null;
@@ -585,7 +596,7 @@ final class Store {
             'temporary_attachment_id' => null,
             'cleanup_after' => null,
             'updated_at' => current_time('mysql'),
-        ], $claim);
+        ], $claim, $media_claim);
         // Preserve old uploads until reference-aware cleanup can verify ownership.
         return $updated ? 0 : null;
     }
@@ -611,10 +622,16 @@ final class Store {
             self::save_draft_snapshot($existing, $values);
             return (int) $existing['id'];
         }
+        $media_claim = self::acquire_media_reference_lock();
+        if (!$media_claim || !self::validate_media_reference_values($values)) {
+            if ($media_claim) self::release_publish_lock($media_claim);
+            return 0;
+        }
         $values['status'] = 'draft';
         $values['created_at'] = $now;
-        $wpdb->insert(self::table_name(), $values);
-        return (int) $wpdb->insert_id;
+        try {
+            return $wpdb->insert(self::table_name(), $values) === 1 ? (int) $wpdb->insert_id : 0;
+        } finally { self::release_publish_lock($media_claim); }
     }
 
     public static function create_manual(array $data): int {
@@ -622,7 +639,7 @@ final class Store {
         $now = current_time('mysql');
         $media_urls = self::sanitize_media_urls($data['media_urls'] ?? []);
         $media_url = $media_urls[0] ?? esc_url_raw((string) ($data['media_url'] ?? ''));
-        $wpdb->insert(self::table_name(), [
+        $values = [
             'campaign_key' => 'manual',
             'post_key' => 'manual-' . wp_generate_uuid4(),
             'showing_ids' => '',
@@ -637,8 +654,15 @@ final class Store {
             'trailer_url' => '',
             'created_at' => $now,
             'updated_at' => $now,
-        ]);
-        return (int) $wpdb->insert_id;
+        ];
+        $media_claim = self::acquire_media_reference_lock();
+        if (!$media_claim || !self::validate_media_reference_values($values)) {
+            if ($media_claim) self::release_publish_lock($media_claim);
+            return 0;
+        }
+        try {
+            return $wpdb->insert(self::table_name(), $values) === 1 ? (int) $wpdb->insert_id : 0;
+        } finally { self::release_publish_lock($media_claim); }
     }
 
     public static function sanitize_media_urls($urls): array {
@@ -706,10 +730,79 @@ final class Store {
         return hash('sha256', wp_json_encode($row));
     }
 
+    private static function values_touch_media_references(array $values): bool {
+        return (bool) array_intersect(['media_url', 'media_urls', 'temporary_attachment_id', 'hangar_asset_id', 'cleanup_after'], array_keys($values));
+    }
+
+    /** Refuse stale local Media Library URLs after cleanup has removed their attachment. */
+    private static function validate_media_reference_values(array $values): bool {
+        if (!function_exists('wp_get_upload_dir') || !function_exists('attachment_url_to_postid')) return true;
+        $urls = [];
+        if (array_key_exists('media_url', $values) && is_string($values['media_url']) && $values['media_url'] !== '') $urls[] = $values['media_url'];
+        if (array_key_exists('media_urls', $values) && $values['media_urls'] !== null && $values['media_urls'] !== '') {
+            $list = is_array($values['media_urls']) ? $values['media_urls'] : (is_string($values['media_urls']) ? json_decode($values['media_urls'], true) : null);
+            if (!is_array($list)) return false;
+            foreach ($list as $url) {
+                if (!is_string($url) || $url === '') return false;
+                $urls[] = $url;
+            }
+        }
+        if (!$urls) return true;
+        $uploads = wp_get_upload_dir();
+        $base = is_array($uploads) ? (string) ($uploads['baseurl'] ?? '') : '';
+        $base_parts = $base !== '' ? parse_url($base) : false;
+        if (!is_array($base_parts) || empty($base_parts['host']) || empty($base_parts['path'])) return true;
+        $base_path = rtrim((string) $base_parts['path'], '/');
+        foreach ($urls as $url) {
+            $parts = parse_url($url);
+            if (!is_array($parts) || empty($parts['host']) || empty($parts['path'])) continue;
+            if (strcasecmp((string) $parts['host'], (string) $base_parts['host']) !== 0
+                || (string) ($parts['port'] ?? '') !== (string) ($base_parts['port'] ?? '')) continue;
+            $path = (string) $parts['path'];
+            if ($path !== $base_path && strpos($path, $base_path . '/') !== 0) continue;
+            global $wpdb;
+            $wpdb->last_error = '';
+            $attachment_id = (int) attachment_url_to_postid($url);
+            $attachment = $attachment_id > 0 ? get_post($attachment_id) : null;
+            if ($wpdb->last_error !== '' || !$attachment || ($attachment->post_type ?? '') !== 'attachment') return false;
+        }
+        return true;
+    }
+
+    /** Shared nonblocking lock: draft media references and cleanup must serialize. */
+    public static function acquire_media_reference_lock(): ?array {
+        global $wpdb;
+        $name = 'roxy-social-media-' . substr(hash('sha256', DB_NAME . ':' . self::table_name()), 0, 46);
+        $wpdb->last_error = '';
+        $locked = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 0)', $name));
+        if ($wpdb->last_error !== '' || (string) $locked !== '1') return null;
+        $wpdb->last_error = '';
+        $connection = (string) $wpdb->get_var('SELECT CONNECTION_ID()');
+        if ($wpdb->last_error !== '' || !preg_match('/^[1-9][0-9]*$/D', $connection)) $connection = '';
+        $claim = ['name' => $name, 'connection' => $connection];
+        if (!self::owns_publish_lock($claim)) {
+            $wpdb->last_error = '';
+            $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $name));
+            return null;
+        }
+        return $claim;
+    }
+
     private static function save_draft_snapshot(array $expected, array $values, bool $allow_approved = false): bool {
         $id = (int) ($expected['id'] ?? 0);
+        $media_claim = null;
+        if (self::values_touch_media_references($values)) {
+            $media_claim = self::acquire_media_reference_lock();
+            if (!$media_claim || !self::validate_media_reference_values($values)) {
+                if ($media_claim) self::release_publish_lock($media_claim);
+                return false;
+            }
+        }
         $claim = self::acquire_publish_lock($id);
-        if (!$claim) return false;
+        if (!$claim) {
+            if ($media_claim) self::release_publish_lock($media_claim);
+            return false;
+        }
         try {
             $current = self::find($id);
             if (!$current || !in_array((string) $current['status'], $allow_approved ? ['draft', 'needs_review', 'approved', 'failed'] : ['draft', 'needs_review'], true)
@@ -733,8 +826,11 @@ final class Store {
             }
             if ($owned_attachment_id > 0 && ($next_attachment_id !== $owned_attachment_id || $media_url_detaches)
                 && !self::queue_detached_media($owned_attachment_id, $id)) return false;
-            return self::save_publish_values($id, $values, $claim);
-        } finally { self::release_publish_lock($claim); }
+            return self::save_publish_values($id, $values, $claim, $media_claim);
+        } finally {
+            self::release_publish_lock($claim);
+            if ($media_claim) self::release_publish_lock($media_claim);
+        }
     }
 
     public static function approve_snapshot(array $expected): bool {
@@ -920,9 +1016,11 @@ final class Store {
 
     // A zero-row update may mean unchanged values OR a missing row. Verify the
     // durable values before reporting success; this is not a worker claim.
-    private static function save_publish_values(int $id, array $values, ?array $claim = null): bool {
+    private static function save_publish_values(int $id, array $values, ?array $claim = null, ?array $media_claim = null): bool {
         global $wpdb;
         if ($id <= 0) return false;
+        if (self::values_touch_media_references($values)
+            && ($media_claim === null || !self::owns_publish_lock($media_claim))) return false;
         if ($claim !== null) {
             if (!self::owns_publish_lock($claim)) return false;
             $sets = [];

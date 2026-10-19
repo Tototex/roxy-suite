@@ -35,8 +35,8 @@ final class CleanupWpdb {
     public bool $fail_later_candidate_query = false;
     public array $delete_fails_for_ids = [];
     public array $queries = [];
-    private bool $locked = false;
-    private int $connection = 81;
+    private array $locked = [];
+    public int $connection = 81;
 
     public function prepare(string $query, ...$args): string {
         if (count($args) === 1 && is_array($args[0])) $args = $args[0];
@@ -146,12 +146,13 @@ final class CleanupWpdb {
         }
         if (strpos($query, 'GET_LOCK(') !== false) {
             preg_match("/GET_LOCK\\('([^']+)'/", $query, $lock);
-            if ($this->lock_busy || in_array($lock[1] ?? '', $this->busy_lock_names, true)) return 0;
-            $this->locked = true; return 1;
+            $name = $lock[1] ?? '';
+            if ($this->lock_busy || isset($this->locked[$name]) || in_array($name, $this->busy_lock_names, true)) return 0;
+            $this->locked[$name] = (string) $this->connection; return 1;
         }
         if (strpos($query, 'CONNECTION_ID()') !== false && strpos($query, 'IS_USED_LOCK') === false) return (string) $this->connection;
-        if (strpos($query, 'IS_USED_LOCK(') !== false) return $this->locked ? (string) $this->connection : null;
-        if (strpos($query, 'RELEASE_LOCK(') !== false) { $this->locked = false; return 1; }
+        if (strpos($query, 'IS_USED_LOCK(') !== false) { preg_match("/IS_USED_LOCK\\('([^']+)'/", $query, $lock); return $this->locked[$lock[1] ?? ''] ?? null; }
+        if (strpos($query, 'RELEASE_LOCK(') !== false) { preg_match("/RELEASE_LOCK\\('([^']+)'/", $query, $lock); unset($this->locked[$lock[1] ?? '']); return 1; }
         if ($this->reference_query_error) { $this->last_error = 'fixture reference query error'; return null; }
         if (strpos($query, 'FROM wp_roxy_social_media_cleanup') !== false) return null;
         if (strpos($query, 'FROM wp_roxy_social_posts') !== false) {
@@ -222,12 +223,18 @@ final class CleanupWpdb {
 }
 
 function current_time(string $type): string { return '2026-10-06 12:00:00'; }
+function wp_json_encode($value, int $flags = 0, int $depth = 512) { return json_encode($value, $flags, $depth); }
+function sanitize_textarea_field(string $value): string { return trim($value); }
+function sanitize_text_field(string $value): string { return trim($value); }
+function esc_url_raw(string $value): string { return $value; }
+function wp_get_upload_dir(): array { return ['baseurl'=>'https://fixture.invalid/uploads']; }
+function attachment_url_to_postid(string $url): int { global $wpdb; if (preg_match('~/clip-(\d+)\.mp4$~', $url, $match)) return isset($wpdb->attachments[(int)$match[1]]) ? (int)$match[1] : 0; return 0; }
 function apply_filters(string $hook, $value) { return $hook === 'roxy_social_enable_detached_media_cleanup' ? ($GLOBALS['cleanup_detached_enabled'] ?? $value) : $value; }
 function wp_schedule_single_event(int $timestamp, string $hook, array $args = []): bool { $GLOBALS['cleanup_scheduled'][] = [$timestamp, $hook, $args]; return true; }
 function get_post(int $id) { global $wpdb; if($wpdb->post_read_error){$wpdb->last_error='fixture read failed';return null;}return $wpdb->attachments[$id] ?? null; }
 function get_post_meta(int $id, string $key, bool $single = false) { global $wpdb; return $wpdb->meta[$id][$key] ?? ''; }
 function wp_get_attachment_url(int $id) { return 'https://fixture.invalid/uploads/clip.mp4'; }
-function wp_delete_attachment(int $id, bool $force = false) { global $wpdb; if($wpdb->delete_throws)throw new RuntimeException('fixture delete threw');if ($wpdb->delete_fails || in_array($id, $wpdb->delete_fails_for_ids, true)) return false; unset($wpdb->attachments[$id]); return (object) ['ID' => $id]; }
+function wp_delete_attachment(int $id, bool $force = false) { global $wpdb; if (isset($GLOBALS['cleanup_during_delete'])) ($GLOBALS['cleanup_during_delete'])($id); if($wpdb->delete_throws)throw new RuntimeException('fixture delete threw');if ($wpdb->delete_fails || in_array($id, $wpdb->delete_fails_for_ids, true)) return false; unset($wpdb->attachments[$id]); return (object) ['ID' => $id]; }
 
 require_once ($argv[1] ?? dirname(__DIR__)) . '/includes/modules/social-publisher/includes/class-roxy-social-store.php';
 
@@ -252,6 +259,24 @@ $GLOBALS['cleanup_detached_enabled'] = true;
 fixture(); $wpdb->yoast_table_exists = true; $wpdb->yoast_reference_ids = [42];
 check_cleanup(\RoxySocial\Store::cleanup_expired() === 0 && isset($wpdb->attachments[42]) && $wpdb->rows[1]['temporary_attachment_id'] === 42,
     'Yoast Open Graph or Twitter image ID reference prevents attachment deletion');
+
+fixture();
+$wpdb->rows[2] = ['id'=>2,'status'=>'draft','post_text'=>'','scheduled_for'=>'2026-10-07 12:00:00','media_type'=>'video','media_url'=>'','media_urls'=>null,'temporary_attachment_id'=>null,'cleanup_after'=>null,'created_at'=>'2026-10-06 12:00:00','updated_at'=>'2026-10-06 12:00:00'];
+$interleaved_save = null;
+$GLOBALS['cleanup_during_delete'] = static function (int $attachment_id) use (&$interleaved_save): void {
+    global $wpdb;
+    $prior_connection = $wpdb->connection;
+    $wpdb->connection = 82; // Model a concurrent WordPress request on another MySQL connection.
+    $row = $wpdb->rows[2];
+    $interleaved_save = \RoxySocial\Store::update_draft(2, 'reused', '2026-10-07 12:00:00', 'https://fixture.invalid/uploads/clip-' . $attachment_id . '.mp4', 'video', \RoxySocial\Store::draft_revision($row));
+    $wpdb->connection = $prior_connection;
+};
+$interleaved_cleanup = \RoxySocial\Store::cleanup_expired();
+unset($GLOBALS['cleanup_during_delete']);
+check_cleanup($interleaved_cleanup === 1 && $interleaved_save === false && !isset($wpdb->attachments[42]) && $wpdb->rows[2]['media_url'] === '',
+    'expired-media deletion and another draft media save serialize on the shared lifecycle lock');
+$stale_save = \RoxySocial\Store::update_draft(2, 'reused', '2026-10-07 12:00:00', 'https://fixture.invalid/uploads/clip-42.mp4', 'video', \RoxySocial\Store::draft_revision($wpdb->rows[2]));
+check_cleanup($stale_save === false && $wpdb->rows[2]['media_url'] === '', 'a stale local upload URL cannot be saved after cleanup removed its attachment');
 
 fixture();
 $wpdb->rows[2] = ['id'=>2, 'status'=>'posted', 'temporary_attachment_id'=>43, 'cleanup_after'=>'2026-10-06 12:01:00', 'media_url'=>''];
