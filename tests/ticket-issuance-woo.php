@@ -47,7 +47,7 @@ try{
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id())&&\RoxyST\IssuanceFixtureTickets::get_order_ticket_ids($order->get_id())===$ids,'quantity increase reuses original ticket sequence');
   $order=wc_get_order($order->get_id());$order->update_status('processing');
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'paid status reconciles through guarded transaction');
-  foreach($ids as $id)$check(get_post_meta($id,'_roxy_ticket_state',true)==='valid'&&(int)get_post_meta($id,'_roxy_ticket_order_item_id',true)===$item_id,'ticket payment state and item identity match');
+  foreach($ids as $id){$ticket_state=(string)get_post_meta($id,'_roxy_ticket_state',true);$ticket_item_id=(int)get_post_meta($id,'_roxy_ticket_order_item_id',true);$check($ticket_state==='valid'&&$ticket_item_id===$item_id,'ticket payment state and item identity match (ticket='.$id.', state='.$ticket_state.', item='.$ticket_item_id.', expected_item='.$item_id.')');}
   if(!function_exists('proc_open'))throw new RuntimeException('Independent admission worker test requires proc_open');
   $workers=[];
   try{
