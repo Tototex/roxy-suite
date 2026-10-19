@@ -9,8 +9,77 @@ class Products {
     add_action('transition_post_status', [__CLASS__, 'on_status_changed'], 20, 3);
     add_action('before_delete_post', [__CLASS__, 'on_showing_deleted'], 20, 2);
     add_action('roxy_st_sync_products_retry', [__CLASS__, 'retry_product_sync'], 10, 2);
+    add_action('init', [__CLASS__, 'ensure_reconciliation_schedule'], 20);
+    add_action('roxy_st_reconcile_products', [__CLASS__, 'reconcile_published_showings'], 10, 1);
     add_action('pre_get_posts', [__CLASS__, 'hide_ticket_products_from_admin_list']);
     add_action('views_edit-product', [__CLASS__, 'add_ticket_product_views']);
+  }
+
+  /** Keep transient or lost product-sync retries from leaving a showing broken indefinitely. */
+  public static function ensure_reconciliation_schedule(): void {
+    if (wp_next_scheduled('roxy_st_reconcile_products')) return;
+    wp_schedule_event(time() + 300, 'hourly', 'roxy_st_reconcile_products');
+  }
+
+  /** Process a bounded ID-ordered page; continuation events carry their cursor without DB state. */
+  public static function reconcile_published_showings($after_id = 0): void {
+    global $wpdb;
+
+    $after_id = is_scalar($after_id) && !is_bool($after_id) ? max(0, (int) $after_id) : 0;
+    $batch_size = 20;
+    $rows = $wpdb->get_col($wpdb->prepare(
+      "SELECT ID FROM {$wpdb->posts} WHERE post_type = %s AND post_status = %s AND ID > %d ORDER BY ID ASC LIMIT %d",
+      CPT::POST_TYPE,
+      'publish',
+      $after_id,
+      $batch_size + 1
+    ));
+
+    if (!is_array($rows) || (isset($wpdb->last_error) && $wpdb->last_error !== '')) {
+      Log::warn('ticket product reconciliation query failed', ['after_id' => $after_id]);
+      self::schedule_reconciliation_continuation($after_id, 600);
+      return;
+    }
+
+    $ids = [];
+    $previous_id = $after_id;
+    foreach ($rows as $row) {
+      if (!is_scalar($row) || is_bool($row) || preg_match('/^[1-9][0-9]*$/D', (string) $row) !== 1) {
+        Log::warn('ticket product reconciliation returned malformed IDs', ['after_id' => $after_id]);
+        self::schedule_reconciliation_continuation($after_id, 600);
+        return;
+      }
+      $id = (int) $row;
+      if ($id <= $previous_id) {
+        Log::warn('ticket product reconciliation returned unordered IDs', ['after_id' => $after_id]);
+        self::schedule_reconciliation_continuation($after_id, 600);
+        return;
+      }
+      $ids[] = $id;
+      $previous_id = $id;
+    }
+
+    $has_more = count($ids) > $batch_size;
+    if ($has_more) array_pop($ids);
+    foreach ($ids as $showing_id) {
+      // Never reactivate products after the configured online-sales cutoff.
+      if (Eligibility::showing_sales_open($showing_id)) {
+        self::ensure_products_for_showing($showing_id);
+      }
+    }
+
+    if ($has_more && !empty($ids)) {
+      self::schedule_reconciliation_continuation((int) end($ids), 120);
+    }
+  }
+
+  private static function schedule_reconciliation_continuation(int $after_id, int $delay): void {
+    $args = [$after_id];
+    if (wp_next_scheduled('roxy_st_reconcile_products', $args)) return;
+    $scheduled = wp_schedule_single_event(time() + max(60, $delay), 'roxy_st_reconcile_products', $args);
+    if ($scheduled === false || is_wp_error($scheduled)) {
+      Log::warn('ticket product reconciliation continuation could not be scheduled', ['after_id' => $after_id]);
+    }
   }
 
   public static function on_showing_saved(int $post_id, $post): void {

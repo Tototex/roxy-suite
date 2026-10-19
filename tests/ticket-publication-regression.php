@@ -35,6 +35,15 @@ define('ABSPATH', __DIR__); define('MINUTE_IN_SECONDS',60); define('ROXY_ST_META
 $root=$argv[1]??dirname(__DIR__); $fixture=$argv[2]??$root.'/includes/modules/show-tickets/includes/';
 $GLOBALS['meta']=[]; $GLOBALS['types']=[]; $GLOBALS['statuses']=[]; $GLOBALS['post_names']=[]; $GLOBALS['notices']=[]; $GLOBALS['writes']=[]; $GLOBALS['hooks']=[]; $GLOBALS['listing_queries']=[]; $GLOBALS['cleanup_queries']=[]; $GLOBALS['cleanup_pages']=[]; $GLOBALS['transients']=[]; $GLOBALS['capacity_locks']=[]; $GLOBALS['logs']=[]; $GLOBALS['errors']=[]; $GLOBALS['next_product_id']=500;
 $GLOBALS['room_lock_calls']=[]; $GLOBALS['room_conflict']=false; $GLOBALS['scheduled_events']=[]; $GLOBALS['schedule_fail']=false; $GLOBALS['product_update_fail']=false; $GLOBALS['product_visibility_fail']=false; $GLOBALS['product_visibility_terms']=[];
+class TicketFixtureDB {
+    public string $posts='fixture_posts';
+    public string $last_error='';
+    public array $rows=[];
+    public $last_prepared=null;
+    public function prepare($sql,...$args){$this->last_prepared=['sql'=>$sql,'args'=>$args];return $this->last_prepared;}
+    public function get_col($query){return $GLOBALS['db_query_fail']?false:$this->rows;}
+}
+$GLOBALS['wpdb']=new TicketFixtureDB(); $GLOBALS['db_query_fail']=false;
 class WooCommerce {} class WP_Error { private $message; function __construct($code,$message){$this->message=$message;} function get_error_message(){return $this->message;} }
 function is_wp_error($v){return $v instanceof WP_Error;}
 function __($s,...$args){return $s;}
@@ -58,6 +67,7 @@ function get_transient($key){return $GLOBALS['transients'][$key]??false;}
 function delete_transient($key){unset($GLOBALS['transients'][$key]);}
 function wp_next_scheduled($hook,$args=[]){foreach($GLOBALS['scheduled_events'] as $event)if($event['hook']===$hook && $event['args']===$args)return $event['timestamp'];return false;}
 function wp_schedule_single_event($timestamp,$hook,$args=[]){if($GLOBALS['schedule_fail'])return false;$GLOBALS['scheduled_events'][]=['timestamp'=>$timestamp,'hook'=>$hook,'args'=>$args];return true;}
+function wp_schedule_event($timestamp,$recurrence,$hook,$args=[]){if($GLOBALS['schedule_fail'])return false;$GLOBALS['scheduled_events'][]=['timestamp'=>$timestamp,'recurrence'=>$recurrence,'hook'=>$hook,'args'=>$args];return true;}
 function roxy_eb_with_showing_time_lock($start,$ignore_showing_id,$write){$GLOBALS['room_lock_calls'][]=[$start,$ignore_showing_id];if($GLOBALS['room_conflict'])return new WP_Error('reservation_conflict','That showing time overlaps another room reservation or showing. The change was not saved.');return $write();}
 function wp_is_post_revision($id){return false;}
 function add_action($hook,$callback,...$args){$GLOBALS['hooks'][$hook][]=$callback;}
@@ -98,7 +108,35 @@ class WP_Query {
 function check($ok,$label){if(!$ok)throw new RuntimeException($label); echo "PASS: $label\n";}
 require $fixture.'class-roxy-st-cpt.php'; require $fixture.'class-roxy-st-products.php'; require $fixture.'class-roxy-st-eligibility.php'; require $fixture.'class-roxy-st-capacity.php'; require $fixture.'class-roxy-st-tickets.php'; require $fixture.'class-roxy-st-frontend.php';
 \RoxyST\Eligibility::init(); \RoxyST\Products::init();
-check(isset($GLOBALS['hooks']['woocommerce_is_purchasable'],$GLOBALS['hooks']['woocommerce_checkout_process'],$GLOBALS['hooks']['woocommerce_check_cart_items'],$GLOBALS['hooks']['transition_post_status'],$GLOBALS['hooks']['before_delete_post'],$GLOBALS['hooks']['roxy_st_sync_products_retry']), 'all managed publication and checkout hooks registered');
+check(isset($GLOBALS['hooks']['woocommerce_is_purchasable'],$GLOBALS['hooks']['woocommerce_checkout_process'],$GLOBALS['hooks']['woocommerce_check_cart_items'],$GLOBALS['hooks']['transition_post_status'],$GLOBALS['hooks']['before_delete_post'],$GLOBALS['hooks']['roxy_st_sync_products_retry'],$GLOBALS['hooks']['roxy_st_reconcile_products']), 'all managed publication and checkout hooks registered');
+
+$GLOBALS['scheduled_events']=[];
+\RoxyST\Products::ensure_reconciliation_schedule();
+check(($GLOBALS['scheduled_events'][0]['hook']??'')==='roxy_st_reconcile_products' && ($GLOBALS['scheduled_events'][0]['recurrence']??'')==='hourly','product reconciliation ensures a low-frequency recurring safety sweep');
+$GLOBALS['scheduled_events']=[];
+$GLOBALS['wpdb']->rows=range(500,520);
+\RoxyST\Products::reconcile_published_showings(0);
+check(($GLOBALS['wpdb']->last_prepared['args'][3]??null)===21 && ($GLOBALS['scheduled_events'][0]['hook']??'')==='roxy_st_reconcile_products' && ($GLOBALS['scheduled_events'][0]['args']??[])===[519],'product reconciliation reads one bounded page and continues from the last processed ID');
+$GLOBALS['scheduled_events']=[]; $GLOBALS['db_query_fail']=true;
+\RoxyST\Products::reconcile_published_showings(520);
+$GLOBALS['db_query_fail']=false;
+check(($GLOBALS['scheduled_events'][0]['hook']??'')==='roxy_st_reconcile_products' && ($GLOBALS['scheduled_events'][0]['args']??[])===[520] && count($GLOBALS['logs'])>0,'product reconciliation query failure keeps its cursor retryable without advancing');
+$GLOBALS['scheduled_events']=[]; $GLOBALS['wpdb']->rows=[['malformed']];
+\RoxyST\Products::reconcile_published_showings(520);
+check(($GLOBALS['scheduled_events'][0]['args']??[])===[520],'malformed reconciliation IDs fail closed and retain the prior cursor');
+$GLOBALS['wpdb']->rows=[];
+$GLOBALS['types'][3]='roxy_showing'; $GLOBALS['statuses'][3]='publish';
+$GLOBALS['meta'][3]=['_roxy_start'=>current_datetime()->modify('+3 hours')->format('Y-m-d\\TH:i'),'_roxy_duration_minutes'=>'120','_roxy_pricing_profile'=>'movie_evening'];
+$GLOBALS['scheduled_events']=[]; $GLOBALS['wpdb']->rows=[3]; $products_before_reconcile=$GLOBALS['next_product_id'];
+\RoxyST\Products::reconcile_published_showings(0);
+$products_after_reconcile=$GLOBALS['next_product_id'];
+check($products_after_reconcile>$products_before_reconcile && (int)($GLOBALS['meta'][3]['_roxy_pid_adult']??0)>0,'scheduled reconciliation repairs missing products for an active published showing');
+\RoxyST\Products::reconcile_published_showings(0);
+check($GLOBALS['next_product_id']===$products_after_reconcile,'repeated product reconciliation is idempotent and creates no duplicates');
+$GLOBALS['types'][4]='roxy_showing'; $GLOBALS['statuses'][4]='publish'; $GLOBALS['meta'][4]=['_roxy_start'=>current_datetime()->modify('-3 hours')->format('Y-m-d\\TH:i'),'_roxy_duration_minutes'=>'60','_roxy_pid_adult'=>401];
+$GLOBALS['types'][401]='product'; $GLOBALS['statuses'][401]='draft'; $GLOBALS['wpdb']->rows=[4];
+\RoxyST\Products::reconcile_published_showings(0);
+check($GLOBALS['statuses'][401]==='draft','product reconciliation does not reactivate products after the showing sales cutoff');
 $GLOBALS['types']=[1=>'roxy_showing',101=>'product',102=>'product',103=>'product',104=>'product',200=>'product'];
 $GLOBALS['statuses']=[1=>'publish',101=>'publish',102=>'publish',103=>'publish',104=>'publish',200=>'publish'];
 $GLOBALS['meta']=[1=>['_roxy_pricing_profile'=>'movie_evening','_roxy_pid_adult'=>101,'_roxy_pid_discount'=>102,'_roxy_pid_subscriber'=>104,'_roxy_start'=>current_datetime()->modify('-30 minutes')->format('Y-m-d\TH:i'),'_roxy_duration_minutes'=>'60'],101=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'adult'],102=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'discount'],103=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'adult'],104=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'subscriber']];
