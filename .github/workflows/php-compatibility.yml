@@ -252,9 +252,13 @@ jobs:
           fi
 
   woocommerce-hpos-private-lifecycle:
-    name: Private WooCommerce HPOS lifecycle contract
+    name: Private WooCommerce HPOS lifecycle contract (WC ${{ matrix.woocommerce_version }})
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        woocommerce_version: ['11.1.2', '11.2.1']
     services:
       mysql:
         image: mysql:8.0
@@ -292,7 +296,8 @@ jobs:
           php "$RUNNER_TEMP/wp-cli.phar" core download --path="$wp_path" --skip-content
           php "$RUNNER_TEMP/wp-cli.phar" config create --path="$wp_path" --dbname=roxy_hpos_test --dbuser=root --dbpass=root --dbhost=127.0.0.1 --skip-check
           php "$RUNNER_TEMP/wp-cli.phar" core install --path="$wp_path" --url=http://roxy-hpos-test.invalid --title='Private Roxy HPOS fixture' --admin_user=fixture --admin_password=fixture-password --admin_email=fixture@example.invalid --skip-email
-          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin install woocommerce --version=11.2.1 --activate
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin install woocommerce --version='${{ matrix.woocommerce_version }}' --activate
+          echo "ROXY_EXPECT_WC_VERSION=${{ matrix.woocommerce_version }}" >> "$GITHUB_ENV"
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" option update woocommerce_custom_orders_table_enabled no
           mkdir -p "$wp_path/wp-content/plugins"
           ln -s "$GITHUB_WORKSPACE" "$wp_path/wp-content/plugins/roxy-suite"

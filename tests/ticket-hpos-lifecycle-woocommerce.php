@@ -2,7 +2,11 @@
 /** Private HPOS ticket lifecycle contract: synthetic zero-value orders only. */
 if (!defined('WP_CLI') || !WP_CLI) exit;
 if (!class_exists('Automattic\\WooCommerce\\Utilities\\OrderUtil') || !Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled()) throw new RuntimeException('This fixture requires authoritative HPOS.');
-if (!defined('WC_VERSION') || WC_VERSION !== '11.2.1') throw new RuntimeException('Review the HPOS schema contract before changing the disposable WooCommerce version.');
+$expected_wc_version = getenv('ROXY_EXPECT_WC_VERSION');
+if (!is_string($expected_wc_version) || !preg_match('/^\d+\.\d+\.\d+$/D', $expected_wc_version)
+  || !defined('WC_VERSION') || WC_VERSION !== $expected_wc_version) {
+  throw new RuntimeException('The installed WooCommerce version does not match this HPOS schema fixture.');
+}
 if (!class_exists('RoxyST\\Issuance') || !class_exists('RoxyST\\Holds') || !class_exists('RoxyST\\Tickets')) throw new RuntimeException('Show Tickets lifecycle is unavailable in the HPOS fixture.');
 
 global $wpdb;
@@ -10,7 +14,7 @@ $meta_table=$wpdb->prefix.'wc_orders_meta';
 $columns=$wpdb->get_col("SHOW COLUMNS FROM `$meta_table`",0);
 $engine=$wpdb->get_var($wpdb->prepare('SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s',$meta_table));
 $check=static function($ok,$label){if(!$ok)throw new RuntimeException($label);echo 'PASS: '.$label.PHP_EOL;};
-if ($wpdb->last_error || !is_array($columns) || array_diff(['id','order_id','meta_key','meta_value'],$columns) || $engine!=='InnoDB') throw new RuntimeException('WooCommerce 11.2.1 HPOS metadata schema differs from the verified transactional contract.');
+if ($wpdb->last_error || !is_array($columns) || array_diff(['id','order_id','meta_key','meta_value'],$columns) || $engine!=='InnoDB') throw new RuntimeException('The active HPOS metadata schema differs from the verified transactional contract.');
 
 $token='PRIVATE-ROXY-ST-HPOS-'.bin2hex(random_bytes(6));
 $created_posts=[];$created_orders=[];$secondary=new wpdb(DB_USER,DB_PASSWORD,DB_NAME,DB_HOST);
