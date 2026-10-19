@@ -83,6 +83,10 @@
     const url = `${ROXY_ARCADE.restUrl}/leaderboards?game=${encodeURIComponent(activeGameKey)}`;
     const res = await fetch(url);
     const data = await res.json();
+    if (!res.ok || data.ok === false) {
+      setStatus(data.message || 'Leaderboard data is temporarily unavailable.');
+      return;
+    }
     renderBoards(data);
   }
 
@@ -95,7 +99,7 @@
     const data = await res.json();
     setStatus(data.message || '');
     if (data.leaderboards) renderBoards({ ...data.leaderboards });
-    else await fetchLeaderboards();
+    else if (!data.leaderboardUnavailable) await fetchLeaderboards();
   }
 
   function escapeHtml(s) {

@@ -8,10 +8,10 @@ function get_transient($key){return [];}function set_transient(...$args){}functi
 class WP_REST_Request {function __construct(private $score=10,private $game='marquee',private $nonce='fixture'){}function get_header($key){return $this->nonce;}function get_param($key){return $key==='game'?$this->game:$this->score;}}
 class WP_REST_Response {function __construct(public $data,public $status){}}
 class ScoreDatabase {
-    public $prefix='fixture_';public $queries=[];public $result=1;public $values=[];
+    public $prefix='fixture_';public $queries=[];public $result=1;public $values=[];public $readResults=[];
     function prepare($sql,...$args){$this->values=$args;return $sql;}
     function query($sql){$this->queries[]=$sql;return $this->result;}
-    function get_results(...$args){return [];}
+    function get_results(...$args){$this->queries[]=$args[0];return $this->readResults?array_shift($this->readResults):[];}
 }
 $GLOBALS['wpdb']=new ScoreDatabase;
 require ($argv[1]??dirname(__DIR__)).'/includes/modules/arcade/roxy-arcade.php';
@@ -30,6 +30,12 @@ $response=Roxy_Arcade::rest_post_score(new WP_REST_Request);
 check($response->status===503&&$response->data['ok']===false&&!isset($response->data['leaderboards']),'REST never reports failed persistence as saved');
 $GLOBALS['wpdb']->result=1;$response=Roxy_Arcade::rest_post_score(new WP_REST_Request);
 check($response->status===200&&$response->data['ok']===true&&isset($response->data['leaderboards']),'successful REST response remains compatible');
+$GLOBALS['wpdb']->readResults=[false];$response=Roxy_Arcade::rest_get_leaderboards(new WP_REST_Request);
+check($response->status===503&&$response->data['ok']===false,'combined leaderboard query failure returns controlled REST error');
+$GLOBALS['wpdb']->readResults=[[],null];$response=Roxy_Arcade::rest_get_leaderboards(new WP_REST_Request);
+check($response->status===503&&$response->data['ok']===false,'per-game leaderboard query failure returns controlled REST error');
+$GLOBALS['wpdb']->readResults=[false];$response=Roxy_Arcade::rest_post_score(new WP_REST_Request);
+check($response->status===200&&$response->data['ok']===true&&!empty($response->data['leaderboardUnavailable'])&&!isset($response->data['leaderboards']),'saved score is not represented as failed when follow-up read fails');
 $response=Roxy_Arcade::rest_post_score(new WP_REST_Request(10,'marquee','bad'));check($response->status===403,'nonce guard retained');
 $response=Roxy_Arcade::rest_post_score(new WP_REST_Request(10,'invalid'));check($response->status===400,'game guard retained');
 $GLOBALS['logged_in']=false;$count=count($GLOBALS['wpdb']->queries);$response=Roxy_Arcade::rest_post_score(new WP_REST_Request);

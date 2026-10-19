@@ -246,11 +246,15 @@ class Roxy_Arcade {
     if ($game === '') $game = 'marquee';
 
     $combined = self::get_combined_top10();
+    $gameScores = self::get_game_top10($game);
+    if (!is_array($combined) || !is_array($gameScores)) {
+      return new WP_REST_Response(['ok' => false, 'message' => 'Leaderboard data is temporarily unavailable. Please try again later.'], 503);
+    }
     $champion = self::champion_from_combined($combined);
 
     return new WP_REST_Response([
       'combined' => $combined,
-      'game' => self::get_game_top10($game),
+      'game' => $gameScores,
       'champion' => $champion,
       'rewardsEnabled' => (int) get_option(self::OPTION_REWARDS_ENABLED, 0),
       'lastAwardedMonth' => (string) get_option(self::OPTION_LAST_AWARDED_MONTH, ''),
@@ -272,13 +276,17 @@ class Roxy_Arcade {
 
     if (!is_user_logged_in()) {
       $combined = self::get_combined_top10();
+      $gameScores = self::get_game_top10($game);
+      if (!is_array($combined) || !is_array($gameScores)) {
+        return new WP_REST_Response(['ok' => false, 'message' => 'Leaderboard data is temporarily unavailable. Please try again later.'], 503);
+      }
       return new WP_REST_Response([
         'ok' => false,
         'guest' => true,
         'message' => 'Nice run! Log in to save your score and compete for the monthly prize.',
         'leaderboards' => [
           'combined' => $combined,
-          'game' => self::get_game_top10($game),
+          'game' => $gameScores,
           'champion' => self::champion_from_combined($combined),
         ],
       ], 200);
@@ -300,12 +308,22 @@ class Roxy_Arcade {
     }
 
     $combined = self::get_combined_top10();
+    $gameScores = self::get_game_top10($game);
+    if (!is_array($combined) || !is_array($gameScores)) {
+      // The score write already succeeded. Do not return an error that might
+      // encourage a duplicate submission; report saved state and omit stale boards.
+      return new WP_REST_Response([
+        'ok' => true,
+        'message' => 'Score saved, but leaderboard data is temporarily unavailable.',
+        'leaderboardUnavailable' => true,
+      ], 200);
+    }
     return new WP_REST_Response([
       'ok' => true,
       'message' => 'Score saved!',
       'leaderboards' => [
         'combined' => $combined,
-        'game' => self::get_game_top10($game),
+        'game' => $gameScores,
         'champion' => self::champion_from_combined($combined),
       ],
     ], 200);
@@ -345,6 +363,11 @@ class Roxy_Arcade {
       $game
     ), ARRAY_A);
 
+    if (!is_array($rows)) return null;
+    foreach ($rows as $row) {
+      if (!is_array($row) || !isset($row['user_id'], $row['best_score']) || !is_numeric($row['user_id']) || !is_numeric($row['best_score'])) return null;
+    }
+
     return array_map(function($r){
       $u = get_user_by('id', (int)$r['user_id']);
       return [
@@ -366,6 +389,11 @@ class Roxy_Arcade {
        LIMIT 10",
       ARRAY_A
     );
+
+    if (!is_array($rows)) return null;
+    foreach ($rows as $row) {
+      if (!is_array($row) || !isset($row['user_id'], $row['total']) || !is_numeric($row['user_id']) || !is_numeric($row['total'])) return null;
+    }
 
     return array_map(function($r){
       $u = get_user_by('id', (int)$r['user_id']);
