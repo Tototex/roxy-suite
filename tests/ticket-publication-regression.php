@@ -43,7 +43,7 @@ function get_post_status($id){if(isset($GLOBALS['stale_statuses'][$id]))return $
 function clean_post_cache($id){unset($GLOBALS['stale_statuses'][$id]);}
 function get_the_title($id){return $GLOBALS['titles'][$id]??'Fixture showing';}
 function get_post_meta($id,$key,$single=true){return $GLOBALS['meta'][$id][$key]??'';}
-function update_post_meta($id,$key,$value){$mode=$GLOBALS['meta_write_mode'][$key]??'';if($mode==='commit_false'){$GLOBALS['meta'][$id][$key]=$value;return false;}if($mode==='false_unchanged')return false;if($mode==='fail')return false;$GLOBALS['meta'][$id][$key]=$value;return true;}
+function update_post_meta($id,$key,$value){$mode=$GLOBALS['meta_write_mode'][$key]??'';if($mode==='commit_false'){$GLOBALS['meta'][$id][$key]=$value;return false;}if($mode==='false_unchanged')return false;if($mode==='malformed'){$GLOBALS['meta'][$id][$key]=(string)$value.'junk';return true;}if($mode==='fail')return false;$GLOBALS['meta'][$id][$key]=$value;return true;}
 function delete_post_meta($id,$key){unset($GLOBALS['meta'][$id][$key]);return true;}
 function wp_update_post($args,$error=false){$GLOBALS['writes'][]=$args;if(!empty($GLOBALS['product_update_fail'])&&($args['post_type']??'')==='product')return new WP_Error('fixture_product_update','fixture product update failure');if(isset($args['post_status'])&&!empty($GLOBALS['product_status_fail'][$args['post_status']]))return new WP_Error('fixture_product_status','fixture product status update failure');if(isset($args['post_status'])&&empty($GLOBALS['product_status_noop'][$args['post_status']]))$GLOBALS['statuses'][$args['ID']]=$args['post_status'];if(isset($args['post_name']))$GLOBALS['post_names'][$args['ID']]=$args['post_name'];return $args['ID'];}
 function wp_insert_post($args,$error=false){if(!empty($GLOBALS['product_insert_fail']))return new WP_Error('fixture_product_insert','fixture product insert failure');$id=$GLOBALS['next_product_id']++;$GLOBALS['types'][$id]=$args['post_type']??'post';$GLOBALS['statuses'][$id]=$args['post_status']??'draft';$GLOBALS['post_names'][$id]=$args['post_name']??'';$GLOBALS['titles'][$id]=$args['post_title']??'';$GLOBALS['writes'][]=$args;return $id;}
@@ -215,6 +215,18 @@ $GLOBALS['meta'][900]=[ROXY_ST_META_SHOWING_ID=>88,ROXY_ST_META_TICKET_TYPE=>'di
 $collision_rejected=false;
 try { $upsert->invoke(null,0,'Unrelated product',12.0,4,'adult',0); } catch (ReflectionException $error) { throw $error; } catch (RuntimeException $error) { $collision_rejected=$error->getMessage()==='Ticket product recovery identity is already in use'; }
 check($collision_rejected && $GLOBALS['next_product_id']===$next_before_collision && ($GLOBALS['meta'][900][ROXY_ST_META_SHOWING_ID]??0)===88,'conflicting stable slug is rejected without taking over an unrelated product');
+$GLOBALS['meta'][1]['_roxy_pid_adult']=999; $GLOBALS['meta_write_mode']['_roxy_pid_adult']='fail'; $GLOBALS['scheduled_events']=[];
+\RoxyST\Products::ensure_products_for_showing(1);
+check(($GLOBALS['meta'][1]['_roxy_pid_adult']??0)===999 && ($GLOBALS['scheduled_events'][0]['args']??[])===[1,1],'failed showing-to-product reference write queues reconciliation instead of reporting success');
+unset($GLOBALS['meta_write_mode']['_roxy_pid_adult']); $mapping_retry=array_shift($GLOBALS['scheduled_events']);
+\RoxyST\Products::retry_product_sync($mapping_retry['args'][0],$mapping_retry['args'][1]);
+check(($GLOBALS['meta'][1]['_roxy_pid_adult']??0)===101 && !isset($GLOBALS['transients']['roxy_st_sync_1']),'scheduled retry repairs the showing-to-product reference');
+$GLOBALS['meta_write_mode']['_roxy_pid_adult']='malformed'; $GLOBALS['scheduled_events']=[];
+\RoxyST\Products::ensure_products_for_showing(1);
+check(($GLOBALS['meta'][1]['_roxy_pid_adult']??'')==='101junk' && ($GLOBALS['scheduled_events'][0]['hook']??'')==='roxy_st_sync_products_retry','malformed numeric-prefix product reference is rejected and queued for repair');
+unset($GLOBALS['meta_write_mode']['_roxy_pid_adult']); $malformed_mapping_retry=array_shift($GLOBALS['scheduled_events']);
+\RoxyST\Products::retry_product_sync($malformed_mapping_retry['args'][0],$malformed_mapping_retry['args'][1]);
+check(($GLOBALS['meta'][1]['_roxy_pid_adult']??0)===101,'retry corrects malformed product reference exactly');
 $GLOBALS['statuses'][103]='publish'; $GLOBALS['writes']=[];
 $show_end=\RoxyST\Eligibility::showing_end_timestamp(1);
 check($show_end!==null && \RoxyST\Eligibility::showing_sales_open(1,$show_end-1) && !\RoxyST\Eligibility::showing_sales_open(1,$show_end),'sales cutoff is exclusive at the actual showing end');

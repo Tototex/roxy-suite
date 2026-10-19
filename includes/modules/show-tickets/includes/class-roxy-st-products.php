@@ -198,6 +198,11 @@ class Products {
       $seat_lease->assert_owner();
       if ($product_id) {
         update_post_meta($showing_id, $meta_key, (int) $product_id);
+        $saved_product_id = get_post_meta($showing_id, $meta_key, true);
+        $saved_product_id = is_scalar($saved_product_id) && !is_bool($saved_product_id) ? (string) $saved_product_id : '';
+        if (preg_match('/^[1-9][0-9]*$/D', $saved_product_id) !== 1 || $saved_product_id !== (string) (int) $product_id) {
+          throw new \RuntimeException('Ticket product mapping could not be synchronized');
+        }
         $seat_lease->assert_owner();
       }
     }
