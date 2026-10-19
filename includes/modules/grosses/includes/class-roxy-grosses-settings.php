@@ -109,7 +109,7 @@ class Settings {
 
     $verified = get_option(self::OPTION_KEY, null);
     if (!is_array($verified)) return null;
-    return ($verified[self::WORKBOOK_TEMPLATE_UPLOAD_KEY] ?? null) === $normalized;
+    return ($verified[self::WORKBOOK_TEMPLATE_UPLOAD_KEY] ?? null) === $normalized ? true : null;
   }
 
   public static function get_all(): array {

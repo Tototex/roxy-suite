@@ -72,7 +72,7 @@ class Workbook {
       $message = $saved_template === false
         ? ($still_referenced
           ? 'The uploaded template path is saved, but the complete settings record did not verify. The referenced private file was preserved; review the workbook template setting.'
-          : 'Workbook template was copied privately, but its settings could not be verified; the existing template setting was retained.')
+          : 'The private copy failed the workbook path-safety check; the existing template setting was retained.')
         : 'Workbook template settings could not be read back, so the private copy was retained for safety. Retry or check the workbook setting before uploading again.';
       if ($cleanup_failed) $message .= ' The unused private copy could not be removed automatically.';
       self::redirect_with_notice('error', $message, null, 'workbook');

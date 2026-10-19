@@ -89,6 +89,53 @@ try {
         && ($after_ordinary_save['workbook_template_upload'] ?? null) === $template
         && ($after_ordinary_save['theater_name'] ?? '') === 'Disposable workbook integration fixture',
         'ordinary settings saves retain the uploaded private workbook while updating other settings');
+
+    $outside_path = trailingslashit(WP_CONTENT_DIR) . 'outside-' . bin2hex(random_bytes(8)) . '.xlsx';
+    if (file_put_contents($outside_path, 'outside private templates fixture') === false) {
+        throw new RuntimeException('Could not create outside-path rejection fixture.');
+    }
+    try {
+        $rejected = $settings_class::save_workbook_template([
+            'path' => $outside_path,
+            'name' => basename($outside_path),
+            'uploaded_at' => current_time('mysql'),
+        ]);
+        $check($rejected === false, 'unsafe workbook paths are rejected before the settings option is written');
+        $after_rejection = get_option($option_key, []);
+        $check(is_array($after_rejection)
+            && ($after_rejection['workbook_template_upload'] ?? null) === $template,
+            'private-path rejection leaves the existing workbook setting untouched');
+    } finally {
+        if (is_file($outside_path)) @unlink($outside_path);
+    }
+
+    $mismatch_path = trailingslashit($private_dir) . 'readback-mismatch-' . bin2hex(random_bytes(8)) . '.xlsx';
+    if (file_put_contents($mismatch_path, 'private synthetic mismatch fixture') === false) {
+        throw new RuntimeException('Could not create private read-back mismatch fixture.');
+    }
+    try {
+        $mismatch_template = [
+            'path' => $mismatch_path,
+            'name' => basename($mismatch_path),
+            'uploaded_at' => current_time('mysql'),
+        ];
+        $keep_existing = static function ($value, $old_value, $option) use ($option_key) {
+            return $option === $option_key ? $old_value : $value;
+        };
+        add_filter('pre_update_option_' . $option_key, $keep_existing, 999, 3);
+        try {
+            $mismatch = $settings_class::save_workbook_template($mismatch_template);
+        } finally {
+            remove_filter('pre_update_option_' . $option_key, $keep_existing, 999);
+        }
+        $check($mismatch === null, 'settings read-back mismatch is distinguished from private-path rejection');
+        $after_mismatch = get_option($option_key, []);
+        $check(is_array($after_mismatch)
+            && ($after_mismatch['workbook_template_upload'] ?? null) === $template,
+            'a settings read-back mismatch preserves the previously saved private template');
+    } finally {
+        if (is_file($mismatch_path)) @unlink($mismatch_path);
+    }
 } finally {
     if ($file_path !== '' && is_file($file_path)) @unlink($file_path);
     if ($prior_row !== null) {
