@@ -592,6 +592,7 @@ jobs:
             core-storage-regression.php
             deployment-manifest-regression.php
             grosses-attachments-regression.php
+            grosses-email-outbox-read-shape-regression.php
             grosses-allocation-transaction-regression.php
             grosses-closed-day-retry-regression.php
             grosses-closed-day-store-regression.php

@@ -213,9 +213,12 @@ final class EmailOutbox {
     global $wpdb;
     $table = self::table_name();
     $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$table} WHERE key_hash = %s LIMIT 1", $key_hash), ARRAY_A);
-    if ($row === null && !empty($wpdb->last_error)) throw self::storage_error('lookup');
-    if ($row === false) throw self::storage_error('lookup');
-    return is_array($row) ? self::decode_error_rows([$row])[0] : null;
+    if ($row === null) {
+      if (!empty($wpdb->last_error)) throw self::storage_error('lookup');
+      return null;
+    }
+    if (!is_array($row)) throw self::storage_error('lookup');
+    return self::decode_error_rows([$row])[0];
   }
 
   /** Read recent rows only; limit is intentionally capped. */
