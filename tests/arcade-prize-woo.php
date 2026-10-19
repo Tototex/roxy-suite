@@ -41,6 +41,11 @@ try {
     $query_start=count((array)$wpdb->queries);
     $id=$once->invoke(null,'2700-01',$user);
     $queries=array_slice((array)$wpdb->queries,$query_start);
+    if($id<=0){
+        $failed_claim=json_decode((string)get_option($key,''),true);
+        $diagnostic_queries=array_map(static fn($query)=>substr((string)($query[0]??''),0,600),array_slice($queries,-16));
+        echo 'ARCADE PRIZE FAILURE DIAGNOSTICS: '.wp_json_encode(['claim'=>$failed_claim,'database_error'=>$wpdb->last_error,'recent_queries'=>$diagnostic_queries])."\n";
+    }
     $check($id>0,'installed WCS creates private one-period prize');$subscriptions[]=$id;
     $sub=wcs_get_subscription($id);$claim=json_decode(get_option($key),true);
     $check($claim['state']==='completed'&&(int)$claim['subscription_id']===$id,'durable completed claim identifies actual subscription');
