@@ -36,6 +36,7 @@ check(count($GLOBALS['notices'])===1&&str_contains($GLOBALS['notices'][0],'order
 $GLOBALS['order_storage_mode']=true;$cart->rows=[];$GLOBALS['notices']=[];
 check(\RoxyST\Capacity::validate_add_to_cart(true,10,1),'verified HPOS storage permits add-to-cart capacity checks');
 check(!\RoxyST\Capacity::validate_add_to_cart(true,10,2),'verified HPOS storage still enforces seat capacity');
+$GLOBALS['notices']=[];
 $cart->rows=['row'=>['product_id'=>10,'quantity'=>1]];
 \RoxyST\Capacity::validate_checkout_capacity();
 check($GLOBALS['notices']===[],'verified HPOS storage permits checkout capacity checks for available seats');
