@@ -197,10 +197,10 @@ check(($GLOBALS['statuses'][101]??'')==='publish' && ($GLOBALS['meta'][101]['_ta
 $new_product_id=$upsert->invoke(null,0,'Fixture new showing (General)',12.0,1,'adult',0);
 check(($GLOBALS['statuses'][$new_product_id]??'')==='publish' && ($GLOBALS['meta'][$new_product_id]['_price']??'')==='12.00' && ($GLOBALS['meta'][$new_product_id][ROXY_ST_META_SHOWING_ID]??0)===1,'new ticket product publishes after every required metadata value is verified');
 $GLOBALS['meta_write_mode']['_price']='fail'; $new_failure_id=0;
-try { $upsert->invoke(null,0,'Fixture failed new showing (General)',12.0,1,'adult',0); } catch (ReflectionException $error) { throw $error; } catch (RuntimeException $error) { $new_failure_id=$GLOBALS['next_product_id']-1; }
+try { $upsert->invoke(null,0,'Fixture failed new showing (General)',12.0,5,'adult',0); } catch (ReflectionException $error) { throw $error; } catch (RuntimeException $error) { $new_failure_id=$GLOBALS['next_product_id']-1; }
 check($new_failure_id>0 && ($GLOBALS['statuses'][$new_failure_id]??'')==='draft' && ($GLOBALS['meta'][$new_failure_id]['_price']??'')!=='12.00','new ticket product remains draft when required metadata cannot be verified');
 unset($GLOBALS['meta_write_mode']['_price']);
-$upsert->invoke(null,$new_failure_id,'Fixture failed new showing (General)',12.0,1,'adult',0);
+$upsert->invoke(null,$new_failure_id,'Fixture failed new showing (General)',12.0,5,'adult',0);
 check(($GLOBALS['statuses'][$new_failure_id]??'')==='publish' && ($GLOBALS['meta'][$new_failure_id]['_price']??'')==='12.00','new-product retry publishes only after metadata repair');
 $GLOBALS['types'][3]='roxy_showing'; $GLOBALS['statuses'][3]='publish';
 $GLOBALS['meta'][3]=['_roxy_pricing_profile'=>'movie_evening','_roxy_start'=>current_datetime()->modify('-30 minutes')->format('Y-m-d\\TH:i'),'_roxy_duration_minutes'=>'60'];
