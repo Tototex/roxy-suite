@@ -88,12 +88,20 @@ class Capacity {
     }
   }
 
+  /** Both order backends are handled by Reservations/Issuance; reject only unknown mode. */
+  private static function order_storage_is_verified(): bool {
+    $utility='\\Automattic\\WooCommerce\\Utilities\\OrderUtil';
+    if(!class_exists($utility) || !method_exists($utility,'custom_orders_table_usage_is_enabled'))return false;
+    try { return is_bool($utility::custom_orders_table_usage_is_enabled()); }
+    catch(\Throwable $error) { return false; }
+  }
+
   public static function validate_add_to_cart(bool $passed, int $product_id, int $quantity, int $variation_id = 0): bool {
     // This is a validation filter: never undo a rejection made by WooCommerce
     // or an earlier validation callback.
     if (!$passed) return false;
 
-    if (!class_exists('\\RoxySuite\\Compatibility') || !\RoxySuite\Compatibility::supports_legacy_order_storage()) {
+    if (!self::order_storage_is_verified()) {
       $showing_id = (int) get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true);
       if ($showing_id > 0) {
         wc_add_notice('Ticket checkout is temporarily unavailable while WooCommerce order storage is being verified.', 'error');
@@ -178,7 +186,7 @@ class Capacity {
       if (!$pid) continue;
       $sid = (int) get_post_meta($pid, ROXY_ST_META_SHOWING_ID, true);
       if (!$sid) continue;
-      if (!class_exists('\\RoxySuite\\Compatibility') || !\RoxySuite\Compatibility::supports_legacy_order_storage()) {
+      if (!self::order_storage_is_verified()) {
         wc_add_notice('Ticket checkout is temporarily unavailable while WooCommerce order storage is being verified.', 'error');
         return;
       }

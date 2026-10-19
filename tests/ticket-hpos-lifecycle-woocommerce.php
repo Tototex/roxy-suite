@@ -95,12 +95,26 @@ try {
   $issue_show=wp_insert_post(['post_type'=>'roxy_showing','post_status'=>'draft','post_title'=>$token.' ISSUE SHOW'],true);
   if(is_wp_error($issue_show))throw new RuntimeException('Could not create HPOS issuance showing.');$created_posts[]=(int)$issue_show;
   update_post_meta($issue_show,'_roxy_start',$start);update_post_meta($issue_show,'_roxy_duration_minutes',90);update_post_meta($issue_show,'_roxy_capacity',5);
-  $issue_product=new WC_Product_Simple();$issue_product->set_name($token.' ISSUE TICKET');$issue_product->set_status('draft');$issue_product->set_catalog_visibility('hidden');$issue_product->set_regular_price('0');$issue_product_id=$issue_product->save();
+  $issue_product=new WC_Product_Simple();$issue_product->set_name($token.' ISSUE TICKET');$issue_product->set_status('publish');$issue_product->set_catalog_visibility('hidden');$issue_product->set_regular_price('0');$issue_product_id=$issue_product->save();
   if($issue_product_id<=0)throw new RuntimeException('Could not create HPOS issuance product.');$created_posts[]=$issue_product_id;
   update_post_meta($issue_product_id,ROXY_ST_META_SHOWING_ID,(int)$issue_show);update_post_meta($issue_product_id,ROXY_ST_META_TICKET_TYPE,'general');update_post_meta($issue_show,'_roxy_pid_adult',$issue_product_id);
   $issued=wc_create_order(['status'=>'processing','customer_note'=>$token.' ISSUE TEST']);
   if(is_wp_error($issued)||!$issued instanceof WC_Order)throw new RuntimeException('Could not create private HPOS issuance order.');$created_orders[]=(int)$issued->get_id();
   $issued_item=(int)$issued->add_product($issue_product,2);$issued->calculate_totals();$issued->save();
+  $check(\RoxyST\Capacity::validate_add_to_cart(true,(int)$issue_product_id,3),'HPOS add-to-cart allows only the remaining seats from authoritative order reservations');
+  $check(!\RoxyST\Capacity::validate_add_to_cart(true,(int)$issue_product_id,4),'HPOS add-to-cart rejects a quantity that would exceed capacity');
+  $previous_cart=WC()->cart;
+  WC()->cart=new class((int)$issue_product_id) {
+    private int $product_id;
+    public int $quantity=3;
+    public function __construct(int $product_id){$this->product_id=$product_id;}
+    public function get_cart(): array {return [['product_id'=>$this->product_id,'quantity'=>$this->quantity]];}
+  };
+  wc_clear_notices();\RoxyST\Capacity::validate_checkout_capacity();
+  $check(wc_get_notices('error')===[],'HPOS checkout accepts a cart within authoritative remaining capacity');
+  WC()->cart->quantity=4;wc_clear_notices();\RoxyST\Capacity::validate_checkout_capacity();
+  $check(count(wc_get_notices('error'))===1,'HPOS checkout recheck rejects a cart exceeding current capacity');
+  wc_clear_notices();WC()->cart=$previous_cart;
   $check(\RoxyST\Tickets::sync_order_tickets((int)$issued->get_id()),'HPOS paid ticket order issues through transactional ticket projection');
   $issued=wc_get_order($issued->get_id());$item=$issued->get_item($issued_item);$item->read_meta_data(true);$ticket_ids=array_map('intval',(array)$item->get_meta('_roxy_ticket_ids',true));
   $check(count($ticket_ids)===2&&count(array_unique($ticket_ids))===2,'HPOS issuance links one ticket CPT identity per purchased seat');
