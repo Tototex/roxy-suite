@@ -1,6 +1,6 @@
 <?php
 namespace RoxyST {
-    class Log { public static function warn(...$args) { $GLOBALS['logs'][]=$args; } }
+    class Log { public static function warn(...$args) { $GLOBALS['logs'][]=$args; } public static function error(...$args) { $GLOBALS['errors'][]=$args; } }
     class Settings {
         public static function get_price($key,$default=0){return $default;}
         public static function get_default_capacity(){return 100;}
@@ -33,7 +33,7 @@ namespace RoxyST {
 namespace {
 define('ABSPATH', __DIR__); define('MINUTE_IN_SECONDS',60); define('ROXY_ST_META_SHOWING_ID','_roxy_showing_id'); define('ROXY_ST_META_TICKET_TYPE','_roxy_ticket_type');
 $root=$argv[1]??dirname(__DIR__); $fixture=$argv[2]??$root.'/includes/modules/show-tickets/includes/';
-$GLOBALS['meta']=[]; $GLOBALS['types']=[]; $GLOBALS['statuses']=[]; $GLOBALS['notices']=[]; $GLOBALS['writes']=[]; $GLOBALS['hooks']=[]; $GLOBALS['listing_queries']=[]; $GLOBALS['cleanup_queries']=[]; $GLOBALS['cleanup_pages']=[]; $GLOBALS['transients']=[]; $GLOBALS['capacity_locks']=[]; $GLOBALS['logs']=[];
+$GLOBALS['meta']=[]; $GLOBALS['types']=[]; $GLOBALS['statuses']=[]; $GLOBALS['notices']=[]; $GLOBALS['writes']=[]; $GLOBALS['hooks']=[]; $GLOBALS['listing_queries']=[]; $GLOBALS['cleanup_queries']=[]; $GLOBALS['cleanup_pages']=[]; $GLOBALS['transients']=[]; $GLOBALS['capacity_locks']=[]; $GLOBALS['logs']=[]; $GLOBALS['errors']=[]; $GLOBALS['next_product_id']=500;
 $GLOBALS['room_lock_calls']=[]; $GLOBALS['room_conflict']=false; $GLOBALS['scheduled_events']=[]; $GLOBALS['schedule_fail']=false; $GLOBALS['product_update_fail']=false; $GLOBALS['product_visibility_fail']=false; $GLOBALS['product_visibility_terms']=[];
 class WooCommerce {} class WP_Error { private $message; function __construct($code,$message){$this->message=$message;} function get_error_message(){return $this->message;} }
 function is_wp_error($v){return $v instanceof WP_Error;}
@@ -43,9 +43,10 @@ function get_post_status($id){if(isset($GLOBALS['stale_statuses'][$id]))return $
 function clean_post_cache($id){unset($GLOBALS['stale_statuses'][$id]);}
 function get_the_title($id){return $GLOBALS['titles'][$id]??'Fixture showing';}
 function get_post_meta($id,$key,$single=true){return $GLOBALS['meta'][$id][$key]??'';}
-function update_post_meta($id,$key,$value){$GLOBALS['meta'][$id][$key]=$value;return true;}
+function update_post_meta($id,$key,$value){$mode=$GLOBALS['meta_write_mode'][$key]??'';if($mode==='commit_false'){$GLOBALS['meta'][$id][$key]=$value;return false;}if($mode==='false_unchanged')return false;if($mode==='fail')return false;$GLOBALS['meta'][$id][$key]=$value;return true;}
 function delete_post_meta($id,$key){unset($GLOBALS['meta'][$id][$key]);return true;}
-function wp_update_post($args,$error=false){$GLOBALS['writes'][]=$args;if(!empty($GLOBALS['product_update_fail'])&&($args['post_type']??'')==='product')return new WP_Error('fixture_product_update','fixture product update failure');$GLOBALS['statuses'][$args['ID']]=$args['post_status']; return $args['ID'];}
+function wp_update_post($args,$error=false){$GLOBALS['writes'][]=$args;if(!empty($GLOBALS['product_update_fail'])&&($args['post_type']??'')==='product')return new WP_Error('fixture_product_update','fixture product update failure');if(isset($args['post_status'])&&!empty($GLOBALS['product_status_fail'][$args['post_status']]))return new WP_Error('fixture_product_status','fixture product status update failure');if(isset($args['post_status'])&&empty($GLOBALS['product_status_noop'][$args['post_status']]))$GLOBALS['statuses'][$args['ID']]=$args['post_status']; return $args['ID'];}
+function wp_insert_post($args,$error=false){if(!empty($GLOBALS['product_insert_fail']))return new WP_Error('fixture_product_insert','fixture product insert failure');$id=$GLOBALS['next_product_id']++;$GLOBALS['types'][$id]=$args['post_type']??'post';$GLOBALS['statuses'][$id]=$args['post_status']??'draft';$GLOBALS['titles'][$id]=$args['post_title']??'';$GLOBALS['writes'][]=$args;return $id;}
 function wp_trash_post($id){$GLOBALS['statuses'][$id]='trash'; return true;}
 function get_posts($args){if(($args['meta_compare']??'')==='<'){ $GLOBALS['cleanup_queries'][]=$args; return $GLOBALS['cleanup_pages'][$args['paged']??1]??[]; } $ids=[]; foreach($GLOBALS['types'] as $id=>$type){if($type!==$args['post_type'])continue; $pass=true; foreach($args['meta_query']??[] as $condition){if(get_post_meta($id,$condition['key'])!=$condition['value'])$pass=false;} if($pass)$ids[]=$id;} return $ids;}
 function sanitize_key($s){return $s;}
@@ -143,6 +144,52 @@ $GLOBALS['product_visibility_fail']=true; $GLOBALS['scheduled_events']=[]; $GLOB
 check(($GLOBALS['statuses'][101]??'')==='draft' && ($GLOBALS['product_visibility_terms'][101]??null)===[] && ($GLOBALS['meta'][101][ROXY_ST_META_SHOWING_ID]??0)===1 && ($GLOBALS['meta'][101][ROXY_ST_META_TICKET_TYPE]??'')==='adult' && ($GLOBALS['scheduled_events'][0]['hook']??'')==='roxy_st_sync_products_retry' && ($GLOBALS['scheduled_events'][0]['args']??[])===[1,1] && !isset($GLOBALS['transients']['roxy_st_sync_1']),'failed Woo visibility taxonomy write fails closed, preserves managed identity, and queues bounded reconciliation');
 $GLOBALS['product_visibility_fail']=false; $visibility_retry=array_shift($GLOBALS['scheduled_events']); \RoxyST\Products::retry_product_sync($visibility_retry['args'][0],$visibility_retry['args'][1]);
 check(($GLOBALS['product_visibility_terms'][101]??[])===['exclude-from-catalog','exclude-from-search'] && !isset($GLOBALS['transients']['roxy_st_sync_1']),'product reconciliation retry restores hidden catalog/search visibility after taxonomy recovery');
+$GLOBALS['meta'][101]['_price']='99.00'; $GLOBALS['meta_write_mode']['_price']='fail'; $GLOBALS['scheduled_events']=[];
+\RoxyST\Products::ensure_products_for_showing(1);
+check(($GLOBALS['statuses'][101]??'')==='draft' && ($GLOBALS['meta'][101]['_price']??'')==='99.00' && ($GLOBALS['scheduled_events'][0]['hook']??'')==='roxy_st_sync_products_retry' && ($GLOBALS['scheduled_events'][0]['args']??[])===[1,1],'failed ticket price metadata write withdraws stale product and queues reconciliation');
+unset($GLOBALS['meta_write_mode']['_price']); $price_retry=array_shift($GLOBALS['scheduled_events']);
+\RoxyST\Products::retry_product_sync($price_retry['args'][0],$price_retry['args'][1]);
+check(($GLOBALS['statuses'][101]??'')==='publish' && ($GLOBALS['meta'][101]['_price']??'')==='12.00' && !isset($GLOBALS['transients']['roxy_st_sync_1']),'price metadata reconciliation restores ticket product only after read-back succeeds');
+$GLOBALS['meta'][101]['_price']='99.00'; $GLOBALS['meta_write_mode']['_price']='commit_false'; $GLOBALS['scheduled_events']=[];
+\RoxyST\Products::ensure_products_for_showing(1);
+check(($GLOBALS['statuses'][101]??'')==='publish' && ($GLOBALS['meta'][101]['_price']??'')==='12.00' && $GLOBALS['scheduled_events']===[],'metadata write that commits but reports false passes after matching read-back');
+$GLOBALS['meta_write_mode']['_price']='false_unchanged';
+\RoxyST\Products::ensure_products_for_showing(1);
+check(($GLOBALS['statuses'][101]??'')==='publish' && ($GLOBALS['meta'][101]['_price']??'')==='12.00' && $GLOBALS['scheduled_events']===[],'unchanged metadata write returning false is accepted when persisted value matches');
+unset($GLOBALS['meta_write_mode']['_price']);
+$upsert=new ReflectionMethod(\RoxyST\Products::class,'upsert_product'); $upsert->setAccessible(true);
+$GLOBALS['meta'][101][ROXY_ST_META_SHOWING_ID]=2; $GLOBALS['meta_write_mode'][ROXY_ST_META_SHOWING_ID]='fail';
+try { $upsert->invoke(null,101,'Fixture showing (General)',12.0,1,'adult',0); } catch (ReflectionException $error) { throw $error; } catch (RuntimeException $error) {}
+check(($GLOBALS['statuses'][101]??'')==='draft' && ($GLOBALS['meta'][101][ROXY_ST_META_SHOWING_ID]??0)===2,'failed managed showing identity write leaves ticket product unavailable');
+unset($GLOBALS['meta_write_mode'][ROXY_ST_META_SHOWING_ID]);
+$upsert->invoke(null,101,'Fixture showing (General)',12.0,1,'adult',0);
+check(($GLOBALS['statuses'][101]??'')==='publish' && ($GLOBALS['meta'][101][ROXY_ST_META_SHOWING_ID]??0)===1,'ticket product republishes after managed identity read-back is repaired');
+$GLOBALS['meta'][101]['_price']='99.00'; $GLOBALS['meta_write_mode']['_price']='fail'; $GLOBALS['product_status_fail']['draft']=true; $GLOBALS['scheduled_events']=[]; $errors_before=count($GLOBALS['errors']);
+\RoxyST\Products::ensure_products_for_showing(1);
+check(($GLOBALS['statuses'][101]??'')==='publish' && ($GLOBALS['meta'][101]['_price']??'')==='99.00' && count($GLOBALS['errors'])===$errors_before+1 && ($GLOBALS['scheduled_events'][0]['hook']??'')==='roxy_st_sync_products_retry','failed withdrawal is escalated and prevents metadata writes while reconciliation is queued');
+unset($GLOBALS['product_status_fail']['draft'],$GLOBALS['meta_write_mode']['_price']); $demotion_retry=array_shift($GLOBALS['scheduled_events']);
+\RoxyST\Products::retry_product_sync($demotion_retry['args'][0],$demotion_retry['args'][1]);
+check(($GLOBALS['statuses'][101]??'')==='publish' && ($GLOBALS['meta'][101]['_price']??'')==='12.00','reconciliation repairs ticket after product withdrawal becomes available');
+$GLOBALS['meta'][101]['_price']='99.00'; $GLOBALS['product_status_fail']['publish']=true; $GLOBALS['scheduled_events']=[];
+\RoxyST\Products::ensure_products_for_showing(1);
+check(($GLOBALS['statuses'][101]??'')==='draft' && ($GLOBALS['meta'][101]['_price']??'')==='12.00' && ($GLOBALS['scheduled_events'][0]['hook']??'')==='roxy_st_sync_products_retry','failed republish keeps corrected ticket unavailable and queues reconciliation');
+unset($GLOBALS['product_status_fail']['publish']); $republish_retry=array_shift($GLOBALS['scheduled_events']);
+\RoxyST\Products::retry_product_sync($republish_retry['args'][0],$republish_retry['args'][1]);
+check(($GLOBALS['statuses'][101]??'')==='publish','ticket product is republished after status-write recovery');
+$GLOBALS['meta'][101]['_tax_class']=false; $GLOBALS['meta_write_mode']['_tax_class']='false_unchanged'; $GLOBALS['scheduled_events']=[];
+\RoxyST\Products::ensure_products_for_showing(1);
+check(($GLOBALS['statuses'][101]??'')==='draft' && ($GLOBALS['scheduled_events'][0]['hook']??'')==='roxy_st_sync_products_retry','malformed boolean metadata is not accepted as an empty tax class');
+unset($GLOBALS['meta_write_mode']['_tax_class']); $tax_retry=array_shift($GLOBALS['scheduled_events']);
+\RoxyST\Products::retry_product_sync($tax_retry['args'][0],$tax_retry['args'][1]);
+check(($GLOBALS['statuses'][101]??'')==='publish' && ($GLOBALS['meta'][101]['_tax_class']??null)==='' ,'ticket product returns to sale only after malformed metadata is corrected');
+$new_product_id=$upsert->invoke(null,0,'Fixture new showing (General)',12.0,1,'adult',0);
+check(($GLOBALS['statuses'][$new_product_id]??'')==='publish' && ($GLOBALS['meta'][$new_product_id]['_price']??'')==='12.00' && ($GLOBALS['meta'][$new_product_id][ROXY_ST_META_SHOWING_ID]??0)===1,'new ticket product publishes after every required metadata value is verified');
+$GLOBALS['meta_write_mode']['_price']='fail'; $new_failure_id=0;
+try { $upsert->invoke(null,0,'Fixture failed new showing (General)',12.0,1,'adult',0); } catch (ReflectionException $error) { throw $error; } catch (RuntimeException $error) { $new_failure_id=$GLOBALS['next_product_id']-1; }
+check($new_failure_id>0 && ($GLOBALS['statuses'][$new_failure_id]??'')==='draft' && ($GLOBALS['meta'][$new_failure_id]['_price']??'')!=='12.00','new ticket product remains draft when required metadata cannot be verified');
+unset($GLOBALS['meta_write_mode']['_price']);
+$upsert->invoke(null,$new_failure_id,'Fixture failed new showing (General)',12.0,1,'adult',0);
+check(($GLOBALS['statuses'][$new_failure_id]??'')==='publish' && ($GLOBALS['meta'][$new_failure_id]['_price']??'')==='12.00','new-product retry publishes only after metadata repair');
 $GLOBALS['statuses'][103]='publish'; $GLOBALS['writes']=[];
 $show_end=\RoxyST\Eligibility::showing_end_timestamp(1);
 check($show_end!==null && \RoxyST\Eligibility::showing_sales_open(1,$show_end-1) && !\RoxyST\Eligibility::showing_sales_open(1,$show_end),'sales cutoff is exclusive at the actual showing end');

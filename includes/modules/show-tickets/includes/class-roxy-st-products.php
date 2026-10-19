@@ -423,7 +423,6 @@ class Products {
     $postarr = [
       'post_title'   => $title,
       'post_type'    => 'product',
-      'post_status'  => 'publish',
       'post_content' => '',
     ];
 
@@ -431,6 +430,8 @@ class Products {
       $postarr['ID'] = $existing_id;
       $product_id = wp_update_post($postarr, true);
     } else {
+      // New products remain unavailable until their required metadata is verified.
+      $postarr['post_status'] = 'draft';
       $product_id = wp_insert_post($postarr, true);
     }
 
@@ -440,21 +441,50 @@ class Products {
       throw new \RuntimeException('Ticket product could not be created or updated');
     }
 
-    update_post_meta($product_id, '_virtual', 'yes');
-    update_post_meta($product_id, '_downloadable', 'no');
-    update_post_meta($product_id, '_manage_stock', 'no');
-    update_post_meta($product_id, '_stock_status', 'instock');
-    update_post_meta($product_id, '_sold_individually', 'no');
-
     $price_str = wc_format_decimal($price, wc_get_price_decimals());
-    update_post_meta($product_id, '_regular_price', $price_str);
-    update_post_meta($product_id, '_price', $price_str);
-    update_post_meta($product_id, '_tax_status', 'none');
-    update_post_meta($product_id, '_tax_class', '');
+    $required_meta = [
+      '_virtual' => 'yes',
+      '_downloadable' => 'no',
+      '_manage_stock' => 'no',
+      '_stock_status' => 'instock',
+      '_sold_individually' => 'no',
+      '_regular_price' => $price_str,
+      '_price' => $price_str,
+      '_tax_status' => 'none',
+      '_tax_class' => '',
+      ROXY_ST_META_SHOWING_ID => $showing_id,
+      ROXY_ST_META_TICKET_TYPE => $ticket_type,
+    ];
+
+    // Withdraw an active ticket before changing critical metadata so a failed
+    // write cannot leave a stale price or identity available for purchase.
+    $metadata_needs_update = false;
+    foreach ($required_meta as $key => $value) {
+      try {
+        $current = get_post_meta($product_id, $key, true);
+      } catch (\Throwable $error) {
+        $metadata_needs_update = true;
+        break;
+      }
+      if (!self::ticket_product_meta_matches($current, $value)) {
+        $metadata_needs_update = true;
+        break;
+      }
+    }
+    if ($metadata_needs_update && get_post_status($product_id) === 'publish') {
+      try {
+        self::set_ticket_product_status($product_id, 'draft');
+      } catch (\Throwable $error) {
+        Log::error('ticket product could not be withdrawn before metadata synchronization', ['product_id'=>$product_id, 'showing_id'=>$showing_id]);
+        throw $error;
+      }
+    }
+
+    foreach ($required_meta as $key => $value) {
+      self::update_ticket_product_meta($product_id, $key, $value);
+    }
     // Persist the managed identity before applying visibility. If the taxonomy
     // write fails on a newly created product, the retry can still discover it.
-    update_post_meta($product_id, ROXY_ST_META_SHOWING_ID, $showing_id);
-    update_post_meta($product_id, ROXY_ST_META_TICKET_TYPE, $ticket_type);
 
     $visibility_result = wp_set_object_terms($product_id, ['exclude-from-catalog','exclude-from-search'], 'product_visibility', false);
     if (is_wp_error($visibility_result)) {
@@ -473,7 +503,48 @@ class Products {
       set_post_thumbnail($product_id, $thumb_id);
     }
 
+    if (get_post_status($product_id) !== 'publish') {
+      self::set_ticket_product_status($product_id, 'publish');
+    }
+
     return (int) $product_id;
+  }
+
+  private static function update_ticket_product_meta(int $product_id, string $key, $value): void {
+    try {
+      update_post_meta($product_id, $key, $value);
+      $actual = get_post_meta($product_id, $key, true);
+    } catch (\Throwable $error) {
+      $actual = null;
+    }
+
+    // false from update_post_meta() can mean either unchanged or failed.
+    if (self::ticket_product_meta_matches($actual, $value)) return;
+
+    try {
+      self::set_ticket_product_status($product_id, 'draft');
+    } catch (\Throwable $error) {
+      Log::error('ticket product could not be deactivated after metadata sync failure', ['product_id'=>$product_id, 'meta_key'=>$key]);
+    }
+    throw new \RuntimeException('Ticket product metadata could not be synchronized');
+  }
+
+  private static function ticket_product_meta_matches($actual, $expected): bool {
+    // WordPress returns scalar metadata as strings. A serialized boolean false
+    // must not be mistaken for a valid empty string (for example, tax class).
+    return is_scalar($actual) && !is_bool($actual) && is_scalar($expected) && !is_bool($expected)
+      && (string) $actual === (string) $expected;
+  }
+
+  private static function set_ticket_product_status(int $product_id, string $status): void {
+    $result = wp_update_post(['ID'=>$product_id, 'post_status'=>$status], true);
+    if (is_wp_error($result) || !$result) {
+      throw new \RuntimeException('Ticket product status could not be synchronized');
+    }
+    clean_post_cache($product_id);
+    if (get_post_status($product_id) !== $status) {
+      throw new \RuntimeException('Ticket product status could not be verified');
+    }
   }
 
   private static function trash_expired_showing_products(): void {
