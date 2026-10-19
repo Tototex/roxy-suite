@@ -12,6 +12,7 @@ if (!defined('ABSPATH')) exit;
 define('ROXY_ARCADE_VERSION', '0.4.7');
 
 class Roxy_Arcade {
+  private static $active_award_locks = [];
   const DB_VERSION = '1.0';
   const TABLE_KEY  = 'roxy_arcade_scores';
 
@@ -475,35 +476,195 @@ class Roxy_Arcade {
   private static function award_once($month, $user_id) {
     global $wpdb;
     if (!preg_match('/^\d{4}-(0[1-9]|1[0-2])$/D', (string) $month) || $user_id <= 0) return 0;
+    $lock = self::acquire_award_lock($month);
+    if (!$lock) return 0;
+    try {
+      return self::award_once_locked($month, $user_id, $lock);
+    } finally {
+      self::release_award_lock($lock);
+    }
+  }
+
+  private static function award_once_locked($month, $user_id, array $lock) {
+    global $wpdb;
     $key = 'roxy_arcade_award_claim_' . $month;
+    $token = wp_generate_uuid4();
     $claim = ['state' => 'started', 'user_id' => (int) $user_id, 'subscription_id' => 0,
-      'token' => wp_generate_uuid4(), 'started_at' => gmdate('c')];
+      'token' => $token, 'created_via' => 'roxy_arcade_prize_' . $token, 'started_at' => gmdate('c')];
     $expected = wp_json_encode($claim);
+    if (!self::award_lock_is_owned($lock)) return 0;
     // Unique option_name is a durable claim, including across worker crashes.
     // Never automatically delete/retry an uncertain attempt or reset a completed one.
     $inserted = $wpdb->query($wpdb->prepare(
       "INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')",
       $key, $expected
     ));
-    if ($inserted !== 1) return 0;
+    if ($inserted === false || (property_exists($wpdb, 'last_error') && $wpdb->last_error !== '')) return 0;
+    if ($inserted !== 1) {
+      // wcs_create_subscription() saves its initial object before returning. If
+      // the worker died before persisting the ID, attach only a unique
+      // marker/customer match and leave it for manager review. Never resume
+      // fulfillment or create a replacement on this path.
+      wp_cache_delete($key, 'options');
+      wp_cache_delete('notoptions', 'options');
+      $stored = get_option($key, null);
+      if (is_string($stored)) {
+        $existing = json_decode($stored, true);
+        if (is_array($existing)) {
+          $existing_user_id = $existing['user_id'] ?? null;
+          $existing_subscription_id = $existing['subscription_id'] ?? null;
+          $existing_marker = $existing['created_via'] ?? null;
+          $existing_token = $existing['token'] ?? null;
+          if (in_array(($existing['state'] ?? ''), ['started', 'needs_review'], true)
+            && (is_int($existing_user_id) || (is_string($existing_user_id) && ctype_digit($existing_user_id)))
+            && (int) $existing_user_id === (int) $user_id
+            && (is_int($existing_subscription_id) || (is_string($existing_subscription_id) && ctype_digit($existing_subscription_id)))
+            && (int) $existing_subscription_id === 0
+            && is_string($existing_marker)
+            && preg_match('/^roxy_arcade_prize_[a-f0-9-]{36}$/D', $existing_marker)
+            && is_string($existing_token)
+            && $existing_marker === 'roxy_arcade_prize_' . $existing_token) {
+            if (self::award_lock_is_owned($lock)) {
+              self::recover_orphaned_prize_subscription($key, $stored, $existing, $user_id, $lock);
+            }
+          }
+        }
+      }
+      return 0;
+    }
     wp_cache_delete($key, 'options');
     wp_cache_delete('notoptions', 'options');
-    $persist = static function ($subscription_id) use ($key, &$claim, &$expected) {
+    $persist = static function ($subscription_id) use ($key, &$claim, &$expected, $lock) {
+      if (!self::award_lock_is_owned($lock)) throw new RuntimeException('Prize award lock was lost before identity persistence');
       $next = $claim; $next['subscription_id'] = (int) $subscription_id;
       $claim = $next;
       if (!self::save_award_claim($key, $expected, $next)) throw new RuntimeException('Prize identity could not be recorded');
       $expected = wp_json_encode($next);
     };
     try {
-      $sub_id = self::award_free_subscription_one_period($user_id, $persist);
+      $sub_id = self::award_free_subscription_one_period($user_id, $claim['created_via'], $persist, $lock);
       if (!$sub_id) throw new RuntimeException('Prize preparation failed');
+      if (!self::award_lock_is_owned($lock)) throw new RuntimeException('Prize award lock was lost before claim finalization');
       $next = $claim; $next['state'] = 'completed'; $next['completed_at'] = gmdate('c');
       if (!self::save_award_claim($key, $expected, $next)) return 0;
       return $sub_id;
     } catch (Throwable $error) {
+      if (!self::award_lock_is_owned($lock)) return 0;
       $next = $claim; $next['state'] = 'needs_review';
       self::save_award_claim($key, $expected, $next);
       return 0;
+    }
+  }
+
+  private static function award_lock_name($month) {
+    global $wpdb;
+    // Distinct WordPress installations can share one MySQL server. Scope the
+    // mutex to the claim table as well as the award month.
+    $database = defined('DB_NAME') ? (string) DB_NAME : '';
+    $options_table = is_object($wpdb) && isset($wpdb->options) ? (string) $wpdb->options : 'options';
+    return 'roxy_arcade_award_' . md5($database . '|' . $options_table . '|' . (string) $month);
+  }
+
+  private static function acquire_award_lock($month, $db = null) {
+    global $wpdb;
+    if (!$db) $db = $wpdb;
+    if (!is_object($db) || !method_exists($db, 'get_var') || !method_exists($db, 'prepare')) return false;
+    $name = self::award_lock_name($month);
+    if (strlen($name) > 64) return false;
+    $connection_key = self::award_lock_connection_key($db);
+    try {
+      $connection_id = $db->get_var('SELECT CONNECTION_ID()');
+      if (!self::award_db_query_ok($db) || !is_numeric($connection_id) || (int) $connection_id <= 0) return false;
+      $active = self::$active_award_locks[$name] ?? null;
+      if (is_array($active) && (int) ($active['connection_id'] ?? 0) === (int) $connection_id) return false;
+      $acquired = $db->get_var($db->prepare('SELECT GET_LOCK(%s, 0)', $name));
+      if ((string) $acquired !== '1') return false;
+      if (!self::award_db_query_ok($db)) {
+        self::release_unidentified_award_lock($db, $name);
+        return false;
+      }
+      $owner = $db->get_var($db->prepare('SELECT IS_USED_LOCK(%s)', $name));
+      $current_connection_id = $db->get_var('SELECT CONNECTION_ID()');
+      if (!self::award_db_query_ok($db) || !is_numeric($owner) || (int) $owner !== (int) $connection_id
+        || !is_numeric($current_connection_id) || (int) $current_connection_id !== (int) $connection_id) {
+        self::release_unidentified_award_lock($db, $name);
+        return false;
+      }
+      self::$active_award_locks[$name] = ['connection_id' => (int) $connection_id, 'connection_key' => $connection_key];
+      return ['name' => $name, 'connection_id' => (int) $connection_id, 'connection_key' => $connection_key, 'db' => $db];
+    } catch (Throwable $error) {
+      self::release_unidentified_award_lock($db, $name);
+      return false;
+    }
+  }
+
+  private static function award_db_query_ok($db) {
+    return !property_exists($db, 'last_error') || $db->last_error === '';
+  }
+
+  private static function award_lock_connection_key($db) {
+    return function_exists('spl_object_id') ? spl_object_id($db) : spl_object_hash($db);
+  }
+
+  private static function release_unidentified_award_lock($db, $name) {
+    try {
+      // The conditional runs on the same server connection as RELEASE_LOCK;
+      // it cannot release a lock owned by another connection.
+      $db->get_var($db->prepare('SELECT IF(IS_USED_LOCK(%s) = CONNECTION_ID(), RELEASE_LOCK(%s), 0)', $name, $name));
+    } catch (Throwable $error) {
+      // Connection close will release any lock that could not be identified.
+    }
+  }
+
+  private static function award_lock_is_owned(array $lock) {
+    $db = $lock['db'] ?? null;
+    if (!is_object($db) || !isset($lock['name'], $lock['connection_id']) || !method_exists($db, 'get_var') || !method_exists($db, 'prepare')) return false;
+    try {
+      $owned = $db->get_var($db->prepare(
+        'SELECT IF(CONNECTION_ID() = %d AND IS_USED_LOCK(%s) = %d, 1, 0)',
+        (int) $lock['connection_id'], $lock['name'], (int) $lock['connection_id']
+      ));
+      return self::award_db_query_ok($db) && (string) $owned === '1';
+    } catch (Throwable $error) {
+      return false;
+    }
+  }
+
+  private static function release_award_lock(array $lock) {
+    $name = $lock['name'] ?? '';
+    $db = $lock['db'] ?? null;
+    if (!is_object($db) || !isset($lock['connection_id'], $lock['connection_key'])
+      || self::award_lock_connection_key($db) !== $lock['connection_key']) return;
+    $active = self::$active_award_locks[$name] ?? null;
+    if (!is_array($active) || (int) ($active['connection_id'] ?? 0) !== (int) $lock['connection_id']
+      || ($active['connection_key'] ?? null) !== $lock['connection_key']) return;
+    try {
+      if (!method_exists($db, 'get_var') || !method_exists($db, 'prepare')) return;
+      $current_connection_id = $db->get_var('SELECT CONNECTION_ID()');
+      if (!self::award_db_query_ok($db) || !is_numeric($current_connection_id)) return;
+      $owner = $db->get_var($db->prepare('SELECT IS_USED_LOCK(%s)', $name));
+      if (!self::award_db_query_ok($db)) return;
+      if (!is_numeric($owner) || (int) $owner !== (int) $lock['connection_id']) {
+        // A successful server-side ownership check proves the original lock
+        // is gone or belongs to another connection, so its local guard can go.
+        unset(self::$active_award_locks[$name]);
+        return;
+      }
+      if ((int) $current_connection_id !== (int) $lock['connection_id']) return;
+      $released = $db->get_var($db->prepare('SELECT RELEASE_LOCK(%s)', $name));
+      if (!self::award_db_query_ok($db)) return;
+      if ((string) $released === '1') {
+        unset(self::$active_award_locks[$name]);
+        return;
+      }
+      $owner_after_release = $db->get_var($db->prepare('SELECT IS_USED_LOCK(%s)', $name));
+      if (self::award_db_query_ok($db) && (!is_numeric($owner_after_release)
+        || (int) $owner_after_release !== (int) $lock['connection_id'])) {
+        unset(self::$active_award_locks[$name]);
+      }
+    } catch (Throwable $error) {
+      // Never issue an unguarded RELEASE_LOCK; the owning connection will
+      // release it when closed if this guarded release cannot be completed.
     }
   }
 
@@ -517,7 +678,51 @@ class Roxy_Arcade {
     return $saved === 1;
   }
 
-  private static function award_free_subscription_one_period($user_id, $persist_identity = null) {
+  private static function recover_orphaned_prize_subscription($key, $expected, array $claim, $user_id, array $lock) {
+    if (!self::award_lock_is_owned($lock)) return false;
+    if (!function_exists('wc_get_orders')) return false;
+    try {
+      $matches = wc_get_orders([
+        'type' => 'shop_subscription',
+        'status' => 'all',
+        'created_via' => $claim['created_via'],
+        'customer_id' => (int) $user_id,
+        'limit' => 2,
+        'return' => 'objects',
+      ]);
+    } catch (Throwable $error) {
+      return false;
+    }
+    if (is_wp_error($matches) || !is_array($matches) || count($matches) !== 1) return false;
+    $subscription = reset($matches);
+    if (!is_object($subscription)
+      || !method_exists($subscription, 'get_id')
+      || !method_exists($subscription, 'get_type')
+      || !method_exists($subscription, 'get_customer_id')
+      || !method_exists($subscription, 'get_created_via')) return false;
+    try {
+      $id = $subscription->get_id();
+      $matched_customer_id = $subscription->get_customer_id();
+      if ((!is_int($id) && !(is_string($id) && ctype_digit($id)))
+        || (int) $id <= 0
+        || (!is_int($matched_customer_id) && !(is_string($matched_customer_id) && ctype_digit($matched_customer_id)))
+        || $subscription->get_type() !== 'shop_subscription'
+        || (int) $matched_customer_id !== (int) $user_id
+        || $subscription->get_created_via() !== $claim['created_via']) return false;
+    } catch (Throwable $error) {
+      return false;
+    }
+
+    $recovered = $claim;
+    $recovered['state'] = 'needs_review';
+    $recovered['subscription_id'] = (int) $id;
+    $recovered['recovered_at'] = gmdate('c');
+    $recovered['review_reason'] = 'A pending prize subscription was recovered after an interrupted creation attempt; inspect it before taking any action.';
+    if (!self::award_lock_is_owned($lock)) return false;
+    return self::save_award_claim($key, $expected, $recovered);
+  }
+
+  private static function award_free_subscription_one_period($user_id, $created_via, $persist_identity = null, $lock = null) {
     if (!class_exists('WooCommerce')) return 0;
     if (!function_exists('wcs_create_subscription')) return 0;
 
@@ -529,9 +734,11 @@ class Roxy_Arcade {
     $period = WC_Subscriptions_Product::get_period($product);
     $interval = (int) WC_Subscriptions_Product::get_interval($product);
     if (!in_array($period, ['day', 'week', 'month', 'year'], true) || $interval < 1 || !get_user_by('id', $user_id)) return 0;
+    if (!$lock || !self::award_lock_is_owned($lock)) throw new RuntimeException('Prize award lock was lost before subscription creation');
 
     $sub = wcs_create_subscription([
       'customer_id' => $user_id,
+      'created_via' => $created_via,
       'status' => 'pending',
       'billing_period' => $period,
       'billing_interval' => $interval,
@@ -564,6 +771,7 @@ class Roxy_Arcade {
     ]);
 
     $sub->save();
+    if (!$lock || !self::award_lock_is_owned($lock)) throw new RuntimeException('Prize award lock was lost before subscription activation');
     if (!$sub->update_status('active', 'Roxy Arcade monthly winner prize awarded.')) throw new RuntimeException('Prize activation failed');
     $sub->add_order_note('Roxy Arcade: Monthly winner prize — Free 1 billing period (SUB002).');
 
@@ -800,7 +1008,11 @@ class Roxy_Arcade {
               <?php endif; ?>
               <p>Monthly claim (<?php echo esc_html($claim_month); ?>): <?php echo esc_html($award_claim['state'] ?? 'No attempt recorded'); ?>.
                 Subscription: <?php echo esc_html((string) ($award_claim['subscription_id'] ?? 0)); ?>.</p>
-              <p class="description">Started or uncertain attempts require manual review before recovery. Completed claims cannot be reset to award twice.</p>
+              <?php if (($award_claim['state'] ?? '') !== 'completed' && (int) ($award_claim['subscription_id'] ?? 0) > 0): ?>
+                <p class="description"><strong>Manager inspection required:</strong> subscription <?php echo esc_html((string) $award_claim['subscription_id']); ?> is attached to an incomplete or uncertain claim. Inspect it in WooCommerce before taking any action; this system will not activate or retry it automatically.</p>
+              <?php else: ?>
+                <p class="description">Started or uncertain attempts require manual review before recovery. Completed claims cannot be reset to award twice.</p>
+              <?php endif; ?>
             </td>
           </tr>
 

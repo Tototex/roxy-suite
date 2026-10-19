@@ -84,12 +84,47 @@ jobs:
           php "$RUNNER_TEMP/wp-cli.phar" config create --path="$wp_path" --dbname=roxy_requested_test --dbuser=root --dbpass=root --dbhost=127.0.0.1 --skip-check
           php "$RUNNER_TEMP/wp-cli.phar" core install --path="$wp_path" --url=http://roxy-requested-test.invalid --title='Private Requested Showings fixture' --admin_user=fixture --admin_password=fixture-password --admin_email=fixture@example.invalid
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin install woocommerce --activate
+          # WooCommerce Payments bundles Automattic's subscriptions-core
+          # library. Enable its local test feature before activating it; no
+          # payment credentials or real payment requests are used.
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin install woocommerce-payments
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" option update _wcpay_feature_subscriptions 1
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin activate woocommerce-payments
+          # The first WCPay migration can reset this feature on an empty store.
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" option update _wcpay_feature_subscriptions 1
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" option update woocommerce_custom_orders_table_enabled no
           mkdir -p "$wp_path/wp-content/plugins"
           ln -s "$GITHUB_WORKSPACE" "$wp_path/wp-content/plugins/roxy-suite"
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" eval '$flags = array_fill_keys(["arcade","sub_check","will_call","show_tickets","requested_showings","event_booking","grosses","inventory","social_publisher"], false); $flags["sub_check"] = true; $flags["show_tickets"] = true; $flags["requested_showings"] = true; $flags["event_booking"] = true; update_option("roxy_suite_modules", $flags);'
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin activate roxy-suite/roxy-suite.php
           echo "R2_WP_PATH=$wp_path" >> "$GITHUB_ENV"
+      - name: Verify Arcade award locking on independent MySQL connections
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/arcade-award-lock-output.txt"
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/arcade-award-lock-mysql.php" "$GITHUB_WORKSPACE" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 35 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Arcade award-lock MySQL fixture failed::$details"
+            exit "$status"
+          fi
+      - name: Run Arcade award lifecycle against installed WooCommerce Subscriptions core
+        shell: bash
+        run: |
+          set -euo pipefail
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval 'if (!function_exists("wcs_create_subscription") || !class_exists("WC_Product_Subscription")) { throw new RuntimeException("WooCommerce Subscriptions core did not initialize."); }'
+          output="$RUNNER_TEMP/arcade-prize-woo-output.txt"
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/arcade-prize-woo.php" "$GITHUB_WORKSPACE" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 50 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Arcade WCS lifecycle fixture failed::$details"
+            exit "$status"
+          fi
       - name: Run Show Tickets checkout-hold and late-confirmation lifecycle fixture
         shell: bash
         run: |
