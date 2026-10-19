@@ -4,6 +4,7 @@ function wp_salt($scheme){return $GLOBALS['salt']??'grosses-isolated-salt';}
 function wp_timezone_string(){return 'America/Los_Angeles';}
 function wp_date($format,...$args){return $format==='Y' ? '2026' : '2026-10-05';}
 function get_option($key,$default=false){return $key==='roxy_grosses_settings' ? ($GLOBALS['saved']??$default) : $default;}
+// Simulate update_option() running the sanitize callback registered during admin_init.
 function update_option($key,$value,$autoload=null){if($key!=='roxy_grosses_settings')return false;$GLOBALS['saved']=\RoxyGrosses\Settings::sanitize($value);return true;}
 function sanitize_text_field($v){return trim($v);}function sanitize_file_name($v){return trim($v);}function sanitize_email($v){return $v;}function sanitize_textarea_field($v){return $v;}
 function wc_format_decimal($v){return $v;}function wp_parse_args($a,$b){return array_merge($b,$a);}

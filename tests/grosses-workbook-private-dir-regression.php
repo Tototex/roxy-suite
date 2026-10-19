@@ -83,6 +83,8 @@ $ensure_template_method = new ReflectionMethod($namespace . '\\Workbook', 'ensur
 $ensure_template_method->setAccessible(true);
 $is_private_method = new ReflectionMethod($namespace . '\\Workbook', 'is_private_path');
 $is_private_method->setAccessible(true);
+$safe_template_method = new ReflectionMethod($namespace . '\\Workbook', 'is_safe_uploaded_template_file');
+$safe_template_method->setAccessible(true);
 $checks = 0;
 $check = static function (bool $condition, string $label) use (&$checks): void {
     if (!$condition) throw new RuntimeException('FAIL: ' . $label);
@@ -120,12 +122,14 @@ try {
     $private_descendant = $workbooks_method->invoke(null) . DIRECTORY_SEPARATOR . 'path-check.xlsx';
     file_put_contents($private_descendant, 'fixture');
     $check($is_private_method->invoke(null, $private_descendant), 'existing private descendants are recognized');
+    $check($safe_template_method->invoke(null, $private_descendant), 'readable template files inside private storage pass the upload metadata guard');
     unlink($private_descendant);
     $shared_prefix = $private_dir . '-public';
     if (!mkdir($shared_prefix, 0700)) throw new RuntimeException('Could not create shared-prefix sibling fixture.');
     $shared_prefix_file = $shared_prefix . DIRECTORY_SEPARATOR . 'book.xlsx';
     file_put_contents($shared_prefix_file, 'fixture');
     $check(!$is_private_method->invoke(null, $shared_prefix_file), 'a sibling with a shared lexical prefix is not misclassified as private');
+    $check(!$safe_template_method->invoke(null, $shared_prefix_file), 'a readable file outside private storage cannot be saved as the uploaded template');
     $check(!$is_private_method->invoke(null, $private_dir . '/../../public-target'), 'canonical resolution rejects a path that traverses outside private storage');
     if (!symlink($public_target, $private_dir . DIRECTORY_SEPARATOR . 'external-link')) throw new RuntimeException('Could not create private-path symlink fixture.');
     $check(!$is_private_method->invoke(null, $private_dir . '/external-link'), 'canonical resolution rejects a private-root child symlink targeting a public directory');
