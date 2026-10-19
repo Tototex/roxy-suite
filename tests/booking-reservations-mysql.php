@@ -126,7 +126,7 @@ try {
         };
     };
     $adjustment_for=static function($booking) {
-        return ['booking_id'=>(int)$booking['id'],'revision_version'=>1,'booking_revision'=>roxy_fixture_eb_booking_revision($booking),'new_extra_hours'=>1,'new_duration_hours'=>3,'new_show_start_at'=>$booking['show_start_at'],'new_doors_close_at'=>'2040-01-02 13:30:00','new_reserved_start_at'=>$booking['reserved_start_at'],'new_reserved_end_at'=>'2040-01-02 14:00:00','new_notes_admin'=>'paid fixture update','new_special_charge_label'=>'Fixture charge','new_special_charge_total'=>40,'new_extra_price'=>100,'new_total_price'=>390,'delta_total'=>140];
+        return ['booking_id'=>(int)$booking['id'],'revision_version'=>1,'booking_revision'=>roxy_fixture_eb_booking_revision($booking),'new_extra_hours'=>1,'new_duration_hours'=>3,'new_show_start_at'=>$booking['show_start_at'],'new_doors_close_at'=>'2040-01-02 13:30:00','new_reserved_start_at'=>$booking['reserved_start_at'],'new_reserved_end_at'=>'2040-01-02 14:00:00','new_notes_admin'=>'paid fixture update','new_special_charge_label'=>'Fixture charge','new_special_charge_total'=>(int)$booking['special_charge_total']+40,'new_extra_price'=>(int)$booking['extra_price']+100,'new_total_price'=>(int)$booking['total_price']+140,'delta_total'=>140];
     };
     $snapshot=roxy_fixture_eb_repo_get_booking($id); $adjustment=$adjustment_for($snapshot);
     $check(is_wp_error(roxy_fixture_eb_apply_booking_adjustment_from_order($make_order(900000010,$id,false),$adjustment)), 'unpaid adjustment cannot alter reservation');
