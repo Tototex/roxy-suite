@@ -202,6 +202,14 @@ class Scheduler {
       return;
     }
 
+    // A delayed 23:00 report can run after the 01:00 refresh time. Its queued
+    // refresh must not claim the shared Square-sync lock before the initial
+    // report has completed, or that report can be lost for the day.
+    if (get_option(self::LAST_AUTO_DATE_KEY) !== $intended_date) {
+      self::retry_closed_day_refresh($intended_date, $attempt, 'The initial scheduled report has not completed; closed-day refresh was deferred.', $now);
+      return;
+    }
+
     try {
       $result = Reporter::refresh_closed_day($intended_date);
       Store::insert_log('closed_day_refresh', 'closed-day-refresh', null, $intended_date, !empty($result['success']), (string) ($result['message'] ?? 'Closed-day refresh completed.'));

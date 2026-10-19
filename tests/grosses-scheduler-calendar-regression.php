@@ -346,6 +346,19 @@ namespace {
     'successful-but-no-op queue write fails verification and preserves existing dates');
   $GLOBALS['queue_write_mode'] = '';
   $GLOBALS['fixture_options'][$queue_key] = [];
+  $GLOBALS['fixture_options']['roxy_grosses_last_auto_date'] = '';
+  $GLOBALS['cron_events'] = array_values(array_filter($GLOBALS['cron_events'], static fn(array $event): bool => !($event['hook'] === 'roxy_grosses_closed_day_refresh' && ($event['args'] ?? []) === ['2000-01-04', 0])));
+  $refresh_calls_before_defer = count(\RoxyGrosses\Reporter::$closed_day_calls);
+  \RoxyGrosses\Scheduler::run_closed_day_refresh('2000-01-04', 0);
+  scheduler_calendar_assert(
+    count(\RoxyGrosses\Reporter::$closed_day_calls) === $refresh_calls_before_defer
+      && \RoxyGrosses\Scheduler::closed_day_refresh_health()['status'] === 'scheduled'
+      && \RoxyGrosses\Scheduler::closed_day_refresh_health()['attempt'] === 1,
+    'closed-day refresh defers instead of racing the not-yet-completed initial scheduled report'
+  );
+  $GLOBALS['fixture_options']['roxy_grosses_last_auto_date'] = '2000-01-04';
+  $GLOBALS['fixture_options'][$queue_key] = [];
+  $GLOBALS['cron_events'] = array_values(array_filter($GLOBALS['cron_events'], static fn(array $event): bool => !($event['hook'] === 'roxy_grosses_closed_day_refresh' && ($event['args'] ?? []) === ['2000-01-04', 1])));
   \RoxyGrosses\Reporter::$refresh_results = [['success' => false, 'message' => 'temporary failure'], ['success' => true, 'message' => 'reviewed']];
   $GLOBALS['cron_events'] = array_values(array_filter($GLOBALS['cron_events'], static fn(array $event): bool => !($event['hook'] === 'roxy_grosses_closed_day_refresh' && ($event['args'] ?? []) === ['2000-01-02', 0])));
   \RoxyGrosses\Scheduler::run_closed_day_refresh('2000-01-02');

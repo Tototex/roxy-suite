@@ -119,6 +119,15 @@ try {
   $assert(get_option($store::ENTRY_MIGRATION_OPTION)==='1'&&(int)$wpdb->get_var("SELECT COUNT(*) FROM {$entries} WHERE report_date BETWEEN '2042-01-01' AND '2042-07-24'")===205,'paged legacy-history retry inserts every row and is completion-stamped');
   $assert($before===$store::get_entry($corrected),'paged migration and retries preserve a current correction');
   delete_option($store::ENTRY_MIGRATION_OPTION);
+  $bad_date='2042-07-25';
+  if($wpdb->insert($history,['created_at'=>current_time('mysql'),'updated_at'=>current_time('mysql'),'report_date'=>$bad_date,'showing_id'=>19600000,'film_title'=>'','source_mode'=>'malformed-fixture'])===false)throw new RuntimeException('Could not seed malformed legacy-history row');
+  $bad_id=(int)$wpdb->insert_id;
+  $store::maybe_backfill_history();
+  $assert((string)get_option($store::ENTRY_MIGRATION_OPTION,'')===''&&(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$entries} WHERE report_date=%s AND showing_id=%d",$bad_date,19600000))===0,'legacy history with an empty title stays retryable and is not silently marked complete');
+  if($wpdb->update($history,['film_title'=>'Repaired legacy title'],['id'=>$bad_id])===false)throw new RuntimeException('Could not repair malformed legacy-history fixture');
+  $store::maybe_backfill_history();
+  $assert(get_option($store::ENTRY_MIGRATION_OPTION)==='1'&&(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$entries} WHERE report_date=%s AND showing_id=%d",$bad_date,19600000))===1,'legacy history migration resumes after malformed source data is repaired');
+  delete_option($store::ENTRY_MIGRATION_OPTION);
   $other=new wpdb(DB_USER,DB_PASSWORD,DB_NAME,DB_HOST);$other->suppress_errors(true);
   $lock='roxy_fixture38_migration_'.substr(hash('sha256',$wpdb->prefix),0,24);
   if((string)$other->get_var($other->prepare('SELECT GET_LOCK(%s,0)',$lock))!=='1')throw new RuntimeException('Cannot establish independent migration claim');
