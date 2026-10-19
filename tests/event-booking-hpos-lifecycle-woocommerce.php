@@ -10,6 +10,10 @@ if (!class_exists($order_util) || !$order_util::custom_orders_table_usage_is_ena
 if (!function_exists('roxy_eb_on_payment_complete') || !function_exists('roxy_eb_start_booking_adjustment_checkout')) {
     throw new RuntimeException('Event Booking WooCommerce handlers are unavailable.');
 }
+global $wpdb;
+if (!$wpdb instanceof wpdb) {
+    throw new RuntimeException('WordPress database is unavailable to the HPOS fixture.');
+}
 
 $checks=0;
 $check=static function(bool $ok,string $label) use (&$checks): void {
@@ -99,7 +103,6 @@ try {
 } finally {
     remove_filter('pre_wp_mail',$mail_guard,PHP_INT_MAX);
     if (function_exists('roxy_eb_clear_pizza_reminders') && $booking_id>0) roxy_eb_clear_pizza_reminders($booking_id);
-    global $wpdb;
     if ($order instanceof WC_Order) {
         $wpdb->delete(roxy_eb_table_bookings(),['woo_order_id'=>(int)$order->get_id()],['%d']);
         $order->delete(true);
