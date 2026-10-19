@@ -137,6 +137,8 @@ $GLOBALS['types'][4]='roxy_showing'; $GLOBALS['statuses'][4]='publish'; $GLOBALS
 $GLOBALS['types'][401]='product'; $GLOBALS['statuses'][401]='draft'; $GLOBALS['wpdb']->rows=[4];
 \RoxyST\Products::reconcile_published_showings(0);
 check($GLOBALS['statuses'][401]==='draft','product reconciliation does not reactivate products after the showing sales cutoff');
+$GLOBALS['next_product_id']=500; $GLOBALS['transients']=[]; $GLOBALS['capacity_locks']=[]; $GLOBALS['scheduled_events']=[];
+\RoxyST\Issuance::$lease_acquired=0; \RoxyST\Issuance::$lease_released=0; \RoxyST\Issuance::$ownership_checks=0; \RoxyST\Issuance::$throw_on_ownership_check=0;
 $GLOBALS['types']=[1=>'roxy_showing',101=>'product',102=>'product',103=>'product',104=>'product',200=>'product'];
 $GLOBALS['statuses']=[1=>'publish',101=>'publish',102=>'publish',103=>'publish',104=>'publish',200=>'publish'];
 $GLOBALS['meta']=[1=>['_roxy_pricing_profile'=>'movie_evening','_roxy_pid_adult'=>101,'_roxy_pid_discount'=>102,'_roxy_pid_subscriber'=>104,'_roxy_start'=>current_datetime()->modify('-30 minutes')->format('Y-m-d\TH:i'),'_roxy_duration_minutes'=>'60'],101=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'adult'],102=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'discount'],103=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'adult'],104=>['_roxy_showing_id'=>1,'_roxy_ticket_type'=>'subscriber']];
