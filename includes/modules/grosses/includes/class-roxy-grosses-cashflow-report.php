@@ -168,9 +168,12 @@ final class CashflowReport {
     $known_order_ids = [];
     foreach ($square_orders as $order) if (is_array($order) && is_string($order['id'] ?? null)) $known_order_ids[$order['id']] = true;
     $refund_order_ids = [];
+    $day_refund_order_ids = [];
     foreach ($square_refunds as $refund) {
       $order_id = $refund['order_id'] ?? null;
-      if (($refund['refund_date'] ?? '') === $report_date && is_string($order_id) && $order_id !== '' && !isset($known_order_ids[$order_id])) $refund_order_ids[$order_id] = true;
+      if (($refund['refund_date'] ?? '') !== $report_date || !is_string($order_id) || $order_id === '') continue;
+      $day_refund_order_ids[$order_id] = true;
+      if (!isset($known_order_ids[$order_id])) $refund_order_ids[$order_id] = true;
     }
     if (count($refund_order_ids) > 100) throw new \RuntimeException('Square refund order review exceeded its safety limit.');
     if ($refund_order_ids) {
@@ -178,6 +181,44 @@ final class CashflowReport {
       $linked_orders = Square::retrieve_orders(array_keys($refund_order_ids), $deadline);
       if (!is_array($linked_orders) || !self::is_list($linked_orders)) throw new \RuntimeException('Square returned an incomplete refund-linked order review.');
       $refund_review_orders = array_merge($refund_review_orders, $linked_orders);
+    }
+    // Square's refund order points back to the original sale through
+    // returns[].source_order_id. The refund order's own closed_at is the
+    // refund day, not the original ticket-sale day.
+    $known_order_ids = [];
+    foreach ($refund_review_orders as $order) {
+      if (is_array($order) && is_string($order['id'] ?? null)) $known_order_ids[$order['id']] = true;
+    }
+    $source_sale_ids = [];
+    foreach ($refund_review_orders as $order) {
+      if (!is_array($order) || !isset($day_refund_order_ids[$order['id'] ?? ''])) continue;
+      $returns = $order['returns'] ?? [];
+      if (!is_array($returns) || !self::is_list($returns)) throw new \RuntimeException('Square returned malformed refund-order return links.');
+      foreach ($returns as $return) {
+        if (!is_array($return)) throw new \RuntimeException('Square returned a malformed refund-order return link.');
+        $source_id = $return['source_order_id'] ?? null;
+        if ($source_id === null || $source_id === '') continue;
+        if (!is_string($source_id)) throw new \RuntimeException('Square returned an invalid original sale order identity.');
+        $source_sale_ids[$source_id] = true;
+      }
+    }
+    $missing_source_sale_ids = array_values(array_filter(array_keys($source_sale_ids), static fn(string $id): bool => !isset($known_order_ids[$id])));
+    if (count($missing_source_sale_ids) > 100) throw new \RuntimeException('Square refund source-sale review exceeded its safety limit.');
+    if ($missing_source_sale_ids) {
+      if (!method_exists(Square::class, 'retrieve_orders')) throw new \RuntimeException('Square original-sale order review is unavailable.');
+      $source_sale_orders = Square::retrieve_orders($missing_source_sale_ids, $deadline);
+      if (!is_array($source_sale_orders) || !self::is_list($source_sale_orders) || count($source_sale_orders) !== count($missing_source_sale_ids)) {
+        throw new \RuntimeException('Square returned an incomplete original-sale order review.');
+      }
+      $seen_source_ids = [];
+      foreach ($source_sale_orders as $order) {
+        if (!is_array($order) || !is_string($order['id'] ?? null) || !isset($source_sale_ids[$order['id']]) || isset($seen_source_ids[$order['id']])) {
+          throw new \RuntimeException('Square returned an invalid original-sale order review.');
+        }
+        $seen_source_ids[$order['id']] = true;
+      }
+      if (count($seen_source_ids) !== count($missing_source_sale_ids)) throw new \RuntimeException('Square returned an incomplete original-sale order review.');
+      $refund_review_orders = array_merge($refund_review_orders, $source_sale_orders);
     }
     $review_exceptions = [
       'woocommerce_manual_refunds' => array_values(array_filter(

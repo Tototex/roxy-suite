@@ -120,8 +120,7 @@ namespace {
   ];
   \RoxyGrosses\Square::$refunds = [[
     'id' => 'sq-refund', 'payment_id' => 'sq-payment', 'location_id' => 'loc', 'status' => 'COMPLETED',
-    'amount_money' => ['amount' => 200, 'currency' => 'USD'], 'updated_at' => '2026-10-03T03:00:00Z', 'order_id' => 'sq-order',
-  ]];
+    'amount_money' => ['amount' => 200, 'currency' => 'USD'], 'updated_at' => '2026-10-03T03:00:00Z', 'order_id' => 'sq-refund-return',
   $GLOBALS['wc_pages'] = [
     'shop_order' => [1 => [
       new \RoxyGrosses\FakeOrder(21, 'stripe', '30.00', 'stripe-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
@@ -143,7 +142,17 @@ namespace {
     'id' => 'sq-exchange', 'state' => 'COMPLETED', 'closed_at' => '2026-10-03T06:30:00Z',
     'returns' => [['uid' => 'return-1']],
     'tenders' => [['amount_money' => ['amount' => 1250, 'currency' => 'USD']]],
-  ], ['id' => 'sq-order', 'state' => 'COMPLETED', 'created_at' => '2026-10-02T03:00:00Z', 'closed_at' => '2026-10-03T06:30:00Z']];
+  ]];
+  \RoxyGrosses\Square::$orders_by_id = [
+    'sq-order' => ['id' => 'sq-order', 'state' => 'COMPLETED', 'created_at' => '2026-10-02T03:00:00Z', 'closed_at' => '2026-10-02T03:00:00Z'],
+    'sq-refund-return' => [
+      'id' => 'sq-refund-return', 'state' => 'COMPLETED', 'closed_at' => '2026-10-03T06:30:00Z',
+      'returns' => [['uid' => 'return-refund', 'source_order_id' => 'sq-order', 'return_line_items' => [[
+        'uid' => 'custom-return', 'quantity' => '1', 'item_type' => 'CUSTOM_AMOUNT',
+      ]]]],
+      'refunds' => [['id' => 'sq-refund', 'tender_id' => 'sq-payment']],
+    ],
+  ];
   $GLOBALS['wc_parent_orders'] = [
     21 => new \RoxyGrosses\FakeOrder(21, 'stripe', '30.00', 'stripe-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
     99 => new \RoxyGrosses\FakeOrder(99, 'paypal', '20.00', 'paypal-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
@@ -170,7 +179,7 @@ namespace {
   ], 'daily report counts refund date evidence only for refunds assigned to the selected day');
   $proxy_dated_refunds = $report['review_exceptions']['square_refunds_using_update_time_proxy'];
   $assert(count($proxy_dated_refunds) === 1 && $proxy_dated_refunds[0]['refund_id'] === 'sq-refund'
-    && $proxy_dated_refunds[0]['payment_id'] === 'sq-payment' && $proxy_dated_refunds[0]['order_id'] === 'sq-order'
+    && $proxy_dated_refunds[0]['payment_id'] === 'sq-payment' && $proxy_dated_refunds[0]['order_id'] === 'sq-refund-return'
     && $proxy_dated_refunds[0]['refund_date'] === '2026-10-02' && $proxy_dated_refunds[0]['amount_cents'] === 200
     && str_contains($proxy_dated_refunds[0]['review'], 'not settlement evidence'),
     'Cashflow exposes each included Square refund whose date relies on mutable updated_at proxy evidence');
@@ -187,45 +196,45 @@ namespace {
   $unmatched_square_refunds = $report['review_exceptions']['square_payment_refunds_without_itemized_returns'];
   $assert(count($unmatched_square_refunds) === 1 && $unmatched_square_refunds[0]['refund_id'] === 'sq-refund'
     && $unmatched_square_refunds[0]['amount_cents'] === 200
-    && $unmatched_square_refunds[0]['original_sale_date'] === '2026-10-02'
+    && $unmatched_square_refunds[0]['original_sale_date'] === '2026-10-01'
     && str_contains($unmatched_square_refunds[0]['review'], 'included in Cashflow'),
-    'completed Square payment refund remains in cash totals and review uses the associated order close date, not its earlier creation date, for original sale day');
-  \RoxyGrosses\Square::$daily_orders[0]['returns'] = [[
+    'completed Square payment refund review follows the return order source_order_id to the original sale order close date');
+  \RoxyGrosses\Square::$orders_by_id['sq-refund-return']['refunds'] = [['id' => 'sq-refund', 'tender_id' => 'different-payment']];
+  \RoxyGrosses\Square::$orders_by_id['sq-refund-return']['returns'] = [[
     'uid' => 'return-1', 'source_order_id' => 'sq-order', 'return_line_items' => [[
       'uid' => 'return-line-1', 'source_line_item_uid' => 'sale-line-1', 'quantity' => '1', 'item_type' => 'ITEM',
     ]],
   ]];
-  \RoxyGrosses\Square::$daily_orders[0]['refunds'] = [['id' => 'sq-refund', 'tender_id' => 'different-payment']];
   $wrong_payment_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
   $assert(count($wrong_payment_report['review_exceptions']['square_payment_refunds_without_itemized_returns']) === 1,
     'refund reference for a different tender does not falsely clear the unmatched-refund review');
-  \RoxyGrosses\Square::$daily_orders[1]['closed_at'] = 'not-a-square-timestamp';
+  \RoxyGrosses\Square::$orders_by_id['sq-order']['closed_at'] = 'not-a-square-timestamp';
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'),
-    'malformed linked Square order close timestamp fails closed rather than guessing the original sale date');
-  \RoxyGrosses\Square::$daily_orders[1]['closed_at'] = '2026-10-03T06:30:00Z';
-  unset(\RoxyGrosses\Square::$daily_orders[1]['closed_at']);
+    'malformed original Square sale close timestamp fails closed rather than guessing the original sale date');
+  \RoxyGrosses\Square::$orders_by_id['sq-order']['closed_at'] = '2026-10-02T03:00:00Z';
+  unset(\RoxyGrosses\Square::$orders_by_id['sq-order']['closed_at']);
   $missing_closed_at_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
   $assert($missing_closed_at_report['review_exceptions']['square_payment_refunds_without_itemized_returns'][0]['original_sale_date'] === '',
-    'missing associated-order close timestamp is unavailable rather than substituted with order creation date');
-  \RoxyGrosses\Square::$daily_orders[1]['closed_at'] = '2026-10-03T06:30:00Z';
-  \RoxyGrosses\Square::$daily_orders[0]['refunds'] = [['id' => 'sq-refund', 'tender_id' => 'sq-payment']];
-  \RoxyGrosses\Square::$daily_orders[0]['returns'] = [['uid' => 'return-1', 'source_order_id' => 'sq-order']];
+    'missing original-sale close timestamp is unavailable rather than substituted with return-order or order-creation time');
+  \RoxyGrosses\Square::$orders_by_id['sq-order']['closed_at'] = '2026-10-02T03:00:00Z';
+  \RoxyGrosses\Square::$orders_by_id['sq-refund-return']['refunds'] = [['id' => 'sq-refund', 'tender_id' => 'sq-payment']];
+  \RoxyGrosses\Square::$orders_by_id['sq-refund-return']['returns'] = [['uid' => 'return-1', 'source_order_id' => 'sq-order']];
   $unitemized_refund_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
   $assert(count($unitemized_refund_report['review_exceptions']['square_payment_refunds_without_itemized_returns']) === 1,
     'a completed return container without return_line_items cannot clear the payment-refund review');
-  \RoxyGrosses\Square::$daily_orders[0]['returns'][0]['return_line_items'] = [[
+  \RoxyGrosses\Square::$orders_by_id['sq-refund-return']['returns'][0]['return_line_items'] = [[
     'uid' => 'return-line-1', 'quantity' => '1', 'item_type' => 'ITEM',
   ]];
   $malformed_itemized_refund_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
   $assert(count($malformed_itemized_refund_report['review_exceptions']['square_payment_refunds_without_itemized_returns']) === 1,
     'a return line without its source sale-line identity cannot clear the payment-refund review');
-  \RoxyGrosses\Square::$daily_orders[0]['returns'][0]['return_line_items'] = [[
+  \RoxyGrosses\Square::$orders_by_id['sq-refund-return']['returns'][0]['return_line_items'] = [[
     'uid' => 'return-line-1', 'source_line_item_uid' => 'sale-line-1', 'quantity' => '1', 'item_type' => 'ITEM',
   ]];
   $matched_refund_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
   $assert($matched_refund_report['review_exceptions']['square_payment_refunds_without_itemized_returns'] === [],
     'itemized return referencing the completed payment refund clears the unmatched-refund review exception');
-  \RoxyGrosses\Square::$daily_orders[0]['refunds'] = [];
+  \RoxyGrosses\Square::$orders_by_id['sq-refund-return']['refunds'] = [];
   \RoxyGrosses\Square::$refunds[0]['order_id'] = 'missing-associated-order';
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'),
     'associated-order read failure aborts Cashflow instead of claiming a refund is unmatched');

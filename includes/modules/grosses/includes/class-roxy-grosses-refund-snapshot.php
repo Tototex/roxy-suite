@@ -417,11 +417,12 @@ final class SquareUnmatchedPaymentRefundReview {
   }
 
   private static function original_sale_date(array $order): string {
+    if (($order['state'] ?? null) !== 'COMPLETED') return '';
     if (!array_key_exists('closed_at', $order) || $order['closed_at'] === null || $order['closed_at'] === '') return '';
     $closed_at = $order['closed_at'];
     if (!is_string($closed_at)
       || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/D', $closed_at)) {
-      throw new \RuntimeException('Square returned an invalid associated-order close timestamp for refund review.');
+      throw new \RuntimeException('Square returned an invalid original-sale close timestamp for refund review.');
     }
     try {
       $closed = new \DateTimeImmutable($closed_at);
@@ -429,8 +430,23 @@ final class SquareUnmatchedPaymentRefundReview {
       if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException();
       return $closed->setTimezone(new \DateTimeZone(Settings::get_report_timezone()))->format('Y-m-d');
     } catch (\Throwable $error) {
-      throw new \RuntimeException('Square returned an invalid associated-order close timestamp for refund review.');
+      throw new \RuntimeException('Square returned an invalid original-sale close timestamp for refund review.');
     }
+  }
+
+  /** Resolve a unique original sale linked from a Square refund order. */
+  private static function original_sale_order_id(array $return_order): string {
+    $returns = $return_order['returns'] ?? [];
+    if (!is_array($returns) || !self::is_list($returns)) throw new \RuntimeException('Square returned malformed return links for refund review.');
+    $source_ids = [];
+    foreach ($returns as $return) {
+      if (!is_array($return)) throw new \RuntimeException('Square returned a malformed return link for refund review.');
+      $source_id = $return['source_order_id'] ?? null;
+      if ($source_id === null || $source_id === '') continue;
+      if (!is_string($source_id)) throw new \RuntimeException('Square returned an invalid original-sale order identity for refund review.');
+      $source_ids[$source_id] = true;
+    }
+    return count($source_ids) === 1 ? (string) array_key_first($source_ids) : '';
   }
 
   /** A return container alone is not itemized evidence; require a usable item line. */
@@ -488,7 +504,9 @@ final class SquareUnmatchedPaymentRefundReview {
       if ($refund['refund_date'] !== $report_date || isset($matched[$refund['payment_id']][$refund['refund_id']])) continue;
       $order_id = $refund['order_id'] ?? null;
       if ($order_id !== null && !is_string($order_id)) throw new \RuntimeException('Square refund has an invalid associated order.');
-      $sale_order = is_string($order_id) ? ($orders_by_id[$order_id] ?? null) : null;
+      $return_order = is_string($order_id) ? ($orders_by_id[$order_id] ?? null) : null;
+      $source_sale_id = is_array($return_order) ? self::original_sale_order_id($return_order) : '';
+      $sale_order = $source_sale_id !== '' ? ($orders_by_id[$source_sale_id] ?? null) : null;
       $exceptions[] = [
         'refund_id' => $refund['refund_id'], 'payment_id' => $refund['payment_id'],
         'order_id' => is_string($order_id) ? $order_id : '', 'amount_cents' => $refund['amount_cents'],
