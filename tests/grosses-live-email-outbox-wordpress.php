@@ -121,7 +121,14 @@ namespace {
       $check(!empty($daily['success']) && count($mail_calls) === $daily_mail_start + 1, 'scheduled daily Grosses send survives the reproduced restrictive-charset failure');
       $daily_mail = $mail_calls[$daily_mail_start] ?? [];
       $check(($daily_mail['to'] ?? null) === ['grosses-admin@example.invalid'], 'scheduled daily Grosses email targets only the configured admin fixture, never a vendor');
-      $check(str_contains((string) ($daily_mail['subject'] ?? ''), 'PROVISIONAL — CLOSED-DAY REFRESH PENDING'), 'intercepted daily email retains the original Unicode provisional subject');
+      $check(!str_contains((string) ($daily_mail['subject'] ?? ''), 'PROVISIONAL')
+        && !str_contains((string) ($daily_mail['message'] ?? ''), 'PROVISIONAL'), 'intercepted daily email omits provisional wording from subject and body');
+      $daily_body = (string) ($daily_mail['message'] ?? '');
+      $rows_position = strpos($daily_body, 'Report rows');
+      $generated_position = strpos($daily_body, 'Generated automatically by the Roxy Grosses plugin.');
+      $signature_position = strpos($daily_body, 'Roxy Fixture Theater');
+      $check($rows_position !== false && $generated_position > $rows_position && $signature_position > $generated_position
+        && str_contains($daily_body, '120 S Washington Ave, Newport, WA 99156') && str_contains($daily_body, '509-447-4125'), 'daily email places generated notice after report rows and theater contact at the bottom');
       $daily_duplicate = $daily_sender->invoke(null, $daily_rows, $daily_summary, 'scheduled-provisional', null, 'daily-grosses', 7413, '2039-07-18', 'f4d9f4e1-2b8c-4a95-a66d-c1d9a43024b8');
       $check(!empty($daily_duplicate['already_accepted']) && count($mail_calls) === $daily_mail_start + 1, 'accepted scheduled daily snapshot is not mailed twice');
     } finally {

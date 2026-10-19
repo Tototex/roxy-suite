@@ -3,8 +3,9 @@
 namespace FreshEmailAllocationFixture {
   final class Settings {
     public static array $status = [];
+    public static array $settings = [];
     public static string $admin_alert_email = '';
-    public static function get(string $key, $default = '') { return $key === 'admin_email' ? self::$admin_alert_email : $default; }
+    public static function get(string $key, $default = '') { return $key === 'admin_email' ? self::$admin_alert_email : (self::$settings[$key] ?? $default); }
     public static function email_list(): array { return ['fresh-email-fixture@example.invalid']; }
     public static function admin_email(): string { return ''; }
     public static function get_report_timezone(): string { return 'UTC'; }
@@ -168,12 +169,28 @@ namespace {
   $check(count($store::$logs)===4 && $store::$logs[0][4]===true && $store::$logs[1][4]===true && $store::$logs[2][4]===false && $store::$logs[3][4]===false, 'email/draft successes and both failure outcomes are recorded through allowed logs');
   $GLOBALS['fresh_email_fixture_rows'] = [['report_date'=>'2038-05-12','show_time'=>'19:00','theater_name'=>'Fixture Theater','film_title'=>'Fixture Movie','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'total_tickets'=>1,'gross_total'=>10.00,'concessions_total'=>0.00,'source_type'=>'square_auto']];
   $GLOBALS['fresh_email_mail_result'] = true;
+  \FreshEmailAllocationFixture\Settings::$settings = [
+    'email_subject' => 'Roxy grosses for {report_date}',
+    'email_body' => "Attached is the grosses report for {report_date}.\n\nGenerated automatically by the Roxy Grosses plugin.\n\nNewport Roxy Theater\n120 S Washington Ave, Newport, WA 99156\n509-447-4125",
+    'theater_name' => 'Newport Roxy Theater',
+  ];
   $provisional = $reporter::send_report('2038-05-12', 'scheduled-provisional');
   $provisional_mail = $GLOBALS['fresh_email_mail_calls'][array_key_last($GLOBALS['fresh_email_mail_calls'])] ?? [];
   $provisional_saved = $store::$reports[$provisional['report_id'] ?? 0] ?? null;
-  $check(!empty($provisional['success']) && str_starts_with((string) ($provisional_mail['subject'] ?? ''), '[PROVISIONAL — CLOSED-DAY REFRESH PENDING]')
-    && str_contains((string) ($provisional_mail['message'] ?? ''), 'no corrected report is sent automatically')
-    && ($provisional_saved['mode'] ?? '') === 'scheduled-provisional', 'provisional email is labeled truthfully and saved with a durable provisional mode');
+  $provisional_body = (string) ($provisional_mail['message'] ?? '');
+  $report_rows_pos = strpos($provisional_body, 'Report rows');
+  $generated_pos = strpos($provisional_body, 'Generated automatically by the Roxy Grosses plugin.');
+  $signature_pos = strpos($provisional_body, 'Newport Roxy Theater');
+  $check(!empty($provisional['success']) && !str_contains((string) ($provisional_mail['subject'] ?? ''), 'PROVISIONAL')
+    && ($provisional_mail['subject'] ?? '') === 'Roxy grosses for 2038-05-12'
+    && !str_contains($provisional_body, 'PROVISIONAL')
+    && str_starts_with($provisional_body, 'Attached is the grosses report for 2038-05-12.')
+    && $report_rows_pos !== false && $generated_pos > $report_rows_pos && $signature_pos > $generated_pos
+    && substr_count($provisional_body, 'Generated automatically by the Roxy Grosses plugin.') === 1
+    && substr_count($provisional_body, '120 S Washington Ave, Newport, WA 99156') === 1
+    && str_contains($provisional_body, '120 S Washington Ave, Newport, WA 99156')
+    && str_contains($provisional_body, '509-447-4125')
+    && ($provisional_saved['mode'] ?? '') === 'scheduled-provisional', 'scheduled email uses the requested concise subject and report/footer/signature order while retaining internal provisional tracking');
   $mail_count_before_duplicate = count($GLOBALS['fresh_email_mail_calls']);
   $first_daily = $reporter::send_report('2038-05-13', 'manual');
   $count_after_first_daily = count($GLOBALS['fresh_email_mail_calls']);

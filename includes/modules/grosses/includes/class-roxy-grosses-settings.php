@@ -64,7 +64,7 @@ class Settings {
       'film_mappings'=>'','studio_mappings'=>'',
       'recipient_emails'=>'comscore@example.com,lori@example.com','advertiser_emails'=>'','live_email_recipients'=>'','admin_email'=>get_option('admin_email'),
       'email_subject'=>'Roxy grosses for {report_date}',
-      'email_body'=>"Attached is the grosses report for {report_date}.\n\nGenerated automatically by the Roxy Grosses plugin.",
+      'email_body'=>"Attached is the grosses report for {report_date}.",
       'advertiser_email_subject'=>'Roxy advertiser summary for {month_name} {year}',
       'advertiser_email_body'=>"Attached is the advertiser summary workbook for {month_name} {year}.",
       'theater_name'=>'Newport Roxy Theater','general_price'=>'12','discount_price'=>'8','group_price'=>'5','lookback_days'=>'0',

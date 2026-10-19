@@ -2772,7 +2772,6 @@ class Reporter {
     $attachment = self::write_csv($reports);
     try {
       $is_test_send = $mode === 'manual-test';
-      $is_provisional = $mode === 'scheduled-provisional';
       $to = $is_test_send ? self::test_email_list() : Settings::email_list();
       if (!$to) {
         return [
@@ -2784,12 +2783,27 @@ class Reporter {
       }
 
       $subject = self::expand_tokens((string) Settings::get('email_subject', ''), $summary);
-      if ($is_provisional) $subject = '[PROVISIONAL — CLOSED-DAY REFRESH PENDING] ' . $subject;
       if ($is_test_send) {
         $subject = '[TEST] ' . $subject;
       }
       $body = self::expand_tokens((string) Settings::get('email_body', ''), $summary);
-      if ($is_provisional) $body = "PROVISIONAL GROSSES: this is the initial scheduled snapshot for the reporting day. A date-based after-midnight refresh will check for later Square sales and flag changes for manager review; no corrected report is sent automatically.\n\n" . $body;
+      // Older saved email templates may still contain the former generated footer
+      // and theater signature. Remove those from the intro before rebuilding the
+      // requested consistent report/footer/signature layout below.
+      $body_lines = preg_split('/\r\n|\r|\n/', $body) ?: [];
+      $theater_name = trim((string) Settings::get('theater_name', 'Newport Roxy Theater'));
+      $body_lines = array_values(array_filter($body_lines, static function ($line) use ($theater_name): bool {
+        $line = trim((string) $line);
+        return $line !== ''
+          && stripos($line, 'Generated automatically by the Roxy Grosses plugin.') === false
+          && stripos($line, 'PROVISIONAL GROSSES:') !== 0
+          && stripos($line, '[PROVISIONAL') !== 0
+          && $line !== $theater_name
+          && $line !== 'Newport Roxy Theater'
+          && $line !== '120 S Washington Ave, Newport, WA 99156'
+          && $line !== '509-447-4125';
+      }));
+      $body = implode("\n", $body_lines);
       if ($is_test_send) {
         $body = "This is a test grosses email sent only to the configured admin alert address.\n\n" . $body;
       }
@@ -2810,6 +2824,9 @@ class Reporter {
             number_format((float) $report['gross_total'], 2)
           );
         }
+      $body .= "\nGenerated automatically by the Roxy Grosses plugin.\n\n";
+      $body .= $theater_name . "\n";
+      $body .= "120 S Washington Ave, Newport, WA 99156\n509-447-4125";
 
       $request_id = self::valid_send_request_id($send_request_id) ? $send_request_id : self::new_send_request_id();
       if ($send_key === null) {
