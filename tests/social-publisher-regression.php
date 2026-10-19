@@ -145,6 +145,13 @@ namespace {
     $meta_error=$decode->invoke(null,response(['error'=>['message'=>'Fatal','type'=>'OAuthException','code'=>9007,'error_subcode'=>2207001]],400),true,false);
     check(($meta_error['error']??'')==='Meta returned HTTP 400: Fatal (type OAuthException; code 9007; subcode 2207001)'&&empty($meta_error['ambiguous']),
         'definitive Meta failures retain safe provider diagnostics without becoming ambiguous');
+    $detailed_meta_error=$decode->invoke(null,response(['error'=>[
+        'message'=>'Fatal','error_user_title'=>'Media unavailable','error_user_msg'=>'Check the media format.','fbtrace_id'=>'AbC_123-X','is_transient'=>false,
+        'error_data'=>['sensitive'=>'must not be copied'],
+    ]],400),true,false);
+    check(($detailed_meta_error['error']??'')==='Meta returned HTTP 400: Fatal (user title: Media unavailable; user message: Check the media format.; trace AbC_123-X; transient no)'
+        &&!str_contains((string)$detailed_meta_error['error'],'sensitive')&&empty($detailed_meta_error['ambiguous']),
+        'Meta user diagnostics and trace ID are retained safely without raw error_data or changing retry classification');
     foreach([response(['id'=>'123'],500),response(['id'=>'123'],408),response([]),['status'=>200,'body'=>'not JSON'],response(['id'=>['123']]),response(['id'=>'']),new \RuntimeException('timeout')] as $r){
         $v=$decode->invoke(null,$r,true,false);check(!empty($v['error'])&&!empty($v['ambiguous']),'unknown or invalid publication never becomes success');
     }

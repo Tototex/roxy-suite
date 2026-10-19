@@ -470,6 +470,21 @@ final class Publisher {
                     if ($value !== '') $diagnostics[] = $label . ' ' . $value;
                 }
             }
+            foreach (['error_user_title' => 'user title', 'error_user_msg' => 'user message'] as $field => $label) {
+                if (isset($provider_error[$field]) && is_scalar($provider_error[$field])) {
+                    $value = sanitize_text_field((string)$provider_error[$field]);
+                    if (function_exists('mb_substr')) $value = mb_substr($value, 0, 180, 'UTF-8');
+                    else $value = substr($value, 0, 180);
+                    if ($value !== '') $diagnostics[] = $label . ': ' . $value;
+                }
+            }
+            if (isset($provider_error['fbtrace_id']) && is_scalar($provider_error['fbtrace_id'])) {
+                $trace_id = sanitize_text_field((string)$provider_error['fbtrace_id']);
+                if ($trace_id !== '' && preg_match('/^[A-Za-z0-9_-]{1,128}$/D', $trace_id)) $diagnostics[] = 'trace ' . $trace_id;
+            }
+            if (isset($provider_error['is_transient']) && is_bool($provider_error['is_transient'])) {
+                $diagnostics[] = 'transient ' . ($provider_error['is_transient'] ? 'yes' : 'no');
+            }
             if ($diagnostics) $message .= ' (' . implode('; ', $diagnostics) . ')';
             return ['error'=>'Meta returned HTTP '.$status.': '.$message,'ambiguous'=>$require_id&&($status>=500||$status===0||$status===408)];
         }
