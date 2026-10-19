@@ -412,11 +412,47 @@ class Products {
       'update_post_term_cache' => false,
     ]);
 
-    return array_values(array_unique(array_map('intval', $posts)));
+    // Only perform this fallback when metadata identity is missing. It finds an
+    // incomplete new draft so reconciliation repairs it instead of duplicating it.
+    $slug_matches = empty($posts) ? self::find_products_by_ticket_slug(self::ticket_product_slug($showing_id, $ticket_type)) : [];
+
+    $slug_matches = array_values(array_filter((array) $slug_matches, static function ($product_id) use ($showing_id, $ticket_type): bool {
+      $product_id = (int) $product_id;
+      if ($product_id <= 0 || get_post_type($product_id) !== 'product' || get_post_status($product_id) !== 'draft') return false;
+      try {
+        $saved_showing = get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true);
+        $saved_type = get_post_meta($product_id, ROXY_ST_META_TICKET_TYPE, true);
+      } catch (\Throwable $error) {
+        return false;
+      }
+      $showing_matches = $saved_showing === '' || $saved_showing === null || (is_scalar($saved_showing) && (string) $saved_showing === (string) $showing_id);
+      $type_matches = $saved_type === '' || $saved_type === null || (is_scalar($saved_type) && !is_bool($saved_type) && (string) $saved_type === $ticket_type);
+      return $showing_matches && $type_matches;
+    }));
+
+    return array_values(array_unique(array_map('intval', array_merge((array) $posts, (array) $slug_matches))));
   }
 
   private static function type_to_meta_key(string $type): string {
     return '_roxy_pid_' . $type;
+  }
+
+  private static function ticket_product_slug(int $showing_id, string $ticket_type): string {
+    return 'roxy-ticket-' . $showing_id . '-' . sanitize_key($ticket_type);
+  }
+
+  private static function find_products_by_ticket_slug(string $slug): array {
+    return get_posts([
+      'post_type' => 'product',
+      'post_status' => ['publish', 'private', 'draft', 'pending', 'future', 'trash'],
+      'posts_per_page' => 5,
+      'fields' => 'ids',
+      'name' => $slug,
+      'no_found_rows' => true,
+      'cache_results' => false,
+      'update_post_meta_cache' => false,
+      'update_post_term_cache' => false,
+    ]);
   }
 
   private static function upsert_product(int $existing_id, string $title, float $price, int $showing_id, string $ticket_type, int $thumb_id): int {
@@ -430,8 +466,16 @@ class Products {
       $postarr['ID'] = $existing_id;
       $product_id = wp_update_post($postarr, true);
     } else {
+      $ticket_slug = self::ticket_product_slug($showing_id, $ticket_type);
+      $slug_matches = self::find_products_by_ticket_slug($ticket_slug);
+      if (!is_array($slug_matches) || !empty($slug_matches)) {
+        throw new \RuntimeException('Ticket product recovery identity is already in use');
+      }
       // New products remain unavailable until their required metadata is verified.
       $postarr['post_status'] = 'draft';
+      // This stable identity lets reconciliation find a draft if product
+      // metadata or the showing's product-ID reference cannot be written.
+      $postarr['post_name'] = $ticket_slug;
       $product_id = wp_insert_post($postarr, true);
     }
 
@@ -443,6 +487,8 @@ class Products {
 
     $price_str = wc_format_decimal($price, wc_get_price_decimals());
     $required_meta = [
+      ROXY_ST_META_SHOWING_ID => $showing_id,
+      ROXY_ST_META_TICKET_TYPE => $ticket_type,
       '_virtual' => 'yes',
       '_downloadable' => 'no',
       '_manage_stock' => 'no',
@@ -452,8 +498,6 @@ class Products {
       '_price' => $price_str,
       '_tax_status' => 'none',
       '_tax_class' => '',
-      ROXY_ST_META_SHOWING_ID => $showing_id,
-      ROXY_ST_META_TICKET_TYPE => $ticket_type,
     ];
 
     // Withdraw an active ticket before changing critical metadata so a failed
