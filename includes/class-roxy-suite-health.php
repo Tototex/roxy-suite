@@ -787,9 +787,6 @@ class Health {
                     } elseif ($days >= 2) {
                         $stale_status = self::FAIL;
                         $stale_note = 'The automatic grosses run is stale. Cron may have stopped firing.';
-                    } elseif ($days >= 1) {
-                        $stale_status = self::WARN;
-                        $stale_note = 'The last automatic grosses run was not today.';
                     }
                 } catch (\Throwable $e) {
                     $stale_status = self::WARN;
@@ -803,7 +800,7 @@ class Health {
             self::item('Last report', $last_date . ($last_mode ? " ($last_mode)" : ''), self::PASS),
             self::item('Next daily cron', $next_local ?: 'Not scheduled', $next_local ? self::PASS : ($sched_enabled ? self::FAIL : self::PASS), $next_local ? '' : ($sched_enabled ? 'The daily grosses cron hook is missing.' : '')),
             self::item('Next advertiser cron', $next_advertiser_local ?: 'Not scheduled', $next_advertiser_local ? self::PASS : ($advertiser_enabled ? self::FAIL : self::PASS), $next_advertiser_local ? '' : ($advertiser_enabled ? 'The advertiser cron hook is missing.' : '')),
-            self::item('Last automatic run', $stale_detail, $stale_status, $stale_note),
+            self::item('Last automatic report date', $stale_detail, $stale_status, $stale_note),
             self::item('Latest log event', $latest_log_detail, $latest_log_status, $latest_log_note),
             self::scheduled_run_item('Daily scheduler outcome', 'roxy_grosses_last_scheduled_sync_result', $sched_enabled),
             self::scheduled_run_item('Advertiser scheduler outcome', 'roxy_grosses_last_advertiser_send_result', $advertiser_enabled),

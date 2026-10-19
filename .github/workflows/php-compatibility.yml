@@ -103,6 +103,19 @@ jobs:
             echo "::error title=Show Tickets checkout-hold lifecycle fixture failed::$details"
             exit "$status"
           fi
+      - name: Run Event Booking serialized reservation lifecycle fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/booking-reservations-output.txt"
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/booking-reservations-mysql.php" "$GITHUB_WORKSPACE" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 50 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Event Booking reservation private-MySQL fixture failed::$details"
+            exit "$status"
+          fi
       - name: Run private authenticated entitlement-to-conversion fixture
         shell: bash
         run: |
