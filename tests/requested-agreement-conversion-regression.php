@@ -51,6 +51,17 @@ class WC_Order_Item_Fee {
     public function get_total(): float { return $this->total; }
     public function get_total_tax(): float { return array_sum($this->taxes['total'] ?? []); }
 }
+class RequestedRefundRoleFixture {
+    private array $meta = [];
+    public function __construct(private bool $hide_readback = false) {}
+    public function add_meta_data(string $key, string $value, bool $unique): void {
+        if (!$unique || !array_key_exists($key, $this->meta)) $this->meta[$key] = $value;
+    }
+    public function save(): void {}
+    public function get_meta(string $key, bool $single = true): string {
+        return $this->hide_readback ? '' : (string)($this->meta[$key] ?? '');
+    }
+}
 
 require dirname(__DIR__) . '/includes/modules/requested-showings/includes/class-roxy-rs-conversion.php';
 
@@ -78,5 +89,19 @@ $fee = new WC_Order_Item_Fee();
 $check($invoke('set_agreed_fee_gross', [new WC_Order(), $fee, 500]) === true, 'sponsorship fee receives the full agreed amount');
 $check($fee->total === 5.0 && $fee->get_total_tax() === 0.0 && $fee->tax_status === 'none', 'sponsorship fee is nontaxable and records no tax');
 $check($invoke('money_to_cents', ['12.00']) === 1200 && $invoke('money_to_cents', ['12.001']) === -1, 'order total validation accepts cents and rejects fractional cents');
+$refund_roles = ['paid_general', 'paid_discount', 'subscriber', 'sponsor_ticket'];
+foreach ($refund_roles as $role) {
+    $line = new RequestedRefundRoleFixture();
+    $check($invoke('set_refund_role', [$line, $role]) === true
+        && $line->get_meta('_roxy_rs_refund_role', true) === $role,
+        'Woo ticket line persists the approved refund role ' . $role);
+}
+$invalid_role_line = new RequestedRefundRoleFixture();
+$check($invoke('set_refund_role', [$invalid_role_line, 'unknown']) === false
+    && $invalid_role_line->get_meta('_roxy_rs_refund_role', true) === '',
+    'unknown refund roles fail closed without writing metadata');
+$unreadable_role_line = new RequestedRefundRoleFixture(true);
+$check($invoke('set_refund_role', [$unreadable_role_line, 'paid_general']) === false,
+    'refund-role persistence fails closed when Woo metadata cannot be read back');
 
 echo "OK: $checks requested-showing conversion agreement checks passed\n";
