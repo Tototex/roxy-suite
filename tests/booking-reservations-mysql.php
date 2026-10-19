@@ -157,7 +157,7 @@ try {
     roxy_fixture_eb_repo_update_booking($id,['doors_open_at'=>(new DateTimeImmutable('+2 days',wp_timezone()))->format('Y-m-d H:i:s')]);
     $adjustment=$adjustment_for(roxy_fixture_eb_repo_get_booking($id));
     $result=roxy_fixture_eb_apply_booking_adjustment_from_order($make_order(900000012,$id),$adjustment);
-    $check(is_wp_error($result) && $result->get_error_code()==='adjustment_cutoff','delayed paid adjustment cannot bypass final edit cutoff');
+    $check(is_wp_error($result) && $result->get_error_code()==='adjustment_cutoff','delayed paid adjustment cannot bypass final edit cutoff'.(is_wp_error($result)?': '.$result->get_error_code().' — '.$result->get_error_message():' (unexpected success)'));
     roxy_fixture_eb_repo_update_booking($id,['status'=>'cancelled']);
     $adjustment=$adjustment_for(roxy_fixture_eb_repo_get_booking($id));
     $check(is_wp_error(roxy_fixture_eb_apply_booking_adjustment_from_order($make_order(900000013,$id),$adjustment)),'paid adjustment cannot reopen cancelled booking');
