@@ -8,6 +8,9 @@ foreach (['reservations.php', 'repository.php', 'availability.php', 'refunds.php
     $source = str_replace("require_once __DIR__ . '/reservations.php';", '', $source);
     $source = str_replace("require_once __DIR__ . '/refunds.php';", '', $source);
     $source = str_replace(['roxy_eb_', 'RoxyEBReservation'], ['roxy_fixture_eb_', 'RoxyEBFixtureReservation'], $source);
+    // Function names are isolated, but persisted WooCommerce metadata keys
+    // must remain byte-for-byte compatible with production order items.
+    $source = str_replace('_roxy_fixture_eb_', '_roxy_eb_', $source);
     eval(substr($source, 5));
 }
 function roxy_fixture_eb_table_bookings() { global $wpdb; return $wpdb->prefix . 'roxy_event_bookings'; }
