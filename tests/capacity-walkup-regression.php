@@ -33,8 +33,10 @@ check(count($GLOBALS['notices'])===1&&str_contains($GLOBALS['notices'][0],'order
 $cart->rows=['row'=>['product_id'=>10,'quantity'=>1]];$GLOBALS['notices']=[];
 \RoxyST\Capacity::validate_checkout_capacity();
 check(count($GLOBALS['notices'])===1&&str_contains($GLOBALS['notices'][0],'order storage is being verified'),'ticket checkout rechecks and blocks a cart after storage becomes unverified');
-$GLOBALS['order_storage_mode']=true;$GLOBALS['notices']=[];
+$GLOBALS['order_storage_mode']=true;$cart->rows=[];$GLOBALS['notices']=[];
 check(\RoxyST\Capacity::validate_add_to_cart(true,10,1),'verified HPOS storage permits add-to-cart capacity checks');
+check(!\RoxyST\Capacity::validate_add_to_cart(true,10,2),'verified HPOS storage still enforces seat capacity');
+$cart->rows=['row'=>['product_id'=>10,'quantity'=>1]];
 \RoxyST\Capacity::validate_checkout_capacity();
 check($GLOBALS['notices']===[],'verified HPOS storage permits checkout capacity checks for available seats');
 $GLOBALS['order_storage_mode']=false;$cart->rows=[];$GLOBALS['notices']=[];
