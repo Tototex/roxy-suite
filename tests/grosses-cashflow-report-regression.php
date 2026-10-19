@@ -121,6 +121,7 @@ namespace {
   \RoxyGrosses\Square::$refunds = [[
     'id' => 'sq-refund', 'payment_id' => 'sq-payment', 'location_id' => 'loc', 'status' => 'COMPLETED',
     'amount_money' => ['amount' => 200, 'currency' => 'USD'], 'updated_at' => '2026-10-03T03:00:00Z', 'order_id' => 'sq-refund-return',
+  ]];
   $GLOBALS['wc_pages'] = [
     'shop_order' => [1 => [
       new \RoxyGrosses\FakeOrder(21, 'stripe', '30.00', 'stripe-charge', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
@@ -235,6 +236,22 @@ namespace {
   $assert($matched_refund_report['review_exceptions']['square_payment_refunds_without_itemized_returns'] === [],
     'itemized return referencing the completed payment refund clears the unmatched-refund review exception');
   \RoxyGrosses\Square::$orders_by_id['sq-refund-return']['refunds'] = [];
+  \RoxyGrosses\Square::$orders_by_id['sq-refund-return']['returns'] = [['uid' => 'return-without-source']];
+  $missing_source_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $assert($missing_source_report['review_exceptions']['square_payment_refunds_without_itemized_returns'][0]['original_sale_date'] === '',
+    'unlinked Square return does not guess the original sale day');
+  \RoxyGrosses\Square::$orders_by_id['sq-order-2'] = ['id' => 'sq-order-2', 'state' => 'COMPLETED', 'closed_at' => '2026-10-02T04:00:00Z'];
+  \RoxyGrosses\Square::$orders_by_id['sq-refund-return']['returns'] = [
+    ['uid' => 'return-source-1', 'source_order_id' => 'sq-order', 'return_line_items' => [[
+      'uid' => 'return-line-1', 'source_line_item_uid' => 'sale-line-1', 'quantity' => '1', 'item_type' => 'ITEM',
+    ]]],
+    ['uid' => 'return-source-2', 'source_order_id' => 'sq-order-2', 'return_line_items' => [[
+      'uid' => 'return-line-2', 'source_line_item_uid' => 'sale-line-2', 'quantity' => '1', 'item_type' => 'ITEM',
+    ]]],
+  ];
+  $ambiguous_source_report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $assert($ambiguous_source_report['review_exceptions']['square_payment_refunds_without_itemized_returns'][0]['original_sale_date'] === '',
+    'multiple distinct Square source orders leave the original sale day unverified rather than guessing');
   \RoxyGrosses\Square::$refunds[0]['order_id'] = 'missing-associated-order';
   $expect_throw(static fn() => \RoxyGrosses\CashflowReport::for_day('2026-10-02'),
     'associated-order read failure aborts Cashflow instead of claiming a refund is unmatched');
