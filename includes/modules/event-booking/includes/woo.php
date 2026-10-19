@@ -277,9 +277,6 @@ function roxy_eb_apply_booking_pizza_change($booking_id, array $change, string $
 }
 
 function roxy_eb_start_booking_adjustment_checkout($booking, array $change) {
-    if (!class_exists('\\RoxySuite\\Compatibility') || !\RoxySuite\Compatibility::supports_legacy_order_storage()) {
-        return new WP_Error('order_storage_unverified', 'Online booking payments are temporarily unavailable while WooCommerce order storage is being verified.');
-    }
     if (!roxy_eb_wc_ready()) return new WP_Error('woo_required', 'WooCommerce is required.');
     $settings = roxy_eb_get_settings();
     $pid = intval($settings['booking_product_id'] ?? 0);
@@ -1075,9 +1072,6 @@ function roxy_eb_thankyou_booking_details($order_id) {
 function roxy_eb_ajax_start_booking() {
     check_ajax_referer('roxy_eb_nonce', 'nonce');
     roxy_eb_rate_limit_public_request('start_booking', 300, 20);
-    if (!class_exists('\\RoxySuite\\Compatibility') || !\RoxySuite\Compatibility::supports_legacy_order_storage()) {
-        wp_send_json_error(['message' => 'Online booking is temporarily unavailable while WooCommerce order storage is being verified.']);
-    }
     if (!roxy_eb_wc_ready()) wp_send_json_error(['message' => 'WooCommerce is required.']);
     $settings = roxy_eb_get_settings();
     $pid = intval($settings['booking_product_id'] ?? 0);
