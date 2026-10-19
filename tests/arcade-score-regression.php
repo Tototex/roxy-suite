@@ -38,5 +38,5 @@ $GLOBALS['wpdb']->readResults=[false];$response=Roxy_Arcade::rest_post_score(new
 check($response->status===200&&$response->data['ok']===true&&!empty($response->data['leaderboardUnavailable'])&&!isset($response->data['leaderboards']),'saved score is not represented as failed when follow-up read fails');
 $response=Roxy_Arcade::rest_post_score(new WP_REST_Request(10,'marquee','bad'));check($response->status===403,'nonce guard retained');
 $response=Roxy_Arcade::rest_post_score(new WP_REST_Request(10,'invalid'));check($response->status===400,'game guard retained');
-$GLOBALS['logged_in']=false;$count=count($GLOBALS['wpdb']->queries);$response=Roxy_Arcade::rest_post_score(new WP_REST_Request);
+$GLOBALS['wpdb']->readResults=[];$GLOBALS['logged_in']=false;$count=count($GLOBALS['wpdb']->queries);$response=Roxy_Arcade::rest_post_score(new WP_REST_Request);
 check($response->data['guest']===true&&count($GLOBALS['wpdb']->queries)===$count,'guests cannot write scores');
