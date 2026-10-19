@@ -5,14 +5,14 @@ if (!defined('WP_CLI') || !WP_CLI) exit(1);
 $root = $args[0] ?? dirname(__DIR__);
 $settings_path = $root . '/includes/modules/grosses/includes/class-roxy-grosses-settings.php';
 $workbook_path = $root . '/includes/modules/grosses/includes/class-roxy-grosses-workbook.php';
-foreach ([$settings_path, $workbook_path] as $path) {
+$scheduler_path = $root . '/includes/modules/grosses/includes/class-roxy-grosses-scheduler.php';
+foreach ([$scheduler_path, $settings_path, $workbook_path] as $path) {
     if (!is_file($path)) throw new RuntimeException('Grosses settings/workbook source is missing.');
 }
 
 // Isolate the real source in a private namespace so this disposable test never
 // invokes the site's scheduled worker or collides with module bootstrap state.
 $namespace = 'RoxyGrossesWorkbookSettingsFixture' . bin2hex(random_bytes(4));
-eval('namespace ' . $namespace . '; class Scheduler { public static function sync_schedule(array $settings): void {} }');
 foreach ([$settings_path, $workbook_path] as $path) {
     $source = file_get_contents($path);
     if (!is_string($source) || substr_count($source, 'namespace RoxyGrosses;') !== 1) {
@@ -21,6 +21,12 @@ foreach ([$settings_path, $workbook_path] as $path) {
     $source = str_replace('namespace RoxyGrosses;', 'namespace ' . $namespace . ';', $source);
     eval('?>' . $source);
 }
+$source = file_get_contents($scheduler_path);
+if (!is_string($source) || substr_count($source, 'namespace RoxyGrosses;') !== 1) {
+    throw new RuntimeException('Could not isolate Grosses scheduler source.');
+}
+$source = str_replace('namespace RoxyGrosses;', 'namespace ' . $namespace . ';', $source);
+eval('?>' . $source);
 
 $settings_class = $namespace . '\\Settings';
 $workbook_class = $namespace . '\\Workbook';
@@ -34,6 +40,8 @@ $prior_engine = strtoupper((string) $wpdb->get_var($wpdb->prepare(
 if (!in_array($prior_engine, ['INNODB', 'MYISAM'], true)) throw new RuntimeException('Could not verify disposable WordPress options-table engine.');
 $prior_row = $wpdb->get_row($wpdb->prepare("SELECT option_value, autoload FROM {$wpdb->options} WHERE option_name = %s", $option_key), ARRAY_A);
 $prior_row = is_array($prior_row) ? $prior_row : null;
+$prior_cron_row = $wpdb->get_row($wpdb->prepare("SELECT option_value, autoload FROM {$wpdb->options} WHERE option_name = %s", 'cron'), ARRAY_A);
+$prior_cron_row = is_array($prior_cron_row) ? $prior_cron_row : null;
 $root_path = trailingslashit(WP_CONTENT_DIR) . 'roxy-grosses-private';
 $templates_path = trailingslashit($root_path) . 'templates';
 $root_existed = is_dir($root_path);
@@ -88,7 +96,13 @@ try {
     } else {
         $wpdb->delete($wpdb->options, ['option_name' => $option_key], ['%s']);
     }
+    if ($prior_cron_row !== null) {
+        $wpdb->update($wpdb->options, $prior_cron_row, ['option_name' => 'cron'], ['%s', '%s'], ['%s']);
+    } else {
+        $wpdb->delete($wpdb->options, ['option_name' => 'cron'], ['%s']);
+    }
     wp_cache_delete($option_key, 'options');
+    wp_cache_delete('cron', 'options');
     wp_cache_delete('alloptions', 'options');
     wp_cache_delete('notoptions', 'options');
     if ($prior_engine !== 'MYISAM') {
