@@ -5,7 +5,23 @@ $fixture_root = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'roxy-workbook-privat
 if (!mkdir($fixture_root, 0700)) throw new RuntimeException('Could not create private fixture root.');
 define('WP_CONTENT_DIR', $fixture_root . DIRECTORY_SEPARATOR . 'content');
 
-class Settings { public const OPTION_KEY = 'roxy_grosses_fixture_settings'; }
+class Settings {
+    public const OPTION_KEY = 'roxy_grosses_fixture_settings';
+    public static function save_workbook_template(array $template): ?bool {
+        $saved_template = [
+            'path' => sanitize_text_field((string) ($template['path'] ?? '')),
+            'name' => sanitize_file_name((string) ($template['name'] ?? '')),
+            'uploaded_at' => sanitize_text_field((string) ($template['uploaded_at'] ?? '')),
+        ];
+        $settings = get_option(self::OPTION_KEY, []);
+        if (!is_array($settings)) $settings = [];
+        $settings['workbook_template_upload'] = $saved_template;
+        update_option(self::OPTION_KEY, $settings);
+        $verified = get_option(self::OPTION_KEY, null);
+        if (!is_array($verified)) return null;
+        return ($verified['workbook_template_upload'] ?? null) === $saved_template;
+    }
+}
 function get_option($key, $default = false) { return $GLOBALS['workbook_options'][$key] ?? $default; }
 function update_option($key, $value) {
     if (!empty($GLOBALS['workbook_option_write_fails'])) return false;
@@ -35,7 +51,23 @@ if (!is_string($source) || substr_count($source, 'namespace RoxyGrosses;') !== 1
     throw new RuntimeException('Could not isolate the Grosses Workbook class.');
 }
 $namespace = 'RoxyWorkbookPrivateFixture_' . bin2hex(random_bytes(4));
-eval('namespace ' . $namespace . '; class Settings { public const OPTION_KEY = "roxy_grosses_fixture_settings"; }');
+eval('namespace ' . $namespace . '; class Settings {
+    public const OPTION_KEY = "roxy_grosses_fixture_settings";
+    public static function save_workbook_template(array $template): ?bool {
+        $saved_template = [
+            "path" => \\sanitize_text_field((string) ($template["path"] ?? "")),
+            "name" => \\sanitize_file_name((string) ($template["name"] ?? "")),
+            "uploaded_at" => \\sanitize_text_field((string) ($template["uploaded_at"] ?? "")),
+        ];
+        $settings = \\get_option(self::OPTION_KEY, []);
+        if (!is_array($settings)) $settings = [];
+        $settings["workbook_template_upload"] = $saved_template;
+        \\update_option(self::OPTION_KEY, $settings);
+        $verified = \\get_option(self::OPTION_KEY, null);
+        if (!is_array($verified)) return null;
+        return ($verified["workbook_template_upload"] ?? null) === $saved_template;
+    }
+}');
 $source = str_replace('namespace RoxyGrosses;', 'namespace ' . $namespace . ';', $source);
 eval('?>' . $source);
 

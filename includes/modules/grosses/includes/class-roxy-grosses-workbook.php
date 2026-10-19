@@ -772,20 +772,7 @@ class Workbook {
   }
 
   private static function set_uploaded_template(array $template): ?bool {
-    $settings = get_option(Settings::OPTION_KEY, []);
-    if (!is_array($settings)) {
-      $settings = [];
-    }
-    $saved_template = [
-      'path' => sanitize_text_field((string) ($template['path'] ?? '')),
-      'name' => sanitize_file_name((string) ($template['name'] ?? '')),
-      'uploaded_at' => sanitize_text_field((string) ($template['uploaded_at'] ?? '')),
-    ];
-    $settings[self::TEMPLATE_KEY] = $saved_template;
-    update_option(Settings::OPTION_KEY, $settings);
-    $verified = get_option(Settings::OPTION_KEY, null);
-    if (!is_array($verified)) return null;
-    return ($verified[self::TEMPLATE_KEY] ?? null) === $saved_template;
+    return Settings::save_workbook_template($template);
   }
 
   private static function resolve_template_path(int $year): string {
@@ -1423,6 +1410,10 @@ class Workbook {
     }
 
     return $normalized_path === $private_root || str_starts_with($normalized_path, $private_root . '/');
+  }
+
+  public static function is_safe_uploaded_template_file(string $path): bool {
+    return is_file($path) && is_readable($path) && self::is_private_path($path);
   }
 
   private static function cell_ref(int $column, int $row): string {

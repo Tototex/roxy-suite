@@ -10,6 +10,7 @@ class Settings {
   private const ENCRYPTION_PREFIX='gcm:';
   private const ENCRYPTION_PREFIX_V2='gcm:v2:';
   private const CASHFLOW_NONCE_ACTION='roxy_grosses_cashflow';
+  private static ?array $authorized_workbook_template_write = null;
 
   public static function init(): void {
     add_action('admin_init',[__CLASS__,'migrate_legacy_token'],1);
@@ -76,6 +77,41 @@ class Settings {
   public static function ensure_defaults(): void {
     if (get_option(self::OPTION_KEY,null)===null) add_option(self::OPTION_KEY,self::defaults());
   }
+
+  /** Save metadata only for a validated workbook already inside private storage. */
+  public static function save_workbook_template(array $template): ?bool {
+    $normalized = [
+      'path' => sanitize_text_field((string) ($template['path'] ?? '')),
+      'name' => sanitize_file_name((string) ($template['name'] ?? '')),
+      'uploaded_at' => sanitize_text_field((string) ($template['uploaded_at'] ?? '')),
+    ];
+    if ($normalized['path'] === '' || $normalized['name'] === ''
+      || !class_exists(Workbook::class)
+      || !Workbook::is_safe_uploaded_template_file($normalized['path'])) {
+      return false;
+    }
+
+    $settings = get_option(self::OPTION_KEY, []);
+    if (!is_array($settings)) $settings = [];
+    $settings[self::WORKBOOK_TEMPLATE_UPLOAD_KEY] = $normalized;
+
+    // update_option() runs the registered sanitize callback in admin requests.
+    // Permit this exact private-template value for this synchronous write only;
+    // ordinary settings submissions continue preserving the stored value.
+    self::$authorized_workbook_template_write = $normalized;
+    try {
+      update_option(self::OPTION_KEY, $settings);
+    } catch (\Throwable $error) {
+      return null;
+    } finally {
+      self::$authorized_workbook_template_write = null;
+    }
+
+    $verified = get_option(self::OPTION_KEY, null);
+    if (!is_array($verified)) return null;
+    return ($verified[self::WORKBOOK_TEMPLATE_UPLOAD_KEY] ?? null) === $normalized;
+  }
+
   public static function get_all(): array {
     $saved=get_option(self::OPTION_KEY,[]); if(!is_array($saved)) $saved=[];
     $all = wp_parse_args($saved,self::defaults());
@@ -199,6 +235,10 @@ class Settings {
       $sanitized['workbook_template_path'] = $workbook_template_path;
     }
     $uploaded_template = $existing[self::WORKBOOK_TEMPLATE_UPLOAD_KEY] ?? [];
+    if (self::$authorized_workbook_template_write !== null
+      && ($input[self::WORKBOOK_TEMPLATE_UPLOAD_KEY] ?? null) === self::$authorized_workbook_template_write) {
+      $uploaded_template = self::$authorized_workbook_template_write;
+    }
     if (is_array($uploaded_template) && $uploaded_template) {
       $sanitized[self::WORKBOOK_TEMPLATE_UPLOAD_KEY] = [
         'path' => sanitize_text_field((string) ($uploaded_template['path'] ?? '')),
