@@ -86,6 +86,7 @@ namespace {
   $hook=\RoxyGrosses\Scheduler::closed_day_hook();
   $report_date=(new DateTimeImmutable('yesterday',new DateTimeZone('America/Los_Angeles')))->format('Y-m-d');
   $GLOBALS['closed_day_options']['roxy_grosses_closed_day_refresh_queue']=[$report_date=>['attempt'=>0,'status'=>'pending','message'=>'','retry_at'=>1]];
+  $GLOBALS['closed_day_options']['roxy_grosses_last_auto_date']=$report_date;
   $save_pending=new ReflectionMethod(\RoxyGrosses\Scheduler::class,'save_closed_day_pending');
   $clear_pending=new ReflectionMethod(\RoxyGrosses\Scheduler::class,'clear_pending_closed_day_refresh');
   $queue_key='roxy_grosses_closed_day_refresh_queue';
