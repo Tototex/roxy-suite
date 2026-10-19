@@ -139,7 +139,8 @@ try {
     $check(is_wp_error(roxy_fixture_eb_apply_booking_adjustment_from_order($make_order(900000010,$id),$adjustment)), 'paid extension rechecks newly occupied room before applying');
     $check(!roxy_fixture_eb_booking_adjustment_order_ids(roxy_fixture_eb_repo_get_booking($id)),'failed extension leaves no applied-once marker');
     roxy_fixture_eb_repo_delete_block($blocking);
-    $check(roxy_fixture_eb_apply_booking_adjustment_from_order($make_order(900000010,$id),$adjustment)===true,'valid versioned paid adjustment commits');
+    $paid_adjustment_result=roxy_fixture_eb_apply_booking_adjustment_from_order($make_order(900000010,$id),$adjustment);
+    $check($paid_adjustment_result===true,'valid versioned paid adjustment commits'.(is_wp_error($paid_adjustment_result)?': '.$paid_adjustment_result->get_error_code().' — '.$paid_adjustment_result->get_error_message():''));
     $updated=roxy_fixture_eb_repo_get_booking($id);
     $check((int)$updated['total_price']===390 && (int)$updated['special_charge_total']===40 && $updated['special_charge_label']==='Fixture charge','paid snapshot retains special charge and total');
     $check(roxy_fixture_eb_booking_adjustment_order_ids($updated)===[900000010],'change and applied-order identity commit together');
