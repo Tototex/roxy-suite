@@ -2,7 +2,7 @@
 // WP-CLI only. Actual candidate code renamed into a fixture namespace; private tables only.
 if (!defined('WP_CLI') || !WP_CLI) exit;
 $root = $args[0] ?? dirname(__DIR__);
-foreach (['reservations.php', 'repository.php', 'availability.php', 'woo.php'] as $file) {
+foreach (['reservations.php', 'repository.php', 'availability.php', 'refunds.php', 'woo.php'] as $file) {
     $source = file_get_contents($root . '/includes/modules/event-booking/includes/' . $file);
     if ($source === false) throw new RuntimeException('Cannot read candidate fixture source');
     $source = str_replace("require_once __DIR__ . '/reservations.php';", '', $source);
