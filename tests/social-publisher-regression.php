@@ -142,6 +142,9 @@ namespace {
     reset_fixture('both','failed');\RoxySocial\Store::$row['facebook_post_id']='123';\RoxySocial\Campaigns::$verified=false;$GLOBALS['responses']=[response(['id'=>'234']),response(['id'=>'345'])];
     check(\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['facebook_post_id']==='123'&&\RoxySocial\Store::$row['status']==='posted'&&count($GLOBALS['calls'])===2,'schedule wording does not block safe retry to only the missing account');
     $decode=new \ReflectionMethod(\RoxySocial\Publisher::class,'decode_response');$decode->setAccessible(true);
+    $meta_error=$decode->invoke(null,response(['error'=>['message'=>'Fatal','type'=>'OAuthException','code'=>9007,'error_subcode'=>2207001]],400),true,false);
+    check(($meta_error['error']??'')==='Meta returned HTTP 400: Fatal (type OAuthException; code 9007; subcode 2207001)'&&empty($meta_error['ambiguous']),
+        'definitive Meta failures retain safe provider diagnostics without becoming ambiguous');
     foreach([response(['id'=>'123'],500),response(['id'=>'123'],408),response([]),['status'=>200,'body'=>'not JSON'],response(['id'=>['123']]),response(['id'=>'']),new \RuntimeException('timeout')] as $r){
         $v=$decode->invoke(null,$r,true,false);check(!empty($v['error'])&&!empty($v['ambiguous']),'unknown or invalid publication never becomes success');
     }

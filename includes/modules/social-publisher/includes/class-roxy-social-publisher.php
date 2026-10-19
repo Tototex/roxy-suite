@@ -459,7 +459,20 @@ final class Publisher {
         if (is_wp_error($response)) return ['error'=>'Meta request outcome is unknown. Review the remote account before retrying.','ambiguous'=>$require_id];
         $status=(int)wp_remote_retrieve_response_code($response);
         $data=json_decode((string)wp_remote_retrieve_body($response),true);
-        if($status<200||$status>=300) return ['error'=>'Meta returned HTTP '.$status.': '.sanitize_text_field((string)($data['error']['message']??'No success was recorded.')),'ambiguous'=>$require_id&&($status>=500||$status===0||$status===408)];
+        if($status<200||$status>=300) {
+            $provider_error = is_array($data['error'] ?? null) ? $data['error'] : [];
+            $raw_message = $provider_error['message'] ?? null;
+            $message = is_scalar($raw_message) ? sanitize_text_field((string)$raw_message) : 'No success was recorded.';
+            $diagnostics = [];
+            foreach (['type' => 'type', 'code' => 'code', 'error_subcode' => 'subcode'] as $field => $label) {
+                if (isset($provider_error[$field]) && is_scalar($provider_error[$field])) {
+                    $value = sanitize_text_field((string)$provider_error[$field]);
+                    if ($value !== '') $diagnostics[] = $label . ' ' . $value;
+                }
+            }
+            if ($diagnostics) $message .= ' (' . implode('; ', $diagnostics) . ')';
+            return ['error'=>'Meta returned HTTP '.$status.': '.$message,'ambiguous'=>$require_id&&($status>=500||$status===0||$status===408)];
+        }
         if(!is_array($data))return ['error'=>'Meta returned an unreadable response. Review the remote account before retrying.','ambiguous'=>$require_id];
         if(isset($data['error']))return ['error'=>sanitize_text_field((string)($data['error']['message']??'Meta reported an error.'))];
         if($require_success&&($data['success']??null)!==true)return ['error'=>'Meta did not confirm removal; the recorded ID was retained.'];
