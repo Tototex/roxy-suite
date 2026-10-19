@@ -107,7 +107,18 @@ try {
             public function is_paid(){return $this->paid;}
             public function get_user_id(){return $this->owner;}
             public function get_billing_email(){return $this->owner===123?'fixture@example.invalid':'other@example.invalid';}
-            public function get_items(){ $item=new WC_Order_Item_Product(); $item->add_meta_data('_roxy_eb_booking_adjustment',wp_json_encode(['booking_id'=>$this->booking])); return [1=>$item]; }
+            public function get_items(){
+                $booking_id=$this->booking;
+                return [1=>new class($booking_id) {
+                    private $booking_id;
+                    public function __construct($booking_id){$this->booking_id=$booking_id;}
+                    public function get_meta($key,$single=true){return $key==='_roxy_eb_booking_adjustment'?wp_json_encode(['booking_id'=>$this->booking_id]):'';}
+                    public function get_id(){return 1;}
+                    public function get_quantity(){return 1;}
+                    public function get_total(){return 140;}
+                }];
+            }
+            public function get_total_refunded_for_item($item_id){return 0;}
             public function add_order_note($note){$GLOBALS['room_fixture_events'][]='note';}
         };
     };
