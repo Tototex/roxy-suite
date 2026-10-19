@@ -146,7 +146,7 @@ function roxy_eb_repo_list_bookings_in_range($start_mysql, $end_mysql) {
          ORDER BY reserved_start_at ASC",
         $end_mysql, $start_mysql
     ), ARRAY_A);
-    if ($wpdb->last_error) return new WP_Error('reservation_read', 'Booking availability is temporarily unavailable.');
+    if ($wpdb->last_error || !is_array($rows)) return new WP_Error('reservation_read', 'Booking availability is temporarily unavailable.');
     return $rows ?: [];
 }
 
@@ -224,7 +224,7 @@ function roxy_eb_repo_list_blocks_in_range($start_mysql, $end_mysql) {
          ORDER BY start_at ASC",
         $end_mysql, $start_mysql
     ), ARRAY_A);
-    if ($wpdb->last_error) return new WP_Error('reservation_read', 'Blocked-event availability is temporarily unavailable.');
+    if ($wpdb->last_error || !is_array($rows)) return new WP_Error('reservation_read', 'Blocked-event availability is temporarily unavailable.');
     return $rows ?: [];
 }
 
