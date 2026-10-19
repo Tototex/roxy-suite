@@ -53,11 +53,16 @@ final class Reservations {
   public static function quantity_for_showing(int $showing_id, int $exclude_order_id = 0, int $subscriber_user_id = 0): int {
     global $wpdb;
     if($showing_id<=0) throw new \RuntimeException('Invalid showing');
+    $utility='\Automattic\WooCommerce\Utilities\OrderUtil';
+    if(!class_exists($utility) || !method_exists($utility,'custom_orders_table_usage_is_enabled')) {
+      throw new \RuntimeException('WooCommerce order storage could not be verified');
+    }
     try {
-      $hpos=class_exists('\Automattic\WooCommerce\Utilities\OrderUtil') && \Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled();
+      $hpos=$utility::custom_orders_table_usage_is_enabled();
     } catch(\Throwable $error) {
       throw new \RuntimeException('WooCommerce order storage could not be verified',0,$error);
     }
+    if(!is_bool($hpos)) throw new \RuntimeException('WooCommerce order storage could not be verified');
     $keys=['_roxy_legacy_product_ids'];
     foreach(['adult','discount','matinee','live1','live2','subscriber'] as $type)$keys[]='_roxy_pid_'.$type;
     $placeholders=implode(',',array_fill(0,count($keys),'%s'));
