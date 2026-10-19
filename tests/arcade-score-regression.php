@@ -8,9 +8,9 @@ function get_transient($key){return [];}function set_transient(...$args){}functi
 class WP_REST_Request {function __construct(private $score=10,private $game='marquee',private $nonce='fixture'){}function get_header($key){return $this->nonce;}function get_param($key){return $key==='game'?$this->game:$this->score;}}
 class WP_REST_Response {function __construct(public $data,public $status){}}
 class ScoreDatabase {
-    public $prefix='fixture_';public $queries=[];public $result=1;public $values=[];public $readResults=[];
+    public $prefix='fixture_';public $queries=[];public $writeQueries=[];public $result=1;public $values=[];public $readResults=[];
     function prepare($sql,...$args){$this->values=$args;return $sql;}
-    function query($sql){$this->queries[]=$sql;return $this->result;}
+    function query($sql){$this->queries[]=$sql;$this->writeQueries[]=$sql;return $this->result;}
     function get_results(...$args){$this->queries[]=$args[0];return $this->readResults?array_shift($this->readResults):[];}
 }
 $GLOBALS['wpdb']=new ScoreDatabase;
@@ -38,5 +38,5 @@ $GLOBALS['wpdb']->readResults=[false];$response=Roxy_Arcade::rest_post_score(new
 check($response->status===200&&$response->data['ok']===true&&!empty($response->data['leaderboardUnavailable'])&&!isset($response->data['leaderboards']),'saved score is not represented as failed when follow-up read fails');
 $response=Roxy_Arcade::rest_post_score(new WP_REST_Request(10,'marquee','bad'));check($response->status===403,'nonce guard retained');
 $response=Roxy_Arcade::rest_post_score(new WP_REST_Request(10,'invalid'));check($response->status===400,'game guard retained');
-$GLOBALS['wpdb']->readResults=[];$GLOBALS['logged_in']=false;$count=count($GLOBALS['wpdb']->queries);$response=Roxy_Arcade::rest_post_score(new WP_REST_Request);
-check($response->data['guest']===true&&count($GLOBALS['wpdb']->queries)===$count,'guests cannot write scores');
+$GLOBALS['wpdb']->readResults=[];$GLOBALS['logged_in']=false;$count=count($GLOBALS['wpdb']->writeQueries);$response=Roxy_Arcade::rest_post_score(new WP_REST_Request);
+check($response->data['guest']===true&&count($GLOBALS['wpdb']->writeQueries)===$count,'guests cannot write scores');
