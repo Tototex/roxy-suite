@@ -240,7 +240,7 @@ The final upload/settings boundary now reads back the persisted template record.
 
 ## Member photo access review — 2026-10-19
 
-Read-only production review found Member Check uploads photos with `media_handle_upload()` and renders their standard attachment URLs from staff pages and the member-check workflow. Only three subscription records currently reference valid attachment posts. The uploads directory and `wp-content` have no `.htaccess`/`index.php` protection, and the root Apache rules pass through existing static files; therefore direct photo URLs appear publicly retrievable even though Member Check itself requires staff access. No customer identifiers, URLs, or image contents were selected or accessed. Owner preference on staff-only delivery is pending; do not migrate or remove existing photos until the access policy and a recoverable file-migration plan are approved.
+Read-only production review found Member Check uploads photos with `media_handle_upload()` and renders their standard attachment URLs from staff pages and the member-check workflow. Only three subscription records currently reference valid attachment posts. An anonymous HEAD request to `/member-check/` receives a 302 redirect to WordPress login, confirming the page route is protected; the uploads directory and `wp-content` have no `.htaccess`/`index.php` protection, and the root Apache rules pass through existing static files, so the separate direct attachment URLs appear publicly retrievable. No customer identifiers, URLs, or image contents were selected or accessed. Owner preference on staff-only delivery is pending; do not migrate or remove existing photos until the access policy and a recoverable file-migration plan are approved.
 
 ## Deferred opportunities
 
