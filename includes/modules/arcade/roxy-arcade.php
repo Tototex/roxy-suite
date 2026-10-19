@@ -772,7 +772,10 @@ class Roxy_Arcade {
 
     $sub->save();
     if (!$lock || !self::award_lock_is_owned($lock)) throw new RuntimeException('Prize award lock was lost before subscription activation');
-    if (!$sub->update_status('active', 'Roxy Arcade monthly winner prize awarded.')) throw new RuntimeException('Prize activation failed');
+    // WCS update_status() returns void on success (and throws when invalid),
+    // so validate the resulting status instead of interpreting null as failure.
+    $sub->update_status('active', 'Roxy Arcade monthly winner prize awarded.');
+    if ($sub->get_status() !== 'active') throw new RuntimeException('Prize activation failed');
     $sub->add_order_note('Roxy Arcade: Monthly winner prize — Free 1 billing period (SUB002).');
 
     return (int) $sub->get_id();

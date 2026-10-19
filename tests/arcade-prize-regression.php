@@ -20,7 +20,8 @@ class PrizeSubscription {
     function set_requires_manual_renewal($v){$GLOBALS['manual']=$v;}function set_payment_method($v){$GLOBALS['payment']=$v;}
     function calculate_totals($taxes){if($taxes!==false)throw new RuntimeException('Unexpected tax recalculation');}
     function get_total(){return $GLOBALS['nonzero']??0;}function update_dates($v){$GLOBALS['dates']=$v;}
-    function save(){}function update_status($v,$note){$this->activated=true;$GLOBALS['activated']=true;return !($GLOBALS['activation_fail']??false);}function add_order_note($n){}
+    function get_status(){return $this->activated?'active':'pending';}
+    function save(){}function update_status($v,$note){if($GLOBALS['activation_fail']??false)return null;$this->activated=true;$GLOBALS['activated']=true;return null;}function add_order_note($n){}
 }
 class PrizeDatabase {
     private static $next_connection_id=100;public $connection_id,$options='fixture_options';public $claims=[];public $fail_insert=false,$fail_update=false,$fail_on_update=0,$commit_then_fail_on_update=0,$updates=0,$last_error='';
