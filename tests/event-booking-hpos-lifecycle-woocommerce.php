@@ -1,11 +1,16 @@
 <?php
-/** Private HPOS Event Booking lifecycle. Synthetic zero-value order; mail intercepted. */
+/** Private Event Booking storage lifecycle. Synthetic zero-value order; mail intercepted. */
 if (!defined('WP_CLI') || !WP_CLI || !class_exists('WooCommerce') || !class_exists('RoxySuite\\Compatibility')) {
     throw new RuntimeException('This fixture requires the active Roxy Suite, Event Booking, and WooCommerce modules.');
 }
 $order_util='Automattic\\WooCommerce\\Utilities\\OrderUtil';
-if (!class_exists($order_util) || !$order_util::custom_orders_table_usage_is_enabled()) {
-    throw new RuntimeException('This fixture requires authoritative HPOS storage.');
+if (!class_exists($order_util) || !method_exists($order_util,'custom_orders_table_usage_is_enabled')) {
+    throw new RuntimeException('This fixture requires a verifiable WooCommerce order storage mode.');
+}
+$actual_hpos=$order_util::custom_orders_table_usage_is_enabled();
+$expected_hpos=getenv('ROXY_EXPECT_HPOS');
+if (!is_bool($actual_hpos) || !in_array($expected_hpos,['0','1'],true) || $actual_hpos!==($expected_hpos==='1')) {
+    throw new RuntimeException('The active WooCommerce order storage mode does not match the fixture expectation.');
 }
 if (!function_exists('roxy_eb_on_payment_complete') || !function_exists('roxy_eb_start_booking_adjustment_checkout')) {
     throw new RuntimeException('Event Booking WooCommerce handlers are unavailable.');
@@ -33,7 +38,7 @@ $mail_guard=static function($short_circuit,$args) use (&$mail_calls) {
 add_filter('pre_wp_mail',$mail_guard,PHP_INT_MAX,2);
 try {
     $product=new WC_Product_Simple();
-    $product->set_name('Private HPOS Event Booking Fixture');
+    $product->set_name('Private Event Booking Storage Fixture');
     // This fixture runs only on a disposable CI site. Keep the product hidden
     // from listings, but published so WooCommerce will accept it in a cart.
     $product->set_status('publish');
@@ -62,28 +67,28 @@ try {
         'special_charge_label'=>'','special_charge_total'=>0,
     ];
     $order=wc_create_order(['status'=>'pending','customer_id'=>0]);
-    if (is_wp_error($order) || !$order instanceof WC_Order) throw new RuntimeException('Could not create private HPOS order.');
-    if ($order->add_product($product,1)<=0) throw new RuntimeException('Could not add private booking product to HPOS order.');
+    if (is_wp_error($order) || !$order instanceof WC_Order) throw new RuntimeException('Could not create the private synthetic order.');
+    if ($order->add_product($product,1)<=0) throw new RuntimeException('Could not add the synthetic product to the Woo order.');
     $items=$order->get_items();
     $item=$items ? reset($items) : false;
-    if (!$item instanceof WC_Order_Item_Product) throw new RuntimeException('Private booking order item is unavailable.');
+    if (!$item instanceof WC_Order_Item_Product) throw new RuntimeException('Synthetic booking order item is unavailable.');
     $item->add_meta_data('_roxy_eb_booking',wp_json_encode($payload),true);
     $item->save();
     $order->calculate_totals();
     $order->set_status('processing'); // Synthetic paid-state marker only; no gateway/provider call.
     $order->save();
     $order_id=(int)$order->get_id();
-    if ((int)round((float)$order->get_total()*100)!==0) throw new RuntimeException('The HPOS lifecycle fixture must remain zero-value.');
+    if ((int)round((float)$order->get_total()*100)!==0) throw new RuntimeException('The storage lifecycle fixture must remain zero-value.');
 
     do_action('woocommerce_payment_complete',$order_id);
     $booking=roxy_eb_repo_get_booking_by_order($order_id);
-    if (!$booking) throw new RuntimeException('HPOS payment-complete hook did not persist its booking.');
+    if (!$booking) throw new RuntimeException('Payment-complete hook did not persist its booking.');
     $booking_id=(int)$booking['id'];
-    $check($booking_id>0 && (int)$booking['woo_order_id']===$order_id,'HPOS payment completion links one private booking to its Woo order');
-    $check($booking['customer_email']==='hpos-fixture@example.invalid' && $booking['event_format']==='movie','HPOS CRUD item metadata is decoded into the expected booking');
+    $check($booking_id>0 && (int)$booking['woo_order_id']===$order_id,'payment completion links one private booking to its Woo order');
+    $check($booking['customer_email']==='hpos-fixture@example.invalid' && $booking['event_format']==='movie','WooCommerce item metadata is decoded into the expected booking');
 
     do_action('woocommerce_payment_complete',$order_id);
-    $check((int)$wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM `'.roxy_eb_table_bookings().'` WHERE woo_order_id=%d',$order_id))===1,'replayed HPOS payment-complete hook does not duplicate the booking');
+    $check((int)$wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM `'.roxy_eb_table_bookings().'` WHERE woo_order_id=%d',$order_id))===1,'replayed payment-complete hook does not duplicate the booking');
 
     $change=[
         'delta_total'=>100,'expected_revision'=>roxy_eb_booking_revision($booking),
@@ -99,7 +104,7 @@ try {
         if ((int)($cart_item['product_id']??0)===(int)$product->get_id()
             && (int)(($cart_item[roxy_eb_booking_adjustment_meta_key()]['booking_id']??0))===$booking_id) $found=true;
     }
-    $check(!is_wp_error($cart_result) && is_string($cart_result) && $found,'HPOS booking adjustment starts a Woo cart with the matching booking identity');
+    $check(!is_wp_error($cart_result) && is_string($cart_result) && $found,'booking adjustment starts a Woo cart with the matching booking identity');
     if ($cart && method_exists($cart,'empty_cart')) $cart->empty_cart(true);
     $check($mail_calls>0,'booking confirmation email attempts were intercepted before transport');
 } finally {
@@ -114,4 +119,5 @@ try {
     else update_option(roxy_eb_option_key(),$saved_settings,false);
     if (WC()->cart && method_exists(WC()->cart,'empty_cart')) WC()->cart->empty_cart(true);
 }
-echo 'Passed '.$checks.' private HPOS Event Booking lifecycle checks. No payment provider or outbound mail transport was used.'.PHP_EOL;
+$storage_label=$actual_hpos?'authoritative HPOS':'legacy post-based';
+echo 'Passed '.$checks.' private Event Booking lifecycle checks on '.$storage_label.' storage. No payment provider or outbound mail transport was used.'.PHP_EOL;

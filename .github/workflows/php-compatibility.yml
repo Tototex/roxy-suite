@@ -298,6 +298,15 @@ jobs:
           ln -s "$GITHUB_WORKSPACE" "$wp_path/wp-content/plugins/roxy-suite"
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" eval '$flags = array_fill_keys(["arcade","sub_check","will_call","show_tickets","requested_showings","event_booking","grosses","inventory","social_publisher"], false); $flags["show_tickets"] = true; $flags["will_call"] = true; $flags["event_booking"] = true; update_option("roxy_suite_modules", $flags);'
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin activate roxy-suite/roxy-suite.php
+          output="$RUNNER_TEMP/event-booking-legacy-output.txt"
+          if ROXY_EXPECT_HPOS=0 php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" eval-file "$GITHUB_WORKSPACE/tests/event-booking-hpos-lifecycle-woocommerce.php" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 60 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Event Booking legacy lifecycle failed::$details"
+            exit "$status"
+          fi
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" wc hpos enable --ignore-plugin-compatibility
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" eval '$u="\\Automattic\\WooCommerce\\Utilities\\OrderUtil"; if (!class_exists($u) || !$u::custom_orders_table_usage_is_enabled()) throw new RuntimeException("HPOS did not become authoritative in the isolated fixture."); global $wpdb; foreach (["wc_orders","wc_orders_meta"] as $n) { $t=$wpdb->prefix.$n; if ($wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s",$t)) !== $t) throw new RuntimeException("Required HPOS table missing: ".$t); }'
           echo "HPOS_WP_PATH=$wp_path" >> "$GITHUB_ENV"
@@ -371,7 +380,7 @@ jobs:
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/hpos-event-booking-output.txt"
-          if php "$RUNNER_TEMP/wp-cli.phar" --path="$HPOS_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/event-booking-hpos-lifecycle-woocommerce.php" >"$output" 2>&1; then
+          if ROXY_EXPECT_HPOS=1 php "$RUNNER_TEMP/wp-cli.phar" --path="$HPOS_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/event-booking-hpos-lifecycle-woocommerce.php" >"$output" 2>&1; then
             cat "$output"
           else
             status=$?
