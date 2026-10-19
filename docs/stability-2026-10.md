@@ -238,6 +238,10 @@ A further workbook-storage review found that `wp_unique_filename()` followed by 
 
 The final upload/settings boundary now reads back the persisted template record. Failed settings writes remove only a confirmed-unreferenced new private copy; uncertain reads preserve it. Legacy public-template migration copies privately first, verifies that the option points at the private copy, then removes the old source; failed writes keep the source intact. The private-directory regression covers successful read-back, failed option writes, failed legacy migration and the exclusive-copy collision. The first hosted run [37821872872](https://github.com/Tototex/roxy-suite/actions/runs/37821872872) exposed a missing namespaced Settings stub in the test fixture; the fixture was corrected, and [37821928498](https://github.com/Tototex/roxy-suite/actions/runs/37821928498) passes PHP 8.0–8.4 lint, the PHP 8.3 full regression suite, and disposable WordPress/MySQL Social lifecycle fixtures.
 
+## Member photo access review — 2026-10-19
+
+Read-only production review found Member Check uploads photos with `media_handle_upload()` and renders their standard attachment URLs from staff pages and the member-check workflow. Only three subscription records currently reference valid attachment posts. The uploads directory and `wp-content` have no `.htaccess`/`index.php` protection, and the root Apache rules pass through existing static files; therefore direct photo URLs appear publicly retrievable even though Member Check itself requires staff access. No customer identifiers, URLs, or image contents were selected or accessed. Owner preference on staff-only delivery is pending; do not migrate or remove existing photos until the access policy and a recoverable file-migration plan are approved.
+
 ## Deferred opportunities
 
 - Advertising contracts/tracking on the website, monthly reporting, renewal management, and permission-based outreach: explicitly requested for follow-up after stability. Automatic renewal terms and payment authorization require a separate design review.
