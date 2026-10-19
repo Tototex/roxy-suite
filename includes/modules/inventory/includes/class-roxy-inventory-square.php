@@ -121,7 +121,6 @@ class Square {
         }
         return $events;
     }
-
     private static function list_catalog(float $deadline, int &$pages): array {
         $all = []; $cursor = null; $seen_cursors = []; $seen_items = [];
         do {
