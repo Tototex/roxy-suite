@@ -96,6 +96,7 @@ namespace {
     try { \RoxySocial\Admin::update_draft(); } catch (\RuntimeException $e) { $blocked_result=json_decode($e->getMessage(),true); }
     $check($blocked_result['success']===false&&\RoxySocial\Store::$saved===$saved_before);
     $GLOBALS['social_removal_review_status']='approved';
+    $_GET=['status'=>'approved'];
     ob_start(); \RoxySocial\Admin::render_page(); $approved_removal_html=ob_get_clean();
     $approved_removal_row='';
     foreach(preg_split('/(?=<tr)/',$approved_removal_html) as $candidate_row) if(str_contains($candidate_row,'REMOVAL_OUTCOME_UNCERTAIN:')) {$approved_removal_row=explode('</tr>',$candidate_row,2)[0];break;}
