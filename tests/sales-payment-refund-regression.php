@@ -201,7 +201,6 @@ $hooks = $GLOBALS['sales_fixture_hooks'];
 $check(($hooks['woocommerce_before_save_order_items'][2] ?? null)===2
   && ($hooks['woocommerce_saved_order_items'][2] ?? null)===2
   && ($hooks['woocommerce_update_order_item'][2] ?? null)===3
-  && ($hooks['woocommerce_new_order_item'][2] ?? null)===3
   && ($hooks['woocommerce_before_delete_order_item'][2] ?? null)===1
   && ($hooks['woocommerce_delete_order_item'][2] ?? null)===1,
   'admin batch and generic Woo item lifecycle hooks register with expected argument counts');

@@ -22,7 +22,6 @@ class Sales {
     add_action('woocommerce_before_save_order_items', [__CLASS__, 'before_order_items_saved'], 1, 2);
     add_action('woocommerce_saved_order_items', [__CLASS__, 'on_order_items_saved'], 20, 2);
     add_action('woocommerce_update_order_item', [__CLASS__, 'on_order_item_updated'], 20, 3);
-    add_action('woocommerce_new_order_item', [__CLASS__, 'on_order_item_created'], 20, 3);
     add_action('woocommerce_before_delete_order_item', [__CLASS__, 'before_order_item_deleted'], 1, 1);
     add_action('woocommerce_delete_order_item', [__CLASS__, 'on_order_item_deleted'], 20, 1);
     add_action('save_post_' . CPT::POST_TYPE, [__CLASS__, 'on_showing_saved'], 30, 1);
@@ -55,14 +54,6 @@ class Sales {
     $showing_ids = self::showing_ids_for_item($item);
     if ($order_id <= 0 || !$showing_ids || isset(self::$admin_item_save_showings[$order_id])) return;
     self::refresh_order_projection($order_id, $showing_ids);
-  }
-
-  /** Generic creation can add a ticket line to an already-existing order. */
-  public static function on_order_item_created(int $item_id, $item, int $order_id): void {
-    $showing_ids = self::showing_ids_for_item($item);
-    if ($order_id > 0 && $showing_ids && !isset(self::$admin_item_save_showings[$order_id])) {
-      self::refresh_order_projection($order_id, $showing_ids);
-    }
   }
 
   /** Capture parent and projection membership before the item row is removed. */
