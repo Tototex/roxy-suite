@@ -1,0 +1,11 @@
+# Cross-module health and Social deployment checkpoint — 2026-10-20
+
+At 2026-10-20 14:41 PDT, deployed the hosted-tested Social Admin and Publisher sources from `b21278f` after validating exact predeploy originals and staged candidates. Installed Admin SHA-256 is `2fbcabbcc8b153e489d5069b5cc6e4710db52dc89a271d2b2ee48ec8fc1e13af`; Publisher is `3d1401f5d91bc4d6c1bafce814d322e60f1417786e2bbbbb3ff325cfcbdbc57f`. Both pass production PHP lint. The originals remain backed up on the server and I: as recorded in `docs/stability-2026-10.md`. A read-only WP-CLI bootstrap confirms the exact `roxy-suite/roxy-suite.php` plugin is active, both Social classes load, and `admin_post_roxy_social_confirm_remote_removal` is registered.
+
+The live `RoxySuite\Health::run_full()` check reports Core, Show Tickets, Requested Showings, Will Call, Member Check, Event Booking, and Arcade as passing. Existing attention items are:
+
+- Grosses: closed-day refresh for 2026-10-19 is failed; last automatic report date remains 2026-10-18; the last daily scheduler outcome is failed with “This request could not be authorized.” The advertiser outcome is a normal skipped send. No historical report was rerun and no email was sent.
+- Inventory: the 2026-10-19 pull failed with “Square inventory request failed or returned invalid JSON”; the last successful pull was 2026-10-18. No inventory pull was triggered and stock was not changed.
+- Social Publisher: one failed partial publication remains (Facebook post ID recorded, Instagram media ID absent). The previously inspected Instagram container was expired and the provider response lacked enough evidence for a safe retry. This row remains for manager review; no post was retried, removed, or changed, and no Meta write was made.
+
+Public HEAD checks returned HTTP 200 for `/`, `/tickets/`, `/showings/`, `/rent-the-roxy/`, and `/private-events/`. The health run performs read-only checks and, only if Event Booking is configured for direct Sling mode, a Sling GET health/auth ping; it does not trigger reports, inventory pulls, emails, or publishing. These checks confirm the Social deployment and current health state, not resolution of the Grosses, Inventory, or partial Instagram issues. Hosted workflow [39500880611](https://github.com/Tototex/roxy-suite/actions/runs/39500880611) passed all 11 jobs for the deployed Social source.
