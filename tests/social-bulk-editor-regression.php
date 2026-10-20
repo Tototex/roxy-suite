@@ -4,7 +4,7 @@ namespace RoxySocial {
         public static $saved;
         public static function all_recent() { return array_map(static function($id) { $no_ids=!empty($GLOBALS['social_removal_review_no_ids']);return ['id'=>$id,'status'=>$id===4?(!empty($GLOBALS['social_removal_review'])?'needs_review':'failed'):'approved','scheduled_for'=>'2026-10-09 10:00:00','campaign_key'=>'movie-20261009','post_text'=>'Original '.$id,'media_url'=>$id===4?'https://example.test/video.mp4':'','media_type'=>$id===4?'video':'image','platform'=>'both','publish_facebook_story'=>$id===4?1:0,'facebook_story_state'=>$id===4&&!$no_ids?json_encode(['expected'=>1,'ids'=>[],'pending_id'=>$GLOBALS['story_pending_id']??'']):null,'trailer_url'=>'','facebook_post_id'=>$id===4&&!$no_ids?'123':null,'instagram_media_id'=>$id===4&&!$no_ids?'456':null,'instagram_container_id'=>null,'last_error'=>$id===4?(!empty($GLOBALS['social_removal_review'])?'REMOVAL_OUTCOME_UNCERTAIN: verify remote posts':'Facebook Story: temporary failure'):null]; }, [1,2,3,4]); }
         public static function draft_revision($r) { return 'revision-'.$r['id']; }
-        public static function find($id) { return ['id'=>$id]; }
+        public static function find($id) { return !empty($GLOBALS['social_removal_review']) ? ['id'=>$id,'status'=>'needs_review','last_error'=>'REMOVAL_OUTCOME_UNCERTAIN: verify remote posts'] : ['id'=>$id,'status'=>'draft','last_error'=>'']; }
         public static function update_draft(...$args) { self::$saved=$args; return $args[5] === 'revision-'.$args[0]; }
     }
     class Campaigns { public static function caption_schedule_warning($row) { return ''; } }
@@ -90,5 +90,9 @@ namespace {
     ob_start(); \RoxySocial\Admin::render_page(); $empty_removal_review_html=ob_get_clean();
     $check(str_contains($empty_removal_review_html,'Confirm all remaining posts are gone')
         &&!str_contains($empty_removal_review_html,'>Retry remove</a>'));
+    $_POST=['id'=>1,'post_text'=>'Attempted edit','scheduled_for'=>'2026-10-09T10:00','draft_revision'=>'revision-1','media_changed'=>'0'];
+    $saved_before=\RoxySocial\Store::$saved;
+    try { \RoxySocial\Admin::update_draft(); } catch (\RuntimeException $e) { $blocked_result=json_decode($e->getMessage(),true); }
+    $check($blocked_result['success']===false&&\RoxySocial\Store::$saved===$saved_before);
     echo $checks," bulk editor server checks passed\n";
 }
