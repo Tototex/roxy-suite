@@ -24,7 +24,7 @@ namespace {
     function esc_html($v) { return htmlspecialchars($v,ENT_QUOTES); }
     function esc_textarea($v) { return htmlspecialchars($v,ENT_QUOTES); }
     function checked($a,$b,$c) { return ''; }
-    function wp_nonce_field($a,$b,$c,$d) { return '<input name="_wpnonce" value="test-nonce" type="hidden">'; }
+    function wp_nonce_field($a,$b='_wpnonce',$c=true,$d=true) { return '<input name="_wpnonce" value="test-nonce" type="hidden">'; }
     function wp_create_nonce($v) { return 'test-nonce'; }
     function wp_nonce_url($v,$a) { return $v.'&_wpnonce=test-nonce'; }
     function wp_json_encode($v,...$a) { return json_encode($v,...$a); }
