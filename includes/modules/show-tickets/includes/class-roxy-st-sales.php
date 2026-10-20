@@ -6,6 +6,10 @@ if (!defined('ABSPATH')) exit;
 class Sales {
   private static array $stats_cache = [];
   private static array $stats_read_errors = [];
+  /** Showing IDs captured before order-item mutations, keyed by order/item. */
+  private static array $admin_item_save_showings = [];
+  private static array $item_mutation_showings = [];
+  private static array $deleted_item_orders = [];
   private const META_KEY = '_roxy_sales_stats';
   private const LEGACY_SCAN_COMPLETE_KEY = '_roxy_legacy_sales_scan_complete';
   private const CACHE_VERSION = 3;
@@ -15,7 +19,102 @@ class Sales {
     add_action('woocommerce_checkout_order_processed', [__CLASS__, 'on_order_changed'], 20, 1);
     add_action('woocommerce_refund_created', [__CLASS__, 'on_refund_created'], 20, 2);
     add_action('woocommerce_refund_deleted', [__CLASS__, 'on_refund_deleted'], 20, 2);
+    add_action('woocommerce_before_save_order_items', [__CLASS__, 'before_order_items_saved'], 1, 2);
+    add_action('woocommerce_saved_order_items', [__CLASS__, 'on_order_items_saved'], 20, 2);
+    add_action('woocommerce_update_order_item', [__CLASS__, 'on_order_item_updated'], 20, 3);
+    add_action('woocommerce_new_order_item', [__CLASS__, 'on_order_item_created'], 20, 3);
+    add_action('woocommerce_before_delete_order_item', [__CLASS__, 'before_order_item_deleted'], 1, 1);
+    add_action('woocommerce_delete_order_item', [__CLASS__, 'on_order_item_deleted'], 20, 1);
     add_action('save_post_' . CPT::POST_TYPE, [__CLASS__, 'on_showing_saved'], 30, 1);
+  }
+
+  /** Capture the old projection membership before Woo's admin line-item edits. */
+  public static function before_order_items_saved(int $order_id, array $items = []): void {
+    if ($order_id <= 0) return;
+    self::$admin_item_save_showings[$order_id] = self::showing_ids_for_order($order_id);
+  }
+
+  /** Refresh once after Woo has finished applying all admin line-item changes. */
+  public static function on_order_items_saved(int $order_id, array $items = []): void {
+    if ($order_id <= 0) return;
+    $previous = self::$admin_item_save_showings[$order_id] ?? [];
+    unset(self::$admin_item_save_showings[$order_id]);
+    self::refresh_order_projection($order_id, $previous);
+    self::clear_order_item_mutation_state($order_id);
+  }
+
+  /** Generic Woo item update path, outside the batched admin save path. */
+  public static function on_order_item_updated(int $item_id, $item_or_args, int $order_id = 0): void {
+    // Woo emits this action as (id, item, order_id) through CRUD and as
+    // (id, args) through wc_update_order_item(). Normalize both signatures.
+    $item = is_object($item_or_args) ? $item_or_args
+      : self::get_order_item($item_id);
+    if ($order_id <= 0 && is_object($item) && method_exists($item, 'get_order_id')) {
+      $order_id = (int) $item->get_order_id();
+    }
+    $showing_ids = self::showing_ids_for_item($item);
+    if ($order_id <= 0 || !$showing_ids || isset(self::$admin_item_save_showings[$order_id])) return;
+    self::refresh_order_projection($order_id, $showing_ids);
+  }
+
+  /** Generic creation can add a ticket line to an already-existing order. */
+  public static function on_order_item_created(int $item_id, $item, int $order_id): void {
+    $showing_ids = self::showing_ids_for_item($item);
+    if ($order_id > 0 && $showing_ids && !isset(self::$admin_item_save_showings[$order_id])) {
+      self::refresh_order_projection($order_id, $showing_ids);
+    }
+  }
+
+  /** Capture parent and projection membership before the item row is removed. */
+  public static function before_order_item_deleted(int $item_id): void {
+    $item = self::get_order_item($item_id);
+    $order_id = is_object($item) && method_exists($item, 'get_order_id') ? (int) $item->get_order_id() : 0;
+    $showing_ids = self::showing_ids_for_item($item);
+    if (!$showing_ids || ($order_id > 0 && isset(self::$admin_item_save_showings[$order_id]))) return;
+    self::$deleted_item_orders[$item_id] = $order_id;
+    self::$item_mutation_showings[$item_id] = ['order_id' => $order_id, 'showings' => $showing_ids];
+  }
+
+  /** Generic deletion path, after the deleted item is no longer queryable. */
+  public static function on_order_item_deleted(int $item_id): void {
+    $order_id = self::$deleted_item_orders[$item_id] ?? 0;
+    $previous = self::$item_mutation_showings[$item_id]['showings'] ?? [];
+    unset(self::$deleted_item_orders[$item_id], self::$item_mutation_showings[$item_id]);
+    if ($order_id > 0 && !isset(self::$admin_item_save_showings[$order_id])) {
+      self::refresh_order_projection($order_id, $previous);
+    }
+  }
+
+  /** Refresh the union so removing the last ticket line still clears its showing cache. */
+  private static function refresh_order_projection(int $order_id, array $additional_showing_ids = []): void {
+    $markers_saved = self::mark_order_showings($order_id);
+    $showing_ids = array_values(array_unique(array_map('intval', array_merge(
+      self::showing_ids_for_order($order_id), $additional_showing_ids
+    ))));
+    foreach ($showing_ids as $showing_id) {
+      if ($showing_id > 0) self::refresh_showing_stats($showing_id, !$markers_saved);
+    }
+  }
+
+  private static function clear_order_item_mutation_state(int $order_id): void {
+    foreach (self::$item_mutation_showings as $item_id => $state) {
+      if ((int) ($state['order_id'] ?? 0) === $order_id) {
+        unset(self::$item_mutation_showings[$item_id], self::$deleted_item_orders[$item_id]);
+      }
+    }
+  }
+
+  private static function showing_ids_for_item($item): array {
+    if (!is_object($item) || !method_exists($item, 'get_product_id')) return [];
+    $product_id = (int) $item->get_product_id();
+    $showing_id = $product_id > 0 ? (int) get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true) : 0;
+    return $showing_id > 0 ? [$showing_id] : [];
+  }
+
+  private static function get_order_item(int $item_id) {
+    if ($item_id <= 0 || !class_exists('\\WC_Order_Factory')
+      || !method_exists('\\WC_Order_Factory', 'get_order_item')) return null;
+    return \\WC_Order_Factory::get_order_item($item_id);
   }
 
   public static function on_showing_saved(int $showing_id): void {

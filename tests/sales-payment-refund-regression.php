@@ -1,8 +1,18 @@
 <?php
-/** Offline fixture for payment eligibility, per-item refund stats, and refund invalidation. */
+/** Offline fixture for payment eligibility, per-item refund stats, and order-item/refund invalidation. */
 if (!defined('ABSPATH')) define('ABSPATH', __DIR__ . '/');
 if (!defined('ROXY_ST_META_SHOWING_ID')) define('ROXY_ST_META_SHOWING_ID', '_roxy_showing_id');
 if (!defined('ROXY_ST_META_TICKET_TYPE')) define('ROXY_ST_META_TICKET_TYPE', '_roxy_ticket_type');
+if (!class_exists('WC_Order_Factory')) {
+  class WC_Order_Factory {
+    public static function get_order_item(int $item_id) {
+      foreach ($GLOBALS['sales_fixture_orders'] ?? [] as $order) {
+        foreach ($order->get_items() as $item) if ($item->get_id() === $item_id) return $item;
+      }
+      return null;
+    }
+  }
+}
 
 $candidate = $argv[1] ?? dirname(__DIR__) . '/includes/modules/show-tickets/includes/class-roxy-st-sales.php';
 if (!is_file($candidate)) throw new RuntimeException('Candidate Sales file missing: ' . $candidate);
@@ -16,9 +26,10 @@ $source = str_replace('namespace RoxyST;', 'namespace ' . $namespace . ';', $sou
 eval('namespace ' . $namespace . ';
   final class CPT { public const POST_TYPE = "roxy_showing"; }
   final class Item {
-    public int $id; public int $product_id; public int $quantity; public float $total;
-    public function __construct(int $id, int $product_id, int $quantity, float $total) { $this->id=$id; $this->product_id=$product_id; $this->quantity=$quantity; $this->total=$total; }
+    public int $id; public int $product_id; public int $quantity; public float $total; public int $order_id;
+    public function __construct(int $id, int $product_id, int $quantity, float $total, int $order_id=42) { $this->id=$id; $this->product_id=$product_id; $this->quantity=$quantity; $this->total=$total; $this->order_id=$order_id; }
     public function get_id(): int { return $this->id; }
+    public function get_order_id(): int { return $this->order_id; }
     public function get_product_id(): int { return $this->product_id; }
     public function get_quantity(): int { return $this->quantity; }
     public function get_total(): float { return $this->total; }
@@ -39,7 +50,7 @@ eval('namespace ' . $namespace . ';
   function wc_get_orders(array $args) { $GLOBALS["sales_fixture_query"] = $args; if (!empty($GLOBALS["sales_fixture_query_failure"]) && (empty($GLOBALS["sales_fixture_legacy_failure_only"]) || !isset($args["meta_query"]))) return false; $orders=array_filter($GLOBALS["sales_fixture_orders"] ?? [], static fn($order) => in_array($order->get_status(), $args["status"] ?? [], true)); if (!empty($GLOBALS["sales_fixture_filter_tagged_orders"]) && isset($args["meta_query"][0])) { $meta=$args["meta_query"][0]; $orders=array_filter($orders,static fn($order) => (string)$order->get_meta((string)$meta["key"],true)===(string)$meta["value"]); } return array_keys($orders); }
   function wc_get_order($id) { return $GLOBALS["sales_fixture_orders"][(int)$id] ?? null; }
   function get_post_meta($id, $key, $single=false) { return $GLOBALS["sales_fixture_meta"][(int)$id][$key] ?? ""; }
-  function update_post_meta($id, $key, $value) { if (!empty($GLOBALS["sales_fixture_tag_write_failure"]) && strpos((string)$key, "_roxy_contains_showing_") === 0) return false; $GLOBALS["sales_fixture_meta"][(int)$id][$key]=$value; return true; }
+  function update_post_meta($id, $key, $value) { if (!empty($GLOBALS["sales_fixture_tag_write_failure"]) && strpos((string)$key, "_roxy_contains_showing_") === 0) return false; if ($key==="_roxy_sales_stats") $GLOBALS["sales_fixture_stats_writes"] = ($GLOBALS["sales_fixture_stats_writes"] ?? 0)+1; $GLOBALS["sales_fixture_meta"][(int)$id][$key]=$value; return true; }
   function delete_post_meta($id, $key) { unset($GLOBALS["sales_fixture_meta"][(int)$id][$key]); return true; }
   function current_time($type) { return "2037-01-01 12:00:00"; }
   function wp_timezone() { return new \\DateTimeZone("UTC"); }
@@ -148,6 +159,52 @@ $check(is_array($hook) && ltrim($hook[0][0], '\\')===ltrim($sales, '\\') && $hoo
 $sales::on_refund_deleted(902,42);
 $after_delete = $sales::get_showing_stats($showing_id);
 $check($after_delete['sold_qty']===3 && $after_delete['refunded_revenue']===0.0 && $after_delete['gross_revenue']===30.0, 'refund deletion clears cached stats and restores original item quantity/revenue');
+
+// Normal Woo admin edits fire per-item hooks during a batch. The projection must
+// refresh once, after the final item values are saved, and include old showings.
+$sales::clear_showing_cache($showing_id);
+$GLOBALS['sales_fixture_orders'][42] = new $order('processing',true,[new $item(901,701,2,20.0)]);
+$GLOBALS['sales_fixture_orders'][42]->meta['_roxy_contains_showing_' . $showing_id]='1';
+$GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete']='1';
+$before_edit = $sales::get_showing_stats($showing_id);
+$check($before_edit['sold_qty']===2 && $before_edit['gross_revenue']===20.0, 'line-item edit fixture begins with cached original quantity and amount');
+$sales::before_order_items_saved(42, []);
+$GLOBALS['sales_fixture_orders'][42]->items=[new $item(901,701,4,44.0)];
+$sales::on_order_item_updated(901, $GLOBALS['sales_fixture_orders'][42]->items[0], 42);
+$writes_before_admin_save = $GLOBALS['sales_fixture_stats_writes'] ?? 0;
+$sales::on_order_items_saved(42, []);
+$writes_after_admin_save = $GLOBALS['sales_fixture_stats_writes'] ?? 0;
+$after_edit = $sales::get_showing_stats($showing_id);
+$check($after_edit['sold_qty']===4 && $after_edit['gross_revenue']===44.0,
+  'completed admin line-item save rebuilds cached quantity and amount after edits');
+$check($writes_after_admin_save===$writes_before_admin_save+1,
+  'batched admin item hooks defer to one projection refresh at save completion');
+
+// Generic CRUD invalidates edits and retains the old showing when its last
+// ticket item is deleted, even though no ticket product remains on the order.
+$sales::clear_showing_cache($showing_id);
+$GLOBALS['sales_fixture_orders'][42]->items=[new $item(901,701,4,44.0)];
+$sales::get_showing_stats($showing_id);
+$GLOBALS['sales_fixture_orders'][42]->items=[new $item(901,701,5,55.0)];
+$sales::on_order_item_updated(901, ['order_item_qty'=>5,'line_total'=>55.0]);
+$after_generic_edit = $sales::get_showing_stats($showing_id);
+$check($after_generic_edit['sold_qty']===5 && $after_generic_edit['gross_revenue']===55.0,
+  'generic Woo order-item CRUD update rebuilds cached quantity and amount');
+$sales::before_order_item_deleted(901);
+$GLOBALS['sales_fixture_orders'][42]->items=[];
+$sales::on_order_item_deleted(901);
+$after_item_removal = $sales::get_showing_stats($showing_id);
+$check($after_item_removal['sold_qty']===0 && $after_item_removal['gross_revenue']===0.0,
+  'generic deletion of an order’s last ticket item clears its former showing projection');
+
+$hooks = $GLOBALS['sales_fixture_hooks'];
+$check(($hooks['woocommerce_before_save_order_items'][2] ?? null)===2
+  && ($hooks['woocommerce_saved_order_items'][2] ?? null)===2
+  && ($hooks['woocommerce_update_order_item'][2] ?? null)===3
+  && ($hooks['woocommerce_new_order_item'][2] ?? null)===3
+  && ($hooks['woocommerce_before_delete_order_item'][2] ?? null)===1
+  && ($hooks['woocommerce_delete_order_item'][2] ?? null)===1,
+  'admin batch and generic Woo item lifecycle hooks register with expected argument counts');
 
 // A failed legacy read must not complete the scan or replace good cached totals.
 $GLOBALS['sales_fixture_orders'] = [];
