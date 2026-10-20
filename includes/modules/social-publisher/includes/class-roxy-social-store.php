@@ -465,12 +465,13 @@ final class Store {
             if (!is_string($table) || !preg_match('/^[A-Za-z0-9_]+$/D', $table)) return true;
             $wpdb->last_error = '';
             $reference = $wpdb->get_var($wpdb->prepare(
-                'SELECT ' . $identity . ' FROM ' . $table . ' WHERE ' . $column . ' = %s OR ' . $column . ' LIKE %s OR ' . $column . ' LIKE %s OR ' . $column . ' LIKE %s OR ' . $column . ' LIKE %s OR ' . $column . ' REGEXP %s LIMIT 1',
+                'SELECT ' . $identity . ' FROM ' . $table . ' WHERE ' . $column . ' = %s OR ' . $column . ' LIKE %s OR ' . $column . ' LIKE %s OR ' . $column . ' LIKE %s OR ' . $column . ' LIKE %s OR (' . $column . ' LIKE %s AND ' . $column . ' REGEXP %s) LIMIT 1',
                 (string) $attachment_id,
                 $patterns[0],
                 $patterns[1],
                 $patterns[2],
                 $patterns[3],
+                '%' . $attachment_id . '%',
                 $numeric_id_pattern
             ));
             if ($wpdb->last_error !== '' || $reference !== null) return true;

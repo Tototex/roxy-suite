@@ -183,6 +183,7 @@ final class CleanupWpdb {
             preg_match('/(?:meta_value|option_value) = \'(.*?)\'/s', $query, $id); $attachment = stripslashes($id[1] ?? '');
             preg_match_all('/(?:meta_value|option_value) LIKE \'(.*?)\'/s', $query, $matches);
             $patterns = array_map(static fn($pattern) => stripslashes($pattern), $matches[1] ?? []);
+            $numeric_id_prefilter = array_pop($patterns) ?? '';
             preg_match('/(?:meta_value|option_value) REGEXP \'(.*?)\'/s', $query, $regex_match);
             $id_regex = stripslashes($regex_match[1] ?? '');
             foreach ($values as $value) {
@@ -191,7 +192,9 @@ final class CleanupWpdb {
                     $like_regex = '/^' . str_replace('%', '.*', preg_quote($pattern, '/')) . '$/s';
                     if ($pattern !== '' && preg_match($like_regex, (string) $value)) return 1;
                 }
-                if ($id_regex !== '' && preg_match('/' . $id_regex . '/', (string) $value)) return 1;
+                if ($id_regex !== '' && $numeric_id_prefilter !== ''
+                    && strpos((string) $value, trim($numeric_id_prefilter, '%')) !== false
+                    && preg_match('/' . $id_regex . '/', (string) $value)) return 1;
             }
             return null;
         }
