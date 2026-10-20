@@ -97,6 +97,11 @@ try {
         && ($current['square_access_token'] ?? null) === $square_ciphertext
         && ($current['square_webhook_signature_key'] ?? null) === $webhook_ciphertext,
         'saving private workbook metadata preserves both existing encrypted credentials byte-for-byte');
+    $decrypt_secret = new ReflectionMethod($settings_class, 'decrypt_secret');
+    $check($decrypt_secret->invoke(null, $square_ciphertext) === 'synthetic-square-token-for-template-save',
+        'Square ciphertext decrypts directly after the internal workbook-setting save');
+    $check($decrypt_secret->invoke(null, $webhook_ciphertext) === 'synthetic-webhook-key-for-template-save',
+        'webhook ciphertext decrypts directly after the internal workbook-setting save');
     $decrypted_credentials = $settings_class::get_all();
     $check(($decrypted_credentials['square_access_token'] ?? null) === 'synthetic-square-token-for-template-save',
         'Square credential remains decryptable after the internal workbook-setting save');
