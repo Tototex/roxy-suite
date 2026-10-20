@@ -58,6 +58,7 @@ $check = static function (bool $ok, string $message) use (&$checks): void {
 $GLOBALS['wpdb']->fail_next_read = true;
 $failed = roxy_fixture_eb_repo_list_bookings_for_user(42, 'customer@example.test');
 $check(is_wp_error($failed) && $failed->get_error_code() === 'booking_list_read_failed', 'booking history repository exposes database read failure');
+$GLOBALS['wpdb']->fail_next_read = true;
 ob_start();
 roxy_fixture_eb_render_my_bookings();
 $failure_html = ob_get_clean();
