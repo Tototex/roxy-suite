@@ -114,7 +114,7 @@ class Sales {
   private static function get_order_item(int $item_id) {
     if ($item_id <= 0 || !class_exists('\\WC_Order_Factory')
       || !method_exists('\\WC_Order_Factory', 'get_order_item')) return null;
-    return \\WC_Order_Factory::get_order_item($item_id);
+    return \WC_Order_Factory::get_order_item($item_id);
   }
 
   public static function on_showing_saved(int $showing_id): void {
