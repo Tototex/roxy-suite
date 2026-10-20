@@ -58,6 +58,10 @@ check(\RoxyST\Capacity::subscription_entitlement_count(7)===0,'thrown subscripti
 $GLOBALS['subscriptions_throw']=false;
 $GLOBALS['subscriptions_result']=[new class{function has_status($s){return $s==='active';}function get_items(){return [new class{function get_quantity(){return 1.5;}}];}}];
 check(\RoxyST\Capacity::subscription_entitlement_count(7)===0,'fractional subscription quantity grants no entitlement');
+$GLOBALS['subscriptions_result']=[new class{function has_status($s){return $s==='active';}function get_items(){return [];}}];
+check(\RoxyST\Capacity::subscription_entitlement_count(7)===1,'each active subscription grants the minimum one-seat allowance, even without line items');
+$GLOBALS['subscriptions_result']=[new class{function has_status($s){return $s==='active';}function get_items(){return [new class{function get_quantity(){return 0;}}];}}];
+check(\RoxyST\Capacity::subscription_entitlement_count(7)===1,'zero-quantity subscription item retains the minimum one-seat allowance');
 $GLOBALS['subscriptions_result']=[new class{function has_status($s){return $s==='active';}function get_items(){return false;}}];
 check(\RoxyST\Capacity::subscription_entitlement_count(7)===0,'malformed subscription items grant no entitlement');
 $GLOBALS['subscriptions_result']=null;
