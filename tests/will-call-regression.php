@@ -36,7 +36,16 @@ function get_transient($key){$GLOBALS['cache_reads'][]=$key;return $GLOBALS['cac
 function set_transient($key,$value,$ttl){$GLOBALS['cache'][$key]=$value;}
 function delete_transient($key){}
 function wc_get_product($id){return new class {function get_name(){return 'General';}};}
-function get_posts($args){$GLOBALS['last_get_posts_args']=$args;return !empty($GLOBALS['get_posts_empty'])?[]:array_keys($GLOBALS['meta']);}
+function get_posts($args){
+    $GLOBALS['last_get_posts_args']=$args;
+    $GLOBALS['get_posts_calls']=($GLOBALS['get_posts_calls']??0)+1;
+    if((int)($GLOBALS['get_posts_fail_call']??0)===$GLOBALS['get_posts_calls'])return false;
+    if(!empty($GLOBALS['get_posts_throw']))throw new RuntimeException('fixture ticket query failure');
+    if(!empty($GLOBALS['get_posts_fail']))return false;
+    if(!empty($GLOBALS['get_posts_malformed']))return (object)['ids'=>[]];
+    if(!empty($GLOBALS['get_posts_sql_error'])){$GLOBALS['wpdb']->last_error='fixture ticket query error';return [];}
+    return !empty($GLOBALS['get_posts_empty'])?[]:array_keys($GLOBALS['meta']);
+}
 function wp_date($format){return '2026-10-03';}
 function esc_html($value){return (string)$value;}
 function roxy_suite_user_can_access_admin(){return true;}
@@ -75,7 +84,15 @@ class FixtureDate {
 class TestDatabase {
     public $prefix='test_'; public $writes=0; public $fail=false;public $last_error='';
     function prepare($sql,...$args){return $sql;}
-    function get_results($sql,$format){return [['customer_key'=>roxy_will_call_customer_key('Test Buyer','buyer@example.test'),'used_qty'=>$GLOBALS['baseline']??0,'checked_in'=>0]];}
+    function get_results($sql,$format){
+        if(!empty($GLOBALS['checkins_query_throw']))throw new RuntimeException('fixture check-in query failure');
+        if(!empty($GLOBALS['checkins_query_fail']))return false;
+        if(!empty($GLOBALS['checkins_query_malformed']))return (object)['rows'=>[]];
+        if(!empty($GLOBALS['checkins_query_sql_error'])){$this->last_error='fixture check-in query error';return [];}
+        if(!empty($GLOBALS['checkins_rows_malformed']))return [['customer_key'=>[], 'used_qty'=>0,'checked_in'=>0]];
+        if(!empty($GLOBALS['checkins_empty']))return [];
+        return [['customer_key'=>roxy_will_call_customer_key('Test Buyer','buyer@example.test'),'used_qty'=>$GLOBALS['baseline']??0,'checked_in'=>0]];
+    }
     function replace(...$args){$this->writes++;return $this->fail?false:1;}
 }
 define('ARRAY_A','ARRAY_A');
@@ -164,6 +181,25 @@ unset($GLOBALS['order_bad_items_id']);
 check($failed && $GLOBALS['cache']===[],'malformed order items reject the full Will Call list without caching partial results');
 $GLOBALS['orders']=$saved_orders;
 check(roxy_will_call_cache_key([8],[8=>'General'])!==roxy_will_call_cache_key([8],[8=>'Renamed']),'cache identity includes ticket labels');
+$ticket_read_failures=0;
+foreach(['get_posts_fail','get_posts_throw','get_posts_malformed','get_posts_sql_error'] as $failure_flag){
+    $GLOBALS[$failure_flag]=true;$GLOBALS['wpdb']->last_error='';$failed=false;
+    try{roxy_will_call_ticket_ids_for_context(8);}catch(Throwable $e){$failed=true;}
+    unset($GLOBALS[$failure_flag]);$GLOBALS['wpdb']->last_error='';
+    if($failed)$ticket_read_failures++;
+}
+check($ticket_read_failures===4,'false, thrown, malformed and SQL-error ticket-ID reads fail closed instead of becoming a legacy empty set');
+$checkins_read_failures=0;
+foreach(['checkins_query_fail','checkins_query_throw','checkins_query_malformed','checkins_query_sql_error','checkins_rows_malformed'] as $failure_flag){
+    $GLOBALS[$failure_flag]=true;$GLOBALS['wpdb']->last_error='';$failed=false;
+    try{roxy_will_call_get_checkins_map(8);}catch(Throwable $e){$failed=true;}
+    unset($GLOBALS[$failure_flag]);$GLOBALS['wpdb']->last_error='';
+    if($failed)$checkins_read_failures++;
+}
+check($checkins_read_failures===5,'false, thrown, malformed and SQL-error saved check-in reads fail closed');
+$GLOBALS['checkins_empty']=true;
+check(roxy_will_call_get_checkins_map(8)===[],'a successful empty saved-attendance query remains a valid empty result');
+unset($GLOBALS['checkins_empty']);
 $save=$GLOBALS['actions']['wp_ajax_roxy_will_call_save'];
 $GLOBALS['meta']=[]; $GLOBALS['baseline']=0;
 $_POST=['nonce'=>'test','context_id'=>8,'customer_key'=>$key,'used_qty'=>1,'baseline_used'=>'0','issued_at'=>(int)(microtime(true)*1000)];
@@ -183,4 +219,16 @@ $GLOBALS['wpdb']->fail=false; $GLOBALS['order_query_fail']=true; $before=$GLOBAL
 try{$save();}catch(JsonResult $e){$query_error=!$e->success && $GLOBALS['wpdb']->writes===$before && strpos($e->data['message'],'No attendance was changed')!==false;}
 check($query_error,'fresh order query failure returns a clear error without attendance writes');
 unset($GLOBALS['order_query_fail']);
+$GLOBALS['wpdb']->last_error='';$GLOBALS['get_posts_fail']=true;$before=$GLOBALS['wpdb']->writes;$ticket_state_before=$GLOBALS['meta'];$ticket_query_error=false;
+try{$save();}catch(JsonResult $e){$ticket_query_error=!$e->success && $GLOBALS['wpdb']->writes===$before && $GLOBALS['meta']===$ticket_state_before && strpos($e->data['message'],'No attendance was changed')!==false;}
+unset($GLOBALS['get_posts_fail']);
+check($ticket_query_error,'ticket-ID query failure returns a clear error without using the legacy attendance fallback or writing');
+$GLOBALS['wpdb']->last_error='';$GLOBALS['checkins_query_fail']=true;$before=$GLOBALS['wpdb']->writes;$ticket_state_before=$GLOBALS['meta'];$saved_query_error=false;
+try{$save();}catch(JsonResult $e){$saved_query_error=!$e->success && $GLOBALS['wpdb']->writes===$before && $GLOBALS['meta']===$ticket_state_before && strpos($e->data['message'],'No attendance was changed')!==false;}
+unset($GLOBALS['checkins_query_fail']);$GLOBALS['wpdb']->last_error='';
+check($saved_query_error,'saved check-in query failure returns a clear error and leaves ticket admissions and aggregate counts unchanged');
+unset($GLOBALS['checkins_query_fail']);$GLOBALS['wpdb']->last_error='';$GLOBALS['get_posts_calls']=0;$GLOBALS['get_posts_fail_call']=3;$before=$GLOBALS['wpdb']->writes;$ticket_state_before=$GLOBALS['meta'];$locked_ticket_query_error=false;
+try{$save();}catch(JsonResult $e){$locked_ticket_query_error=!$e->success && $GLOBALS['wpdb']->writes===$before && $GLOBALS['meta']===$ticket_state_before && strpos($e->data['message'],'Group admission was not saved')!==false;}
+unset($GLOBALS['get_posts_fail_call']);
+check($locked_ticket_query_error,'ticket-ID read failure during the locked pre-commit validation aborts without changing ticket or summary attendance');
 echo "NOTE: full ticket concurrency, legacy refund reconciliation and financial reports remain separate checks.\n";

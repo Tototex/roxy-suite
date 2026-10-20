@@ -1338,8 +1338,16 @@ function roxy_will_call_get_checkins_map($context_id) {
     $wpdb->prepare("SELECT customer_key, checked_in, used_qty FROM $table WHERE product_id = %d", (int) $context_id),
     ARRAY_A
   );
+  if (!empty($wpdb->last_error) || !is_array($rows)) {
+    throw new RuntimeException('Saved Will Call attendance could not be verified.');
+  }
   $map = [];
   foreach ($rows as $r) {
+    if (!is_array($r) || !isset($r['customer_key'], $r['checked_in'], $r['used_qty'])
+      || !is_string($r['customer_key']) || $r['customer_key'] === ''
+      || !is_numeric($r['checked_in']) || !is_numeric($r['used_qty'])) {
+      throw new RuntimeException('Saved Will Call attendance data is incomplete.');
+    }
     $map[$r['customer_key']] = [
       'checked_in' => (int) $r['checked_in'],
       'used_qty' => (int) $r['used_qty'],
@@ -1349,6 +1357,7 @@ function roxy_will_call_get_checkins_map($context_id) {
 }
 
 function roxy_will_call_ticket_ids_for_context(int $context_id): array {
+  global $wpdb;
   $mode = roxy_will_call_context_mode($context_id);
   $object_id = roxy_will_call_context_object_id($context_id);
   if ($object_id <= 0) {
@@ -1387,7 +1396,17 @@ function roxy_will_call_ticket_ids_for_context(int $context_id): array {
     'no_found_rows' => true,
   ]);
 
-  return array_map('intval',(array)$ticket_ids);
+  if (!empty($wpdb->last_error) || !is_array($ticket_ids)) {
+    throw new RuntimeException('Ticket records could not be verified.');
+  }
+  $ids = [];
+  foreach ($ticket_ids as $ticket_id) {
+    if ((!is_int($ticket_id) && (!is_string($ticket_id) || !ctype_digit($ticket_id))) || (int) $ticket_id <= 0) {
+      throw new RuntimeException('Ticket records could not be verified.');
+    }
+    $ids[] = (int) $ticket_id;
+  }
+  return $ids;
 }
 
 function roxy_will_call_ticket_ids_for_customer(int $context_id, string $customer_key): array {
@@ -1453,7 +1472,12 @@ add_action('wp_ajax_roxy_will_call_save', function () {
   $issued_at=(float)($_POST['issued_at']??0)/1000;
   if ($issued_at < time()-2*HOUR_IN_SECONDS || $issued_at > time()+300) wp_send_json_error(['message'=>'This queued admission is expired. Refresh before changing attendance.','conflict'=>true]);
 
-  $ticket_ids = roxy_will_call_ticket_ids_for_customer($context_id, $customer_key);
+  try {
+    $ticket_ids = roxy_will_call_ticket_ids_for_customer($context_id, $customer_key);
+  } catch (Throwable $e) {
+    wp_send_json_error(['message'=>'Will Call could not verify this customer\'s ticket records. No attendance was changed; refresh and try again.','conflict'=>true]);
+    return;
+  }
   $mode=roxy_will_call_context_mode($context_id); $object_id=roxy_will_call_context_object_id($context_id);
   $products=$mode==='showing' ? roxy_will_call_showing_product_ids($object_id) : [$object_id];
   try { $fresh=roxy_will_call_get_list($products,[],true); }
@@ -1461,7 +1485,12 @@ add_action('wp_ajax_roxy_will_call_save', function () {
   $matching=null;
   foreach($fresh['rows'] as $row) if($row['customer_key']===$customer_key) $matching=$row;
   if(!$matching || $used_qty > (int)$matching['qty']) wp_send_json_error(['message'=>'Customer or paid ticket quantity changed. Refresh the list.','conflict'=>true]);
-  $current_map=roxy_will_call_authoritative_checkins($context_id,roxy_will_call_get_checkins_map($context_id));
+  try {
+    $current_map=roxy_will_call_authoritative_checkins($context_id,roxy_will_call_get_checkins_map($context_id));
+  } catch (Throwable $e) {
+    wp_send_json_error(['message'=>'Will Call could not verify saved attendance or ticket records. No attendance was changed; refresh and try again.','conflict'=>true]);
+    return;
+  }
   $current_used=(int)($current_map[$customer_key]['used_qty']??0);
   if (!isset($_POST['baseline_used']) || !ctype_digit((string)$_POST['baseline_used']) || (int)$_POST['baseline_used'] !== $current_used) wp_send_json_error(['message'=>'Another admission changed this customer. Refresh before retrying.','conflict'=>true]);
   try {
