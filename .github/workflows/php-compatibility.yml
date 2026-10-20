@@ -587,6 +587,12 @@ jobs:
           php-version: ${{ matrix.php }}
           coverage: none
 
+      - name: Set up Node.js for JavaScript syntax regressions
+        if: matrix.php == '8.3'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Lint all tracked PHP files
         shell: bash
         run: |
@@ -600,6 +606,10 @@ jobs:
 
       - name: Run Will Call regression
         run: php tests/will-call-regression.php "$GITHUB_WORKSPACE"
+
+      - name: Run Will Call JavaScript syntax regression
+        if: matrix.php == '8.3'
+        run: node tests/will-call-js-syntax.cjs "$GITHUB_WORKSPACE"
 
       - name: Run Door Mode JavaScript regression
         if: matrix.php == '8.3'
