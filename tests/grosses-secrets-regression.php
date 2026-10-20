@@ -38,10 +38,17 @@ $GLOBALS['workbook_private_path_ok']=true;
 \RoxyGrosses\Settings::init();do_action('admin_init');
 check(($GLOBALS['option_sanitizers']['roxy_grosses_settings']??null)===[\RoxyGrosses\Settings::class,'sanitize'],
   'admin_init registers the actual Grosses settings sanitizer callback');
+$square_cipher_before_template=$GLOBALS['saved']['square_access_token'];
+$webhook_cipher_before_template=$GLOBALS['saved']['square_webhook_signature_key'];
 check(\RoxyGrosses\Settings::save_workbook_template($template)===true
   && ($GLOBALS['saved']['workbook_template_upload']??null)===$template,
   'internal private-template write survives the registered settings sanitizer and verifies after read-back');
 $saved_template=$GLOBALS['saved']['workbook_template_upload'];
+$check($GLOBALS['saved']['square_access_token']===$square_cipher_before_template
+  && $GLOBALS['saved']['square_webhook_signature_key']===$webhook_cipher_before_template
+  && $decrypt->invoke(null,$GLOBALS['saved']['square_access_token'])==='fixture-token'
+  && $decrypt->invoke(null,$GLOBALS['saved']['square_webhook_signature_key'])==='webhook-fixture',
+  'internal private-template saves preserve and decrypt existing encrypted credentials');
 $injected=['path'=>'/outside/untrusted.xlsx','name'=>'untrusted.xlsx','uploaded_at'=>'2026-10-19 12:01:00'];
 $result=\RoxyGrosses\Settings::sanitize(['workbook_template_upload'=>$injected]);
 check(($result['workbook_template_upload']??null)===$saved_template,

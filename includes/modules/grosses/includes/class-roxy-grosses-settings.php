@@ -188,8 +188,18 @@ class Settings {
     $incoming_webhook_key = sanitize_text_field((string) ($input['square_webhook_signature_key'] ?? ''));
     $previous_webhook_key=(string)($existing['square_webhook_signature_key']??'');
     try {
-      $square_token=$incoming_square_token!=='' ? self::encrypt_secret($incoming_square_token) : $previous_token;
-      $webhook_key=$incoming_webhook_key!=='' ? self::encrypt_secret($incoming_webhook_key) : $previous_webhook_key;
+      // Internal option updates (for example, saving an uploaded workbook
+      // template) pass the existing encrypted values back through this
+      // sanitizer. Preserve an unchanged ciphertext instead of encrypting it
+      // again, which would make the stored credential undecryptable.
+      $square_token=$incoming_square_token!==''
+        ? (($incoming_square_token===$previous_token && str_starts_with($previous_token,self::ENCRYPTION_PREFIX))
+          ? $previous_token : self::encrypt_secret($incoming_square_token))
+        : $previous_token;
+      $webhook_key=$incoming_webhook_key!==''
+        ? (($incoming_webhook_key===$previous_webhook_key && str_starts_with($previous_webhook_key,self::ENCRYPTION_PREFIX))
+          ? $previous_webhook_key : self::encrypt_secret($incoming_webhook_key))
+        : $previous_webhook_key;
       // Migrate legacy plaintext during a normal settings save, even if token is blank.
       if ($square_token!=='' && !str_starts_with($square_token,self::ENCRYPTION_PREFIX)) $square_token=self::encrypt_secret($square_token);
       if ($webhook_key!=='' && !str_starts_with($webhook_key,self::ENCRYPTION_PREFIX)) $webhook_key=self::encrypt_secret($webhook_key);

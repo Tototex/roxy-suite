@@ -76,11 +76,31 @@ try {
         'name' => basename($file_path),
         'uploaded_at' => current_time('mysql'),
     ];
+    $settings_before_credentials = get_option($option_key, []);
+    if (!is_array($settings_before_credentials)) $settings_before_credentials = [];
+    $settings_before_credentials['square_access_token'] = 'synthetic-square-token-for-template-save';
+    $settings_before_credentials['square_webhook_signature_key'] = 'synthetic-webhook-key-for-template-save';
+    update_option($option_key, $settings_before_credentials);
+    $credentials_before_template_save = get_option($option_key, []);
+    $square_ciphertext = is_array($credentials_before_template_save) ? ($credentials_before_template_save['square_access_token'] ?? null) : null;
+    $webhook_ciphertext = is_array($credentials_before_template_save) ? ($credentials_before_template_save['square_webhook_signature_key'] ?? null) : null;
+    $check(is_string($square_ciphertext) && str_starts_with($square_ciphertext, 'gcm:')
+        && is_string($webhook_ciphertext) && str_starts_with($webhook_ciphertext, 'gcm:'),
+        'fixture credentials are stored encrypted before the internal workbook-setting save');
+
     $saved = $settings_class::save_workbook_template($template);
     $check($saved === true, 'private workbook setting persists and reads back through WordPress option sanitization');
     $current = get_option($option_key, []);
     $check(is_array($current) && ($current['workbook_template_upload'] ?? null) === $template,
         'persisted workbook metadata exactly matches the validated private template');
+    $check(is_array($current)
+        && ($current['square_access_token'] ?? null) === $square_ciphertext
+        && ($current['square_webhook_signature_key'] ?? null) === $webhook_ciphertext,
+        'saving private workbook metadata preserves both existing encrypted credentials byte-for-byte');
+    $decrypted_credentials = $settings_class::get_all();
+    $check(($decrypted_credentials['square_access_token'] ?? null) === 'synthetic-square-token-for-template-save'
+        && ($decrypted_credentials['square_webhook_signature_key'] ?? null) === 'synthetic-webhook-key-for-template-save',
+        'both credentials remain decryptable after the internal workbook-setting save');
 
     $current['theater_name'] = 'Disposable workbook integration fixture';
     update_option($option_key, $current);
@@ -89,6 +109,13 @@ try {
         && ($after_ordinary_save['workbook_template_upload'] ?? null) === $template
         && ($after_ordinary_save['theater_name'] ?? '') === 'Disposable workbook integration fixture',
         'ordinary settings saves retain the uploaded private workbook while updating other settings');
+    $decrypted_after_ordinary_save = $settings_class::get_all();
+    $check(is_array($after_ordinary_save)
+        && ($after_ordinary_save['square_access_token'] ?? null) === $square_ciphertext
+        && ($after_ordinary_save['square_webhook_signature_key'] ?? null) === $webhook_ciphertext
+        && ($decrypted_after_ordinary_save['square_access_token'] ?? null) === 'synthetic-square-token-for-template-save'
+        && ($decrypted_after_ordinary_save['square_webhook_signature_key'] ?? null) === 'synthetic-webhook-key-for-template-save',
+        'ordinary settings saves preserve and decrypt both existing credentials');
 
     $outside_path = trailingslashit(WP_CONTENT_DIR) . 'outside-' . bin2hex(random_bytes(8)) . '.xlsx';
     if (file_put_contents($outside_path, 'outside private templates fixture') === false) {
