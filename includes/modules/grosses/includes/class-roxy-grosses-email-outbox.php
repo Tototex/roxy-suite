@@ -103,10 +103,19 @@ final class EmailOutbox {
   public static function ensure_schema(bool $force_verify = false): bool {
     global $wpdb;
     try {
-      if (!$force_verify && function_exists('get_option')
-        && (string) get_option(self::SCHEMA_OPTION, '') === self::SCHEMA_VERSION) return true;
       $table = self::table_name();
       if (!is_object($wpdb) || !method_exists($wpdb, 'get_charset_collate') || !method_exists($wpdb, 'query')) return false;
+      if (!$force_verify && function_exists('get_option')
+        && (string) get_option(self::SCHEMA_OPTION, '') === self::SCHEMA_VERSION) {
+        if (!method_exists($wpdb, 'get_var') || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'esc_like')) return false;
+        $table_name = trim($table, '`');
+        $existing_table = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table_name)));
+        if (!empty($wpdb->last_error)) throw self::storage_error('cached schema table check');
+        // The schema marker is only a hint: deployments, restores, or manual
+        // repair may remove the table after this version was last recorded.
+        // In that case continue through CREATE and full verification below.
+        if ($existing_table === $table_name) return true;
+      }
       $charset = trim((string) $wpdb->get_charset_collate());
       $sql = "CREATE TABLE IF NOT EXISTS {$table} (
         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

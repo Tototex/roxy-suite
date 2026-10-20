@@ -23,6 +23,7 @@ $other_db = new wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
 $other_db->suppress_errors(true);
 $other_db->prefix = $private_prefix;
 $created = false;
+$schema_option_filter = null;
 $checks = 0;
 $check = static function ($condition, string $label) use (&$checks): void {
   if (!$condition) throw new RuntimeException('FAIL: ' . $label);
@@ -57,6 +58,18 @@ try {
   $created = $original_db->get_var($original_db->prepare('SHOW TABLES LIKE %s', $original_db->esc_like($table))) === $table;
   $check($schema_ok, 'schema creation succeeds for private table');
   $check($outbox::ensure_schema(true), 'schema creation is repeatable');
+
+  // A previously verified version marker must not make a missing table look
+  // ready. Simulate restoration/deletion against this private DB only.
+  $schema_option_filter = static fn($pre) => '1';
+  add_filter('pre_option_roxy_grosses_email_outbox_schema_version', $schema_option_filter, PHP_INT_MAX);
+  if ($fixture_db->query('DROP TABLE `' . $table . '`') === false) throw new RuntimeException('Could not remove private outbox table for cached-schema recovery fixture.');
+  $created = false;
+  $recovered_schema = $outbox::ensure_schema(false);
+  remove_filter('pre_option_roxy_grosses_email_outbox_schema_version', $schema_option_filter, PHP_INT_MAX);
+  $schema_option_filter = null;
+  $created = $original_db->get_var($original_db->prepare('SHOW TABLES LIKE %s', $original_db->esc_like($table))) === $table;
+  $check($recovered_schema && $created, 'cached schema marker repairs a missing outbox table before reporting readiness');
 
   $logical_key = 'grosses:daily:2039-04-05';
   $unicode_subject = 'Fixture report ' . "\u{2014}" . ' manager ' . "\u{2019}" . ' 🍿';
@@ -171,6 +184,7 @@ try {
   echo "Passed {$checks} isolated Grosses email outbox checks. No mail/provider calls were made.\n";
 } finally {
   $wpdb = $original_db;
+  if ($schema_option_filter) remove_filter('pre_option_roxy_grosses_email_outbox_schema_version', $schema_option_filter, PHP_INT_MAX);
   if ($created && preg_match('/^' . preg_quote($original_prefix, '/') . preg_quote($token, '/') . '_[A-Za-z0-9_]+$/', $table)) {
     $exists = $original_db->get_var($original_db->prepare('SHOW TABLES LIKE %s', $original_db->esc_like($table))) === $table;
     if ($exists) $original_db->query('DROP TABLE `' . $table . '`');
