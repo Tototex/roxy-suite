@@ -170,7 +170,7 @@ final class Admin {
                 $story_retry_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_retry_facebook_story&id=' . (int) $row['id']), 'roxy_social_retry_facebook_story_' . (int) $row['id']);
                 echo ' <a class="button button-primary" href="' . esc_url($story_retry_url) . '" onclick="return confirm(\'Retry only the unfinished Facebook Story? The normal Facebook and Instagram posts will not be repeated.\')">Retry Facebook Story</a>';
             }
-            if (in_array($status, ['failed', 'needs_review'], true) && $has_published_ids) {
+            if (in_array($status, ['failed', 'needs_review'], true) && ($has_published_ids || $removal_review)) {
                 if (Publisher::requires_removal_review($row)) {
                     echo '<p class="description">Meta did not return a conclusive removal result. Check every remaining recorded item in Meta Business Suite, remove any that are still live, then confirm below. No retry will be sent from this screen.</p>';
                     echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_confirm_remote_removal"><input type="hidden" name="id" value="' . (int) $row['id'] . '">';
