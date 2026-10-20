@@ -344,6 +344,11 @@ function roxy_eb_render_my_bookings() {
     echo '<p>You can cancel for free up to 7 days before your event. Within 7 days, please contact us to cancel.</p>';
     echo '<p>You can edit your order more than ' . esc_html(roxy_eb_order_edit_cutoff_days()) . ' days before your event.</p>';
 
+    if (is_wp_error($rows)) {
+        echo '<p role="alert">' . esc_html($rows->get_error_message()) . '</p></div>';
+        return;
+    }
+
     if (empty($rows)) {
         echo '<p>No bookings found.</p></div>';
         return;

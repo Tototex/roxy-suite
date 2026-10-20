@@ -121,6 +121,7 @@ function roxy_eb_repo_list_bookings_for_user($wp_user_id, $email) {
     $table = roxy_eb_table_bookings();
     $wp_user_id = intval($wp_user_id);
     $email = sanitize_email($email);
+    $wpdb->last_error = '';
     if ($wp_user_id > 0) {
         $rows = $wpdb->get_results($wpdb->prepare(
             "SELECT * FROM $table WHERE (wp_user_id=%d) OR (customer_email=%s) ORDER BY doors_open_at DESC",
@@ -132,7 +133,10 @@ function roxy_eb_repo_list_bookings_for_user($wp_user_id, $email) {
             $email
         ), ARRAY_A);
     }
-    return $rows ?: [];
+    if ($wpdb->last_error !== '' || !is_array($rows)) {
+        return new WP_Error('booking_list_read_failed', 'Your booking history is temporarily unavailable. Please try again shortly.');
+    }
+    return $rows;
 }
 
 function roxy_eb_repo_list_bookings_in_range($start_mysql, $end_mysql) {
