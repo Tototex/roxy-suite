@@ -553,12 +553,11 @@ function roxy_eb_admin_bookings_page() {
     $show_archived = !empty($_GET['show_archived']);
     $start = $now->modify('-30 days');
     $end   = $now->modify('+365 days');
-    $rows = roxy_eb_repo_list_bookings_in_range(roxy_eb_datetime_to_mysql($start), roxy_eb_datetime_to_mysql($end));
+    $rows = roxy_eb_repo_list_admin_bookings_in_range(roxy_eb_datetime_to_mysql($start), roxy_eb_datetime_to_mysql($end));
     if (is_wp_error($rows)) { echo '<div class="notice notice-error"><p>' . esc_html($rows->get_error_message()) . '</p></div>'; $rows = []; }
     $display_rows = [];
     foreach ($rows as $r) {
-        $booking = roxy_eb_repo_get_booking($r['id']);
-        if (!$booking) continue;
+        $booking = $r;
         $booking['_is_archived'] = roxy_eb_is_booking_archived($booking, $now);
         if (!$show_archived && $booking['_is_archived']) continue;
         $display_rows[] = $booking;

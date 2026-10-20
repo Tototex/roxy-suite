@@ -25,11 +25,13 @@ final class BookingHistoryReadWpdb {
     public $result = [];
     public bool $fail_next_read = false;
     public $row = null;
+    public array $queries = [];
     public function prepare(string $query, ...$args): string {
         foreach ($args as $arg) $query = preg_replace('/%s|%d/', "'" . addslashes((string) $arg) . "'", $query, 1);
         return $query;
     }
     public function get_results(string $query, $format = null) {
+        $this->queries[] = $query;
         if ($this->fail_next_read) {
             $this->last_error = 'fixture database read failure';
             $this->fail_next_read = false;
@@ -73,6 +75,13 @@ $check(roxy_fixture_eb_repo_get_booking_by_order(123) === null, 'booking lookup 
 $GLOBALS['wpdb']->fail_next_read = true;
 $failed_order_lookup = roxy_fixture_eb_repo_get_booking_by_order(123);
 $check(is_wp_error($failed_order_lookup) && $failed_order_lookup->get_error_code() === 'booking_order_read_failed', 'booking lookup distinguishes database failure from a missing booking');
+$GLOBALS['wpdb']->result = [['id' => 7, 'doors_close_at' => '2040-01-02 12:00:00', 'customer_last_name' => 'Fixture']];
+$GLOBALS['wpdb']->queries = [];
+$admin_rows = roxy_fixture_eb_repo_list_admin_bookings_in_range('2040-01-02 09:00:00', '2040-01-02 18:00:00');
+$check(count($admin_rows) === 1 && isset($admin_rows[0]['doors_close_at']) && count($GLOBALS['wpdb']->queries) === 1 && str_contains($GLOBALS['wpdb']->queries[0], 'SELECT *'), 'admin booking list loads full rows in one dedicated query');
+$GLOBALS['wpdb']->fail_next_read = true;
+$failed_admin_rows = roxy_fixture_eb_repo_list_admin_bookings_in_range('2040-01-02 09:00:00', '2040-01-02 18:00:00');
+$check(is_wp_error($failed_admin_rows) && $failed_admin_rows->get_error_code() === 'booking_admin_list_read_failed', 'admin booking list reports database failures instead of treating them as empty');
 $GLOBALS['wpdb']->fail_next_read = true;
 ob_start();
 roxy_fixture_eb_render_my_bookings();

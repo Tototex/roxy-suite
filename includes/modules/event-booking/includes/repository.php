@@ -158,6 +158,24 @@ function roxy_eb_repo_list_bookings_in_range($start_mysql, $end_mysql) {
     return $rows ?: [];
 }
 
+/** Full booking rows for the manager list; keep the smaller range reader for availability checks. */
+function roxy_eb_repo_list_admin_bookings_in_range($start_mysql, $end_mysql) {
+    global $wpdb;
+    $table = roxy_eb_table_bookings();
+    $wpdb->last_error = '';
+    $rows = $wpdb->get_results($wpdb->prepare(
+        "SELECT * FROM $table
+         WHERE status IN ('confirmed','pending','pending_invoice')
+         AND reserved_start_at < %s AND reserved_end_at > %s
+         ORDER BY reserved_start_at ASC",
+        $end_mysql, $start_mysql
+    ), ARRAY_A);
+    if ($wpdb->last_error !== '' || !is_array($rows)) {
+        return new WP_Error('booking_admin_list_read_failed', 'The booking list is temporarily unavailable. Please reload the page.');
+    }
+    return $rows;
+}
+
 function roxy_eb_repo_list_sling_auth_failed_bookings($limit = 25) {
     global $wpdb;
     $table = roxy_eb_table_bookings();
