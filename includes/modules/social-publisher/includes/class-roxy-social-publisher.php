@@ -34,7 +34,8 @@ final class Publisher {
             self::with_lock((int) $stale_id, static function () use ($stale_id, $stale_before) {
                 $row = Store::find((int) $stale_id);
                 if (!$row || $row['status'] !== 'publishing' || $row['updated_at'] > $stale_before) return false;
-                return self::save_result((int) $stale_id, 'needs_review', 'The publishing worker was interrupted. Review remote accounts before approving another attempt; recorded platform IDs have been retained.');
+                $error = self::requires_removal_review($row) ? (string) $row['last_error'] : 'The publishing worker was interrupted. Review remote accounts before approving another attempt; recorded platform IDs have been retained.';
+                return self::save_result((int) $stale_id, 'needs_review', $error);
             });
         }
         $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . Store::table_name() . ' WHERE ((status = %s) OR (status = %s AND instagram_media_id IS NULL AND (last_error LIKE %s OR last_error LIKE %s))) AND scheduled_for <= %s ORDER BY scheduled_for ASC, id ASC LIMIT 3', 'approved', 'failed', '%Instagram video is still processing%', '%Media ID is not available%', current_time('mysql')), ARRAY_A) ?: [];
@@ -184,12 +185,20 @@ final class Publisher {
             if (!$row || (string) ($row['status'] ?? '') !== 'publishing'
                 || !hash_equals((string) ($row['publish_attempt_token'] ?? ''), $attempt_token)
                 || !empty($row['publish_worker_token'])) return false;
+            if (self::requires_removal_review($row)) {
+                self::save_result($id, 'needs_review', (string) $row['last_error']);
+                return false;
+            }
             $worker_token = wp_generate_uuid4();
             if (!Store::claim_publish_execution($id, $attempt_token, $worker_token, self::$claim)) return false;
             $row = Store::find($id);
             if (!$row || (string) ($row['status'] ?? '') !== 'publishing'
                 || (string) ($row['publish_attempt_token'] ?? '') !== $attempt_token
                 || (string) ($row['publish_worker_token'] ?? '') !== $worker_token) return false;
+            if (self::requires_removal_review($row)) {
+                self::save_result($id, 'needs_review', (string) $row['last_error']);
+                return false;
+            }
 
             try {
                 $story = FacebookStories::publish($row, (string) ($row['facebook_story_state'] ?? ''));

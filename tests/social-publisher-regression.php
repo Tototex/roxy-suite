@@ -414,4 +414,16 @@ namespace {
         &&str_starts_with((string)\RoxySocial\Store::$row['last_error'],'REMOVAL_OUTCOME_UNCERTAIN:')
         &&!$GLOBALS['scheduled_events']&&!$GLOBALS['calls'],
         'scheduled publisher demotes an accidentally approved uncertain removal without provider calls');
+    reset_fixture('both','publishing');\RoxySocial\Store::$row['last_error']='REMOVAL_OUTCOME_UNCERTAIN: retain review marker';
+    $GLOBALS['wpdb']=new PublisherFixtureDb();$GLOBALS['due_rows']=[];\RoxySocial\Publisher::publish_due();
+    check(\RoxySocial\Store::$row['status']==='needs_review'
+        &&str_starts_with((string)\RoxySocial\Store::$row['last_error'],'REMOVAL_OUTCOME_UNCERTAIN:')&&!$GLOBALS['calls'],
+        'stale publishing recovery preserves an uncertain-removal marker');
+    reset_fixture('facebook','publishing');\RoxySocial\Store::$row['last_error']='REMOVAL_OUTCOME_UNCERTAIN: retain review marker';
+    \RoxySocial\Store::$row['publish_attempt_token']='00000000-0000-4000-8000-000000000001';
+    \RoxySocial\Publisher::process_facebook_story_retry(1,(string)\RoxySocial\Store::$row['publish_attempt_token']);
+    check(\RoxySocial\Store::$row['status']==='needs_review'
+        &&str_starts_with((string)\RoxySocial\Store::$row['last_error'],'REMOVAL_OUTCOME_UNCERTAIN:')
+        &&\RoxySocial\FacebookStories::$calls===0&&!$GLOBALS['calls'],
+        'queued Facebook Story retry preserves review and makes no provider call');
 }
