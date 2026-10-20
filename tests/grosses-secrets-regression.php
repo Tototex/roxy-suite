@@ -33,6 +33,10 @@ $iv=random_bytes(12);$tag='';$legacy=openssl_encrypt('legacy-gcm-fixture','aes-2
 $result=\RoxyGrosses\Settings::sanitize(['square_access_token'=>'']);check(str_starts_with($result['square_access_token'],'gcm:v2:')&&$decrypt->invoke(null,$result['square_access_token'])==='existing-fixture','blank token save migrates old plaintext rather than replacing credential');
 check(str_starts_with($result['square_webhook_signature_key'],'gcm:v2:')&&$decrypt->invoke(null,$result['square_webhook_signature_key'])==='webhook-fixture','webhook signature key is encrypted on settings save');
 $GLOBALS['saved']=$result;
+$repeated=\RoxyGrosses\Settings::sanitize($GLOBALS['saved']);
+check($repeated['square_access_token']===$GLOBALS['saved']['square_access_token']
+  && $repeated['square_webhook_signature_key']===$GLOBALS['saved']['square_webhook_signature_key'],
+  'repeated settings sanitization preserves authenticated ciphertext byte-for-byte');
 $GLOBALS['saved']['square_access_token']=$cipher;$result=\RoxyGrosses\Settings::sanitize(['square_access_token'=>'']);check($result['square_access_token']===$cipher,'blank save preserves existing encrypted value byte-for-byte');
 $template=['path'=>'/private/test-template.xlsx','name'=>'test-template.xlsx','uploaded_at'=>'2026-10-19 12:00:00'];
 $GLOBALS['workbook_private_path_ok']=true;
