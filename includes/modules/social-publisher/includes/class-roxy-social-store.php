@@ -720,7 +720,7 @@ final class Store {
         if (!$claim) return false;
         try {
             $row = self::find($id);
-            if (!$row || $revision === '' || !hash_equals(self::draft_revision($row), $revision)) return false;
+            if (!$row || self::has_ambiguous_removal($row) || $revision === '' || !hash_equals(self::draft_revision($row), $revision)) return false;
             $transitions = ['draft' => ['approved', 'skipped'], 'approved' => ['draft', 'skipped'], 'needs_review' => ['approved', 'draft', 'skipped'], 'failed' => ['approved', 'draft', 'skipped']];
             if (!$row || !in_array($status, $transitions[(string) $row['status']] ?? [], true)) return false;
             return self::compare_publish_status($id, (string) $row['status'], $status, $claim);
@@ -729,6 +729,10 @@ final class Store {
 
     public static function draft_revision(array $row): string {
         return hash('sha256', wp_json_encode($row));
+    }
+
+    public static function has_ambiguous_removal(array $row): bool {
+        return str_starts_with((string) ($row['last_error'] ?? ''), 'REMOVAL_OUTCOME_UNCERTAIN:');
     }
 
     private static function values_touch_media_references(array $values): bool {
@@ -806,7 +810,8 @@ final class Store {
         }
         try {
             $current = self::find($id);
-            if (!$current || !in_array((string) $current['status'], $allow_approved ? ['draft', 'needs_review', 'approved', 'failed'] : ['draft', 'needs_review'], true)
+            if (!$current || self::has_ambiguous_removal($current)
+                || !in_array((string) $current['status'], $allow_approved ? ['draft', 'needs_review', 'approved', 'failed'] : ['draft', 'needs_review'], true)
                 || !hash_equals(self::draft_revision($expected), self::draft_revision($current))
                 || !empty($current['facebook_post_id']) || !empty($current['instagram_media_id']) || !empty($current['instagram_container_id'])) return false;
             $values['updated_at'] = current_time('mysql');
@@ -1054,7 +1059,7 @@ final class Store {
         if (!$claim) return null;
         try {
             $row = self::find($id);
-            if (!$row || (string) $row['status'] === 'publishing') return null;
+            if (!$row || (string) $row['status'] === 'publishing' || self::has_ambiguous_removal($row)) return null;
             if ((int) ($row['temporary_attachment_id'] ?? 0) > 0
                 && !self::queue_detached_media((int) $row['temporary_attachment_id'], $id)) return null;
             $deleted = $wpdb->query($wpdb->prepare('DELETE FROM ' . self::table_name() . ' WHERE id = %d AND status <> %s AND IS_USED_LOCK(%s) = CONNECTION_ID() AND CONNECTION_ID() = %d', $id, 'publishing', $claim['name'], $claim['connection']));

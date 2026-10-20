@@ -29,6 +29,7 @@ namespace RoxySocial {
         public static function compare_publish_status($id,$expected,$status){if(self::$row['status']!==$expected)return false;self::$row['status']=$status;if($status!=='publishing')self::$row['publish_attempt_token']=self::$row['publish_worker_token']=null;if($expected==='needs_review'&&$status==='approved')self::$row['last_error']=null;return true;}
         public static function find($id){return self::$row;}
         public static function table_name(){return 'fixture_social';}
+        public static function has_ambiguous_removal($row){return str_starts_with((string)($row['last_error']??''),'REMOVAL_OUTCOME_UNCERTAIN:');}
         public static function update_publish_result($id,$status,$error='',$fb='',$ig=''){
             if (self::$fail_id && ($fb!=='' || $ig!=='')) return false;
             self::$row['status']=$status;self::$row['last_error']=$error;
@@ -402,4 +403,15 @@ namespace {
     \RoxySocial\Store::$row['status']='needs_review';\RoxySocial\Store::$row['last_error']='Prior ambiguity';
     check(\RoxySocial\Store::compare_publish_status(1,'needs_review','approved')&&\RoxySocial\Store::$row['last_error']===null,
         'explicit manager approval after remote review clears only the stale ambiguity marker');
+    reset_fixture('both','approved');\RoxySocial\Store::$row['last_error']='REMOVAL_OUTCOME_UNCERTAIN: remote deletion must be verified';
+    \RoxySocial\Store::$row['facebook_post_id']='possibly-live-facebook';
+    check(!\RoxySocial\Publisher::queue_publish_now(1)&&!\RoxySocial\Publisher::publish_now(1)
+        &&!$GLOBALS['scheduled_events']&&!$GLOBALS['calls'],
+        'uncertain remote removal cannot be manually queued or published');
+    \RoxySocial\Store::$row['status']='approved';$GLOBALS['wpdb']=new PublisherFixtureDb();$GLOBALS['due_rows']=[\RoxySocial\Store::$row];
+    \RoxySocial\Publisher::publish_due();
+    check(\RoxySocial\Store::$row['status']==='needs_review'
+        &&str_starts_with((string)\RoxySocial\Store::$row['last_error'],'REMOVAL_OUTCOME_UNCERTAIN:')
+        &&!$GLOBALS['scheduled_events']&&!$GLOBALS['calls'],
+        'scheduled publisher demotes an accidentally approved uncertain removal without provider calls');
 }

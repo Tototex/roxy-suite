@@ -166,6 +166,12 @@ try {
     $row=roxy_snapshot_row();$revision=\RoxySocial\DraftFixtureStore::draft_revision($row);
     roxy_snapshot_check(\RoxySocial\DraftFixtureStore::update_status(1,'approved',$revision),'manager can approve exactly the displayed snapshot');
     roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::update_status(1,'draft',$revision),'stale status link cannot change newer row');
+    $row=roxy_snapshot_row(['status'=>'needs_review','last_error'=>'REMOVAL_OUTCOME_UNCERTAIN: verify provider state','facebook_post_id'=>'possibly-live']);$revision=\RoxySocial\DraftFixtureStore::draft_revision($row);
+    roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::update_status(1,'approved',$revision)
+        &&!\RoxySocial\DraftFixtureStore::update_draft(1,'Attempted reset','2026-10-06 10:00:00',null,null,$revision)
+        &&\RoxySocial\DraftFixtureStore::delete_unposted(1)===null
+        &&(string)\RoxySocial\DraftFixtureStore::find(1)['last_error']==='REMOVAL_OUTCOME_UNCERTAIN: verify provider state',
+        'ambiguous remote removal cannot be approved, edited, or deleted through Store mutations');
     $row=roxy_snapshot_row(['status'=>'publishing']);$revision=\RoxySocial\DraftFixtureStore::draft_revision($row);
     roxy_snapshot_check(!\RoxySocial\DraftFixtureStore::update_status(1,'approved',$revision)&&\RoxySocial\DraftFixtureStore::delete_unposted(1)===null&&\RoxySocial\DraftFixtureStore::clear_media(1)===null,'publishing draft cannot be approved, deleted or have media removed');
     $row=roxy_snapshot_row(['status'=>'posted','facebook_post_id'=>'123']);

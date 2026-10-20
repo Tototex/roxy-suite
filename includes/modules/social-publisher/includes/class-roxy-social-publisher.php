@@ -39,6 +39,16 @@ final class Publisher {
         }
         $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . Store::table_name() . ' WHERE ((status = %s) OR (status = %s AND instagram_media_id IS NULL AND (last_error LIKE %s OR last_error LIKE %s))) AND scheduled_for <= %s ORDER BY scheduled_for ASC, id ASC LIMIT 3', 'approved', 'failed', '%Instagram video is still processing%', '%Media ID is not available%', current_time('mysql')), ARRAY_A) ?: [];
         foreach ($rows as $row) {
+            if (self::requires_removal_review($row)) {
+                self::with_lock((int) $row['id'], static function () use ($row) {
+                    $id = (int) ($row['id'] ?? 0);
+                    $fresh = Store::find($id);
+                    if (!$fresh || !self::requires_removal_review($fresh)
+                        || !in_array((string) ($fresh['status'] ?? ''), ['approved', 'failed'], true)) return false;
+                    return self::save_result($id, 'needs_review', (string) $fresh['last_error']);
+                });
+                continue;
+            }
             if ((string) ($row['status'] ?? '') === 'failed'
                 && stripos((string) ($row['last_error'] ?? ''), 'Media ID is not available') !== false) {
                 self::with_lock((int) $row['id'], static function () use ($row) {
@@ -62,7 +72,7 @@ final class Publisher {
 
     public static function queue_publish_now(int $id): bool {
         $row = Store::find($id);
-        if (!$row || !in_array((string) $row['status'], ['approved', 'failed'], true)) return false;
+        if (!$row || self::requires_removal_review($row) || !in_array((string) $row['status'], ['approved', 'failed'], true)) return false;
         if ((string) $row['status'] === 'failed' && !empty($row['facebook_post_id']) && !empty($row['instagram_media_id'])) return false;
         return self::queue_publish($id);
     }
@@ -73,10 +83,18 @@ final class Publisher {
             $row = Store::find($id);
             if (!$row || (string) $row['status'] !== 'publishing'
                 || !hash_equals((string) ($row['publish_attempt_token'] ?? ''), $attempt_token)) return false;
+            if (self::requires_removal_review($row)) {
+                self::save_result($id, 'needs_review', (string) $row['last_error']);
+                return false;
+            }
             $worker_token = wp_generate_uuid4();
             if (!Store::claim_publish_execution($id, $attempt_token, $worker_token, self::$claim)) return false;
             $row = Store::find($id);
             if (!$row || (string) ($row['publish_worker_token'] ?? '') !== $worker_token) return false;
+            if (self::requires_removal_review($row)) {
+                self::save_result($id, 'needs_review', (string) $row['last_error']);
+                return false;
+            }
             if (stripos((string) ($row['last_error'] ?? ''), 'Media ID is not available') !== false) {
                 self::save_result($id, 'needs_review', 'A queued Instagram publish retry had an earlier “Media ID is not available” outcome. The queued retry was stopped. Check the Instagram account, then approve a new attempt only after remote review; recorded platform IDs and the container ID have been retained.');
                 return false;
@@ -105,7 +123,7 @@ final class Publisher {
     private static function queue_publish(int $id, int $video_attempt = 0): bool {
         return self::with_lock($id, static function () use ($id, $video_attempt) {
             $row = Store::find($id);
-            if (!$row || !in_array((string) $row['status'], ['approved', 'failed'], true)) return false;
+            if (!$row || self::requires_removal_review($row) || !in_array((string) $row['status'], ['approved', 'failed'], true)) return false;
             $attempt_token = wp_generate_uuid4();
             if (!Store::claim_publish_attempt($id, (string) $row['status'], $attempt_token, null, self::$claim)) return false;
             $args = [$id, $video_attempt, $attempt_token];
@@ -118,7 +136,7 @@ final class Publisher {
     public static function publish_now(int $id): bool {
         return self::with_lock($id, static function () use ($id) {
             $row = Store::find($id);
-            if (!$row || !in_array((string) $row['status'], ['approved', 'failed'], true)) return false;
+            if (!$row || self::requires_removal_review($row) || !in_array((string) $row['status'], ['approved', 'failed'], true)) return false;
             if ((string) $row['status'] === 'failed' && !empty($row['facebook_post_id']) && !empty($row['instagram_media_id'])) return false;
             $attempt_token = wp_generate_uuid4();
             $worker_token = wp_generate_uuid4();
@@ -204,14 +222,14 @@ final class Publisher {
     }
 
     public static function requires_removal_review(array $row): bool {
-        return str_starts_with((string) ($row['last_error'] ?? ''), self::REMOVE_REVIEW_PREFIX);
+        return Store::has_ambiguous_removal($row);
     }
 
     /** Mark removal complete only after a manager manually confirms the remaining IDs are absent remotely. */
     public static function confirm_remote_removal(int $id): bool {
         return self::with_lock($id, static function () use ($id) {
             $row = Store::find($id);
-            if (!$row || (string) ($row['status'] ?? '') !== 'needs_review' || !self::requires_removal_review($row)) return false;
+            if (!$row || (string) ($row['status'] ?? '') === 'publishing' || !self::requires_removal_review($row)) return false;
             return self::save_result($id, 'removed');
         });
     }
@@ -288,6 +306,7 @@ final class Publisher {
         $media_urls = self::row_image_urls($row);
         $caption = trim((string) ($row['post_text'] ?? ''));
         $platform = (string) ($row['platform'] ?? 'both');
+        if (self::requires_removal_review($row)) return false;
         if (!in_array($platform, ['facebook', 'instagram', 'both'], true)) return false;
         if (($platform !== 'instagram' && empty($row['facebook_post_id']) && (Meta::page_id() === '' || Meta::page_access_token() === ''))
             || ($platform !== 'facebook' && empty($row['instagram_media_id']) && (Meta::instagram_user_id() === '' || Meta::access_token() === ''))) {
