@@ -151,6 +151,9 @@ try {
   $allocated_movie = $wpdb->get_row($wpdb->prepare(
     "SELECT * FROM `{$movie_table}` WHERE report_date = %s AND movie_title = %s", '2038-06-10', 'Nearby Movie'
   ), ARRAY_A);
+  if ($wpdb->last_error !== '' || !is_array($allocated_rental) || !is_array($allocated_movie)) {
+    throw new RuntimeException('Could not read back private rental attribution rows.');
+  }
   $dashboard_summary = $store::rental_entries_summary(['date_from' => '2038-06-10', 'date_to' => '2038-06-10']);
   $check((float) $allocated_rental['concessions_total'] === 141.77 && (float) $allocated_movie['concessions_total'] === 0.0,
     'real Reporter allocation attributes the Square sale to its exact private rental window instead of a nearby movie');
