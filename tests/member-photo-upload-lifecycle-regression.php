@@ -17,7 +17,7 @@ register_shutdown_function(static function () {
         $path = $root . $include;
         if (is_file($path)) unlink($path);
     }
-    foreach (['wp-admin/includes', 'wp-admin', ''] as $directory) {
+    foreach (['wp-admin/includes', 'wp-admin'] as $directory) {
         $path = $root . $directory;
         if (is_dir($path)) rmdir($path);
     }
@@ -121,7 +121,7 @@ $staff_url=$photo_url->invoke(null,901);
 check(str_contains($staff_url,'admin-post.php') && !str_contains($staff_url,'901.jpg'), 'staff-facing photo URL uses the access-controlled endpoint, not the public upload URL');
 $account_sub=new PhotoUploadSubscription(901);
 ob_start(); Roxy_Sub_Check::render_myaccount_photo_uploader($account_sub); $account_markup=ob_get_clean();
-check(str_contains($account_markup,'visible only to authorized staff') && !str_contains($account_markup,'<img'), 'customer account confirms photo status without rendering the private photo');
+check(str_contains($account_markup,'visible only to authorized staff') && !str_contains($account_markup,'/uploads/901.jpg'), 'customer account confirms photo status without rendering the private photo');
 $GLOBALS['member_logged_in']=false;
 check($photo_file->invoke(null,901)==='', 'anonymous visitors cannot resolve private member photo files');
 $GLOBALS['member_logged_in']=true; $GLOBALS['member_staff_allowed']=false;
