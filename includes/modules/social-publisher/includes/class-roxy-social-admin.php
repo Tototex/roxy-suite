@@ -19,6 +19,7 @@ final class Admin {
         add_action('admin_post_roxy_social_publish_now', [__CLASS__, 'publish_now']);
         add_action('admin_post_roxy_social_retry_facebook_story', [__CLASS__, 'retry_facebook_story']);
         add_action('admin_post_roxy_social_remove_published', [__CLASS__, 'remove_published']);
+        add_action('admin_post_roxy_social_confirm_remote_removal', [__CLASS__, 'confirm_remote_removal']);
         add_action('admin_post_roxy_social_create_manual', [__CLASS__, 'create_manual']);
         add_action('admin_post_roxy_social_remove_media', [__CLASS__, 'remove_media']);
         add_action('admin_post_roxy_social_auto_approve', [__CLASS__, 'save_auto_approve']);
@@ -81,6 +82,10 @@ final class Admin {
             $removed = (string) $_GET['removed_live'] === '1';
             echo '<div class="notice ' . ($removed ? 'notice-success' : 'notice-error') . '"><p>' . ($removed ? 'The recorded live posts were removed.' : 'Removal was not confirmed. Review the draft error and the remote accounts before retrying; unconfirmed IDs have been retained.') . '</p></div>';
         }
+        if (isset($_GET['remote_removal_confirmed'])) {
+            $confirmed = (string) $_GET['remote_removal_confirmed'] === '1';
+            echo '<div class="notice ' . ($confirmed ? 'notice-success' : 'notice-error') . '"><p>' . ($confirmed ? 'The post was marked removed after your confirmation. Recorded provider IDs were retained for audit.' : 'Removal was not confirmed. Reload the row and review the remaining provider IDs.') . '</p></div>';
+        }
         if (isset($_GET['story_retry'])) {
             $queued = (string) $_GET['story_retry'] === '1';
             echo '<div class="notice ' . ($queued ? 'notice-success' : 'notice-error') . '"><p>' . ($queued ? 'The Facebook Story-only retry was queued. Existing feed posts will not be repeated.' : 'The Story retry could not be queued. Reload and review the draft state before trying again.') . '</p></div>';
@@ -102,6 +107,7 @@ final class Admin {
         echo '<table class="widefat striped"><thead><tr><th>Scheduled</th><th>Campaign</th><th>Post</th><th>Media</th><th>Status</th><th>Action</th></tr></thead><tbody>';
         foreach ($rows as $row) {
             $status = (string) $row['status'];
+            $removal_review = Publisher::requires_removal_review($row);
             $scheduled = date_create((string) $row['scheduled_for'], wp_timezone());
             $local_value = $scheduled ? $scheduled->format('Y-m-d\\TH:i') : (string) $row['scheduled_for'];
             echo '<tr><td><input form="roxy-social-draft-' . (int) $row['id'] . '" type="datetime-local" name="scheduled_for" value="' . esc_attr($local_value) . '" style="width:155px"></td>';
@@ -140,7 +146,7 @@ final class Admin {
                 $retry_url = wp_nonce_url(add_query_arg(['action' => 'roxy_social_retry_ai', 'id' => (int) $row['id'], 'draft_revision' => Store::draft_revision($row)], admin_url('admin-post.php')), 'roxy_social_retry_ai_' . (int) $row['id']);
                 echo '<a class="button" href="' . esc_url($retry_url) . '">Retry AI</a> ';
             }
-            if (in_array($status, ['draft', 'needs_review', 'failed'], true) && !($status === 'failed' && $has_published_ids)) self::action_link((int) $row['id'], 'approved', $status === 'needs_review' ? 'Approve after remote review' : 'Approve', $status === 'needs_review', Store::draft_revision($row));
+            if (in_array($status, ['draft', 'needs_review', 'failed'], true) && !$removal_review && !($status === 'failed' && $has_published_ids)) self::action_link((int) $row['id'], 'approved', $status === 'needs_review' ? 'Approve after remote review' : 'Approve', $status === 'needs_review', Store::draft_revision($row));
             if ($status === 'approved') self::action_link((int) $row['id'], 'draft', 'Un-approve', false, Store::draft_revision($row));
             if ($status === 'approved') {
                 $publish_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_publish_now&id=' . (int) $row['id']), 'roxy_social_publish_now_' . (int) $row['id']);
@@ -165,10 +171,17 @@ final class Admin {
                 echo ' <a class="button button-primary" href="' . esc_url($story_retry_url) . '" onclick="return confirm(\'Retry only the unfinished Facebook Story? The normal Facebook and Instagram posts will not be repeated.\')">Retry Facebook Story</a>';
             }
             if (in_array($status, ['failed', 'needs_review'], true) && $has_published_ids) {
-                $remove_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_remove_published&id=' . (int) $row['id']), 'roxy_social_remove_published_' . (int) $row['id']);
-                echo '<a class="button" style="margin-top:6px" href="' . esc_url($remove_url) . '" onclick="return confirm(\'Remove this post from Facebook and Instagram?\')">Retry remove</a>';
-                $delete_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_delete_draft&id=' . (int) $row['id']), 'roxy_social_delete_draft_' . (int) $row['id']);
-                echo ' <a class="button" href="' . esc_url($delete_url) . '" onclick="return confirm(\'Delete this local draft? Any remaining social post must be removed in Meta Business Suite.\')">Delete</a>';
+                if (Publisher::requires_removal_review($row)) {
+                    echo '<p class="description">Meta did not return a conclusive removal result. Check every remaining recorded item in Meta Business Suite, remove any that are still live, then confirm below. No retry will be sent from this screen.</p>';
+                    echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="roxy_social_confirm_remote_removal"><input type="hidden" name="id" value="' . (int) $row['id'] . '">';
+                    wp_nonce_field('roxy_social_confirm_remote_removal_' . (int) $row['id']);
+                    echo '<button type="submit" class="button" onclick="return confirm(\'Have you checked every remaining Facebook, Story, and Instagram item and confirmed none are still live?\')">Confirm all remaining posts are gone</button></form>';
+                } else {
+                    $remove_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_remove_published&id=' . (int) $row['id']), 'roxy_social_remove_published_' . (int) $row['id']);
+                    echo '<a class="button" style="margin-top:6px" href="' . esc_url($remove_url) . '" onclick="return confirm(\'Remove this post from Facebook and Instagram?\')">Retry remove</a>';
+                    $delete_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_delete_draft&id=' . (int) $row['id']), 'roxy_social_delete_draft_' . (int) $row['id']);
+                    echo ' <a class="button" href="' . esc_url($delete_url) . '" onclick="return confirm(\'Delete this local draft? Any remaining social post must be removed in Meta Business Suite.\')">Delete</a>';
+                }
             } elseif ($status === 'posted') {
                 $remove_url = wp_nonce_url(admin_url('admin-post.php?action=roxy_social_remove_published&id=' . (int) $row['id']), 'roxy_social_remove_published_' . (int) $row['id']);
                 echo '<a class="button" href="' . esc_url($remove_url) . '" onclick="return confirm(\'Remove the recorded live posts?\')">Remove live post</a>';
@@ -329,6 +342,16 @@ final class Admin {
         check_admin_referer('roxy_social_remove_published_' . $id);
         $removed = Publisher::remove_published($id);
         wp_safe_redirect(self::drafts_url(['removed_live' => ($removed ? '1' : '0')]));
+        exit;
+    }
+
+    public static function confirm_remote_removal(): void {
+        if (!roxy_suite_user_can_access_admin()) wp_die('Insufficient permissions.');
+        if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? '')) !== 'POST') wp_die('A confirmation form is required.');
+        $id = isset($_POST['id']) ? absint($_POST['id']) : 0;
+        check_admin_referer('roxy_social_confirm_remote_removal_' . $id);
+        $confirmed = Publisher::confirm_remote_removal($id);
+        wp_safe_redirect(self::drafts_url(['remote_removal_confirmed' => ($confirmed ? '1' : '0')]));
         exit;
     }
 

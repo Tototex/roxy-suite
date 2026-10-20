@@ -4,6 +4,7 @@ namespace RoxySocial;
 if (!defined('ABSPATH')) exit;
 
 final class Publisher {
+    private const REMOVE_REVIEW_PREFIX = 'REMOVAL_OUTCOME_UNCERTAIN:';
     private static ?array $claim = null;
 
     private static function with_lock(int $id, callable $work): bool {
@@ -202,37 +203,82 @@ final class Publisher {
         return self::with_lock($id, static function () use ($id) { return self::remove_row($id); });
     }
 
+    public static function requires_removal_review(array $row): bool {
+        return str_starts_with((string) ($row['last_error'] ?? ''), self::REMOVE_REVIEW_PREFIX);
+    }
+
+    /** Mark removal complete only after a manager manually confirms the remaining IDs are absent remotely. */
+    public static function confirm_remote_removal(int $id): bool {
+        return self::with_lock($id, static function () use ($id) {
+            $row = Store::find($id);
+            if (!$row || (string) ($row['status'] ?? '') !== 'needs_review' || !self::requires_removal_review($row)) return false;
+            return self::save_result($id, 'removed');
+        });
+    }
+
     private static function remove_row(int $id): bool {
         $row = Store::find($id);
         if (!$row || !in_array((string) $row['status'], ['posted', 'failed', 'needs_review'], true)) return false;
+        // A previous DELETE may have succeeded even though its response was lost.
+        // Require a human check before making another request for the same IDs.
+        if (self::requires_removal_review($row)) return false;
         $story_state = json_decode((string) ($row['facebook_story_state'] ?? ''), true);
         $story_ids = is_array($story_state) ? array_filter(array_map('strval', $story_state['ids'] ?? [])) : [];
         if (is_array($story_state) && !empty($story_state['pending_id'])) $story_ids[] = (string) $story_state['pending_id'];
         if (empty($row['facebook_post_id']) && empty($row['instagram_media_id']) && !$story_ids) {self::save_result($id,(string)$row['status'],'No published IDs are recorded; verify the remote accounts manually before marking removed.');return false;}
+        // Persist the review gate before crossing the remote side-effect boundary.
+        // A crash or lost response after Meta deletes an object must not expose a
+        // blind retry after the worker releases its lock.
+        $pending_message = self::REMOVE_REVIEW_PREFIX . ' A removal request started but has not been conclusively recorded. Check every remaining Facebook, Story, and Instagram item in Meta Business Suite; remove any still present there, then confirm here.';
+        if (!self::save_result($id, 'needs_review', $pending_message)) return false;
         $facebook = empty($row['facebook_post_id']) ? [] : self::delete_remote((string) $row['facebook_post_id'], Meta::page_access_token());
-        if (!empty($facebook['success']) && !Store::clear_publish_id($id, 'facebook', self::$claim)) $facebook=['error'=>'Remote removal succeeded but its local record could not be saved. Review before retrying.'];
+        $ambiguous_removal = !empty($facebook['ambiguous']);
+        if (!empty($facebook['success']) && !Store::clear_publish_id($id, 'facebook', self::$claim)) {
+            $facebook=['error'=>'Remote removal succeeded but its local record could not be saved. Review before retrying.','ambiguous'=>true];
+            $ambiguous_removal = true;
+        }
         $story_errors = [];
         foreach (array_unique($story_ids) as $story_id) {
             $removed = self::delete_remote((string) $story_id, Meta::page_access_token());
             if (empty($removed['success'])) {
                 $story_errors[] = (string) ($removed['error'] ?? 'Facebook did not confirm Story removal.');
+                $ambiguous_removal = $ambiguous_removal || !empty($removed['ambiguous']);
                 continue;
             }
             if (is_array($story_state)) {
                 $story_state['ids'] = array_values(array_filter((array) ($story_state['ids'] ?? []), static function ($id) use ($story_id) { return (string) $id !== (string) $story_id; }));
                 if ((string) ($story_state['pending_id'] ?? '') === (string) $story_id) $story_state['pending_id'] = '';
-                if (!Store::set_facebook_story_state($id, wp_json_encode($story_state), self::$claim)) $story_errors[] = 'A removed Facebook Story ID could not be cleared locally; review before retrying.';
+                if (!Store::set_facebook_story_state($id, wp_json_encode($story_state), self::$claim)) {
+                    $story_errors[] = 'A removed Facebook Story ID could not be cleared locally; review before retrying.';
+                    $ambiguous_removal = true;
+                }
             }
         }
-        if (!$story_errors && is_array($story_state) && !Store::clear_facebook_story_state($id, self::$claim)) $story_errors[] = 'Facebook Stories were removed but their local IDs could not be cleared.';
+        if (!$story_errors && is_array($story_state) && !Store::clear_facebook_story_state($id, self::$claim)) {
+            $story_errors[] = 'Facebook Stories were removed but their local IDs could not be cleared.';
+            $ambiguous_removal = true;
+        }
         $instagram = empty($row['instagram_media_id']) ? [] : self::delete_remote((string) $row['instagram_media_id'], Meta::access_token());
-        if (!empty($instagram['success']) && !Store::clear_publish_id($id, 'instagram', self::$claim)) $instagram=['error'=>'Remote removal succeeded but its local record could not be saved. Review before retrying.'];
+        $ambiguous_removal = $ambiguous_removal || !empty($instagram['ambiguous']);
+        if (!empty($instagram['success']) && !Store::clear_publish_id($id, 'instagram', self::$claim)) {
+            $instagram=['error'=>'Remote removal succeeded but its local record could not be saved. Review before retrying.','ambiguous'=>true];
+            $ambiguous_removal = true;
+        }
         $errors = array_filter([
             !empty($facebook['error']) ? 'Facebook: ' . $facebook['error'] : '',
             $story_errors ? 'Facebook Story: ' . implode(' ', $story_errors) : '',
             !empty($instagram['error']) ? 'Instagram: ' . $instagram['error'] : '',
         ]);
-        if ($errors) { self::save_result($id, (string) $row['status'], implode(' ', $errors)); return false; }
+        if ($errors) {
+            $error = implode(' ', $errors);
+            if ($ambiguous_removal) {
+                $error = self::REMOVE_REVIEW_PREFIX . ' Do not retry from this screen. Check every remaining Facebook, Story, and Instagram item in Meta Business Suite; remove any still present there, then confirm here. Details: ' . $error;
+                self::save_result($id, 'needs_review', $error);
+            } else {
+                self::save_result($id, (string) $row['status'], $error);
+            }
+            return false;
+        }
         return self::save_result($id, 'removed', '');
     }
 
@@ -456,7 +502,7 @@ final class Publisher {
     }
 
     private static function decode_response($response,bool $require_id,bool $require_success): array {
-        if (is_wp_error($response)) return ['error'=>'Meta request outcome is unknown. Review the remote account before retrying.','ambiguous'=>$require_id];
+        if (is_wp_error($response)) return ['error'=>'Meta request outcome is unknown. Review the remote account before retrying.','ambiguous'=>$require_id || $require_success];
         $status=(int)wp_remote_retrieve_response_code($response);
         $data=json_decode((string)wp_remote_retrieve_body($response),true);
         if($status<200||$status>=300) {
@@ -486,11 +532,14 @@ final class Publisher {
                 $diagnostics[] = 'transient ' . ($provider_error['is_transient'] ? 'yes' : 'no');
             }
             if ($diagnostics) $message .= ' (' . implode('; ', $diagnostics) . ')';
-            return ['error'=>'Meta returned HTTP '.$status.': '.$message,'ambiguous'=>$require_id&&($status>=500||$status===0||$status===408)];
+            return ['error'=>'Meta returned HTTP '.$status.': '.$message,'ambiguous'=>($require_id || $require_success)&&($status>=500||$status===0||$status===408)];
         }
-        if(!is_array($data))return ['error'=>'Meta returned an unreadable response. Review the remote account before retrying.','ambiguous'=>$require_id];
+        if(!is_array($data))return ['error'=>'Meta returned an unreadable response. Review the remote account before retrying.','ambiguous'=>$require_id || $require_success];
         if(isset($data['error']))return ['error'=>sanitize_text_field((string)($data['error']['message']??'Meta reported an error.'))];
-        if($require_success&&($data['success']??null)!==true)return ['error'=>'Meta did not confirm removal; the recorded ID was retained.'];
+        if($require_success&&($data['success']??null)!==true) {
+            $ambiguous = !array_key_exists('success', $data) || !is_bool($data['success']);
+            return ['error'=>'Meta did not confirm removal; the recorded ID was retained.','ambiguous'=>$ambiguous];
+        }
         if($require_id&&(!isset($data['id'])||!is_scalar($data['id'])||!preg_match('/^\d+(?:_\d+)?$/',(string)$data['id'])))return ['error'=>'Meta did not return a valid published ID. Review the remote account before retrying.','ambiguous'=>true];
         return $data;
     }

@@ -68,6 +68,7 @@ namespace {
         $GLOBALS['calls'][]=[$url,$args,\RoxySocial\Store::$row];
         if(!empty($GLOBALS['lose_lock']))\RoxySocial\Store::$locked=false;
         if(!empty($GLOBALS['reenter_worker_on_http'])){$GLOBALS['reenter_worker_on_http']=false;\RoxySocial\Store::$locked=false;\RoxySocial\Publisher::process_queued(1,0,(string)(\RoxySocial\Store::$row['publish_attempt_token']??''));}
+        if(!empty($GLOBALS['reenter_remove_on_http'])){$GLOBALS['reenter_remove_on_http']=false;$GLOBALS['nested_remove_result']=\RoxySocial\Publisher::remove_published(1);}
         if(!$GLOBALS['responses'])throw new \LogicException('Unexpected HTTP fixture call');
         return array_shift($GLOBALS['responses']);
     }
@@ -82,7 +83,7 @@ namespace {
         \RoxySocial\FacebookStories::$result=[];\RoxySocial\FacebookStories::$calls=0;
         \RoxySocial\Campaigns::$verified=true;
         $GLOBALS['calls']=[];$GLOBALS['responses']=[];$GLOBALS['scheduled_events']=[];
-        $GLOBALS['lose_lock']=false;$GLOBALS['reenter_worker_on_http']=false;$GLOBALS['schedule_ok']=true;$GLOBALS['schedule_state']=null;
+        $GLOBALS['lose_lock']=false;$GLOBALS['reenter_worker_on_http']=false;$GLOBALS['reenter_remove_on_http']=false;$GLOBALS['nested_remove_result']=null;$GLOBALS['schedule_ok']=true;$GLOBALS['schedule_state']=null;
     }
     function check($ok,$label){if(!$ok){fwrite(STDERR,"::error title=Social publisher regression failed::".$label."\n");throw new \RuntimeException($label);}echo "PASS: $label\n";}
     require ($argv[1]??dirname(__DIR__)).'/includes/modules/social-publisher/includes/class-roxy-social-publisher.php';
@@ -232,6 +233,28 @@ namespace {
     check(!\RoxySocial\Publisher::remove_published(1)&&!$GLOBALS['calls']&&\RoxySocial\Store::$row['status']==='posted','missing recorded IDs cannot report removed');
     reset_fixture('facebook','posted');\RoxySocial\Store::$row['facebook_post_id']='123';$GLOBALS['responses']=[response(['success'=>false])];
     check(!\RoxySocial\Publisher::remove_published(1)&&\RoxySocial\Store::$row['facebook_post_id']==='123','false success cannot erase published ID');
+    foreach ([new \RuntimeException('timeout'),response(['error'=>['message'=>'temporary']],503),['status'=>200,'body'=>'not JSON'],response([])] as $uncertain_delete) {
+        reset_fixture('facebook','posted');\RoxySocial\Store::$row['facebook_post_id']='123';$GLOBALS['responses']=[$uncertain_delete];
+        check(!\RoxySocial\Publisher::remove_published(1)
+            &&\RoxySocial\Store::$row['status']==='needs_review'
+            &&\RoxySocial\Store::$row['facebook_post_id']==='123'
+            &&\RoxySocial\Publisher::requires_removal_review(\RoxySocial\Store::$row),
+            'uncertain remote deletion retains its ID and enters explicit review');
+        $calls_before_retry=count($GLOBALS['calls']);
+        check(!\RoxySocial\Publisher::remove_published(1)&&count($GLOBALS['calls'])===$calls_before_retry,
+            'ambiguous deletion cannot issue a blind second provider request');
+        check(\RoxySocial\Publisher::confirm_remote_removal(1)
+            &&\RoxySocial\Store::$row['status']==='removed'
+            &&\RoxySocial\Store::$row['facebook_post_id']==='123'
+            &&\RoxySocial\Store::$row['last_error']==='',
+            'manager confirmation marks removed only after reviewing and retains provider ID for audit');
+    }
+    reset_fixture('facebook','posted');
+    check(!\RoxySocial\Publisher::confirm_remote_removal(1)&&\RoxySocial\Store::$row['status']==='posted',
+        'manual removal confirmation is rejected without an ambiguous-removal review marker');
+    reset_fixture('facebook','posted');\RoxySocial\Store::$row['facebook_post_id']='123';$GLOBALS['responses']=[response(['success'=>true])];$GLOBALS['reenter_remove_on_http']=true;
+    check(\RoxySocial\Publisher::remove_published(1)&&$GLOBALS['nested_remove_result']===false&&count($GLOBALS['calls'])===1,
+        'concurrent duplicate removal cannot issue a second provider DELETE');
     reset_fixture();\RoxySocial\Store::$deny_lock=true;
     check(!\RoxySocial\Publisher::publish_now(1)&&!$GLOBALS['calls']&&\RoxySocial\Store::$row['status']==='approved','competing worker cannot publish or change status');
     reset_fixture();check(\RoxySocial\Publisher::queue_publish_now(1)&&!\RoxySocial\Store::$locked,'queued worker releases ownership before cron execution');
