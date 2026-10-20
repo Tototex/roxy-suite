@@ -25,6 +25,8 @@ namespace {
     function wp_parse_args($values, $defaults) { return array_merge($defaults, $values); }
     function wp_parse_url($url) { return parse_url($url); }
     function is_admin() { return true; }
+    function current_user_can($capability) { return $capability === 'update_plugins'; }
+    function esc_html($value) { return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8'); }
     function wp_doing_cron() { return false; }
     function add_filter($hook, $callback, $priority = 10, $accepted_args = 1) { $GLOBALS['registered_filters'][$hook] = [$callback, $accepted_args]; }
     function add_action($hook, $callback, $priority = 10, $accepted_args = 1) {}
@@ -224,7 +226,14 @@ namespace {
     \RoxySuite\Updater::filter_update_plugins((object) ['response' => [], 'no_update' => []]);
     check_updater($GLOBALS['remote_calls'] === 1 && ($GLOBALS['transients'][$cache_key . '_failed'] ?? false) === 1, 'provider failure is cached after one update lookup');
     check_updater(($GLOBALS['transient_ttls'][$cache_key . '_failed'] ?? 0) === 5 * MINUTE_IN_SECONDS, 'provider failure cache has a bounded five-minute lifetime');
+    check_updater(is_string($GLOBALS['transients'][$cache_key . '_error'] ?? null) && ($GLOBALS['transient_ttls'][$cache_key . '_error'] ?? 0) === 5 * MINUTE_IN_SECONDS, 'provider failure stores a bounded sanitized admin diagnostic');
+    ob_start();
+    \RoxySuite\Updater::render_update_error_notice();
+    $update_notice = ob_get_clean();
+    check_updater(strpos($update_notice, 'Roxy Suite updater:') !== false && strpos($update_notice, 'Synthetic provider outage') === false, 'admin notice explains updater failure without exposing provider error text');
     \RoxySuite\Updater::filter_update_plugins((object) ['response' => [], 'no_update' => []]);
     check_updater($GLOBALS['remote_calls'] === 1, 'repeated update lookup during outage does not call the provider again');
     check_updater($other_mixed === false, 'unrelated package in mixed bulk list remains untouched during outage');
+    $recovered = $fetch($latest, $manifest);
+    check_updater(is_array($recovered) && !isset($GLOBALS['transients'][$cache_key . '_error']), 'successful release verification clears the temporary updater notice');
 }

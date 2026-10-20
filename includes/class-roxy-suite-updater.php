@@ -43,6 +43,7 @@ class Updater {
         add_filter('plugins_api', [__CLASS__, 'filter_plugins_api'], 20, 3);
         add_filter('upgrader_pre_download', [__CLASS__, 'filter_upgrader_pre_download'], 10, 4);
         add_action('upgrader_process_complete', [__CLASS__, 'handle_upgrader_process_complete'], 20, 2);
+        add_action('admin_notices', [__CLASS__, 'render_update_error_notice']);
     }
 
     private static function get_cache_key(): string {
@@ -232,6 +233,7 @@ class Updater {
         self::$release = null;
         delete_site_transient(self::get_cache_key());
         delete_site_transient(self::get_cache_key() . '_failed');
+        delete_site_transient(self::get_cache_key() . '_error');
         delete_site_transient('update_plugins');
         if (function_exists('wp_clean_plugins_cache')) {
             wp_clean_plugins_cache(true);
@@ -255,6 +257,7 @@ class Updater {
         }
         // Reserve a short retry window before the request, including malformed responses.
         set_site_transient($cache_key . '_failed', 1, 5 * MINUTE_IN_SECONDS);
+        set_site_transient($cache_key . '_error', 'The latest Roxy Suite release could not be verified. Update checks will retry in five minutes.', 5 * MINUTE_IN_SECONDS);
 
         $url      = 'https://api.github.com/repos/' . self::$config['github_repo'] . '/releases/latest';
         $response = wp_remote_get($url, [
@@ -267,17 +270,20 @@ class Updater {
         ]);
 
         if (is_wp_error($response)) {
-            return null;
+            return self::record_update_failure($cache_key, 'GitHub could not be reached. Update checks will retry in five minutes.');
         }
 
         $code = (int) wp_remote_retrieve_response_code($response);
         if ($code < 200 || $code >= 300) {
-            return null;
+            $reason = in_array($code, [403, 429], true)
+                ? 'GitHub rate-limited the release check (HTTP ' . $code . '). Update checks will retry in five minutes.'
+                : 'GitHub returned HTTP ' . $code . ' for the release check. Update checks will retry in five minutes.';
+            return self::record_update_failure($cache_key, $reason);
         }
 
         $release_body = wp_remote_retrieve_body($response);
         if (!is_string($release_body) || strlen($release_body) > 1048576) {
-            return null;
+            return self::record_update_failure($cache_key, 'GitHub returned an unreadable release response. Update checks will retry in five minutes.');
         }
         $data = json_decode($release_body, true);
         if (!is_array($data)
@@ -286,12 +292,12 @@ class Updater {
             || $data['tag_name'] === ''
             || empty($data['assets'])
             || !is_array($data['assets'])) {
-            return null;
+            return self::record_update_failure($cache_key, 'GitHub returned incomplete release metadata. Update checks will retry in five minutes.');
         }
 
         $version = self::version_from_tag($data['tag_name']);
         if ($version === null) {
-            return null;
+            return self::record_update_failure($cache_key, 'GitHub returned an invalid release version. Update checks will retry in five minutes.');
         }
 
         $archive_name  = self::$config['slug'] . '-' . $version . '.zip';
@@ -316,7 +322,7 @@ class Updater {
         }
 
         if ($archive_url === '' || $manifest_url === '') {
-            return null;
+            return self::record_update_failure($cache_key, 'The latest release is missing its verified update package or integrity manifest. Update checks will retry in five minutes.');
         }
 
         $manifest_response = wp_remote_get($manifest_url, [
@@ -328,16 +334,16 @@ class Updater {
             'limit_response_size' => 1048576,
         ]);
         if (is_wp_error($manifest_response) || (int) wp_remote_retrieve_response_code($manifest_response) < 200 || (int) wp_remote_retrieve_response_code($manifest_response) >= 300) {
-            return null;
+            return self::record_update_failure($cache_key, 'GitHub could not provide the release integrity manifest. Update checks will retry in five minutes.');
         }
 
         $manifest_body = wp_remote_retrieve_body($manifest_response);
         if (!is_string($manifest_body) || strlen($manifest_body) > 1048576) {
-            return null;
+            return self::record_update_failure($cache_key, 'GitHub returned an unreadable release integrity manifest. Update checks will retry in five minutes.');
         }
         $manifest = json_decode($manifest_body, true);
         if (!self::validate_manifest($manifest, $version, $archive_name)) {
-            return null;
+            return self::record_update_failure($cache_key, 'The latest release integrity manifest is invalid. The update was blocked. Update checks will retry in five minutes.');
         }
 
         self::$release = [
@@ -349,8 +355,22 @@ class Updater {
 
         set_site_transient($cache_key, self::$release, 10 * MINUTE_IN_SECONDS);
         delete_site_transient($cache_key . '_failed');
+        delete_site_transient($cache_key . '_error');
 
         return self::$release;
+    }
+
+    private static function record_update_failure(string $cache_key, string $message): ?array {
+        set_site_transient($cache_key . '_failed', 1, 5 * MINUTE_IN_SECONDS);
+        set_site_transient($cache_key . '_error', $message, 5 * MINUTE_IN_SECONDS);
+        return null;
+    }
+
+    public static function render_update_error_notice(): void {
+        if (empty(self::$config['plugin_file']) || !current_user_can('update_plugins')) return;
+        $message = get_site_transient(self::get_cache_key() . '_error');
+        if (!is_string($message) || $message === '') return;
+        echo '<div class="notice notice-warning"><p><strong>Roxy Suite updater:</strong> ' . esc_html($message) . '</p></div>';
     }
 
     private static function version_from_tag(string $tag): ?string {
