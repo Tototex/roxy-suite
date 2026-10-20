@@ -158,6 +158,7 @@ function roxy_eb_repo_list_sling_auth_failed_bookings($limit = 25) {
     global $wpdb;
     $table = roxy_eb_table_bookings();
     $limit = max(1, min(100, intval($limit)));
+    $wpdb->last_error = '';
     $like = $wpdb->esc_like('Sling authorization failed') . '%';
     $rows = $wpdb->get_results(
         $wpdb->prepare(

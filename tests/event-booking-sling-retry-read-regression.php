@@ -61,6 +61,7 @@ roxy_eb_sling_job_retry_failed_auth_syncs();
 $check($GLOBALS['queued'] === [] && $wpdb->logs === [], 'verified empty scan queues nothing and records no error');
 
 $wpdb->rows = [['id' => 42]];
+$wpdb->last_error = 'stale prior query error';
 roxy_eb_sling_job_retry_failed_auth_syncs();
 $check(count($GLOBALS['queued']) === 1
     && $GLOBALS['queued'][0]['hook'] === 'roxy_eb_sling_sync_booking'
