@@ -65,11 +65,17 @@ try {
   add_filter('pre_option_roxy_grosses_email_outbox_schema_version', $schema_option_filter, PHP_INT_MAX);
   if ($fixture_db->query('DROP TABLE `' . $table . '`') === false) throw new RuntimeException('Could not remove private outbox table for cached-schema recovery fixture.');
   $created = false;
-  $recovered_schema = $outbox::ensure_schema(false);
+  $missing_schema_ready = $outbox::ensure_schema(false);
+  $missing_claim_blocked = false;
+  try { $outbox::claim('grosses:missing-table', 'daily_report', 99, '2039-04-04', ['report' => 'fixture'], ['trigger' => 'manual']); }
+  catch (RuntimeException $error) { $missing_claim_blocked = true; }
   remove_filter('pre_option_roxy_grosses_email_outbox_schema_version', $schema_option_filter, PHP_INT_MAX);
   $schema_option_filter = null;
+  $table_still_missing = $original_db->get_var($original_db->prepare('SHOW TABLES LIKE %s', $original_db->esc_like($table))) !== $table;
+  $check(!$missing_schema_ready && $table_still_missing && $missing_claim_blocked,
+    'cached schema marker fails closed on a missing durable outbox table without recreating the send ledger');
+  $check($outbox::ensure_schema(true), 'explicit forced schema verification can restore the private fixture after the fail-closed check');
   $created = $original_db->get_var($original_db->prepare('SHOW TABLES LIKE %s', $original_db->esc_like($table))) === $table;
-  $check($recovered_schema && $created, 'cached schema marker repairs a missing outbox table before reporting readiness');
 
   $logical_key = 'grosses:daily:2039-04-05';
   $unicode_subject = 'Fixture report ' . "\u{2014}" . ' manager ' . "\u{2019}" . ' 🍿';

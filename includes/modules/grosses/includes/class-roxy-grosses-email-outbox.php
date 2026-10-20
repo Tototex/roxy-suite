@@ -111,10 +111,11 @@ final class EmailOutbox {
         $table_name = trim($table, '`');
         $existing_table = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table_name)));
         if (!empty($wpdb->last_error)) throw self::storage_error('cached schema table check');
-        // The schema marker is only a hint: deployments, restores, or manual
-        // repair may remove the table after this version was last recorded.
-        // In that case continue through CREATE and full verification below.
+        // The table is also the durable duplicate-send ledger. Recreating it
+        // empty after a loss could allow previously sent reports to be sent
+        // again, so a stale marker must fail closed for explicit restoration.
         if ($existing_table === $table_name) return true;
+        return false;
       }
       $charset = trim((string) $wpdb->get_charset_collate());
       $sql = "CREATE TABLE IF NOT EXISTS {$table} (
