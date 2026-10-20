@@ -475,6 +475,14 @@ function roxy_eb_cancel_booking($booking_id, $by = 'customer') {
 
         if ($order_ids && class_exists('WC_Order')) {
             foreach ($order_ids as $order_id) {
+                // A refund is external to the reservation transaction. If an
+                // earlier provider call overlaps a booking edit, stop before
+                // issuing another refund from this now-stale order snapshot.
+                $current = roxy_eb_repo_get_booking($booking_id);
+                if (!$current || !hash_equals(roxy_eb_booking_revision($booking), roxy_eb_booking_revision($current))) {
+                    return new WP_Error('booking_stale', 'This booking changed while cancellation was processing. No further refunds were attempted; please review the order before retrying.');
+                }
+
                 $order = wc_get_order($order_id);
                 if (!$order) return new WP_Error('order_missing', 'A linked booking order is unavailable. Please contact us for review.');
 
@@ -491,6 +499,15 @@ function roxy_eb_cancel_booking($booking_id, $by = 'customer') {
                         $order->add_order_note('Roxy booking cancelled and gateway-refunded $' . number_format((float) $refund_result['amount'], 2) . ' (booking #' . $booking_id . ').');
                     } else {
                         $order->add_order_note('Roxy booking cancelled (booking #' . $booking_id . '). No refundable balance remained on the order.');
+                    }
+
+                    // Re-read immediately after each provider round-trip. A
+                    // stale cancellation must not continue to refund linked
+                    // adjustment orders that were not part of the new booking
+                    // revision.
+                    $current = roxy_eb_repo_get_booking($booking_id);
+                    if (!$current || !hash_equals(roxy_eb_booking_revision($booking), roxy_eb_booking_revision($current))) {
+                        return new WP_Error('booking_stale', 'This booking changed while cancellation was processing. No further refunds were attempted; please review the order before retrying.');
                     }
                 } catch (Throwable $e) {
                     $message = $e->getMessage();

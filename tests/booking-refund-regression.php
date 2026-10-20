@@ -322,6 +322,17 @@ run_test('cancellation does not overwrite a booking edit made during provider re
       'stale cancellation is rejected without overwriting the concurrent booking edit');
     check(count($GLOBALS['wc_refund_calls'])===1 && !$GLOBALS['queued_cancellations'],'stale cancellation performs no duplicate provider call or follow-on work');
 });
+run_test('stale cancellation stops before refunding later linked adjustment orders', function() {
+    reset_gateway(); make_booking(86,186,[187]);
+    register_order(new WC_Order(186,50,[1=>make_item(86,null,50)]));
+    register_order(new WC_Order(187,25,[2=>make_adjustment_item(86,25)]));
+    $GLOBALS['during_refund']=static function() { $GLOBALS['bookings'][86]['guest_count']=11; $GLOBALS['bookings'][86]['fixture_revision']='r2'; };
+    $result=roxy_eb_cancel_booking(86,'admin');
+    check(is_wp_error($result) && $result->get_error_code()==='booking_stale','booking edit during first provider call stops stale cancellation');
+    check(count($GLOBALS['wc_refund_calls'])===1 && $GLOBALS['wc_refund_calls'][0]['order_id']===186,'later linked adjustment order is not refunded from stale snapshot');
+    check($GLOBALS['bookings'][86]['status']==='confirmed' && $GLOBALS['bookings'][86]['guest_count']===11,'concurrent booking edit and occupancy remain intact');
+    check(!$GLOBALS['cleared_reminders'] && !$GLOBALS['queued_cancellations'],'stale multi-order cancellation retains reminders and external reservation work');
+});
 run_test('Woo refund hook retains reminders when booking cancellation fails', function() {
     reset_gateway(); make_booking(85,99998);
     roxy_eb_maybe_cancel_booking_for_order(99998);
