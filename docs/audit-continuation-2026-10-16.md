@@ -342,3 +342,5 @@ Full runtime parity recheck (2026-10-19, read-only): compared the current commit
 
 # Full hosted PHP regression rerun (2026-10-21): reran the existing PHP 8.3 job from workflow [39458985285](https://github.com/Tototex/roxy-suite/actions/runs/39458985285) after confirming that commits since its tested code tree only changed audit documentation. The latest attempt completed successfully: all tracked PHP lint, 19 named focused regression/guard steps, the full isolated cross-module regression suite, and deterministic runtime-package verification passed. No production deployment, provider call, email, or business-data change occurred.
 
+# Client-side syntax and focused regression sweep (2026-10-21): all 20 tracked `.js`, `.cjs`, and `.mjs` files pass `node --check`. Booking asset, Will Call UI queue/syntax, Social picker, Member Door, Inventory cost-review UI, and the 26-check release-manifest guards all pass locally. The browser-rendered Social suites and live admin browser workflows were not run in this sweep. No production or business data changed.
+
