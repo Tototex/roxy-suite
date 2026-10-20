@@ -238,7 +238,8 @@ namespace {
         check(!\RoxySocial\Publisher::remove_published(1)
             &&\RoxySocial\Store::$row['status']==='needs_review'
             &&\RoxySocial\Store::$row['facebook_post_id']==='123'
-            &&\RoxySocial\Publisher::requires_removal_review(\RoxySocial\Store::$row),
+            &&\RoxySocial\Publisher::requires_removal_review(\RoxySocial\Store::$row)
+            &&($GLOBALS['calls'][0][2]['status']??'')==='needs_review',
             'uncertain remote deletion retains its ID and enters explicit review');
         $calls_before_retry=count($GLOBALS['calls']);
         check(!\RoxySocial\Publisher::remove_published(1)&&count($GLOBALS['calls'])===$calls_before_retry,
