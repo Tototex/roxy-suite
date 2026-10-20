@@ -53,6 +53,7 @@ require $root.'/includes/modules/inventory/includes/class-roxy-inventory-square.
 $checks=0;
 function check($ok,$label) { global $checks; if(!$ok)throw new RuntimeException($label);++$checks;echo 'PASS: '.$label."\n"; }
 function rejects($label) { $failed=false;try{\RoxyInventory\Square::pull();}catch(Throwable $e){$failed=true;}check($failed && !\RoxyInventory\Store::$saved && \RoxyInventory\Store::$commits===0 && \RoxyInventory\Store::$stock===['v1'=>19],$label.' preserves saved inventory'); }
+function rejection_message($response) { resetfixture($response); try { \RoxyInventory\Square::pull(); } catch (Throwable $e) { return $e->getMessage(); } return ''; }
 resetfixture(); $items=\RoxyInventory\Square::pull();
 check($items['v1']['on_hand']===3.0 && \RoxyInventory\Store::$commits===1,'valid response commits once');
 $body=json_decode($GLOBALS['requests'][1][1]['body'],true);
@@ -86,6 +87,14 @@ $ordered=[['id'=>4,'created_at'=>'2026-10-06 10:00:00','payload'=>json_encode([[
 resetfixture(null,null,encoded(['errors'=>[['detail'=>'fixture failure']]])); \RoxyInventory\Store::$receipt_orders=$ordered; rejects('change-history API failure prevents a partial inventory commit');
 resetfixture(null,null,encoded(['changes'=>(object)[]])); \RoxyInventory\Store::$receipt_orders=$ordered; rejects('malformed change-history collection prevents a partial inventory commit');
 foreach (['invalid json'=>['code'=>200,'body'=>'bad'], 'JSON list'=>encoded([]),'null'=>encoded(null),'HTTP failure'=>encoded((object)[],500),'provider errors'=>encoded(['errors'=>[['detail'=>'private']]]),'invalid errors'=>encoded(['errors'=>(object)[]]),'object collection'=>encoded(['objects'=>(object)[]]),'scalar collection'=>encoded(['objects'=>'bad']),'scalar record'=>encoded(['objects'=>['bad']])] as $name=>$r) { resetfixture($r); rejects($name); }
+foreach ([401=>'saved access token (HTTP 401)',403=>'inventory request (HTTP 403)',404=>'endpoint (HTTP 404)',429=>'rate-limited (HTTP 429)',503=>'temporarily unavailable (HTTP 503)'] as $code=>$expected) {
+    $message=rejection_message(['code'=>$code,'body'=>json_encode(['errors'=>[['category'=>'AUTHENTICATION_ERROR','code'=>'UNAUTHORIZED','detail'=>'must not be copied into logs']]])]);
+    check(strpos($message,$expected)!==false && strpos($message,'must not be copied')===false && !\RoxyInventory\Store::$saved && \RoxyInventory\Store::$commits===0,'HTTP '.$code.' gives safe actionable diagnostics without saving inventory');
+}
+$message=rejection_message(['code'=>200,'body'=>'not json']);
+check(strpos($message,'unreadable inventory JSON (HTTP 200)')!==false && !\RoxyInventory\Store::$saved && \RoxyInventory\Store::$commits===0,'malformed success response is distinguished without saving inventory');
+$message=rejection_message(encoded(['errors'=>[['category'=>'INVALID_REQUEST_ERROR','code'=>'INVALID_VALUE','detail'=>'private provider text']]]));
+check(strpos($message,'INVALID_REQUEST_ERROR/INVALID_VALUE')!==false && strpos($message,'private provider text')===false && !\RoxyInventory\Store::$saved && \RoxyInventory\Store::$commits===0,'provider error code is retained while private detail is omitted');
 foreach (['counts object'=>encoded(['counts'=>(object)[]]),'counts null'=>encoded(['counts'=>null]),'scalar count'=>encoded(['counts'=>['bad']]),'quantity junk'=>encoded(['counts'=>[countrow('3x')]]),'quantity exponent'=>encoded(['counts'=>[countrow('1e2')]]),'quantity too precise'=>encoded(['counts'=>[countrow('1.123456')]]),'quantity numeric'=>encoded(['counts'=>[countrow(3)]]),'quantity overflow'=>encoded(['counts'=>[countrow('10000000000')]]),'wrong location'=>encoded(['counts'=>[countrow('3','other')]]),'duplicate count'=>encoded(['counts'=>[countrow(),countrow()]])] as $name=>$r) { resetfixture(null,$r); rejects($name); }
 $row=countrow();$row['catalog_object_id']='other';resetfixture(null,encoded(['counts'=>[$row]]));rejects('unrequested variation');
 resetfixture(null,encoded(['unexpected'=>'not inventory']));rejects('unrecognized response is not empty stock');

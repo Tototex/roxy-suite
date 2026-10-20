@@ -163,11 +163,27 @@ class Square {
         $remaining = $deadline === null ? 35 : $deadline - microtime(true);
         if ($remaining <= 0) throw new \RuntimeException('Square inventory retrieval timed out.');
         $args = ['headers'=>['Authorization'=>'Bearer '.$token,'Content-Type'=>'application/json','Accept'=>'application/json','Square-Version'=>self::API_VERSION],'timeout'=>min(35, $remaining)]; if ($body !== null) $args['body'] = wp_json_encode($body);
-        $response = strtoupper($method) === 'GET' ? wp_remote_get($base.$path,$args) : wp_remote_post($base.$path,$args); if (is_wp_error($response)) throw new \RuntimeException($response->get_error_message());
+        $response = strtoupper($method) === 'GET' ? wp_remote_get($base.$path,$args) : wp_remote_post($base.$path,$args);
+        if (is_wp_error($response)) throw new \RuntimeException('Could not reach Square for the inventory request.');
         $code = (int) wp_remote_retrieve_response_code($response); $raw = wp_remote_retrieve_body($response);
         $native = json_decode($raw);
-        if ($code < 200 || $code >= 300 || !($native instanceof \stdClass) || json_last_error() !== JSON_ERROR_NONE) throw new \RuntimeException('Square inventory request failed or returned invalid JSON.');
-        if (property_exists($native, 'errors') && (!is_array($native->errors) || $native->errors)) throw new \RuntimeException('Square reported an inventory request error.');
+        if ($code < 200 || $code >= 300) {
+            $message = 'Square inventory request failed (HTTP ' . $code . ').';
+            if ($code === 401) $message = 'Square rejected the saved access token (HTTP 401). Reconnect Square in Grosses settings and verify the selected environment.';
+            elseif ($code === 403) $message = 'Square denied the inventory request (HTTP 403). Check that the saved token has inventory read permissions.';
+            elseif ($code === 404) $message = 'Square did not recognize the inventory endpoint (HTTP 404). Check the installed API version and endpoint.';
+            elseif ($code === 429) $message = 'Square rate-limited the inventory request (HTTP 429). Retry after the provider limit resets.';
+            elseif ($code >= 500) $message = 'Square is temporarily unavailable for the inventory request (HTTP ' . $code . '). Retry later.';
+            throw new \RuntimeException($message);
+        }
+        if (!($native instanceof \stdClass) || json_last_error() !== JSON_ERROR_NONE) throw new \RuntimeException('Square returned unreadable inventory JSON (HTTP ' . $code . ').');
+        if (property_exists($native, 'errors') && (!is_array($native->errors) || $native->errors)) {
+            $error = is_array($native->errors) ? reset($native->errors) : null;
+            $provider_code = is_object($error) && is_string($error->code ?? null) && preg_match('/^[A-Z0-9_]{1,64}$/D', $error->code) ? $error->code : '';
+            $category = is_object($error) && is_string($error->category ?? null) && preg_match('/^[A-Z0-9_]{1,64}$/D', $error->category) ? $error->category : '';
+            $safe_code = trim($category . ($category !== '' && $provider_code !== '' ? '/' : '') . $provider_code, '/');
+            throw new \RuntimeException($safe_code !== '' ? 'Square reported an inventory request error (' . $safe_code . ').' : 'Square reported an inventory request error.');
+        }
         $field = strpos($path, '/v2/catalog/list') === 0 ? 'objects' : (strpos($path, '/v2/inventory/changes/batch-retrieve') === 0 ? 'changes' : 'counts');
         if (!property_exists($native, $field) && !property_exists($native, 'cursor')) throw new \RuntimeException('Square omitted the inventory collection from a terminal response.');
         if (array_diff(array_keys(get_object_vars($native)), ['errors','cursor',$field])) throw new \RuntimeException('Square returned an unrecognized inventory response.');
