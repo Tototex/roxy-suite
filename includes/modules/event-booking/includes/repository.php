@@ -268,6 +268,7 @@ function roxy_eb_repo_list_sling_logs($limit = 200, $booking_id = 0) {
     $table = roxy_eb_table_sling_logs();
     $limit = max(1, min(500, intval($limit)));
     $booking_id = intval($booking_id);
+    $wpdb->last_error = '';
 
     if ($booking_id > 0) {
         $rows = $wpdb->get_results(
@@ -281,7 +282,10 @@ function roxy_eb_repo_list_sling_logs($limit = 200, $booking_id = 0) {
         );
     }
 
-    return $rows ?: [];
+    if ($wpdb->last_error !== '' || !is_array($rows)) {
+        return new WP_Error('sling_logs_read_failed', 'Sling Logs are temporarily unavailable because the database read failed.');
+    }
+    return $rows;
 }
 
 function roxy_eb_repo_prune_old_sling_logs($days = null) {

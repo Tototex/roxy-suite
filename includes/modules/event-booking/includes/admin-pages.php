@@ -763,7 +763,7 @@ function roxy_eb_admin_sling_logs_page() {
         <table class="widefat striped">
             <thead><tr><th>Time</th><th>Booking</th><th>Action</th><th>Endpoint</th><th>HTTP</th><th>Message</th></tr></thead>
             <tbody>
-            <?php if (empty($rows)): ?><tr><td colspan="6">No logs found.</td></tr><?php else: foreach ($rows as $r): ?>
+            <?php if (is_wp_error($rows)): ?><tr><td colspan="6" role="alert"><?php echo esc_html($rows->get_error_message()); ?></td></tr><?php elseif (empty($rows)): ?><tr><td colspan="6">No logs found.</td></tr><?php else: foreach ($rows as $r): ?>
                 <tr>
                     <td><code><?php echo esc_html($r['created_at']); ?></code></td>
                     <td><?php echo $r['booking_id'] ? '<a href="' . esc_url(admin_url('admin.php?page=roxy-event-booking&booking_id=' . intval($r['booking_id']))) . '">' . intval($r['booking_id']) . '</a>' : ''; ?></td>

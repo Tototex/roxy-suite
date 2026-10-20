@@ -29,9 +29,17 @@ final class SlingRetryReadDatabase {
     public int $insert_id = 1;
     public $rows = [];
     public array $logs = [];
+    public bool $fail_next_read = false;
     public function prepare(string $sql, ...$args): string { return $sql; }
     public function esc_like(string $value): string { return addcslashes($value, '_%\\'); }
-    public function get_results(string $sql, $format = null) { return $this->rows; }
+    public function get_results(string $sql, $format = null) {
+        if ($this->fail_next_read) {
+            $this->last_error = 'database unavailable';
+            $this->fail_next_read = false;
+            return null;
+        }
+        return $this->rows;
+    }
     public function insert(string $table, array $row): int { $this->last_error = ''; $this->logs[] = [$table, $row]; return 1; }
 }
 
@@ -75,4 +83,12 @@ $check(count($wpdb->logs) === 1
 $wpdb->last_error = '';
 $wpdb->rows = false;
 $check(is_wp_error(roxy_eb_repo_list_sling_auth_failed_bookings()), 'malformed non-array query result fails closed');
+$wpdb->last_error = '';
+$wpdb->rows = [];
+$check(roxy_eb_repo_list_sling_logs() === [], 'verified empty Sling Logs query remains an empty list');
+$wpdb->rows = [['id' => 3, 'action' => 'sync']];
+$check(roxy_eb_repo_list_sling_logs() === $wpdb->rows, 'Sling Logs query returns verified rows');
+$wpdb->fail_next_read = true;
+$log_error = roxy_eb_repo_list_sling_logs();
+$check(is_wp_error($log_error) && $log_error->get_error_code() === 'sling_logs_read_failed', 'Sling Logs read error is not shown as an empty log');
 echo "{$checks} Event Booking Sling retry-read checks passed.\n";
