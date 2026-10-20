@@ -81,7 +81,37 @@ class Admin {
         echo '</form><p><a class="button" href="' . esc_url(self::url('dashboard')) . '">Back to all vendors</a></p>';
         if (!$open) echo '<script>(function(){var t=document.getElementById("roxy-inventory-vendor-review"),b=document.getElementById("roxy-submit-vendor-order"),m=document.getElementById("roxy-order-minimum");if(!t||!b||!m)return;function c(){var total=0,incomplete=false;t.querySelectorAll(".roxy-order-qty").forEach(function(i){var q=Math.max(0,parseInt(i.value||"0",10)),cost=parseFloat(i.dataset.cost||"0"),known=i.dataset.costKnown==="1",cell=i.closest("tr").querySelector(".roxy-order-line-total");if(q>0&&!known){incomplete=true;if(cell)cell.textContent="Unknown";}else if(cell)cell.textContent="$"+(q*cost).toFixed(2);if(known)total+=q*cost;});document.getElementById("roxy-order-total").textContent=incomplete?"Incomplete — $"+total.toFixed(2)+" known":"$"+total.toFixed(2);b.disabled=incomplete||!(total>=parseFloat(m.dataset.minimum||"0"));}t.addEventListener("input",c);})();</script>';
     }
-    private static function unassigned(): void { $vendors=Store::vendors(); echo '<h2>Unassigned / not tracked products</h2><p>Assign vendors and change statuses, then save once. Not tracked items may remain without a vendor and never generate order quantities.</p><form method="post" action="'.esc_url(admin_url('admin-post.php')).'">'.wp_nonce_field('roxy_inventory_bulk_save','_wpnonce',true,false).'<input type="hidden" name="action" value="roxy_inventory_bulk_save"><table class="widefat striped"><thead><tr><th>Product</th><th>On hand</th><th>Vendor</th><th>Status</th></tr></thead><tbody>'; foreach(Store::review_products() as $p) { $status=($p['tracking_status']??'tracked'); echo '<tr><td>'.esc_html($p['name']).'</td><td>'.esc_html($p['on_hand']).'</td><td><select name="vendor['.esc_attr($p['id']).']"><option value="">Unassigned</option>'; foreach($vendors as $v) echo '<option value="'.esc_attr($v['name']).'" '.selected($p['vendor'],$v['name'],false).'>'.esc_html($v['name']).'</option>'; echo '</select></td><td><select name="tracking_status['.esc_attr($p['id']).']"><option value="tracked" '.selected($status,'tracked',false).'>Tracked</option><option value="not_tracked" '.selected($status,'not_tracked',false).'>Not tracked</option></select></td></tr>'; } echo '</tbody></table><p>'.get_submit_button('Save all changes','primary','submit',false).'</p></form>'; }
+    private static function unassigned(): void {
+        $vendors = Store::vendors();
+        $products = Store::review_products();
+        echo '<h2>Unassigned / not tracked products</h2><p>Assign vendors and change statuses, then save once. Not tracked items may remain without a vendor and never generate order quantities.</p>';
+        echo '<form id="roxy-inventory-unassigned" method="post" action="' . esc_url(admin_url('admin-post.php')) . '">' . wp_nonce_field('roxy_inventory_bulk_save','_wpnonce',true,false);
+        echo '<input type="hidden" name="action" value="roxy_inventory_bulk_save"><input type="hidden" name="unassigned_rows_complete" value="1"><input type="hidden" name="unassigned_row_count" value="' . esc_attr((string) count($products)) . '"><input type="hidden" name="unassigned_rows_json" value="">';
+        echo '<table class="widefat striped"><thead><tr><th>Product</th><th>On hand</th><th>Vendor</th><th>Status</th></tr></thead><tbody>';
+        foreach ($products as $product) {
+            $id = (int) $product['id'];
+            $status = $product['tracking_status'] ?? 'tracked';
+            echo '<tr><td>' . esc_html($product['name']) . '</td><td>' . esc_html($product['on_hand']) . '</td><td><select name="vendor[' . esc_attr((string) $id) . ']"><option value="">Unassigned</option>';
+            foreach ($vendors as $vendor) echo '<option value="' . esc_attr($vendor['name']) . '" ' . selected($product['vendor'],$vendor['name'],false) . '>' . esc_html($vendor['name']) . '</option>';
+            echo '</select></td><td><select name="tracking_status[' . esc_attr((string) $id) . ']"><option value="tracked" ' . selected($status,'tracked',false) . '>Tracked</option><option value="not_tracked" ' . selected($status,'not_tracked',false) . '>Not tracked</option></select></td></tr>';
+        }
+        echo '</tbody></table><p>' . get_submit_button('Save all changes','primary','submit',false) . '</p></form>';
+        echo <<<'JS'
+<script>
+document.getElementById('roxy-inventory-unassigned').addEventListener('submit', function () {
+    var rows = {};
+    this.querySelectorAll('select[name]').forEach(function (field) {
+        var match = field.name.match(/^(vendor|tracking_status)\[(\d+)\]$/);
+        if (!match) return;
+        if (!rows[match[2]]) rows[match[2]] = {};
+        rows[match[2]][match[1]] = field.value;
+        field.removeAttribute('name');
+    });
+    this.elements.unassigned_rows_json.value = JSON.stringify(rows);
+});
+</script>
+JS;
+    }
     private static function history(): void {
         $selected_id = absint($_GET['order_id'] ?? 0);
         $selected = $selected_id ? Store::order($selected_id) : null;
@@ -226,16 +256,45 @@ class Admin {
         }
         self::redirect('products', 'Product saved.', true);
     }
+    public static function unassigned_rows_from_submission(array $post): ?array {
+        if (($post['unassigned_rows_complete'] ?? null) !== '1'
+            || !is_scalar($post['unassigned_row_count'] ?? null)
+            || !ctype_digit((string) $post['unassigned_row_count'])
+            || (int) $post['unassigned_row_count'] > 20000) return null;
+        $expected = (int) $post['unassigned_row_count'];
+        if (isset($post['unassigned_rows_json']) && $post['unassigned_rows_json'] !== '') {
+            if (!is_string($post['unassigned_rows_json']) || strlen($post['unassigned_rows_json']) > 2000000) return null;
+            $rows = json_decode(wp_unslash($post['unassigned_rows_json']), true);
+            if (!is_array($rows) || count($rows) !== $expected) return null;
+        } else {
+            $vendors = $post['vendor'] ?? null;
+            $statuses = $post['tracking_status'] ?? null;
+            if (!is_array($vendors) || !is_array($statuses) || count($vendors) !== $expected || count($statuses) !== $expected) return null;
+            if (array_diff_key($vendors, $statuses) || array_diff_key($statuses, $vendors)) return null;
+            $rows = [];
+            foreach ($statuses as $id => $status) $rows[$id] = ['vendor' => $vendors[$id], 'tracking_status' => $status];
+        }
+        if (count($rows) !== $expected) return null;
+        foreach ($rows as $id => $row) {
+            if (!is_string($id) && !is_int($id)) return null;
+            if (!ctype_digit((string) $id) || (int) $id < 1 || (string) (int) $id !== (string) $id || !is_array($row)
+                || !array_key_exists('vendor', $row) || !is_scalar($row['vendor'])
+                || !array_key_exists('tracking_status', $row) || !is_string($row['tracking_status'])
+                || !in_array($row['tracking_status'], ['tracked', 'not_tracked'], true)) return null;
+        }
+        return $rows;
+    }
+
     public static function bulk_save(): void {
         self::guard(); check_admin_referer('roxy_inventory_bulk_save');
-        try { Store::transaction(static function () {
-            if(!is_array($_POST['tracking_status']??null)||!is_array($_POST['vendor']??null))throw new \RuntimeException('Incomplete product changes; nothing was saved.');
+        $rows = self::unassigned_rows_from_submission($_POST);
+        if ($rows === null) self::redirect('unassigned','The product list was incomplete or invalid. Nothing was saved; reload and try again.',false);
+        try { Store::transaction(static function () use ($rows) {
             $names=array_column(Store::all_vendors(),'name');
-            foreach((array)($_POST['tracking_status']??[]) as $id=>$status) {
+            foreach($rows as $id=>$row) {
                 $id=self::record_id($id);
-                if(!$id || !in_array($status,['tracked','not_tracked'],true) || !array_key_exists($id,(array)($_POST['vendor']??[]))) throw new \RuntimeException('Incomplete product changes; nothing was saved.');
-                $vendor=self::validated_vendor($_POST['vendor'][$id],$names);
-                Store::update_product($id,['vendor'=>$vendor,'tracking_status'=>$status]);
+                $vendor=self::validated_vendor($row['vendor'],$names);
+                Store::update_product($id,['vendor'=>$vendor,'tracking_status'=>$row['tracking_status']]);
             }
         }); } catch (\Throwable $e) { self::redirect('unassigned',$e->getMessage(),false); }
         self::redirect('unassigned','All product changes saved.',true);

@@ -59,6 +59,18 @@ $fallback = ['product_row_count'=>'1','product_rows_complete'=>'1','vendor'=>[1=
 check(count(\RoxyInventory\Admin::product_rows_from_submission($fallback)) === 1, 'I1: complete non-JavaScript fallback accepted');
 unset($fallback['target_stock']);
 check(\RoxyInventory\Admin::product_rows_from_submission($fallback) === null, 'I1: truncated fallback rejected');
+$unassigned = [];
+for ($id = 1; $id <= 550; $id++) $unassigned[$id] = ['vendor' => 'Vistar', 'tracking_status' => 'tracked'];
+$unassigned_post = ['unassigned_rows_complete'=>'1','unassigned_row_count'=>'550','unassigned_rows_json'=>json_encode($unassigned)];
+check(count(\RoxyInventory\Admin::unassigned_rows_from_submission($unassigned_post)) === 550, 'I1: unassigned bulk JSON preserves more than max_input_vars rows');
+$unassigned_post['unassigned_row_count'] = '551';
+check(\RoxyInventory\Admin::unassigned_rows_from_submission($unassigned_post) === null, 'I1: declared unassigned row count rejects truncated JSON before writes');
+$unassigned_post = ['unassigned_rows_complete'=>'1','unassigned_row_count'=>'2','vendor'=>[1=>'Vistar',2=>'Tripp'],'tracking_status'=>[1=>'tracked']];
+check(\RoxyInventory\Admin::unassigned_rows_from_submission($unassigned_post) === null, 'I1: truncated non-JavaScript unassigned form rejects mismatched field sets');
+$unassigned_post = ['unassigned_rows_complete'=>'1','unassigned_row_count'=>'1','vendor'=>[1=>'Vistar'],'tracking_status'=>[1=>'not_tracked']];
+check(count(\RoxyInventory\Admin::unassigned_rows_from_submission($unassigned_post)) === 1, 'I1: complete non-JavaScript unassigned form remains supported');
+$unassigned_post['tracking_status'][1] = 'invalid';
+check(\RoxyInventory\Admin::unassigned_rows_from_submission($unassigned_post) === null, 'I1: invalid unassigned tracking status is rejected');
 foreach(['bad_cost'=>['unit_cost'=>'1.555'],'overflow'=>['target_stock'=>'10000000000']]as$case=>$change){
     $row=['vendor'=>'Vistar','pack_size'=>'12','reorder_point'=>'20','target_stock'=>'60','unit_cost'=>'1.50','unit_cost_status'=>'estimate','unit_cost_source'=>'legacy list','unit_cost_checked_at'=>'','supplier_sku'=>'','override_qty'=>''];
     $p=['product_rows_complete'=>'1','product_row_count'=>'1','product_rows_json'=>json_encode([1=>array_merge($row,$change)])];
