@@ -13,8 +13,9 @@ function sanitize_key($value) { return preg_replace('/[^a-z0-9_\\-]/', '', strto
 function sanitize_text_field($value) { return trim(strip_tags((string)$value)); }
 function update_meta_cache($type, $ids) { if (count($ids)>100 && !$GLOBALS['extension']) throw new RuntimeException('Unbounded candidate metadata batch'); }
 function get_post_meta($id, $key, $single) { return str_contains($key, 'trade') ? ($id%10===0) : ($id%2===0 ? $id : 0); }
-function wp_get_attachment_image_src($id, $size) { return ['https://example.test/photo/'.$id]; }
+function wp_get_attachment_image_src($id, $size) { return ['https://example.test/wp-admin/admin-post.php?action=roxy_member_photo&attachment_id='.$id]; }
 function admin_url($path) { return 'https://example.test/wp-admin/'.$path; }
+class Roxy_Sub_Check { const META_PHOTO_ID='_roxy_member_photo_id'; static function staff_member_photo_url($id) { return 'https://example.test/wp-admin/admin-post.php?action=roxy_member_photo&attachment_id='.(int)$id; } }
 function esc_html($value) { return htmlspecialchars((string)$value, ENT_QUOTES); }
 function esc_url($value) { return htmlspecialchars((string)$value, ENT_QUOTES); }
 function add_query_arg($key, $value=null, $url=null) {
