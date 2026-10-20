@@ -27,7 +27,7 @@ function as_enqueue_async_action(string $hook, array $args, string $group): int 
 final class SlingRetryReadDatabase {
     public string $last_error = '';
     public int $insert_id = 1;
-    public array $rows = [];
+    public $rows = [];
     public array $logs = [];
     public function prepare(string $sql, ...$args): string { return $sql; }
     public function esc_like(string $value): string { return addcslashes($value, '_%\\'); }
