@@ -56,6 +56,8 @@ $file_path = '';
 $stored_upload_path = '';
 $upload_source = '';
 $invalid_source = '';
+$retained_upload_path = '';
+$retained_upload_source = '';
 $checks = 0;
 $check = static function (bool $condition, string $label) use (&$checks): void {
     if (!$condition) throw new RuntimeException('FAIL: ' . $label);
@@ -217,11 +219,48 @@ try {
         'invalid upload is rejected and its temporary copy is removed');
     $check(count($store_class::$logs) === 1,
         'rejected upload does not record a success audit entry');
+
+    $retained_upload_name = 'synthetic-readback-mismatch-' . bin2hex(random_bytes(8)) . '.xlsx';
+    $retained_upload_source = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $retained_upload_name;
+    $zip = new ZipArchive();
+    if ($zip->open($retained_upload_source, ZipArchive::CREATE | ZipArchive::EXCL) !== true) throw new RuntimeException('Could not create read-back mismatch workbook fixture.');
+    foreach ([
+        '[Content_Types].xml' => '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+        '_rels/.rels' => '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>',
+        'xl/workbook.xml' => '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>',
+        'xl/worksheets/sheet3.xml' => '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>',
+        'xl/worksheets/sheet4.xml' => '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>',
+    ] as $entry => $xml) {
+        if (!$zip->addFromString($entry, $xml)) throw new RuntimeException('Could not add read-back mismatch package entry.');
+    }
+    if (!$zip->close()) throw new RuntimeException('Could not finish read-back mismatch workbook.');
+    $retained_upload_path = trailingslashit($private_dir) . $retained_upload_name;
+    $keep_existing_option = static function ($value, $old_value, $option) use ($option_key) {
+        return $option === $option_key ? $old_value : $value;
+    };
+    add_filter('pre_update_option_' . $option_key, $keep_existing_option, 999, 3);
+    try {
+        $mismatch_result = $store_upload_method->invoke(null, $retained_upload_source, $retained_upload_name);
+    } finally {
+        remove_filter('pre_update_option_' . $option_key, $keep_existing_option, 999);
+    }
+    $after_workflow_mismatch = get_option($option_key, []);
+    $check(($mismatch_result['success'] ?? true) === false
+        && strpos((string) ($mismatch_result['message'] ?? ''), 'settings could not be read back') !== false,
+        'upload reports a controlled error when the full settings option does not read back');
+    $check(is_file($retained_upload_path) && !is_file($retained_upload_source)
+        && is_array($after_workflow_mismatch)
+        && ($after_workflow_mismatch['workbook_template_upload']['path'] ?? '') === $stored_upload_path,
+        'settings read-back failure preserves the existing reference and retains the new private copy safely');
+    $check(count($store_class::$logs) === 1,
+        'settings read-back failure does not record a success audit entry');
 } finally {
     if ($file_path !== '' && is_file($file_path)) @unlink($file_path);
     if ($stored_upload_path !== '' && is_file($stored_upload_path)) @unlink($stored_upload_path);
     if ($upload_source !== '' && is_file($upload_source)) @unlink($upload_source);
     if ($invalid_source !== '' && is_file($invalid_source)) @unlink($invalid_source);
+    if ($retained_upload_path !== '' && is_file($retained_upload_path)) @unlink($retained_upload_path);
+    if ($retained_upload_source !== '' && is_file($retained_upload_source)) @unlink($retained_upload_source);
     if ($prior_row !== null) {
         $wpdb->update($wpdb->options, $prior_row, ['option_name' => $option_key], ['%s', '%s'], ['%s']);
     } else {
