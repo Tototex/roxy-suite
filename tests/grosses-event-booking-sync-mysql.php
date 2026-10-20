@@ -37,6 +37,13 @@ $source = str_replace('namespace RoxyGrosses;', 'namespace ' . $namespace . ';',
 foreach ($tables as $old => $new) $source = str_replace("'" . $old . "'", "'" . $new . "'", $source);
 foreach ($options as $old => $new) $source = str_replace("'" . $old . "'", "'" . $new . "'", $source);
 eval($source);
+eval('namespace ' . $namespace . ';'
+  . ' final class Settings { public static function get_report_timezone(): string { return "America/Los_Angeles"; } }'
+  . ' final class Square {'
+  . ' public static function concession_reporting_categories(array $ids): array { return array_fill_keys($ids, true); }'
+  . ' public static function is_in_store_purchase_item(string $id, array $map = []): bool { return !empty($map[$id]); }'
+  . ' }'
+);
 $store = '\\' . $namespace . '\\Store';
 $check_count = 0;
 $check = static function (bool $ok, string $message) use (&$check_count): void {
@@ -99,6 +106,57 @@ try {
   $check($row['rental_title'] === 'Private Rental - Fixture Company' && $row['show_time'] === '4:30 PM'
       && $row['customer_name'] === 'Casey Tester' && $row['status'] === 'Paid' && (float) $row['invoice_amount'] === 425.0,
     'maps rental title, doors-open time, customer, invoice status and amount');
+
+  // Chain the real booking sync to the real Reporter allocator and rental dashboard
+  // summary using only randomized private Grosses tables and a local Square fixture.
+  if (!class_exists('\\' . $namespace . '\\Reporter', false)) {
+    $reporter_path = dirname($store_path) . '/class-roxy-grosses-reporter.php';
+    $reporter_source = file_get_contents($reporter_path);
+    if (!is_string($reporter_source) || strpos($reporter_source, 'namespace RoxyGrosses;') === false) throw new RuntimeException('Unexpected candidate Grosses Reporter source.');
+    $reporter_source = preg_replace('/^<\?php\s*/', '', $reporter_source, 1);
+    $reporter_source = str_replace('namespace RoxyGrosses;', 'namespace ' . $namespace . ';', $reporter_source);
+    eval($reporter_source);
+  }
+  update_option('timezone_string', 'America/Los_Angeles');
+  update_option('roxy_grosses_settings', ['report_timezone' => 'America/Los_Angeles']);
+  $wpdb->insert($bookings, [
+    'id' => 900010, 'visibility' => 'private', 'status' => 'confirmed', 'invoice_status' => 'paid',
+    'reserved_start_at' => '2038-06-10 16:00:00', 'reserved_end_at' => '2038-06-10 20:00:00',
+    'doors_open_at' => '2038-06-10 16:30:00', 'business_name' => 'Attribution Fixture', 'total_price' => '425.00',
+  ]);
+  if ($wpdb->last_error !== '') throw new RuntimeException('Could not seed private attribution booking.');
+  $attribution_sync = $store::sync_event_bookings_to_rentals('2038-06-01', '2038-06-30');
+  $check($attribution_sync['created'] === 1 && in_array('2038-06-10', $attribution_sync['dates'], true),
+    'nightly booking sync creates a rental row and marks its report date for concessions reallocation');
+  $movie_table = $store::entries_table_name();
+  $wpdb->insert($movie_table, [
+    'report_date' => '2038-06-10', 'movie_title' => 'Nearby Movie', 'normalized_title' => 'nearby movie',
+    'show_time' => '6:15 PM', 'general_qty' => 1, 'total_tickets' => 1, 'gross_total' => '12.00',
+    'concessions_total' => '0.00', 'created_at' => current_time('mysql'), 'updated_at' => current_time('mysql'),
+  ]);
+  if ($wpdb->last_error !== '') throw new RuntimeException('Could not seed private neighboring movie row.');
+  $rebalance = new ReflectionMethod('\\' . $namespace . '\\Reporter', 'rebalance_concessions_for_date');
+  $rebalance->setAccessible(true);
+  $square_fixture = [[
+    'id' => 'rental-attribution-order-fixture', 'closed_at' => '2038-06-10T18:00:00-07:00',
+    'line_items' => [[
+      'uid' => 'rental-attribution-line-fixture', 'item_type' => 'ITEM', 'catalog_object_id' => 'fixture-snack',
+      'name' => 'Concessions', 'quantity' => '1', 'total_money' => ['amount' => 14177, 'currency' => 'USD'],
+    ]],
+  ]];
+  $rebalance->invoke(null, '2038-06-10', $square_fixture);
+  $allocated_rental = $wpdb->get_row($wpdb->prepare(
+    'SELECT * FROM ' . $store::rental_entries_table_name() . ' WHERE source_ref = %s', 'booking:900010'
+  ), ARRAY_A);
+  $allocated_movie = $wpdb->get_row($wpdb->prepare(
+    "SELECT * FROM `{$movie_table}` WHERE report_date = %s AND movie_title = %s", '2038-06-10', 'Nearby Movie'
+  ), ARRAY_A);
+  $dashboard_summary = $store::rental_entries_summary(['date_from' => '2038-06-10', 'date_to' => '2038-06-10']);
+  $check((float) $allocated_rental['concessions_total'] === 141.77 && (float) $allocated_movie['concessions_total'] === 0.0,
+    'real Reporter allocation attributes the Square sale to its exact private rental window instead of a nearby movie');
+  $check($dashboard_summary['row_count'] === 1 && $dashboard_summary['invoice_total'] === 425.0
+      && $dashboard_summary['concessions'] === 141.77,
+    'real Rentals dashboard summary includes the synchronized booking invoice and attributed Square concessions');
 
   $repeat = $store::sync_event_bookings_to_rentals('2026-06-01', '2026-06-30');
   $check($repeat['created'] === 0 && $repeat['updated'] === 0 && $repeat['skipped'] === 1,
