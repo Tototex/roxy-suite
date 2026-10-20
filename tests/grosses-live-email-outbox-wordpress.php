@@ -8,6 +8,7 @@ namespace RoxyGrosses {
     public static function get($key, $default = '') {
       if ($key === 'theater_name') return 'Roxy Fixture Theater';
       if ($key === 'admin_email') return 'grosses-admin@example.invalid';
+      if ($key === 'email_subject') return '[PROVISIONAL — CLOSED-DAY REFRESH PENDING] Roxy grosses for {report_date}';
       return $default;
     }
     public static function get_report_timezone(): string { return 'UTC'; }
@@ -121,7 +122,8 @@ namespace {
       $check(!empty($daily['success']) && count($mail_calls) === $daily_mail_start + 1, 'scheduled daily Grosses send survives the reproduced restrictive-charset failure');
       $daily_mail = $mail_calls[$daily_mail_start] ?? [];
       $check(($daily_mail['to'] ?? null) === ['grosses-admin@example.invalid'], 'scheduled daily Grosses email targets only the configured admin fixture, never a vendor');
-      $check(!str_contains((string) ($daily_mail['subject'] ?? ''), 'PROVISIONAL')
+      $check(($daily_mail['subject'] ?? '') === 'Roxy grosses for 2039-07-18'
+        && !str_contains((string) ($daily_mail['subject'] ?? ''), 'PROVISIONAL')
         && !str_contains((string) ($daily_mail['message'] ?? ''), 'PROVISIONAL'), 'intercepted daily email omits provisional wording from subject and body');
       $daily_body = (string) ($daily_mail['message'] ?? '');
       $rows_position = strpos($daily_body, 'Report rows');

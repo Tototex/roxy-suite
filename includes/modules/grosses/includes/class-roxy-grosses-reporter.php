@@ -2783,6 +2783,10 @@ class Reporter {
       }
 
       $subject = self::expand_tokens((string) Settings::get('email_subject', ''), $summary);
+      // Existing saved templates may still carry the provisional prefix that
+      // used to be added to scheduled reports. It is internal scheduling state,
+      // not part of the manager-facing report subject.
+      $subject = preg_replace('/^\s*\[PROVISIONAL\b[^\]]*\]\s*/iu', '', $subject) ?? $subject;
       if ($is_test_send) {
         $subject = '[TEST] ' . $subject;
       }
