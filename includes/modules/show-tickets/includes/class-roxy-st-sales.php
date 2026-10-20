@@ -78,13 +78,21 @@ class Sales {
 
   /** Refresh the union so removing the last ticket line still clears its showing cache. */
   private static function refresh_order_projection(int $order_id, array $additional_showing_ids = []): void {
-    $markers_saved = self::mark_order_showings($order_id);
+    $order = wc_get_order($order_id);
+    $markers_saved = self::order_is_reportable($order) ? self::mark_order_showings($order_id) : true;
     $showing_ids = array_values(array_unique(array_map('intval', array_merge(
       self::showing_ids_for_order($order_id), $additional_showing_ids
     ))));
     foreach ($showing_ids as $showing_id) {
       if ($showing_id > 0) self::refresh_showing_stats($showing_id, !$markers_saved);
     }
+  }
+
+  private static function order_is_reportable($order): bool {
+    if (!is_object($order)) return false;
+    $status = method_exists($order, 'get_status') ? (string) $order->get_status() : '';
+    if (in_array($status, ['processing', 'completed'], true)) return true;
+    return method_exists($order, 'is_paid') && (bool) $order->is_paid();
   }
 
   private static function clear_order_item_mutation_state(int $order_id): void {
