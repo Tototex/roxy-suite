@@ -84,6 +84,12 @@ function roxy_eb_sling_job_cancel_booking($booking_id) {
 
 function roxy_eb_sling_job_retry_failed_auth_syncs() {
     $rows = roxy_eb_repo_list_sling_auth_failed_bookings(25);
+    if (is_wp_error($rows)) {
+        $message = 'Sling authorization retry scan could not read booking records; no retries were queued.';
+        roxy_eb_sling_log_api(['action' => 'auto_retry_scan'], 'internal/retry-failed-auth-syncs', 0, $message);
+        error_log('Roxy Event Booking: ' . $message);
+        return;
+    }
     foreach ($rows as $row) {
         $booking_id = intval($row['id'] ?? 0);
         if ($booking_id > 0) {

@@ -682,6 +682,7 @@ jobs:
             arcade-score-regression.php
             booking-refund-regression.php
             booking-availability-read-regression.php
+            event-booking-sling-retry-read-regression.php
             capacity-missing-order-api-regression.php
             c6-governance-regression.php
             capacity-walkup-regression.php

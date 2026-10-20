@@ -169,7 +169,10 @@ function roxy_eb_repo_list_sling_auth_failed_bookings($limit = 25) {
         ),
         ARRAY_A
     );
-    return $rows ?: [];
+    if ($wpdb->last_error !== '' || !is_array($rows)) {
+        return new WP_Error('sling_retry_read_failed', 'Failed to read Sling authorization-retry candidates.');
+    }
+    return $rows;
 }
 
 function roxy_eb_repo_insert_block($data) {
