@@ -103,6 +103,12 @@ try{
   \RoxyST\IssuanceFixtureTickets::apply_will_call_group($ids,3,false,$summary,null,9);
   $check($count_checked($ids)===3&&count(array_filter($ids,static fn($id)=>(int)get_post_meta($id,'_roxy_checked_in_by',true)===9))===3,'Will Call group records the explicitly supplied staff actor for every ticket');
   $summary['baseline_used']=3;
+  $fail_ticket_query=static function($sql){return stripos((string)$sql,"'roxy_ticket'")!==false?'SELECT * FROM `roxy_missing_will_call_ticket_read`':$sql;};
+  add_filter('query',$fail_ticket_query);$suppressed=$wpdb->suppress_errors(true);$locked_query_rejected=false;
+  try {try {\RoxyST\IssuanceFixtureTickets::apply_will_call_group($ids,0,true,$summary,static function()use($summary){roxy_will_call_ticket_ids_for_context((int)$summary['context_id']);throw new RuntimeException('Failure injection did not apply.');});}catch(RuntimeException $e){$locked_query_rejected=strpos($e->getMessage(),'Ticket records could not be verified')!==false;}}
+  finally {remove_filter('query',$fail_ticket_query);$wpdb->suppress_errors($suppressed);$wpdb->last_error='';}
+  $stored_after_query_failure=(int)$wpdb->get_var($wpdb->prepare("SELECT used_qty FROM {$wpdb->prefix}roxy_will_call_checkins WHERE product_id=%d AND customer_key=%s",$summary['context_id'],$summary['customer_key']));
+  $check($locked_query_rejected&&$count_checked($ids)===3&&$stored_after_query_failure===3,'ticket-record read failure inside the real locked Will Call transaction preserves all tickets and aggregate attendance');
   \RoxyST\IssuanceFixtureTickets::apply_will_call_group($ids,0,true,$summary,null,9);
   $summary['baseline_used']=0;
   $fail_group=static function($sql)use($wpdb,$ids){return strpos($sql,"INSERT INTO `{$wpdb->postmeta}`")===0&&str_contains($sql,'SELECT '.$ids[1].',')&&str_contains($sql,'_roxy_checked_in_by')?'INSERT INTO `roxy_missing_group_failure_target` VALUES (1)':$sql;};
