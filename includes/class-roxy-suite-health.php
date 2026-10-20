@@ -786,7 +786,7 @@ class Health {
                         $stale_note = 'The saved automatic Grosses date is in the future.';
                     } elseif ($days >= 2) {
                         $stale_status = self::FAIL;
-                        $stale_note = 'The automatic grosses run is stale. Cron may have stopped firing.';
+                        $stale_note = 'No successful automatic Grosses run is recorded in the last two report days. Check Daily scheduler outcome below to distinguish a failed run from a missing cron event.';
                     }
                 } catch (\Throwable $e) {
                     $stale_status = self::WARN;

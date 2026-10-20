@@ -145,7 +145,7 @@ $check(is_array($auto_item) && $auto_item['status'] === 'pass', 'yesterday repor
 $GLOBALS['health_options']['roxy_grosses_last_auto_date'] = (new DateTimeImmutable('-2 days', new DateTimeZone('UTC')))->format('Y-m-d');
 $grosses_items = $call('functional_grosses');
 foreach ($grosses_items as $item) if ($item['label'] === 'Last automatic report date') $auto_item = $item;
-$check(is_array($auto_item) && $auto_item['status'] === 'fail' && str_contains($auto_item['note'], 'stale'), 'two-day-old report marker indicates a missed scheduled report');
+$check(is_array($auto_item) && $auto_item['status'] === 'fail' && str_contains($auto_item['note'], 'Daily scheduler outcome below') && !str_contains($auto_item['note'], 'Cron may have stopped firing'), 'stale success marker directs staff to the recorded scheduler outcome instead of assuming cron stopped');
 $GLOBALS['health_options']['roxy_grosses_last_auto_date'] = ['not-a-date'];
 $grosses_items = $call('functional_grosses');
 foreach ($grosses_items as $item) if ($item['label'] === 'Last automatic report date') $auto_item = $item;
