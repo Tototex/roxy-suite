@@ -12,6 +12,9 @@ if (!defined('ABSPATH')) exit;
 
 class Roxy_Sub_Check {
   const META_PHOTO_ID = '_roxy_member_photo_id';
+  const META_PHOTO_PRIVATE = '_roxy_member_photo_private';
+  const OPTION_PRIVATE_PHOTO_PATHS = 'roxy_member_private_photo_paths';
+  const OPTION_PHOTO_PRIVACY_VERSION = 'roxy_member_photo_privacy_version';
   const TABLE_LOG     = 'roxy_member_scans';
   const SCHEMA_VERSION = '1';
   private static bool $schema_ready = false;
@@ -20,6 +23,8 @@ class Roxy_Sub_Check {
   public static function init() {
     add_action('init', [__CLASS__, 'maybe_upgrade_schema'], 1);
     add_action('init', [__CLASS__, 'rewrite_rule']);
+    add_action('init', [__CLASS__, 'ensure_existing_member_photos_private'], 2);
+    add_filter('wp_update_attachment_metadata', [__CLASS__, 'protect_member_photo_metadata_updates'], 10, 2);
     add_filter('query_vars', [__CLASS__, 'query_vars']);
     add_action('template_redirect', [__CLASS__, 'template_redirect']);
 
@@ -36,6 +41,8 @@ class Roxy_Sub_Check {
     add_action('init', [__CLASS__, 'handle_myaccount_photo_upload']);
     add_action('wp_ajax_roxy_sub_check_lookup', [__CLASS__, 'ajax_lookup']);
     add_action('admin_post_roxy_sub_export_scans', [__CLASS__, 'handle_scan_export']);
+    add_action('admin_post_roxy_member_photo', [__CLASS__, 'serve_private_member_photo']);
+    add_action('admin_post_nopriv_roxy_member_photo', [__CLASS__, 'serve_private_member_photo']);
     add_action('admin_init', [__CLASS__, 'redirect_legacy_export']);
   }
 
@@ -102,6 +109,207 @@ class Roxy_Sub_Check {
 
   private static function can_access_member_check(): bool {
     return roxy_suite_user_can_access_admin();
+  }
+
+  /** Migrate existing subscription photos to protected storage paths without moving their files. */
+  public static function ensure_existing_member_photos_private(): void {
+    if (get_option(self::OPTION_PHOTO_PRIVACY_VERSION) === '1') return;
+    global $wpdb;
+    if (!isset($wpdb) || !is_object($wpdb)) return;
+    $sql = $wpdb->prepare(
+      "SELECT DISTINCT CAST(meta_value AS UNSIGNED) FROM {$wpdb->postmeta} WHERE meta_key = %s AND CAST(meta_value AS UNSIGNED) > 0",
+      self::META_PHOTO_ID
+    );
+    $ids = $wpdb->get_col($sql);
+    if (!is_array($ids) || $wpdb->last_error) {
+      error_log('Roxy Member Check: existing member photos could not be enumerated for privacy migration.');
+      return;
+    }
+    foreach ($ids as $id) {
+      if (!self::protect_member_photo_attachment(absint($id))) {
+        error_log('Roxy Member Check: existing member photo privacy migration did not complete; photo previews remain hidden until protection succeeds.');
+        return;
+      }
+    }
+    update_option(self::OPTION_PHOTO_PRIVACY_VERSION, '1', false);
+  }
+
+  /** Return safe relative upload paths for the original and every known derivative. */
+  private static function member_photo_relative_paths(int $attachment_id, ?array $metadata_override = null): array {
+    if ($attachment_id <= 0 || get_post_type($attachment_id) !== 'attachment') return [];
+    $upload = wp_upload_dir(null, false);
+    $base = isset($upload['basedir']) ? realpath((string)$upload['basedir']) : false;
+    if (!$base || !is_dir($base) || is_link((string)$upload['basedir'])) return [];
+    $base = trailingslashit(wp_normalize_path($base));
+    $candidate_paths = [];
+    $attached = get_attached_file($attachment_id);
+    if (is_string($attached) && $attached !== '') $candidate_paths[] = $attached;
+    $meta = is_array($metadata_override) ? $metadata_override : wp_get_attachment_metadata($attachment_id);
+    if (is_array($meta) && !empty($meta['file']) && is_string($meta['file'])) {
+      $relative_dir = dirname(wp_normalize_path($meta['file']));
+      if ($relative_dir === '.') $relative_dir = '';
+      foreach (['file', 'original_image'] as $key) {
+        if (!empty($meta[$key]) && is_string($meta[$key])) {
+          $candidate_paths[] = trailingslashit($upload['basedir']) . ltrim($relative_dir . '/' . basename($meta[$key]), '/');
+        }
+      }
+      foreach (['sizes', 'backup_sizes'] as $collection) {
+        foreach ((array)($meta[$collection] ?? []) as $size) {
+          if (!empty($size['file']) && is_string($size['file'])) {
+            $candidate_paths[] = trailingslashit($upload['basedir']) . ltrim($relative_dir . '/' . basename($size['file']), '/');
+          }
+        }
+      }
+    }
+    $paths = [];
+    foreach ($candidate_paths as $candidate) {
+      if (is_link($candidate) || !is_file($candidate)) continue;
+      $real = realpath($candidate);
+      if (!$real) continue;
+      $real = wp_normalize_path($real);
+      if (strpos($real, $base) !== 0) return [];
+      $relative = substr($real, strlen($base));
+      // Restrict generated Apache patterns to a predictable, literal path alphabet.
+      if ($relative === '' || !preg_match('~\A[A-Za-z0-9._/-]+\z~D', $relative) || strpos($relative, '../') !== false) return [];
+      $paths[] = $relative;
+    }
+    $paths = array_values(array_unique($paths));
+    sort($paths, SORT_STRING);
+    return $paths;
+  }
+
+  /** Install/extend an exact-path Apache deny list before associating an attachment with a member. */
+  public static function protect_member_photo_metadata_updates($metadata, $attachment_id) {
+    $attachment_id = absint($attachment_id);
+    if ($attachment_id <= 0 || get_post_meta($attachment_id, self::META_PHOTO_PRIVATE, true) !== '1' || !is_array($metadata)) return $metadata;
+    if (!self::protect_member_photo_attachment($attachment_id, $metadata)) {
+      error_log('Roxy Member Check: regenerated member-photo variants could not be added to the private-file rules.');
+    }
+    return $metadata;
+  }
+
+  private static function protect_member_photo_attachment(int $attachment_id, ?array $metadata_override = null): bool {
+    $paths = self::member_photo_relative_paths($attachment_id, $metadata_override);
+    if (!$paths) return false;
+    $saved_paths = get_option(self::OPTION_PRIVATE_PHOTO_PATHS, []);
+    if (!is_array($saved_paths)) return false;
+    $paths = array_values(array_unique(array_merge($saved_paths, $paths)));
+    foreach ($paths as $path) {
+      if (!is_string($path) || !preg_match('~\A[A-Za-z0-9._/-]+\z~D', $path) || preg_match('~(?:\A|/)\.{1,2}(?:/|\z)~', $path)) return false;
+    }
+    sort($paths, SORT_STRING);
+    $upload = wp_upload_dir(null, false);
+    $dir = isset($upload['basedir']) ? (string)$upload['basedir'] : '';
+    if (!$dir || !is_dir($dir) || is_link($dir) || !is_writable($dir)) return false;
+    $htaccess = trailingslashit($dir) . '.htaccess';
+    if (is_link($htaccess) || (file_exists($htaccess) && !self::is_regular_privacy_file($htaccess))) return false;
+    $existing = file_exists($htaccess) ? self::read_privacy_file($htaccess) : '';
+    if (!is_string($existing)) return false;
+    $begin = '# BEGIN ROXY MEMBER PHOTO PRIVACY';
+    $end = '# END ROXY MEMBER PHOTO PRIVACY';
+    $begin_count = substr_count($existing, $begin);
+    $end_count = substr_count($existing, $end);
+    if ($begin_count !== $end_count || $begin_count > 1) return false;
+    if ($begin_count === 1) {
+      $start = strpos($existing, $begin);
+      $finish = strpos($existing, $end, $start);
+      if ($start === false || $finish === false) return false;
+      $finish += strlen($end);
+      $existing = substr($existing, 0, $start) . substr($existing, $finish);
+    }
+    $block = $begin . "\n<IfModule mod_rewrite.c>\nRewriteEngine On\nRewriteRule ^\\.roxy-member-photo-privacy-[A-Za-z0-9]+$ - [F,L]\n";
+    foreach ($paths as $path) $block .= 'RewriteRule ^' . str_replace('.', '\\.', $path) . "$ - [F,L]\n";
+    $block .= "</IfModule>\n$end\n";
+    $contents = $block . $existing;
+    if (!self::write_privacy_file_atomically($dir, $htaccess, $contents)) return false;
+    if (get_option(self::OPTION_PRIVATE_PHOTO_PATHS, null) !== $paths) update_option(self::OPTION_PRIVATE_PHOTO_PATHS, $paths, false);
+    if (get_option(self::OPTION_PRIVATE_PHOTO_PATHS, null) !== $paths) return false;
+    update_post_meta($attachment_id, self::META_PHOTO_PRIVATE, '1');
+    return get_post_meta($attachment_id, self::META_PHOTO_PRIVATE, true) === '1';
+  }
+
+  private static function is_regular_privacy_file(string $path): bool {
+    clearstatcache(true, $path);
+    if (is_link($path)) return false;
+    $stat = @lstat($path);
+    return is_array($stat) && (($stat['mode'] & 0170000) === 0100000);
+  }
+
+  private static function read_privacy_file(string $path) {
+    if (!self::is_regular_privacy_file($path)) return false;
+    $handle = @fopen($path, 'rb');
+    if (!is_resource($handle)) return false;
+    $opened = @fstat($handle);
+    clearstatcache(true, $path);
+    $current = @lstat($path);
+    $same = is_array($opened) && is_array($current) && (($opened['mode'] & 0170000) === 0100000)
+      && ($opened['dev'] ?? null) === ($current['dev'] ?? null) && ($opened['ino'] ?? null) === ($current['ino'] ?? null);
+    $contents = $same ? @stream_get_contents($handle) : false;
+    @fclose($handle);
+    return is_string($contents) ? $contents : false;
+  }
+
+  private static function write_privacy_file_atomically(string $dir, string $path, string $contents): bool {
+    $temporary = '';
+    $handle = false;
+    for ($attempt = 0; $attempt < 8; $attempt++) {
+      $candidate = trailingslashit($dir) . '.roxy-member-photo-privacy-' . bin2hex(random_bytes(8));
+      $handle = @fopen($candidate, 'x+b');
+      if (is_resource($handle)) { $temporary = $candidate; break; }
+    }
+    if (!is_resource($handle) || $temporary === '') return false;
+    $offset = 0; $length = strlen($contents); $ok = true;
+    while ($offset < $length) {
+      $written = @fwrite($handle, substr($contents, $offset));
+      if (!is_int($written) || $written <= 0) { $ok = false; break; }
+      $offset += $written;
+    }
+    $ok = $ok && $offset === $length && @fflush($handle);
+    $opened = @fstat($handle); clearstatcache(true, $temporary); $current = @lstat($temporary);
+    $same = is_array($opened) && is_array($current) && (($opened['mode'] & 0170000) === 0100000)
+      && ($opened['dev'] ?? null) === ($current['dev'] ?? null) && ($opened['ino'] ?? null) === ($current['ino'] ?? null);
+    $closed = @fclose($handle);
+    if (!$ok || !$same || !$closed || !self::is_regular_privacy_file($temporary)) { @unlink($temporary); return false; }
+    clearstatcache(true, $path);
+    if (is_link($path) || (file_exists($path) && !self::is_regular_privacy_file($path)) || !@rename($temporary, $path)) { @unlink($temporary); return false; }
+    $verified = self::read_privacy_file($path);
+    return is_string($verified) && $verified === $contents;
+  }
+
+  private static function private_member_photo_url(int $attachment_id): string {
+    if ($attachment_id <= 0 || get_post_meta($attachment_id, self::META_PHOTO_PRIVATE, true) !== '1') return '';
+    return add_query_arg(['action' => 'roxy_member_photo', 'attachment_id' => $attachment_id], admin_url('admin-post.php'));
+  }
+
+  private static function authorized_member_photo_file(int $attachment_id): string {
+    if (!is_user_logged_in() || !self::can_access_member_check() || $attachment_id <= 0
+      || get_post_meta($attachment_id, self::META_PHOTO_PRIVATE, true) !== '1') return '';
+    $file = get_attached_file($attachment_id);
+    $real = is_string($file) && !is_link($file) ? realpath($file) : false;
+    $upload = wp_upload_dir(null, false);
+    $base = isset($upload['basedir']) ? realpath((string)$upload['basedir']) : false;
+    $type = $real ? wp_check_filetype($real) : [];
+    $allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (!$real || !$base || strpos(wp_normalize_path($real), trailingslashit(wp_normalize_path($base))) !== 0
+      || !is_file($real) || !in_array((string)($type['type'] ?? ''), $allowed, true)) {
+      return '';
+    }
+    return $real;
+  }
+
+  public static function serve_private_member_photo(): void {
+    $attachment_id = isset($_GET['attachment_id']) ? absint($_GET['attachment_id']) : 0;
+    $real = self::authorized_member_photo_file($attachment_id);
+    if ($real === '') { status_header(404); exit; }
+    $type = wp_check_filetype($real);
+    nocache_headers();
+    header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
+    header('X-Content-Type-Options: nosniff');
+    header('Content-Type: ' . $type['type']);
+    header('Content-Length: ' . (string)filesize($real));
+    header('Content-Disposition: inline; filename="member-photo.' . strtolower((string)$type['ext']) . '"');
+    readfile($real);
+    exit;
   }
 
   public static function template_redirect() {
@@ -347,10 +555,7 @@ class Roxy_Sub_Check {
 
     $photo_id = method_exists($sub, 'get_meta') ? absint($sub->get_meta(self::META_PHOTO_ID, true)) : 0;
     if ($photo_id) {
-      $img = wp_get_attachment_image_src($photo_id, 'medium');
-      if (is_array($img) && !empty($img[0])) {
-        $out['photo_url'] = $img[0];
-      }
+      $out['photo_url'] = self::private_member_photo_url($photo_id);
     }
 
     return $out;
@@ -1000,21 +1205,13 @@ class Roxy_Sub_Check {
     if ((int)$owner !== (int)$current_user_id) return;
 
     $photo_id = method_exists($subscription, 'get_meta') ? absint($subscription->get_meta(self::META_PHOTO_ID, true)) : 0;
-    $photo_url = '';
-    if ($photo_id) {
-      $img = wp_get_attachment_image_src($photo_id, 'medium');
-      if (is_array($img) && !empty($img[0])) $photo_url = $img[0];
-    }
-
     echo '<section style="margin-top:18px; padding:16px; border:1px solid #e5e5e5; border-radius:12px;">';
     echo '<h3 style="margin-top:0;">Member Photo (for your NFC card)</h3>';
     echo '<p style="opacity:.85;">Upload a clear headshot. This photo will show at the door when your membership is scanned.</p>';
 
-    if ($photo_url) {
-      echo '<p><img src="' . esc_url($photo_url) . '" alt="Member photo" style="width:120px; height:120px; border-radius:16px; object-fit:cover; border:1px solid #ddd;"></p>';
-    } else {
-      echo '<p style="opacity:.75;">No photo on file.</p>';
-    }
+    echo $photo_id
+      ? '<p style="opacity:.75;">Photo on file. It is visible only to authorized staff.</p>'
+      : '<p style="opacity:.75;">No photo on file.</p>';
 
     echo '<form method="post" enctype="multipart/form-data">';
     wp_nonce_field('roxy_myaccount_photo_upload', 'roxy_myaccount_photo_nonce');
@@ -1076,6 +1273,11 @@ class Roxy_Sub_Check {
 
     $attachment_id = absint($attachment_id);
     if (!$attachment_id) return;
+    if (!self::protect_member_photo_attachment($attachment_id)) {
+      if (function_exists('wp_delete_attachment')) wp_delete_attachment($attachment_id, true);
+      error_log('Roxy Member Check: uploaded member photo was not saved because private-file protection could not be verified.');
+      return;
+    }
     $previous_photo_id = method_exists($sub, 'get_meta') ? absint($sub->get_meta(self::META_PHOTO_ID, true)) : 0;
     $metadata_saved = false;
 
@@ -1205,11 +1407,7 @@ class Roxy_Sub_Check {
 
     $subscription = function_exists('wcs_get_subscription') ? wcs_get_subscription((int)$post->ID) : false;
     $photo_id = is_object($subscription) && method_exists($subscription, 'get_meta') ? absint($subscription->get_meta(self::META_PHOTO_ID, true)) : 0;
-    $photo_url = '';
-    if ($photo_id) {
-      $img = wp_get_attachment_image_src($photo_id, 'medium');
-      if (is_array($img) && !empty($img[0])) $photo_url = $img[0];
-    }
+    $photo_url = $photo_id ? self::private_member_photo_url($photo_id) : '';
 
     echo '<p style="margin-top:0;">Attach a photo to this specific subscription (best for households with multiple cards).</p>';
 
@@ -1247,6 +1445,10 @@ class Roxy_Sub_Check {
     if (!is_object($subscription) || !method_exists($subscription, 'get_meta') || !method_exists($subscription, 'save')
       || ($photo_id > 0 && !method_exists($subscription, 'update_meta_data'))
       || ($photo_id <= 0 && !method_exists($subscription, 'delete_meta_data'))) {
+      set_transient('roxy_member_photo_save_' . get_current_user_id(), 0, MINUTE_IN_SECONDS);
+      return;
+    }
+    if ($photo_id > 0 && !self::protect_member_photo_attachment($photo_id)) {
       set_transient('roxy_member_photo_save_' . get_current_user_id(), 0, MINUTE_IN_SECONDS);
       return;
     }
