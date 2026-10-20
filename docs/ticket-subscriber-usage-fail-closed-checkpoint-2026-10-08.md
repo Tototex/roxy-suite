@@ -18,3 +18,7 @@ The subscriber allowance calculator treated WooCommerce's paid-order query as an
 ## Remaining
 
 This protects this module's read path but does not certify guest/Blocks/gateway coverage or all shared capacity-cache behaviors. The larger T1/T6 verification remains in progress.
+
+## Policy regression clarification — 2026-10-20
+
+The existing entitlement rule intentionally grants at least one subscriber seat for each active or pending-cancel subscription, even when Woo returns an empty item list or a zero-quantity item; additional valid item quantities increase the allowance. This preserves the established membership policy rather than treating a missing line item as proof that the membership itself is invalid. Regression assertions cover the minimum-one behavior as well as malformed/fractional data. Hosted run [39509868924](https://github.com/Tototex/roxy-suite/actions/runs/39509868924) passed all 11 jobs, including the PHP 8.0–8.4 matrix, isolated suite, and private WordPress/Woo/MySQL/HPOS lifecycle jobs. No production ticket or subscription data was changed.
