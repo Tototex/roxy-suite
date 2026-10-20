@@ -24,6 +24,7 @@ final class BookingHistoryReadWpdb {
     public string $last_error = '';
     public $result = [];
     public bool $fail_next_read = false;
+    public $row = null;
     public function prepare(string $query, ...$args): string {
         foreach ($args as $arg) $query = preg_replace('/%s|%d/', "'" . addslashes((string) $arg) . "'", $query, 1);
         return $query;
@@ -35,6 +36,14 @@ final class BookingHistoryReadWpdb {
             return null;
         }
         return $this->result;
+    }
+    public function get_row(string $query, $format = null) {
+        if ($this->fail_next_read) {
+            $this->last_error = 'fixture database read failure';
+            $this->fail_next_read = false;
+            return null;
+        }
+        return $this->row;
     }
 }
 $GLOBALS['wpdb'] = new BookingHistoryReadWpdb();
@@ -58,6 +67,12 @@ $check = static function (bool $ok, string $message) use (&$checks): void {
 $GLOBALS['wpdb']->fail_next_read = true;
 $failed = roxy_fixture_eb_repo_list_bookings_for_user(42, 'customer@example.test');
 $check(is_wp_error($failed) && $failed->get_error_code() === 'booking_list_read_failed', 'booking history repository exposes database read failure');
+$GLOBALS['wpdb']->last_error = 'stale unrelated database error';
+$GLOBALS['wpdb']->row = null;
+$check(roxy_fixture_eb_repo_get_booking_by_order(123) === null, 'booking lookup clears stale database errors and preserves verified no-booking result');
+$GLOBALS['wpdb']->fail_next_read = true;
+$failed_order_lookup = roxy_fixture_eb_repo_get_booking_by_order(123);
+$check(is_wp_error($failed_order_lookup) && $failed_order_lookup->get_error_code() === 'booking_order_read_failed', 'booking lookup distinguishes database failure from a missing booking');
 $GLOBALS['wpdb']->fail_next_read = true;
 ob_start();
 roxy_fixture_eb_render_my_bookings();

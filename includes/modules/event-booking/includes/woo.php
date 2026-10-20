@@ -409,6 +409,11 @@ function roxy_eb_maybe_cancel_booking_for_order($order_id) {
     $order_id = intval($order_id);
     if ($order_id <= 0) return;
     $booking = roxy_eb_repo_get_booking_by_order($order_id);
+    if (is_wp_error($booking)) {
+        $order = function_exists('wc_get_order') ? wc_get_order($order_id) : null;
+        if ($order) $order->add_order_note('Roxy booking could not be checked after a refund because the booking database lookup failed. Manager review is required; the booking was not automatically cancelled.');
+        return;
+    }
     if (!$booking) return;
     if (($booking['status'] ?? '') === 'cancelled') return;
 
@@ -846,6 +851,11 @@ function roxy_eb_on_payment_complete($order_id) {
     }
 
     $existing = roxy_eb_repo_get_booking_by_order($order_id);
+    if (is_wp_error($existing)) {
+        $order->add_order_note('Roxy booking could not be checked after payment because the booking database lookup failed. Manager review is required; automatic booking creation was stopped to avoid a duplicate.');
+        roxy_eb_email_internal_booking_failed($order, 'Booking storage could not be checked after payment. Please review this paid order and confirm whether its booking exists.');
+        return;
+    }
     if ($existing) return;
 
     foreach ($order->get_items() as $item) {
@@ -1024,7 +1034,7 @@ function roxy_eb_thankyou_booking_details($order_id) {
     echo '<section class="roxy-eb-thankyou" style="margin-top:24px;">';
     echo '<h2>' . ($has_adjustment ? 'Your Booking Update' : 'Your Roxy Booking') . '</h2>';
 
-    if (!$booking) {
+    if (!$booking || is_wp_error($booking)) {
         echo '<p>' . ($has_adjustment ? 'Your booking update is processing. If you do not receive a confirmation email shortly, please contact us.' : 'Your booking is processing. If you do not receive a confirmation email shortly, please contact us.') . '</p>';
         echo '</section>';
         return;

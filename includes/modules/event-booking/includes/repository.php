@@ -112,7 +112,11 @@ function roxy_eb_repo_get_booking($id) {
 function roxy_eb_repo_get_booking_by_order($order_id) {
     global $wpdb;
     $table = roxy_eb_table_bookings();
+    $wpdb->last_error = '';
     $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table WHERE woo_order_id=%d ORDER BY id DESC LIMIT 1", intval($order_id)), ARRAY_A);
+    if ($wpdb->last_error !== '' || (!is_array($row) && $row !== null)) {
+        return new WP_Error('booking_order_read_failed', 'Booking lookup failed: ' . ($wpdb->last_error ?: 'database returned an invalid result.'));
+    }
     return $row ?: null;
 }
 
