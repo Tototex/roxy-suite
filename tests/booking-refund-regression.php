@@ -332,6 +332,9 @@ run_test('stale cancellation stops before refunding later linked adjustment orde
     check(count($GLOBALS['wc_refund_calls'])===1 && $GLOBALS['wc_refund_calls'][0]['order_id']===186,'later linked adjustment order is not refunded from stale snapshot');
     check($GLOBALS['bookings'][86]['status']==='confirmed' && $GLOBALS['bookings'][86]['guest_count']===11,'concurrent booking edit and occupancy remain intact');
     check(!$GLOBALS['cleared_reminders'] && !$GLOBALS['queued_cancellations'],'stale multi-order cancellation retains reminders and external reservation work');
+    check(roxy_eb_cancel_booking(86,'admin')===true,'fresh cancellation snapshot can safely finish after review');
+    check(count($GLOBALS['wc_refund_calls'])===2 && $GLOBALS['wc_refund_calls'][1]['order_id']===187,'retry does not refund the already-completed primary order again and processes the still-linked adjustment order once');
+    check($GLOBALS['bookings'][86]['status']==='cancelled' && $GLOBALS['cleared_reminders']===[86] && $GLOBALS['queued_cancellations']===[86],'successful fresh retry finally releases occupancy and clears reminders');
 });
 run_test('Woo refund hook retains reminders when booking cancellation fails', function() {
     reset_gateway(); make_booking(85,99998);
