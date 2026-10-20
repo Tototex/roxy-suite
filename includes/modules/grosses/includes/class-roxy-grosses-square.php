@@ -389,8 +389,14 @@ class Square {
     $data = json_decode($raw, true);
 
     if ($code < 200 || $code >= 300) {
-      $message = 'Square request failed.';
-      if (!empty($data['errors'][0]['detail'])) {
+      if ($code === 401) {
+        $message = 'Square rejected the saved access token. Reconnect Square in Grosses settings and verify the selected environment.';
+      } elseif ($code === 403) {
+        $message = 'Square denied this request. Check the saved token\'s required permissions in Grosses settings.';
+      } else {
+        $message = 'Square request failed.';
+      }
+      if ($code !== 401 && $code !== 403 && !empty($data['errors'][0]['detail'])) {
         $message = (string) $data['errors'][0]['detail'];
       }
       throw new \RuntimeException($message);

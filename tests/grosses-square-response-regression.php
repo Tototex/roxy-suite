@@ -22,6 +22,11 @@ namespace {
   function reset_fixture($responses){$GLOBALS['responses']=$responses;$GLOBALS['calls']=[];\RoxyGrosses\Settings::$locations='fixture-location';}
   function must_fail($responses,$label){reset_fixture($responses);try{\RoxyGrosses\Square::fetch_orders_for_date('2026-10-03');throw new \LogicException('Failure expected: '.$label);}catch(\RuntimeException $error){check(true,$label);}}
   require ($argv[2]??(($argv[1]??dirname(__DIR__)).'/includes/modules/grosses/includes/class-roxy-grosses-square.php'));
+  foreach ([401=>"Square rejected the saved access token. Reconnect Square in Grosses settings and verify the selected environment.",403=>"Square denied this request. Check the saved token's required permissions in Grosses settings."] as $status=>$expected) {
+    reset_fixture([response(['errors'=>[['detail'=>'provider-specific authorization text']]],$status)]);
+    try { \RoxyGrosses\Square::fetch_orders_for_date('2026-10-03'); throw new \LogicException('Authorization failure expected.'); }
+    catch (\RuntimeException $error) { check($error->getMessage()===$expected && !str_contains($error->getMessage(),'provider-specific'),'HTTP '.$status.' has actionable non-sensitive guidance'); }
+  }
   foreach([['status'=>200,'body'=>'broken'],response(null),response([]),response('text'),response(['errors'=>[['detail'=>'failure']]]),response(['orders'=>null]),response(['orders'=>'bad']),response(['orders'=>['bad']]),response(['orders'=>[[]]]),response(['orders'=>['not-list'=>['id'=>'a']]]),response(['order_entries'=>[]]),response(['orders'=>[['id'=>'a']]],429),response(['orders'=>[['id'=>'a']]],500),new FixtureNetworkError('network failure')] as $r)must_fail([$r],'malformed/HTTP/error/incomplete order response cannot become a sales report');
   reset_fixture([['status'=>200,'body'=>'{}']]);check(\RoxyGrosses\Square::fetch_orders_for_date('2026-10-03')===[],'valid empty object remains a legitimate zero-order result');
   must_fail([response(['orders'=>(object)[]])],'JSON object cannot masquerade as an empty order list');
