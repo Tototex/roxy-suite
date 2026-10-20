@@ -91,7 +91,8 @@ namespace {
     || !str_contains($proxy_response, '$5.00')
     || !str_contains($proxy_response, 'Proxy date; verify provider record.')
     || !str_contains($proxy_response, 'recorded paid order total')
-    || !str_contains($proxy_response, 'not independently verified against Stripe/PayPal capture records or payout settlement')) {
+    || !str_contains($proxy_response, 'Stripe orders explicitly marked as uncaptured are excluded')
+    || !str_contains($proxy_response, 'not independently confirmed with payment providers or payout settlement')) {
     throw new RuntimeException('Cashflow must itemize and escape proxy-dated Square refunds without changing included totals.');
   }
   \RoxyGrosses\CashflowReport::$response['review_exceptions']['square_refunds_using_update_time_proxy'] = [];

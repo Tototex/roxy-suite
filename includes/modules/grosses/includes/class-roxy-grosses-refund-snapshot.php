@@ -621,6 +621,8 @@ final class WooCollectionEvents {
       $gateway = $order->get_payment_method();
       if (!is_string($gateway) || $gateway === '') throw new \RuntimeException('WooCommerce collection order has an invalid gateway identity.');
       if (!isset($gateways[$gateway])) continue;
+      if ($gateway === 'stripe' && method_exists($order, 'get_meta')
+        && $order->get_meta('_stripe_charge_captured', true) === 'no') continue;
       $is_paid = $order->is_paid() === true;
       if (!$is_paid && method_exists($order, 'get_meta')) {
         $seat_review = $order->get_meta('_roxy_seat_review', true);

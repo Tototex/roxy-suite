@@ -44,7 +44,8 @@ final class FakeWooCollectionOrder {
     private string $currency,
     private $total,
     private ?\DateTimeInterface $paid_at,
-    private string $transaction_id
+    private string $transaction_id,
+    private array $meta = []
   ) {}
   public function get_id(): int { return $this->id; }
   public function get_payment_method(): string { return $this->gateway; }
@@ -53,6 +54,7 @@ final class FakeWooCollectionOrder {
   public function get_total() { return $this->total; }
   public function get_date_paid(): ?\DateTimeInterface { return $this->paid_at; }
   public function get_transaction_id(): string { return $this->transaction_id; }
+  public function get_meta(string $key, bool $single = true) { return $this->meta[$key] ?? ''; }
 }
 final class Square {
   public static array $orders = [];
@@ -235,6 +237,10 @@ namespace {
   ], ['stripe']);
   $assert(count($woo_collections) === 1 && $woo_collections[0]['amount_cents'] === 4237, 'Woo collection projection includes positive paid orders only from the explicit online gateway allow-list');
   $assert($woo_collections[0]['transaction_id'] === 'ch_private_1' && $woo_collections[0]['collection_date'] === '2026-10-02', 'Woo collection retains transaction identity and Pacific paid date');
+  $stripe_authorized_only = new \RoxyGrosses\FakeWooCollectionOrder(205, 'stripe', true, 'USD', '99.00', new \DateTimeImmutable('2026-10-03T06:30:00Z'), 'pi_authorized_only', ['_stripe_charge_captured' => 'no']);
+  $stripe_captured = new \RoxyGrosses\FakeWooCollectionOrder(206, 'stripe', true, 'USD', '12.34', new \DateTimeImmutable('2026-10-03T06:30:00Z'), 'ch_captured', ['_stripe_charge_captured' => 'yes']);
+  $assert(\RoxyGrosses\WooCollectionEvents::from_orders([$stripe_authorized_only], ['stripe']) === [], 'Stripe authorization explicitly recorded as uncaptured is excluded from cash collected');
+  $assert(count(\RoxyGrosses\WooCollectionEvents::from_orders([$stripe_captured], ['stripe'])) === 1, 'explicitly captured Stripe charge remains eligible for cash collected');
   $expect_throw(static fn() => \RoxyGrosses\WooCollectionEvents::from_orders([new \RoxyGrosses\FakeWooCollectionOrder(201, 'stripe', true, 'USD', '1.00', null, 'tx')], ['stripe']), 'paid Woo collection without paid timestamp fails closed');
   $expect_throw(static fn() => \RoxyGrosses\WooCollectionEvents::from_orders([new \RoxyGrosses\FakeWooCollectionOrder(201, 'stripe', true, 'USD', '1.001', new \DateTimeImmutable('2026-10-03T06:30:00Z'), 'tx')], ['stripe']), 'Woo collection fractional cents fail closed');
   $expect_throw(static fn() => \RoxyGrosses\WooCollectionEvents::from_orders([new \RoxyGrosses\FakeWooCollectionOrder(201, 'stripe', true, 'CAD', '1.00', new \DateTimeImmutable('2026-10-03T06:30:00Z'), 'tx')], ['stripe']), 'Woo collection non-USD order fails closed');
