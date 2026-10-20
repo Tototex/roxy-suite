@@ -99,9 +99,10 @@ namespace {
     ob_start(); \RoxySocial\Admin::render_page(); $approved_removal_html=ob_get_clean();
     $approved_removal_row='';
     foreach(preg_split('/(?=<tr)/',$approved_removal_html) as $candidate_row) if(str_contains($candidate_row,'REMOVAL_OUTCOME_UNCERTAIN:')) {$approved_removal_row=explode('</tr>',$candidate_row,2)[0];break;}
-    $check($approved_removal_row!==''&&str_contains($approved_removal_row,'Needs Review')&&str_contains($approved_removal_row,'Confirm all remaining posts are gone')
-        &&!str_contains($approved_removal_row,'Post now')&&!str_contains($approved_removal_row,'Un-approve')
-        &&!str_contains($approved_removal_row,'Retry publish')&&!str_contains($approved_removal_row,'Retry remove')
-        &&!str_contains($approved_removal_row,'name="action" value="roxy_social_delete_draft"'));
+    $check($approved_removal_row!=='','uncertain removal remains in its own rendered row');
+    $check(str_contains($approved_removal_row,'Needs Review')&&str_contains($approved_removal_row,'Confirm all remaining posts are gone'),'approved-but-uncertain row is rendered as Needs Review with its manual confirmation');
+    $check(!str_contains($approved_removal_row,'Post now')&&!str_contains($approved_removal_row,'Un-approve'),'uncertain removal row hides publish and approval controls');
+    $check(!str_contains($approved_removal_row,'Retry publish')&&!str_contains($approved_removal_row,'Retry remove'),'uncertain removal row hides blind retry controls');
+    $check(!str_contains($approved_removal_row,'name="action" value="roxy_social_delete_draft"'),'uncertain removal row cannot be deleted from the UI');
     echo $checks," bulk editor server checks passed\n";
 }
