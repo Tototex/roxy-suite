@@ -42,6 +42,12 @@ class Workbook {
 
     $temporary_path = (string) ($uploaded['file'] ?? '');
     $original_name = sanitize_file_name((string) ($_FILES['workbook_template']['name'] ?? basename($temporary_path ?: 'template.xlsx')));
+    $result = self::store_uploaded_template($temporary_path, $original_name);
+    self::redirect_with_notice($result['success'] ? 'success' : 'error', $result['message'], null, 'workbook');
+  }
+
+  /** Validate, privatize, and persist one upload; split from the redirecting admin endpoint for integration testing. */
+  private static function store_uploaded_template(string $temporary_path, string $original_name): array {
     try {
       self::validate_template_package($temporary_path, $original_name);
       $private_path = self::move_file_to_private_storage(
@@ -56,7 +62,7 @@ class Workbook {
       if ($cleanup_failed) error_log('Roxy Grosses: unable to remove a rejected workbook upload from temporary storage.');
       $message = 'Workbook template was not accepted: ' . $error->getMessage();
       if ($cleanup_failed) $message .= ' The rejected upload could not be removed automatically; remove it from the WordPress uploads folder.';
-      self::redirect_with_notice('error', $message, null, 'workbook');
+      return ['success' => false, 'message' => $message];
     }
 
     $saved_template = self::set_uploaded_template([
@@ -75,13 +81,13 @@ class Workbook {
           : 'The private copy failed the workbook path-safety check; the existing template setting was retained.')
         : 'Workbook template settings could not be read back, so the private copy was retained for safety. Retry or check the workbook setting before uploading again.';
       if ($cleanup_failed) $message .= ' The unused private copy could not be removed automatically.';
-      self::redirect_with_notice('error', $message, null, 'workbook');
+      return ['success' => false, 'message' => $message];
     }
 
     Store::insert_log('upload_workbook_template', 'manual-template', null, null, true, 'Workbook template uploaded.', [
       'path' => $private_path,
     ]);
-    self::redirect_with_notice('success', 'Workbook template uploaded successfully.', null, 'workbook');
+    return ['success' => true, 'message' => 'Workbook template uploaded successfully.', 'path' => $private_path];
   }
 
   public static function handle_refresh_workbook(): void {

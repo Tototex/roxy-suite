@@ -27,9 +27,11 @@ if (!is_string($source) || substr_count($source, 'namespace RoxyGrosses;') !== 1
 }
 $source = str_replace('namespace RoxyGrosses;', 'namespace ' . $namespace . ';', $source);
 eval('?>' . $source);
+eval('namespace ' . $namespace . '; class Store { public static array $logs = []; public static function insert_log(...$args): bool { self::$logs[] = $args; return true; } }');
 
 $settings_class = $namespace . '\\Settings';
 $workbook_class = $namespace . '\\Workbook';
+$store_class = $namespace . '\\Store';
 $settings_class::register_settings();
 $option_key = $settings_class::OPTION_KEY;
 global $wpdb;
@@ -48,7 +50,12 @@ $root_existed = is_dir($root_path);
 $templates_existed = is_dir($templates_path);
 $private_dir_method = new ReflectionMethod($workbook_class, 'private_templates_dir');
 $private_dir_method->setAccessible(true);
+$store_upload_method = new ReflectionMethod($workbook_class, 'store_uploaded_template');
+$store_upload_method->setAccessible(true);
 $file_path = '';
+$stored_upload_path = '';
+$upload_source = '';
+$invalid_source = '';
 $checks = 0;
 $check = static function (bool $condition, string $label) use (&$checks): void {
     if (!$condition) throw new RuntimeException('FAIL: ' . $label);
@@ -169,8 +176,52 @@ try {
     } finally {
         if (is_file($mismatch_path)) @unlink($mismatch_path);
     }
+
+    if (!class_exists('ZipArchive')) throw new RuntimeException('ZipArchive is required for the uploaded-template workflow fixture.');
+    $upload_source = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'roxy-workbook-upload-' . bin2hex(random_bytes(8)) . '.xlsx';
+    $zip = new ZipArchive();
+    if ($zip->open($upload_source, ZipArchive::CREATE | ZipArchive::EXCL) !== true) throw new RuntimeException('Could not create synthetic uploaded workbook.');
+    foreach ([
+        '[Content_Types].xml' => '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+        '_rels/.rels' => '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>',
+        'xl/workbook.xml' => '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>',
+        'xl/worksheets/sheet3.xml' => '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>',
+        'xl/worksheets/sheet4.xml' => '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>',
+    ] as $entry => $xml) {
+        if (!$zip->addFromString($entry, $xml)) throw new RuntimeException('Could not add synthetic workbook package entry.');
+    }
+    if (!$zip->close()) throw new RuntimeException('Could not finish synthetic uploaded workbook.');
+    $upload_result = $store_upload_method->invoke(null, $upload_source, 'synthetic-upload.xlsx');
+    $stored_upload_path = (string) ($upload_result['path'] ?? '');
+    $check(($upload_result['success'] ?? false) === true
+        && ($upload_result['message'] ?? '') === 'Workbook template uploaded successfully.',
+        'actual upload-processing path validates and accepts a well-formed synthetic workbook');
+    $check(!is_file($upload_source) && is_file($stored_upload_path)
+        && dirname($stored_upload_path) === $private_dir,
+        'accepted upload is moved out of temporary storage into the private template directory');
+    $uploaded_settings = get_option($option_key, []);
+    $check(is_array($uploaded_settings)
+        && ($uploaded_settings['workbook_template_upload']['path'] ?? '') === $stored_upload_path
+        && ($uploaded_settings['workbook_template_upload']['name'] ?? '') === 'synthetic-upload.xlsx',
+        'accepted private upload is persisted through the real sanitized WordPress option');
+    $check(count($store_class::$logs) === 1
+        && ($store_class::$logs[0][0] ?? '') === 'upload_workbook_template',
+        'accepted upload records exactly one success audit entry');
+
+    $invalid_source = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'roxy-workbook-invalid-' . bin2hex(random_bytes(8)) . '.xlsx';
+    if (file_put_contents($invalid_source, 'not an OOXML workbook') === false) throw new RuntimeException('Could not create invalid upload fixture.');
+    $invalid_result = $store_upload_method->invoke(null, $invalid_source, 'invalid.xlsx');
+    $check(($invalid_result['success'] ?? true) === false
+        && strpos((string) ($invalid_result['message'] ?? ''), 'not a readable Excel workbook archive') !== false
+        && !is_file($invalid_source),
+        'invalid upload is rejected and its temporary copy is removed');
+    $check(count($store_class::$logs) === 1,
+        'rejected upload does not record a success audit entry');
 } finally {
     if ($file_path !== '' && is_file($file_path)) @unlink($file_path);
+    if ($stored_upload_path !== '' && is_file($stored_upload_path)) @unlink($stored_upload_path);
+    if ($upload_source !== '' && is_file($upload_source)) @unlink($upload_source);
+    if ($invalid_source !== '' && is_file($invalid_source)) @unlink($invalid_source);
     if ($prior_row !== null) {
         $wpdb->update($wpdb->options, $prior_row, ['option_name' => $option_key], ['%s', '%s'], ['%s']);
     } else {
