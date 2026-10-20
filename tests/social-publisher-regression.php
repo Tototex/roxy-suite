@@ -303,6 +303,56 @@ namespace {
         &&!array_filter($GLOBALS['scheduled_events'],static fn($event)=>$event[1]==='roxy_social_video_status_retry'),
         'video remaining in progress after five scheduled checks stops automatic polling');
 
+    reset_fixture('instagram','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['instagram_container_id']='five-poll-container';
+    \RoxySocial\Store::$row['last_error']='Instagram video is still processing (status check 0 of 5)';
+    $polls_ok=true;
+    for($attempt=1;$attempt<=5;$attempt++){
+        if($attempt>1&&($GLOBALS['scheduled_events'][count($GLOBALS['scheduled_events'])-1][1]??'')==='roxy_social_video_status_retry')array_pop($GLOBALS['scheduled_events']);
+        if(!\RoxySocial\Publisher::queue_video_status_retry(1,$attempt)){$polls_ok=false;break;}
+        $poll_args=$GLOBALS['scheduled_events'][count($GLOBALS['scheduled_events'])-1][2];
+        array_pop($GLOBALS['scheduled_events']); // The fixture executes the queued cron event now.
+        $GLOBALS['responses']=[response(['status_code'=>'IN_PROGRESS'])];
+        \RoxySocial\Publisher::process_queued(...$poll_args);
+        $polls_ok=$polls_ok&&count($GLOBALS['calls'])===$attempt
+            &&str_contains($GLOBALS['calls'][$attempt-1][0],'/five-poll-container?fields=status_code')
+            &&!str_ends_with($GLOBALS['calls'][$attempt-1][0],'/media_publish')
+            &&\RoxySocial\Store::$row['instagram_container_id']==='five-poll-container';
+        if($attempt<5){
+            $polls_ok=$polls_ok&&\RoxySocial\Store::$row['status']==='failed'
+                &&str_contains((string)\RoxySocial\Store::$row['last_error'],'status check '.$attempt.' of 5')
+                &&($GLOBALS['scheduled_events'][count($GLOBALS['scheduled_events'])-1][1]??'')==='roxy_social_video_status_retry';
+        }else{
+            $polls_ok=$polls_ok&&\RoxySocial\Store::$row['status']==='needs_review'
+                &&!array_filter($GLOBALS['scheduled_events'],static fn($event)=>$event[1]==='roxy_social_video_status_retry');
+        }
+    }
+    check($polls_ok,'five consecutive in-progress polls reuse one container and end in review without publishing');
+
+    reset_fixture('instagram','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['instagram_container_id']='malformed-status-container';
+    \RoxySocial\Store::$row['last_error']='Instagram video is still processing (status check 0 of 5)';
+    check(\RoxySocial\Publisher::queue_video_status_retry(1,1),'malformed-status fixture queues its bounded read-only poll');
+    $malformed_status_args=$GLOBALS['scheduled_events'][count($GLOBALS['scheduled_events'])-1][2];
+    array_pop($GLOBALS['scheduled_events']); // Execute the queued event rather than leaving it pending.
+    $GLOBALS['responses']=[response(['unexpected'=>'shape'])];\RoxySocial\Publisher::process_queued(...$malformed_status_args);
+    check(\RoxySocial\Store::$row['status']==='needs_review'
+        &&\RoxySocial\Store::$row['instagram_container_id']==='malformed-status-container'
+        &&count($GLOBALS['calls'])===1&&!str_ends_with($GLOBALS['calls'][0][0],'/media_publish')
+        &&!array_filter($GLOBALS['scheduled_events'],static fn($event)=>$event[1]==='roxy_social_video_status_retry'),
+        'malformed video status is retained for review without publishing or scheduling more polls');
+
+    reset_fixture('instagram','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['instagram_container_id']='unavailable-status-container';
+    \RoxySocial\Store::$row['last_error']='Instagram video is still processing (status check 0 of 5)';
+    check(\RoxySocial\Publisher::queue_video_status_retry(1,1),'unavailable-status fixture queues its bounded read-only poll');
+    $unavailable_status_args=$GLOBALS['scheduled_events'][count($GLOBALS['scheduled_events'])-1][2];
+    array_pop($GLOBALS['scheduled_events']); // Execute the queued event rather than leaving it pending.
+    $GLOBALS['responses']=[response(['error'=>['message'=>'temporary provider failure']],503)];
+    \RoxySocial\Publisher::process_queued(...$unavailable_status_args);
+    check(\RoxySocial\Store::$row['status']==='failed'
+        &&\RoxySocial\Store::$row['instagram_container_id']==='unavailable-status-container'
+        &&count($GLOBALS['calls'])===1&&!str_ends_with($GLOBALS['calls'][0][0],'/media_publish')
+        &&!array_filter($GLOBALS['scheduled_events'],static fn($event)=>$event[1]==='roxy_social_video_status_retry'),
+        'temporary status-read failure retains the container and never publishes or automatically retries');
+
     reset_fixture('instagram','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['instagram_container_id']='legacy-container';
     \RoxySocial\Store::$row['last_error']='Instagram video is still processing; the old retry event did not run';
     $GLOBALS['wpdb']=new PublisherFixtureDb();$GLOBALS['due_rows']=[\RoxySocial\Store::$row];\RoxySocial\Publisher::publish_due();
