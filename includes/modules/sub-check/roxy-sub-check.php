@@ -117,7 +117,8 @@ class Roxy_Sub_Check {
     global $wpdb;
     if (!isset($wpdb) || !is_object($wpdb)) return;
     $sql = $wpdb->prepare(
-      "SELECT DISTINCT CAST(meta_value AS UNSIGNED) FROM {$wpdb->postmeta} WHERE meta_key = %s AND CAST(meta_value AS UNSIGNED) > 0",
+      "SELECT DISTINCT CAST(pm.meta_value AS UNSIGNED) FROM {$wpdb->postmeta} pm JOIN {$wpdb->posts} p ON p.ID = pm.post_id WHERE p.post_type = %s AND pm.meta_key = %s AND CAST(pm.meta_value AS UNSIGNED) > 0",
+      'shop_subscription',
       self::META_PHOTO_ID
     );
     $ids = $wpdb->get_col($sql);
@@ -125,6 +126,37 @@ class Roxy_Sub_Check {
       error_log('Roxy Member Check: existing member photos could not be enumerated for privacy migration.');
       return;
     }
+    $orders_table = isset($wpdb->prefix) ? $wpdb->prefix . 'wc_orders' : '';
+    $orders_meta_table = isset($wpdb->prefix) ? $wpdb->prefix . 'wc_orders_meta' : '';
+    if ($orders_table !== '' && $orders_meta_table !== '') {
+      $hpos_tables = [];
+      foreach ([$orders_table, $orders_meta_table] as $table) {
+        $found = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table)));
+        if ($wpdb->last_error) {
+          error_log('Roxy Member Check: HPOS member-photo references could not be checked for privacy migration.');
+          return;
+        }
+        $hpos_tables[$table] = ($found === $table);
+      }
+      if ($hpos_tables[$orders_meta_table] && !$hpos_tables[$orders_table]) {
+        error_log('Roxy Member Check: HPOS order metadata exists without its order table; privacy migration is paused.');
+        return;
+      }
+      if ($hpos_tables[$orders_table] && $hpos_tables[$orders_meta_table]) {
+        $hpos_sql = $wpdb->prepare(
+          "SELECT DISTINCT CAST(pm.meta_value AS UNSIGNED) FROM {$orders_meta_table} pm JOIN {$orders_table} o ON o.id = pm.order_id WHERE o.type = %s AND pm.meta_key = %s AND CAST(pm.meta_value AS UNSIGNED) > 0",
+          'shop_subscription',
+          self::META_PHOTO_ID
+        );
+        $hpos_ids = $wpdb->get_col($hpos_sql);
+        if (!is_array($hpos_ids) || $wpdb->last_error) {
+          error_log('Roxy Member Check: HPOS member-photo references could not be enumerated for privacy migration.');
+          return;
+        }
+        $ids = array_merge($ids, $hpos_ids);
+      }
+    }
+    $ids = array_values(array_unique(array_filter(array_map('absint', $ids))));
     foreach ($ids as $id) {
       if (!self::protect_member_photo_attachment(absint($id))) {
         error_log('Roxy Member Check: existing member photo privacy migration did not complete; photo previews remain hidden until protection succeeds.');
@@ -279,6 +311,14 @@ class Roxy_Sub_Check {
   private static function private_member_photo_url(int $attachment_id): string {
     if ($attachment_id <= 0 || get_post_meta($attachment_id, self::META_PHOTO_PRIVATE, true) !== '1') return '';
     return add_query_arg(['action' => 'roxy_member_photo', 'attachment_id' => $attachment_id], admin_url('admin-post.php'));
+  }
+
+  public static function staff_member_photo_url(int $attachment_id): string {
+    return self::private_member_photo_url($attachment_id);
+  }
+
+  public static function protect_staff_member_photo(int $attachment_id): bool {
+    return self::protect_member_photo_attachment(absint($attachment_id));
   }
 
   private static function authorized_member_photo_file(int $attachment_id): string {

@@ -238,6 +238,11 @@ class Members_Dashboard {
         if ($action === 'save_photo') {
             $attachment_id = isset($_POST['attachment_id']) ? absint($_POST['attachment_id']) : 0;
             if ($attachment_id > 0) {
+                if (!class_exists('\\Roxy_Sub_Check') || !method_exists('\\Roxy_Sub_Check', 'protect_staff_member_photo')
+                    || !\Roxy_Sub_Check::protect_staff_member_photo($attachment_id)) {
+                    echo '<div class="notice notice-error is-dismissible"><p>Member photo could not be saved because private-file protection could not be verified.</p></div>';
+                    return;
+                }
                 $subscription->update_meta_data(self::photo_meta_key(), $attachment_id);
                 $saved_id = $subscription->save();
                 echo '<div class="notice notice-'.($saved_id ? 'success' : 'error').' is-dismissible"><p>'.($saved_id ? 'Member photo updated.' : 'Member photo could not be saved.').'</p></div>';
@@ -581,8 +586,9 @@ class Members_Dashboard {
         if (!is_object($subscription) || !method_exists($subscription, 'get_meta')) return '';
         $photo_id = absint($subscription->get_meta(self::photo_meta_key(), true));
         if (!$photo_id) return '';
-        $img = wp_get_attachment_image_src($photo_id, 'thumbnail');
-        return is_array($img) && !empty($img[0]) ? (string) $img[0] : '';
+        return class_exists('\\Roxy_Sub_Check') && method_exists('\\Roxy_Sub_Check', 'staff_member_photo_url')
+            ? \Roxy_Sub_Check::staff_member_photo_url($photo_id)
+            : '';
     }
 
     private static function photo_cell(array $row): void {

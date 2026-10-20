@@ -139,13 +139,16 @@ file_put_contents(ROXY_PHOTO_UPLOADS.'901-300x300.jpg','regenerated-thumbnail');
 $new_metadata=['file'=>'901.jpg','sizes'=>['thumbnail'=>['file'=>'901-150x150.jpg'],'medium'=>['file'=>'901-300x300.jpg']]];
 Roxy_Sub_Check::protect_member_photo_metadata_updates($new_metadata,901);
 check(str_contains((string)file_get_contents(ROXY_PHOTO_UPLOADS.'.htaccess'), 'RewriteRule ^901-300x300\\.jpg$ - [F,L]'), 'future regenerated image sizes are added to the deny rules');
-$GLOBALS['wpdb']=new class { public $postmeta='fixture_postmeta'; public $last_error=''; function prepare($sql,...$args) { return $sql; } function get_col($sql) { return [910]; } };
+$GLOBALS['wpdb']=new class { public $prefix='fixture_';public $posts='fixture_posts';public $postmeta='fixture_postmeta';public $last_error='';public $last_arg=''; function prepare($sql,...$args) { $this->last_arg=(string)($args[0]??'');return $sql; } function get_col($sql) { return str_contains($sql,'fixture_wc_orders_meta')?[911]:[910]; } function get_var($sql) { return in_array($this->last_arg,['fixture_wc_orders','fixture_wc_orders_meta'],true)?$this->last_arg:''; } function esc_like($value) { return $value; } };
 file_put_contents(ROXY_PHOTO_UPLOADS.'910.jpg','legacy-photo');
 file_put_contents(ROXY_PHOTO_UPLOADS.'910-150x150.jpg','legacy-thumbnail');
+file_put_contents(ROXY_PHOTO_UPLOADS.'911.jpg','hpos-photo');
 Roxy_Sub_Check::ensure_existing_member_photos_private();
 check(get_option(Roxy_Sub_Check::OPTION_PHOTO_PRIVACY_VERSION)==='1', 'existing subscription photo privacy migration completes only after applying protection');
 check(($GLOBALS['privacy_post_meta'][910][Roxy_Sub_Check::META_PHOTO_PRIVATE]??'')==='1'
     && str_contains((string)file_get_contents(ROXY_PHOTO_UPLOADS.'.htaccess'), 'RewriteRule ^910\\.jpg$ - [F,L]'), 'existing attachment is marked private without changing its attachment ID');
+check(($GLOBALS['privacy_post_meta'][911][Roxy_Sub_Check::META_PHOTO_PRIVATE]??'')==='1'
+    && str_contains((string)file_get_contents(ROXY_PHOTO_UPLOADS.'.htaccess'), 'RewriteRule ^911\\.jpg$ - [F,L]'), 'HPOS-backed subscription photo references are included in the migration');
 
 foreach (['false','throw'] as $mode) {
     $failed=new PhotoUploadSubscription(112); $failed->save_mode=$mode;

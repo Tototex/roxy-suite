@@ -2,18 +2,22 @@
 // Isolated member lookup/admission/navigation regression; no actual memberships.
 define('ABSPATH',__DIR__);define('ARRAY_A','ARRAY_A');
 define('MINUTE_IN_SECONDS',60);
+define('MEMBER_REGRESSION_UPLOADS',sys_get_temp_dir().'/roxy-member-regression-'.getmypid().'/uploads/');
+mkdir(MEMBER_REGRESSION_UPLOADS,0777,true);
+register_shutdown_function(static function(){foreach(glob(MEMBER_REGRESSION_UPLOADS.'*')?:[] as $path)if(is_file($path))unlink($path);foreach(glob(MEMBER_REGRESSION_UPLOADS.'.*')?:[] as $path)if(is_file($path))unlink($path);if(is_dir(MEMBER_REGRESSION_UPLOADS))rmdir(MEMBER_REGRESSION_UPLOADS);$root=dirname(MEMBER_REGRESSION_UPLOADS);if(is_dir($root))rmdir($root);});
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS: $label\n";}
-function get_option($key,$default=false){return ['roxy_member_scans_schema_version'=>'1','date_format'=>'Y-m-d','time_format'=>'H:i'][$key]??$default;}
-function update_option(...$args){} function add_action(...$args){}function add_filter(...$args){}function register_activation_hook(...$args){}
+function get_option($key,$default=false){return $GLOBALS['member_options'][$key]??(['roxy_member_scans_schema_version'=>'1','date_format'=>'Y-m-d','time_format'=>'H:i'][$key]??$default);}
+function update_option($key,$value,...$args){$GLOBALS['member_options'][$key]=$value;return true;} function add_action(...$args){}function add_filter(...$args){}function register_activation_hook(...$args){}
 function wp_timezone(){return new DateTimeZone('America/Los_Angeles');}
 function get_current_user_id(){return 42;}function set_transient($key,$value,$expiration){$GLOBALS['test_transients'][$key]=$value;return true;}function get_transient($key){return $GLOBALS['test_transients'][$key]??false;}function delete_transient($key){unset($GLOBALS['test_transients'][$key]);}
 function get_current_screen(){return $GLOBALS['test_screen']??null;}
 function wp_date($format,$timestamp=null,$timezone=null){return (new DateTimeImmutable('@'.($timestamp??1791010800)))->setTimezone($timezone??wp_timezone())->format($format);}
 function current_time($format){return '2026-10-03 10:00:00';}function date_i18n($fmt,$timestamp){return date($fmt,$timestamp);}
-function absint($value){return abs((int)$value);}function get_post_meta(...$args){return '';}
+function absint($value){return abs((int)$value);}function get_post_meta($id,$key,$single=true){return $GLOBALS['member_post_meta'][(int)$id][$key]??'';}function update_post_meta($id,$key,$value){$GLOBALS['member_post_meta'][(int)$id][$key]=$value;return true;}
 function get_user_meta($id,$key,$single=true){return $key==='first_name'?'Fixture':'Member';}
 function wp_verify_nonce($nonce,$action){return $nonce==='fixture';}function current_user_can(...$args){return true;}
 function wp_get_attachment_image_src($id,$size){return ['https://example.test/photo/'.$id];}
+function get_post_type($id){return 'attachment';}function wp_upload_dir(...$args){return ['basedir'=>MEMBER_REGRESSION_UPLOADS];}function trailingslashit($path){return rtrim((string)$path,'/\\').'/';}function wp_normalize_path($path){return str_replace('\\','/',(string)$path);}function get_attached_file($id){return MEMBER_REGRESSION_UPLOADS.absint($id).'.jpg';}function wp_get_attachment_metadata($id){return ['file'=>absint($id).'.jpg'];}
 function wcs_get_subscription($id){return new TestSubscription($id);}
 function wcs_is_custom_order_tables_usage_enabled(){return !empty($GLOBALS['member_hpos']);}
 function wcs_get_subscriptions($args){$GLOBALS['member_search_queries'][]=$args;if(!empty($GLOBALS['member_hpos_query_fail'])){$GLOBALS['wpdb']->last_error='fixture subscription query failure';return null;}return $GLOBALS['member_hpos_subscriptions'][(int)($args['customer_id']??0)]??[];}
@@ -55,6 +59,8 @@ class TestDatabase {
 $GLOBALS['wpdb']=new TestDatabase;
 $GLOBALS['member_search_queries']=[];
 $GLOBALS['test_sub_meta']=[];
+$GLOBALS['member_options']=[];$GLOBALS['member_post_meta']=[];
+$GLOBALS['member_photo_fixture_files']=[77,88,99];foreach($GLOBALS['member_photo_fixture_files'] as $id)file_put_contents(MEMBER_REGRESSION_UPLOADS.$id.'.jpg','fixture-photo');
 $GLOBALS['test_transients']=[];$GLOBALS['test_screen']=(object)['post_type'=>'shop_subscription'];
 $root=$argv[1]??dirname(__DIR__);
 require $root.'/includes/modules/sub-check/roxy-sub-check.php';
@@ -87,7 +93,8 @@ $GLOBALS['wpdb']->fail=false;
 $dashboard_action=new ReflectionMethod(\RoxySuite\Members_Dashboard::class,'handle_member_actions');$dashboard_action->setAccessible(true);
 $_POST=['roxy_members_action_nonce'=>'fixture','roxy_members_action'=>'save_photo','subscription_id'=>42,'attachment_id'=>77];ob_start();$dashboard_action->invoke(null);$photo_notice=ob_get_clean();
 check(($GLOBALS['test_sub_meta'][42]['_roxy_member_photo_id']??0)===77&&str_contains($photo_notice,'Member photo updated.'),'member dashboard persists photo metadata through subscription CRUD');
-check((Roxy_Sub_Check::get_member_payload(42,false)['photo_url']??'')==='https://example.test/photo/77','member-check photo read sees CRUD-saved subscription metadata');
+check(($GLOBALS['member_post_meta'][77][Roxy_Sub_Check::META_PHOTO_PRIVATE]??'')==='1','member dashboard protects an attachment before saving its subscription reference');
+check((Roxy_Sub_Check::get_member_payload(42,false)['photo_url']??'')==='https://example.test/wp-admin/admin-post.php?action=roxy_member_photo&attachment_id=77','member-check photo read uses the staff-only image endpoint');
 $photo_post=(object)['ID'=>51,'post_type'=>'shop_subscription'];
 $_POST=['roxy_member_photo_nonce'=>'fixture','roxy_member_photo_id'=>'88'];
 Roxy_Sub_Check::save_subscription_photo_metabox(51,$photo_post);
