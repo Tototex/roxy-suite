@@ -98,9 +98,10 @@ try {
         && ($current['square_webhook_signature_key'] ?? null) === $webhook_ciphertext,
         'saving private workbook metadata preserves both existing encrypted credentials byte-for-byte');
     $decrypted_credentials = $settings_class::get_all();
-    $check(($decrypted_credentials['square_access_token'] ?? null) === 'synthetic-square-token-for-template-save'
-        && ($decrypted_credentials['square_webhook_signature_key'] ?? null) === 'synthetic-webhook-key-for-template-save',
-        'both credentials remain decryptable after the internal workbook-setting save');
+    $check(($decrypted_credentials['square_access_token'] ?? null) === 'synthetic-square-token-for-template-save',
+        'Square credential remains decryptable after the internal workbook-setting save');
+    $check(($decrypted_credentials['square_webhook_signature_key'] ?? null) === 'synthetic-webhook-key-for-template-save',
+        'webhook credential remains decryptable after the internal workbook-setting save');
 
     $current['theater_name'] = 'Disposable workbook integration fixture';
     update_option($option_key, $current);
