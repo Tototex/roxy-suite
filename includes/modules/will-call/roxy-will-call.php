@@ -244,7 +244,7 @@ function roxy_will_call_admin_page(bool $wrap = true, bool $show_title = true) {
           echo '<p>Select a showing or product to generate the list.</p>';
         }
       } catch (\Throwable $e) {
-        echo '<div class="notice notice-error"><p>Will Call could not verify the complete paid-ticket list. No partial list was shown; try again or contact the administrator.</p></div>';
+        echo '<div class="notice notice-error"><p>Will Call could not verify the complete ticket and subscriber-admission list. No partial list was shown; try again or contact the administrator.</p></div>';
       }
     ?>
   <style>
