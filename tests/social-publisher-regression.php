@@ -327,6 +327,29 @@ namespace {
         &&!array_filter($GLOBALS['scheduled_events'],static fn($event)=>$event[1]==='roxy_social_video_status_retry'),
         'expired Instagram retry preserves the already-published Facebook post without duplicating it or scheduling a retry');
 
+    reset_fixture('both','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['facebook_post_id']='facebook-already-published';\RoxySocial\Store::$row['instagram_container_id']='expired-instagram-container';
+    $GLOBALS['responses']=[response(['status_code'=>'EXPIRED']),response(['id'=>'556677'])];
+    check(\RoxySocial\Publisher::queue_publish_now(1),'manual partial retry queues an explicit expired-container replacement intent');
+    $manual_retry_args=$GLOBALS['scheduled_events'][count($GLOBALS['scheduled_events'])-1][2];
+    check(count($manual_retry_args)===4&&$manual_retry_args[3]===true,'manual failed-row retry carries the expired-container replacement intent');
+    \RoxySocial\Publisher::process_queued(...$manual_retry_args);
+    check(\RoxySocial\Store::$row['status']==='failed'
+        &&\RoxySocial\Store::$row['facebook_post_id']==='facebook-already-published'
+        &&\RoxySocial\Store::$row['instagram_container_id']==='556677'
+        &&str_contains($GLOBALS['calls'][0][0],'/expired-instagram-container?fields=status_code')
+        &&str_ends_with($GLOBALS['calls'][1][0],'/media')
+        &&!array_filter($GLOBALS['calls'],static fn($call)=>str_ends_with($call[0],'/photos')||str_ends_with($call[0],'/videos'))
+        &&count(array_filter($GLOBALS['scheduled_events'],static fn($event)=>$event[1]==='roxy_social_video_status_retry'))===1,
+        'manual retry recreates only an Instagram container after confirmed expiry and keeps bounded status polling: '.json_encode(['row'=>\RoxySocial\Store::$row,'calls'=>$GLOBALS['calls'],'events'=>$GLOBALS['scheduled_events']]));
+    $GLOBALS['responses']=[response(['status_code'=>'FINISHED']),response(['id'=>'778899'])];
+    check(\RoxySocial\Publisher::queue_video_status_retry(1,1),'fresh Instagram container queues its normal first status poll');
+    $fresh_retry_args=$GLOBALS['scheduled_events'][count($GLOBALS['scheduled_events'])-1][2];\RoxySocial\Publisher::process_queued(...$fresh_retry_args);
+    check(\RoxySocial\Store::$row['status']==='posted'
+        &&\RoxySocial\Store::$row['facebook_post_id']==='facebook-already-published'
+        &&\RoxySocial\Store::$row['instagram_media_id']==='778899'
+        &&!array_filter($GLOBALS['calls'],static fn($call)=>str_ends_with($call[0],'/photos')||str_ends_with($call[0],'/videos')),
+        'expired-container manual recovery publishes Instagram only and never duplicates the recorded Facebook post');
+
     reset_fixture('instagram','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['instagram_container_id']='published-container';
     \RoxySocial\Store::$row['last_error']='Instagram video is still processing';$GLOBALS['responses']=[response(['status_code'=>'PUBLISHED'])];
     check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='needs_review'
@@ -394,7 +417,8 @@ namespace {
     \RoxySocial\Store::$row['last_error']='Instagram video is still processing; the old retry event did not run';
     $GLOBALS['wpdb']=new PublisherFixtureDb();$GLOBALS['due_rows']=[\RoxySocial\Store::$row];\RoxySocial\Publisher::publish_due();
     check(\RoxySocial\Store::$row['status']==='publishing'&&$GLOBALS['scheduled_events'][0][1]==='roxy_social_publish_single'
-        &&$GLOBALS['scheduled_events'][0][2][0]===1&&$GLOBALS['scheduled_events'][0][2][1]===5&&count($GLOBALS['scheduled_events'][0][2])===3,
+        &&$GLOBALS['scheduled_events'][0][2][0]===1&&$GLOBALS['scheduled_events'][0][2][1]===5
+        &&($GLOBALS['scheduled_events'][0][2][2]??null)===false&&count($GLOBALS['scheduled_events'][0][2])===4,
         'legacy stuck video receives one final status-check recovery instead of an unbounded retry loop');
 
     reset_fixture('instagram','failed');\RoxySocial\Store::$row['instagram_container_id']='legacy-container';
