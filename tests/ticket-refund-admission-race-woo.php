@@ -44,7 +44,7 @@ $collect_worker = static function () use (&$worker, &$worker_pipes): array {
   if (!preg_match('/REFUND_RACE_ADMISSION=([01])/', $stdout, $match)) throw new RuntimeException('Refund/admission worker result missing: ' . $stderr);
   return ['admitted' => (int) $match[1], 'exit' => $exit, 'stderr' => $stderr];
 };
-$spawn_worker = static function () use (&$worker, &$worker_pipes, $wp_cli, $order_id, &$ticket_ids, $label, $ready_path): void {
+$spawn_worker = static function () use (&$worker, &$worker_pipes, $wp_cli, &$order_id, &$ticket_ids, $label, $ready_path): void {
   if (is_resource($worker)) throw new RuntimeException('Previous race worker is still active');
   @unlink($ready_path);
   $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
