@@ -8,6 +8,8 @@ $suffix='fixture_social_cleanup53_'.bin2hex(random_bytes(5));$table=$wpdb->prefi
 $yoast_table=$wpdb->prefix.'yoast_indexable';
 $reference_posts=$wpdb->prefix.'rcp_'.$suffix;
 $production=$wpdb->prefix.'roxy_social_posts';
+if(($wpdb->dbname??'')!=='roxy_test')throw new RuntimeException('This fixture may only run against the disposable roxy_test database.');
+if($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($yoast_table)))===$yoast_table)throw new RuntimeException('Refusing to replace a pre-existing Yoast fixture table.');
 $before=hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)));
 $code=file_get_contents($path);
 $code=str_replace(['namespace RoxySocial;',"'roxy_social_posts'","'roxy_social_media_cleanup'","'roxy_social_poster_cleanup'"],['namespace '.$namespace.';',var_export($suffix,true),var_export($queue_suffix,true),var_export($poster_queue_suffix,true)],$code);
@@ -29,8 +31,8 @@ try {
         'social rows'=>'CREATE TEMPORARY TABLE '.$table.' LIKE '.$production,
         'media cleanup queue'=>'CREATE TEMPORARY TABLE '.$queue_table.' (attachment_id BIGINT UNSIGNED NOT NULL, social_post_id BIGINT UNSIGNED NOT NULL, cleanup_after DATETIME NOT NULL, created_at DATETIME NOT NULL, PRIMARY KEY (attachment_id), KEY cleanup_after (cleanup_after), KEY social_post_id (social_post_id))',
         'poster cleanup queue'=>'CREATE TEMPORARY TABLE '.$poster_queue_table.' (path_hash CHAR(64) NOT NULL, file_path TEXT NOT NULL, attempts INT UNSIGNED NOT NULL DEFAULT 0, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, PRIMARY KEY (path_hash), KEY retry_batch (attempts, updated_at, path_hash))',
-        'Yoast image reference'=>'CREATE TEMPORARY TABLE '.$yoast_table.' (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, open_graph_image_id VARCHAR(32) NULL, twitter_image_id VARCHAR(32) NULL, PRIMARY KEY (id))',
         'post content reference'=>'CREATE TEMPORARY TABLE '.$reference_posts.' (ID BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, post_content LONGTEXT NOT NULL, PRIMARY KEY (ID))',
+        'Yoast image reference'=>'CREATE TABLE '.$yoast_table.' (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, open_graph_image_id VARCHAR(32) NULL, twitter_image_id VARCHAR(32) NULL, PRIMARY KEY (id))',
     ] as $label=>$sql){if($wpdb->query($sql)===false)throw new RuntimeException('Private cleanup schema failed for '.$label.': '.($wpdb->last_error?:$sql));}$created=true;
     $GLOBALS['cleanup53_yoast_table']=$yoast_table;
     add_filter('query',$block,PHP_INT_MAX);add_filter('pre_wp_mail',$mail,PHP_INT_MAX);add_filter('pre_http_request',$http,PHP_INT_MAX);
@@ -91,7 +93,7 @@ $reset=static function()use($wpdb,$table,$virtual_base){
     $assert($pagination_result===1&&($pagination_schedule[1]??'')==='roxy_social_cleanup_page'&&($pagination_schedule[2]??[])===[100,101],'actual private-table cleanup schedules exactly the remaining bounded high-water page; '.json_encode(['result'=>$pagination_result,'scheduled'=>$GLOBALS['cleanup53_scheduled']]));
     $assert(hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)))===$before,'pagination leaves production Social rows unchanged');
 } finally {
-    if($created&&($wpdb->query('DROP TEMPORARY TABLE '.$yoast_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$reference_posts)===false||$wpdb->query('DROP TEMPORARY TABLE '.$poster_queue_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$queue_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$table)===false))throw new RuntimeException('Private cleanup schema removal failed.');
+    if($created&&($wpdb->query('DROP TABLE '.$yoast_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$reference_posts)===false||$wpdb->query('DROP TEMPORARY TABLE '.$poster_queue_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$queue_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$table)===false))throw new RuntimeException('Private cleanup schema removal failed.');
     remove_filter('query',$block,PHP_INT_MAX);remove_filter('pre_wp_mail',$mail,PHP_INT_MAX);remove_filter('pre_http_request',$http,PHP_INT_MAX);$wpdb->suppress_errors($old);
 }
 echo 'Passed '.$checks.' actual cleanup-SQL assertions with virtual media; private schema removed.'.PHP_EOL;
