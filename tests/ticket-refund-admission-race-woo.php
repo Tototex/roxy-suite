@@ -118,15 +118,19 @@ try {
 
   // Repeat with production hooks enabled. The independent worker must wait for
   // refund persistence and ticket reconciliation, then reject the refunded QR.
-  add_action('woocommerce_create_refund', $spawn_worker, 2, 2);
   $probe = new wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
   if (!$probe->ready) throw new RuntimeException('Independent lock probe connection unavailable');
   $lock = 'roxy_ticket_' . substr(hash('sha256', $wpdb->prefix . ':' . $order_id), 0, 48);
+  $blocked_probe = false;
+  $verify_guarded_lock = static function () use ($spawn_worker, $probe, $lock, &$blocked_probe): void {
+    $spawn_worker();
+    $blocked_probe = (string) $probe->get_var($probe->prepare('SELECT GET_LOCK(%s,0)', $lock)) === '0';
+    if (!$blocked_probe) $probe->get_var($probe->prepare('SELECT RELEASE_LOCK(%s)', $lock));
+  };
+  add_action('woocommerce_create_refund', $verify_guarded_lock, 2, 2);
   try { $refund = wc_create_refund($refund_args); }
-  finally { remove_action('woocommerce_create_refund', $spawn_worker, 2); }
+  finally { remove_action('woocommerce_create_refund', $verify_guarded_lock, 2); }
   if (is_wp_error($refund)) throw new RuntimeException('Serialized zero-dollar refund failed: ' . $refund->get_error_message());
-  $blocked_probe = (string) $probe->get_var($probe->prepare('SELECT GET_LOCK(%s,0)', $lock)) === '0';
-  if (!$blocked_probe) $probe->get_var($probe->prepare('SELECT RELEASE_LOCK(%s)', $lock));
   $worker_result = $collect_worker();
   $check($blocked_probe, 'independent MySQL connection cannot enter ticket operation while Woo is saving/reconciling refund');
   $check($worker_result['exit'] === 0 && $worker_result['admitted'] === 0,
