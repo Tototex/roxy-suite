@@ -2781,6 +2781,8 @@ class Reporter {
             : 'No recipient emails are configured.',
         ];
       }
+      $recipient_error = self::grosses_recipient_safety_error($to);
+      if ($recipient_error !== '') return ['success' => false, 'message' => $recipient_error];
 
       $subject = self::expand_tokens((string) Settings::get('email_subject', ''), $summary);
       // Existing saved templates may still carry the provisional prefix that
@@ -2914,7 +2916,54 @@ class Reporter {
     return [$admin_email];
   }
 
+  /** Prevent Grosses messages from reaching active Inventory vendors, including after settings drift. */
+  private static function grosses_recipient_safety_error(array $recipients): string {
+    global $wpdb;
+    if (!isset($wpdb) || !is_object($wpdb) || !isset($wpdb->prefix) || !is_string($wpdb->prefix)
+      || !preg_match('/^[A-Za-z0-9_]+$/', $wpdb->prefix)) {
+      return 'Email was not attempted because active Inventory vendor recipients could not be verified.';
+    }
+    $table = $wpdb->prefix . 'roxy_inventory_vendors';
+    if (!preg_match('/^[A-Za-z0-9_]+$/', $table)) {
+      return 'Email was not attempted because the Inventory vendor table name is invalid.';
+    }
+    $wpdb->last_error = '';
+    $existing = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table)));
+    if (!empty($wpdb->last_error)) {
+      return 'Email was not attempted because active Inventory vendor recipients could not be verified.';
+    }
+    // If Inventory is enabled, a missing table is a verification failure; do not fail open.
+    if ($existing !== $table) {
+      return function_exists('roxy_suite_module_enabled') && roxy_suite_module_enabled('inventory')
+        ? 'Email was not attempted because the active Inventory vendor list is unavailable.'
+        : '';
+    }
+
+    $wpdb->last_error = '';
+    $vendors = $wpdb->get_results("SELECT email FROM `{$table}` WHERE active=1", ARRAY_A);
+    if (!empty($wpdb->last_error) || !is_array($vendors)) {
+      return 'Email was not attempted because active Inventory vendor recipients could not be verified.';
+    }
+    $vendor_emails = [];
+    foreach ($vendors as $vendor) {
+      if (!is_array($vendor) || !array_key_exists('email', $vendor)) {
+        return 'Email was not attempted because active Inventory vendor recipients could not be verified.';
+      }
+      $email = strtolower(trim((string) $vendor['email']));
+      if ($email !== '' && is_email($email)) $vendor_emails[$email] = true;
+    }
+    foreach ($recipients as $recipient) {
+      $email = strtolower(trim((string) $recipient));
+      if ($email !== '' && isset($vendor_emails[$email])) {
+        return 'Email was not attempted because a configured Grosses recipient is also an active Inventory vendor.';
+      }
+    }
+    return '';
+  }
+
   private static function send_live_grosses_email(array $row, array $recipients, bool $include_concessions, string $mode = 'manual-live-email', string $send_request_id = ''): array {
+    $recipient_error = self::grosses_recipient_safety_error($recipients);
+    if ($recipient_error !== '') return ['success' => false, 'message' => $recipient_error];
     $attachment = self::write_live_csv($row, $include_concessions);
     try {
       $show_title = (string) ($row['show_title'] ?? 'Live Show');
@@ -3296,6 +3345,11 @@ class Reporter {
   public static function notify_admin_failure(string $subject, string $report_date, string $mode, string $message): void {
     $to = sanitize_email((string) Settings::get('admin_email', get_option('admin_email')));
     if ($to === '') {
+      return;
+    }
+    $recipient_error = self::grosses_recipient_safety_error([$to]);
+    if ($recipient_error !== '') {
+      error_log('Roxy Grosses failure alert was suppressed: ' . $recipient_error);
       return;
     }
 

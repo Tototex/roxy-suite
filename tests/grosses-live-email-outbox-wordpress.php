@@ -37,13 +37,17 @@ namespace {
   $private_prefix = $original_db->prefix . $token . '_';
   if (!preg_match('/^[A-Za-z0-9_]+$/', $private_prefix)) throw new \RuntimeException('Private outbox prefix is invalid.');
   $table = $private_prefix . \RoxyGrosses\EmailOutbox::TABLE;
-  if (!preg_match('/^' . preg_quote($original_db->prefix, '/') . preg_quote($token, '/') . '_[A-Za-z0-9_]+$/', $table)) {
-    throw new \RuntimeException('Refusing to use an outbox table outside the random private namespace.');
+  $vendor_table = $private_prefix . 'roxy_inventory_vendors';
+  foreach ([$table, $vendor_table] as $private_table) {
+    if (!preg_match('/^' . preg_quote($original_db->prefix, '/') . preg_quote($token, '/') . '_[A-Za-z0-9_]+$/', $private_table)) {
+      throw new \RuntimeException('Refusing to use a fixture table outside the random private namespace.');
+    }
   }
   $fixture_db = new \wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
   $fixture_db->suppress_errors(true);
   $fixture_db->prefix = $private_prefix;
   $created = false;
+  $vendor_table_created = false;
   $mail_calls = [];
   $checks = 0;
   $check = static function (bool $condition, string $label) use (&$checks): void {
@@ -59,9 +63,15 @@ namespace {
   try {
     $existing = $original_db->get_var($original_db->prepare('SHOW TABLES LIKE %s', $original_db->esc_like($table)));
     if ($existing === $table) throw new \RuntimeException('Random private outbox table already exists; refusing to reuse it.');
+    $existing_vendors = $original_db->get_var($original_db->prepare('SHOW TABLES LIKE %s', $original_db->esc_like($vendor_table)));
+    if ($existing_vendors === $vendor_table) throw new \RuntimeException('Random private vendor table already exists; refusing to reuse it.');
     $wpdb = $fixture_db;
     if (!\RoxyGrosses\EmailOutbox::ensure_schema(true)) throw new \RuntimeException('Could not create the private outbox schema.');
     $created = true;
+    if ($fixture_db->query("CREATE TABLE `{$vendor_table}` (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, email VARCHAR(255) NOT NULL DEFAULT '', active TINYINT(1) NOT NULL DEFAULT 1, PRIMARY KEY (id)) ENGINE=InnoDB") === false) {
+      throw new \RuntimeException('Could not create the private vendor-safety fixture table.');
+    }
+    $vendor_table_created = true;
     add_filter('pre_wp_mail', $mail_interceptor, PHP_INT_MAX, 2);
 
     $method = new \ReflectionMethod(\RoxyGrosses\Reporter::class, 'send_live_grosses_email');
@@ -138,17 +148,34 @@ namespace {
     }
 
     $failure_mail_start = count($mail_calls);
+    $fixture_db->insert($vendor_table, ['email' => 'LIVE-REPORT@EXAMPLE.INVALID', 'active' => 1], ['%s', '%d']);
+    $fixture_db->insert($vendor_table, ['email' => 'GROSSES-ADMIN@EXAMPLE.INVALID', 'active' => 1], ['%s', '%d']);
+    $blocked_live = $method->invoke(null, $row, $recipients, true, 'manual-live-email');
+    $check(empty($blocked_live['success']) && str_contains((string) ($blocked_live['message'] ?? ''), 'active Inventory vendor')
+      && count($mail_calls) === $failure_mail_start, 'live report refuses to email a configured active Inventory vendor');
+    $blocked_daily = $daily_sender->invoke(null, $daily_rows, $daily_summary, 'scheduled-provisional', null, 'daily-grosses', 7414, '2039-07-18', 'c1e6a237-4e4f-47d1-9853-2f9c0684d420');
+    $check(empty($blocked_daily['success']) && str_contains((string) ($blocked_daily['message'] ?? ''), 'active Inventory vendor')
+      && count($mail_calls) === $failure_mail_start, 'daily report refuses to email a configured active Inventory vendor');
     \RoxyGrosses\Reporter::notify_admin_failure('Fixture Grosses failure', '2039-07-18', 'scheduled-provisional', 'Fixture failure only.');
     $failure_mail = $mail_calls[$failure_mail_start] ?? [];
     $failure_recipients = $failure_mail['to'] ?? [];
-    $fixture_vendor_addresses = ['inventory-vendor@example.invalid'];
-    $check(count($mail_calls) === $failure_mail_start + 1 && $failure_recipients === 'grosses-admin@example.invalid', 'Grosses failure alert targets only the configured admin fixture');
-    $check(!array_intersect((array) $failure_recipients, $fixture_vendor_addresses), 'Grosses failure alert never targets the Inventory vendor fixture');
+    $check(count($mail_calls) === $failure_mail_start, 'Grosses failure alert is suppressed when the admin address matches an active Inventory vendor');
+    if ($fixture_db->query("ALTER TABLE `{$vendor_table}` CHANGE COLUMN email unexpected_email VARCHAR(255) NOT NULL DEFAULT ''") === false) {
+      throw new \RuntimeException('Could not prepare the private vendor-read failure fixture.');
+    }
+    $mail_count_before_vendor_read_failure = count($mail_calls);
+    $vendor_read_failure = $method->invoke(null, $row, ['safe-manager@example.invalid'], true, 'manual-live-email');
+    $check(empty($vendor_read_failure['success']) && str_contains((string) ($vendor_read_failure['message'] ?? ''), 'could not be verified')
+      && count($mail_calls) === $mail_count_before_vendor_read_failure, 'Grosses mail fails closed when active Inventory vendor addresses cannot be read');
 
     echo "Passed {$checks} real daily/live Grosses outbox route checks; report and failure-alert mail were intercepted before transport.\n";
   } finally {
     remove_filter('pre_wp_mail', $mail_interceptor, PHP_INT_MAX);
     $wpdb = $original_db;
+    if ($vendor_table_created) {
+      $drop_vendor = $original_db->query("DROP TABLE IF EXISTS `{$vendor_table}`");
+      if ($drop_vendor === false || !empty($original_db->last_error)) throw new \RuntimeException('Could not remove the private vendor-safety fixture table.');
+    }
     if ($created) {
       $drop = $original_db->query("DROP TABLE IF EXISTS `{$table}`");
       if ($drop === false || !empty($original_db->last_error)) throw new \RuntimeException('Could not remove the private live-Grosses outbox table.');
