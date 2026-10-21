@@ -207,8 +207,8 @@ try {
             $order_lines = $order->get_items('line_item');
             $subscriber_line = $order_lines ? reset($order_lines) : false;
             $check($subscriber_line && (string)$subscriber_line->get_meta('_roxy_rs_refund_role', true) === 'subscriber', 'new Woo ticket line persists its refund category for accurate future reconciliation');
-            $check((int) get_post_meta($order_id, '_roxy_seat_hold_managed', true) === 1
-                && (int) get_post_meta($order_id, '_roxy_seat_hold_until', true) > 0, 'actual Show Tickets hold implementation persisted its seat claim before no-charge completion');
+            $check((int) $order->get_meta('_roxy_seat_hold_managed', true) === 1
+                && (int) $order->get_meta('_roxy_seat_hold_until', true) > 0, 'actual Show Tickets hold implementation persisted its seat claim before no-charge completion');
             $check(\RoxyST\Reservations::quantity_for_showing($showing_id, 0, $user_id) === 1, 'persisted Woo order is counted by the actual subscriber reservation query');
             $check((string) get_post_meta($request_id, \RoxyRS\CPT::META_STATUS, true) === 'approved'
                 && get_post_status($request_id) === 'publish', 'conversion verified final request approval state');
