@@ -110,7 +110,7 @@ try {
   $store::upsert_history_rows($legacy,'legacy-fixture');
   $history_page=0;$history_fault=false;
   $history_inject=static function($sql)use(&$history_page,&$history_fault,$history){
-    if(strpos($sql,'SELECT id, report_date, showing_id, show_time')===0&&strpos($sql,' FROM '.$history.' WHERE id <= ')!==false&&strpos($sql,'ORDER BY report_date ASC, film_title ASC, id ASC LIMIT 100')!==false&&++$history_page===2){$history_fault=true;return 'SELECT * FROM roxy_fixture38_missing_table';}
+    if(strpos($sql,'SELECT id, report_date, showing_id, show_time')===0&&strpos($sql,' FROM '.$history.' WHERE id <= ')!==false&&strpos($sql,'ORDER BY report_date ASC, BINARY film_title ASC, id ASC LIMIT 100')!==false&&++$history_page===2){$history_fault=true;return 'SELECT * FROM roxy_fixture38_missing_table';}
     return $sql;
   };
   add_filter('query',$history_inject);$store::maybe_backfill_history();remove_filter('query',$history_inject);
