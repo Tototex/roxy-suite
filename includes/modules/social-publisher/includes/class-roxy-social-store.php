@@ -268,10 +268,7 @@ final class Store {
 
                 $shared = self::other_social_row_references_media($social_post_id, $attachment_id, $url);
                 if ($shared !== false) continue;
-                $posts = $wpdb->posts;
-                $wpdb->last_error = '';
-                $post_ref = $wpdb->get_var($wpdb->prepare('SELECT ID FROM ' . $posts . ' WHERE ID <> %d AND (post_content LIKE %s OR post_content LIKE %s OR post_content LIKE %s) LIMIT 1', $attachment_id, '%' . $wpdb->esc_like($url) . '%', '%' . str_replace('/', '%', $wpdb->esc_like($url)) . '%', '%' . $wpdb->esc_like('wp-image-' . $attachment_id) . '%'));
-                if ($wpdb->last_error !== '' || $post_ref !== null || self::has_core_attachment_reference($attachment_id, $url) || !self::owns_publish_lock($claim)) continue;
+                if (self::has_wp_post_reference($attachment_id, $url) !== false || self::has_core_attachment_reference($attachment_id, $url) || !self::owns_publish_lock($claim)) continue;
                 if (!wp_delete_attachment($attachment_id, true) || !self::remove_cleanup_queue_item($attachment_id, $queued)) continue;
                 $deleted++;
             } catch (\Throwable $error) {
@@ -403,10 +400,7 @@ final class Store {
                     $shared = self::other_social_row_references_media($id, $attachment_id, $url);
                     if ($shared !== false) continue;
 
-                    $posts = $wpdb->posts;
-                    $wpdb->last_error = '';
-                    $post_ref = $wpdb->get_var($wpdb->prepare('SELECT ID FROM ' . $posts . ' WHERE ID <> %d AND (post_content LIKE %s OR post_content LIKE %s OR post_content LIKE %s) LIMIT 1', $attachment_id, '%' . $wpdb->esc_like($url) . '%', '%' . str_replace('/', '%', $wpdb->esc_like($url)) . '%', '%' . $wpdb->esc_like('wp-image-' . $attachment_id) . '%'));
-                    if ($wpdb->last_error !== '' || $post_ref !== null) continue;
+                    if (self::has_wp_post_reference($attachment_id, $url) !== false) continue;
 
                     // Revalidate our lifecycle lock before the broad reference scan so
                     // that scan is the final database read before deletion. The lock
@@ -432,6 +426,33 @@ final class Store {
             if (!$scheduled) error_log('Roxy Social cleanup could not schedule its next bounded page. The next regular cleanup run will retry.');
         }
         return $deleted + $detached_deleted;
+    }
+
+    /** Check all core post fields that may hold a media URL or attachment class. */
+    private static function has_wp_post_reference(int $attachment_id, string $url): ?bool {
+        global $wpdb;
+        if ($attachment_id <= 0 || $url === '' || !is_string($wpdb->posts) || !preg_match('/^[A-Za-z0-9_]+$/D', $wpdb->posts)) return null;
+        $columns = ['post_content', 'post_excerpt', 'post_content_filtered', 'guid'];
+        $patterns = [
+            '%' . $wpdb->esc_like($url) . '%',
+            '%' . str_replace('/', '%', $wpdb->esc_like($url)) . '%',
+            '%' . $wpdb->esc_like('wp-image-' . $attachment_id) . '%',
+        ];
+        $conditions = [];
+        $parameters = [$attachment_id];
+        foreach ($columns as $column) {
+            foreach ($patterns as $pattern) {
+                $conditions[] = $column . ' LIKE %s';
+                $parameters[] = $pattern;
+            }
+        }
+        $wpdb->last_error = '';
+        $reference = $wpdb->get_var($wpdb->prepare(
+            'SELECT ID FROM ' . $wpdb->posts . ' WHERE ID <> %d AND (' . implode(' OR ', $conditions) . ') LIMIT 1',
+            ...$parameters
+        ));
+        if ($wpdb->last_error !== '') return null;
+        return $reference !== null;
     }
 
     /**

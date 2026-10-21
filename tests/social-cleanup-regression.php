@@ -18,6 +18,7 @@ final class CleanupWpdb {
     public array $attachments = [];
     public array $meta = [];
     public array $post_content = [];
+    public array $post_fields = [];
     public array $postmeta_values = [];
     public array $metadata_values = ['wp_usermeta'=>[], 'wp_termmeta'=>[], 'wp_commentmeta'=>[], 'wp_options'=>[]];
     public bool $initial_query_error = false;
@@ -188,14 +189,16 @@ final class CleanupWpdb {
         if (strpos($query, 'FROM wp_posts') !== false) {
             preg_match('/ID <> (\d+)/', $query, $m); $self = (int) ($m[1] ?? 0);
             preg_match('/wp-image-(\d+)/', $query, $i); $image = 'wp-image-' . (int) ($i[1] ?? 0);
-            preg_match_all('/post_content LIKE \'(.*?)\'/s', $query, $matches);
+            preg_match_all('/(?:post_content|post_excerpt|post_content_filtered|guid) LIKE \'(.*?)\'/s', $query, $matches);
             $patterns = array_map(static fn($pattern) => stripslashes($pattern), $matches[1] ?? []);
-            foreach ($this->post_content as $id => $content) {
+            $post_ids = array_unique(array_merge(array_keys($this->post_content), array_keys($this->post_fields)));
+            foreach ($post_ids as $id) {
                 if ((int) $id === $self) continue;
-                if (strpos($content, $image) !== false) return $id;
+                $fields = array_merge(['post_content' => $this->post_content[$id] ?? ''], $this->post_fields[$id] ?? []);
+                foreach ($fields as $content) if (strpos((string) $content, $image) !== false) return $id;
                 foreach ($patterns as $pattern) {
                     $like_regex = '/^' . str_replace('%', '.*', preg_quote($pattern, '/')) . '$/s';
-                    if ($pattern !== '' && preg_match($like_regex, (string) $content)) return $id;
+                    foreach ($fields as $content) if ($pattern !== '' && preg_match($like_regex, (string) $content)) return $id;
                 }
             }
             return null;
@@ -349,6 +352,9 @@ foreach ([
     ['shared post content', static function () { $GLOBALS['wpdb']->post_content[5] = 'wp-image-42'; }],
     ['shared post URL without attachment ID', static function () { $GLOBALS['wpdb']->post_content[5] = 'https://fixture.invalid/uploads/clip.mp4'; }],
     ['JSON-escaped post URL without attachment ID', static function () { $GLOBALS['wpdb']->post_content[5] = json_encode(['url'=>'https://fixture.invalid/uploads/clip.mp4']); }],
+    ['shared post excerpt URL', static function () { $GLOBALS['wpdb']->post_fields[5]['post_excerpt'] = 'Preview https://fixture.invalid/uploads/clip.mp4'; }],
+    ['shared filtered post content URL', static function () { $GLOBALS['wpdb']->post_fields[5]['post_content_filtered'] = 'https://fixture.invalid/uploads/clip.mp4'; }],
+    ['shared post GUID URL', static function () { $GLOBALS['wpdb']->post_fields[5]['guid'] = 'https://fixture.invalid/uploads/clip.mp4'; }],
     ['shared postmeta', static function () { $GLOBALS['wpdb']->postmeta_values[] = '42'; }],
     ['serialized postmeta attachment ID', static function () { $GLOBALS['wpdb']->postmeta_values[] = 'a:1:{s:12:"attachment";i:42;}'; }],
     ['shared postmeta URL without attachment ID', static function () { $GLOBALS['wpdb']->postmeta_values[] = 'https://fixture.invalid/uploads/clip.mp4'; }],
