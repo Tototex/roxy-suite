@@ -95,7 +95,7 @@ try {
     $committed_result=\RoxySocial\DraftFixtureStore::update_imported_media(1,9600,'image',null,960,'committed.jpg',$row);
     remove_filter('query',$fail_committed_readback);
     roxy_snapshot_check(!$committed_result&&$failed_readback&&\RoxySocial\DraftFixtureStore::find(1)['media_url']==='https://fixture.test/9600.jpg','import assignment commits even though Store read-back reports failure');
-    $cleanup=new ReflectionMethod(\RoxySocial\SnapshotFixtureHangar::class,'cleanup_failed_import');$cleanup->setAccessible(true);
+    $cleanup=new ReflectionMethod(\RoxySocial\SnapshotFixtureHangar::class,'cleanup_failed_import');if (PHP_VERSION_ID < 80100) $cleanup->setAccessible(true);
     $cleanup->invoke(null,1,9600);
     roxy_snapshot_check(!in_array(9600,$GLOBALS['snapshot_deleted_attachments']??[],true),'uncertain committed media assignment is retained after read-back failure');
 

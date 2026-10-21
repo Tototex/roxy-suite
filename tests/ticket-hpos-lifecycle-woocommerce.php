@@ -73,7 +73,7 @@ try {
   $guard_order=$make_order($token.' GUARD TEST');
   $check(\RoxyST\Holds::claim($guard_order),'HPOS seat hold is established for a second order transaction');
   (new \RoxyST\Issuance((int)$guard_order->get_id()))->run(static function($writer)use($guard_order,$secondary,$meta_table,$check){
-    $predicate=(new ReflectionMethod($writer,'predicate'));$predicate->setAccessible(true);$guard=$predicate->invoke($writer);
+    $predicate=(new ReflectionMethod($writer,'predicate'));if (PHP_VERSION_ID < 80100) $predicate->setAccessible(true);$guard=$predicate->invoke($writer);
     $replayed=$secondary->query($secondary->prepare("INSERT INTO `$meta_table` (order_id,meta_key,meta_value) SELECT %d,%s,%s FROM DUAL WHERE $guard",(int)$guard_order->get_id(),'_roxy_seat_hold_until','1'));
     $check($replayed===0,'replayed HPOS hold SQL cannot write from a connection without the active lock');
   });

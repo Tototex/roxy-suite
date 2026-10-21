@@ -208,7 +208,7 @@ namespace {
     foreach (['24:00','23:60','99:99','23:00junk'] as $time) check(\RoxyInventory\Settings::sanitize(['schedule_time'=>$time])['schedule_time']==='23:00','Invalid schedule time safely defaults');
     check(\RoxyInventory\Settings::sanitize(['schedule_time'=>'22:45'])['schedule_time']==='22:45','Valid editable schedule time preserved');
     $seed = new \ReflectionMethod(\RoxyInventory\Store::class, 'seed_vendors');
-    $seed->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $seed->setAccessible(true);
     $GLOBALS['test_queries'] = [];
     $seed->invoke(null);
     foreach ($GLOBALS['test_queries'] as $query) {

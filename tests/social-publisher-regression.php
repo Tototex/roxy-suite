@@ -143,7 +143,7 @@ namespace {
         'ambiguous pending Story upload is not offered to the retry queue');
     reset_fixture('both','failed');\RoxySocial\Store::$row['facebook_post_id']='123';\RoxySocial\Campaigns::$verified=false;$GLOBALS['responses']=[response(['id'=>'234']),response(['id'=>'345'])];
     check(\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['facebook_post_id']==='123'&&\RoxySocial\Store::$row['status']==='posted'&&count($GLOBALS['calls'])===2,'schedule wording does not block safe retry to only the missing account');
-    $decode=new \ReflectionMethod(\RoxySocial\Publisher::class,'decode_response');$decode->setAccessible(true);
+    $decode=new \ReflectionMethod(\RoxySocial\Publisher::class,'decode_response');if (PHP_VERSION_ID < 80100) $decode->setAccessible(true);
     $meta_error=$decode->invoke(null,response(['error'=>['message'=>'Fatal','type'=>'OAuthException','code'=>9007,'error_subcode'=>2207001]],400),true,false);
     check(($meta_error['error']??'')==='Meta returned HTTP 400: Fatal (type OAuthException; code 9007; subcode 2207001)'&&empty($meta_error['ambiguous']),
         'definitive Meta failures retain safe provider diagnostics without becoming ambiguous');

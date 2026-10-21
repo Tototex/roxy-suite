@@ -36,7 +36,7 @@ require $root . '/includes/modules/inventory/includes/class-roxy-inventory-store
 $wpdb = new CostSchemaDatabase();
 $GLOBALS['cost_schema_options'] = [];
 $store = new ReflectionClass(\RoxyInventory\Store::class);
-$ensure = $store->getMethod('ensure_product_column'); $ensure->setAccessible(true);
+$ensure = $store->getMethod('ensure_product_column'); if (PHP_VERSION_ID < 80100) $ensure->setAccessible(true);
 $ensure->invoke(null, 'unit_cost_status', "VARCHAR(20) NOT NULL DEFAULT 'unknown' AFTER unit_cost");
 check(isset($wpdb->columns['unit_cost_status']), 'Missing Inventory cost column is added and verified');
 $wpdb->fail_query = true;
@@ -47,8 +47,8 @@ $wpdb->products = [
     'zero'=>['unit_cost'=>0.0,'unit_cost_status'=>'unknown','pack_size'=>1,'target_stock'=>0],
     'already_free'=>['unit_cost'=>0.0,'unit_cost_status'=>'free','pack_size'=>36,'target_stock'=>72],
 ];
-$migrate = $store->getMethod('migrate_cost_provenance'); $migrate->setAccessible(true);
-$save_version = $store->getMethod('save_schema_version'); $save_version->setAccessible(true);
+$migrate = $store->getMethod('migrate_cost_provenance'); if (PHP_VERSION_ID < 80100) $migrate->setAccessible(true);
+$save_version = $store->getMethod('save_schema_version'); if (PHP_VERSION_ID < 80100) $save_version->setAccessible(true);
 $save_version->invoke(null);
 check(($GLOBALS['cost_schema_options']['roxy_inventory_db_version']??'')==='0.1.0', 'Schema version marker is saved after a successful upgrade');
 $GLOBALS['cost_schema_options']['roxy_inventory_db_version']='old-version';

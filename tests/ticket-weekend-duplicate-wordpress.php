@@ -47,7 +47,7 @@ try {
     }
     if (wp_timezone_string() !== 'America/Los_Angeles') throw new RuntimeException('Fixture could not force the Los Angeles site timezone.');
     $clone = new ReflectionMethod('RoxyST\\CPT', 'duplicate_showing_to_next_weekend');
-    $clone->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $clone->setAccessible(true);
     $cases = [
         ['2026-10-31T23:30', '2026-11-07T23:30', 169],
         ['2026-03-07T23:30', '2026-03-14T23:30', 167],
@@ -170,7 +170,7 @@ update_post_meta($route_source_id, '_roxy_pid_subscriber', '910006');
 update_post_meta($route_source_id, '_roxy_legacy_product_ids', "910001\n910002\n910099");
 
 $strict_datetime = new ReflectionMethod('RoxyST\\CPT', 'validated_local_datetime');
-$strict_datetime->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $strict_datetime->setAccessible(true);
 $check($strict_datetime->invoke(null, '2026-10-16T23:30') === '2026-10-16T23:30', 'admin duplicate accepts a valid site-local Friday showtime');
 $check($strict_datetime->invoke(null, '2026-02-30T19:30') === null, 'admin duplicate rejects an impossible calendar date');
 $check($strict_datetime->invoke(null, '2026-03-08T02:30') === null, 'admin duplicate rejects a nonexistent Los Angeles DST-gap time');

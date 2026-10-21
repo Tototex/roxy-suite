@@ -136,7 +136,7 @@ try {
   ]);
   if ($wpdb->last_error !== '') throw new RuntimeException('Could not seed private neighboring movie row.');
   $rebalance = new ReflectionMethod('\\' . $namespace . '\\Reporter', 'rebalance_concessions_for_date');
-  $rebalance->setAccessible(true);
+  if (PHP_VERSION_ID < 80100) $rebalance->setAccessible(true);
   $square_fixture = [[
     'id' => 'rental-attribution-order-fixture', 'closed_at' => '2038-06-10T18:00:00-07:00',
     'line_items' => [[
@@ -249,7 +249,7 @@ try {
     'site-local booking wall times convert to the Grosses report timezone before report-date selection');
   if (!class_exists('\\RoxyGrosses\\Reporter', false)) require_once dirname($store_path) . '/class-roxy-grosses-reporter.php';
   $window_parser = new ReflectionMethod('\\RoxyGrosses\\Reporter', 'rental_window_datetime');
-  $window_parser->setAccessible(true);
+  if (PHP_VERSION_ID < 80100) $window_parser->setAccessible(true);
   $report_window_start = $window_parser->invoke(null, '2026-06-10 23:30:00');
   $check($report_window_start instanceof DateTimeImmutable && $report_window_start->format('Y-m-d H:i:s e') === '2026-06-11 06:30:00 UTC',
     'rental attribution parses persisted wall time in the WordPress timezone before converting to report timezone');

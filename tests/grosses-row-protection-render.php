@@ -6,7 +6,7 @@ eval('?>'.$source);
 $checks=0;
 foreach(['movie'=>'movies','live'=>'live','rental'=>'rentals','legacy'=>'legacy'] as $name=>$dataset) {
   $method=new ReflectionMethod(RoxyGrossesRenderFixture37\Settings::class,'render_'.$name.'_edit_row');
-  $method->setAccessible(true);
+  if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
   foreach([0,1] as $locked) {
     ob_start(); $method->invoke(null,['id'=>19000001,'is_locked'=>$locked],'<fixture>',2037,'01','02'); $html=ob_get_clean();
     $dom=new DOMDocument(); @$dom->loadHTML($html); $xpath=new DOMXPath($dom);

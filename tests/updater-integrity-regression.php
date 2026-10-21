@@ -60,10 +60,10 @@ namespace {
 
     $config = new \ReflectionProperty(\RoxySuite\Updater::class, 'config');
     $release = new \ReflectionProperty(\RoxySuite\Updater::class, 'release');
-    $config->setAccessible(true);
-    $release->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $config->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $release->setAccessible(true);
     $cache_key_method = new \ReflectionMethod(\RoxySuite\Updater::class, 'get_cache_key');
-    $cache_key_method->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $cache_key_method->setAccessible(true);
     $cache_key = $cache_key_method->invoke(null);
 
     $archive_bytes = "fake zip bytes\n";
@@ -122,7 +122,7 @@ namespace {
     $oversized_manifest = $manifest;
     $oversized_manifest['files'] = array_fill(0, 10001, ['path' => 'roxy-suite/file.php', 'sha256' => str_repeat('a', 64)]);
     $validate_manifest = new \ReflectionMethod(\RoxySuite\Updater::class, 'validate_manifest');
-    $validate_manifest->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $validate_manifest->setAccessible(true);
     check_updater(!$validate_manifest->invoke(null, $oversized_manifest, '1.0.61', 'roxy-suite-1.0.61.zip'), 'manifest with more than 10,000 file records rejected');
 
     $valid = $fetch($latest, $manifest);

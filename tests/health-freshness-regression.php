@@ -99,7 +99,7 @@ namespace {
   };
   $private = static function (string $method): \ReflectionMethod {
     $reflection = new \ReflectionMethod(\RoxySuite\Health::class, $method);
-    $reflection->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $reflection->setAccessible(true);
     return $reflection;
   };
   $event_item = static function () use ($private): array {

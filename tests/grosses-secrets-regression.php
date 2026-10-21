@@ -18,8 +18,8 @@ function add_settings_error(...$args){$GLOBALS['settings_error']=true;}
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS: $label\n";}
 eval('namespace RoxyGrosses; class Scheduler {static function sync_schedule($settings){$GLOBALS["schedule_changed"]=true;}} class Workbook {static function is_safe_uploaded_template_file($path){return !empty($GLOBALS["workbook_private_path_ok"]) && $path==="/private/test-template.xlsx";}}');
 $root=$argv[1]??dirname(__DIR__);require $root.'/includes/modules/grosses/includes/class-roxy-grosses-settings.php';
-$encrypt=new ReflectionMethod(\RoxyGrosses\Settings::class,'encrypt_secret');$encrypt->setAccessible(true);
-$decrypt=new ReflectionMethod(\RoxyGrosses\Settings::class,'decrypt_secret');$decrypt->setAccessible(true);
+$encrypt=new ReflectionMethod(\RoxyGrosses\Settings::class,'encrypt_secret');if (PHP_VERSION_ID < 80100) $encrypt->setAccessible(true);
+$decrypt=new ReflectionMethod(\RoxyGrosses\Settings::class,'decrypt_secret');if (PHP_VERSION_ID < 80100) $decrypt->setAccessible(true);
 $GLOBALS['saved']=['square_access_token'=>'existing-fixture','square_webhook_signature_key'=>'webhook-fixture','schedule_time'=>'23:00'];
 if(!function_exists('openssl_encrypt')){
   $result=\RoxyGrosses\Settings::sanitize(['square_access_token'=>'replacement']);

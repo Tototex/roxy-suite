@@ -113,10 +113,10 @@ check(is_string($rules) && str_contains($rules, 'RewriteRule ^901-150x150\\.jpg$
 check(is_string($rules) && str_contains($rules, "# Existing site rule\n"), 'pre-existing uploads rules are preserved');
 check(get_option(Roxy_Sub_Check::OPTION_PRIVATE_PHOTO_PATHS)===['901-150x150.jpg','901.jpg'], 'protected original and thumbnail paths are durably recorded');
 $photo_file=(new ReflectionClass(Roxy_Sub_Check::class))->getMethod('authorized_member_photo_file');
-$photo_file->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $photo_file->setAccessible(true);
 check($photo_file->invoke(null,901)===ROXY_PHOTO_UPLOADS.'901.jpg', 'authorized staff can resolve a protected member photo through the private endpoint');
 $photo_url=(new ReflectionClass(Roxy_Sub_Check::class))->getMethod('private_member_photo_url');
-$photo_url->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $photo_url->setAccessible(true);
 $staff_url=$photo_url->invoke(null,901);
 check(str_contains($staff_url,'admin-post.php') && !str_contains($staff_url,'901.jpg'), 'staff-facing photo URL uses the access-controlled endpoint, not the public upload URL');
 $account_sub=new PhotoUploadSubscription(901);

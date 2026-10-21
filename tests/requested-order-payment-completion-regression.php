@@ -45,7 +45,7 @@ function wc_get_order(int $id) {
 
 require dirname(__DIR__) . '/includes/modules/requested-showings/includes/class-roxy-rs-conversion.php';
 $method = new ReflectionMethod(\RoxyRS\Conversion::class, 'complete_order_and_verify_payment');
-$method->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
 $complete = static fn(WC_Order $order, string $transaction, int $amount = 1200, string $currency = 'USD'): bool => (bool) $method->invoke(null, $order, $transaction, $amount, $currency);
 $checks = 0;
 $check = static function (bool $ok, string $message) use (&$checks): void {

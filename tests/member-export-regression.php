@@ -25,7 +25,7 @@ class TestDatabase {
 }
 $GLOBALS['wpdb']=new TestDatabase;
 require ($argv[1]??dirname(__DIR__)).'/includes/modules/sub-check/roxy-sub-check.php';
-$export=new ReflectionMethod(Roxy_Sub_Check::class,'export_scan_log_csv');$export->setAccessible(true);
+$export=new ReflectionMethod(Roxy_Sub_Check::class,'export_scan_log_csv');if (PHP_VERSION_ID < 80100) $export->setAccessible(true);
 $temp_dirs_before=glob(sys_get_temp_dir().DIRECTORY_SEPARATOR.'roxy-scan-export-*')?:[];ob_start();$export->invoke(null,7);$csv=ob_get_clean();$temp_dirs_after=glob(sys_get_temp_dir().DIRECTORY_SEPARATOR.'roxy-scan-export-*')?:[];
 if(count($temp_dirs_after)!==count($temp_dirs_before))throw new RuntimeException('Successful export must remove its private temporary directory');
 $lines=explode("\n",trim($csv));$first=str_getcsv($lines[1],',','"','');
@@ -45,7 +45,7 @@ try{$export->invoke(null,7);}catch(RuntimeException $error){$failed_page=str_con
 $failed_page_output=ob_get_clean();$after_dirs=glob(sys_get_temp_dir().DIRECTORY_SEPARATOR.'roxy-scan-export-*')?:[];
 if(!$failed_page||$failed_page_output!==''||count($after_dirs)!==count($before_dirs))throw new RuntimeException('A later database-page failure must clean private output and send no partial CSV');
 echo "PASS: later-page failure sends no partial CSV and removes its private temporary export\n";
-$private_check=new ReflectionMethod(Roxy_Sub_Check::class,'scan_export_temp_is_private');$private_check->setAccessible(true);$temp_root=realpath(sys_get_temp_dir());
+$private_check=new ReflectionMethod(Roxy_Sub_Check::class,'scan_export_temp_is_private');if (PHP_VERSION_ID < 80100) $private_check->setAccessible(true);$temp_root=realpath(sys_get_temp_dir());
 $_SERVER['DOCUMENT_ROOT']=$temp_root;
 if($private_check->invoke(null,$temp_root)!==false)throw new RuntimeException('System temp under the document root must be rejected');
 $_SERVER['DOCUMENT_ROOT']=dirname(__DIR__);
@@ -56,7 +56,7 @@ try{$export->invoke(null,0);}catch(RuntimeException $error){$temp_failure=str_co
 $temp_failure_output=ob_get_clean();$_SERVER['DOCUMENT_ROOT']=dirname(__DIR__);
 if(!$temp_failure||$temp_failure_output!=='')throw new RuntimeException('Private temp-storage failure must return before emitting response bytes');
 echo "PASS: unavailable private temp storage fails without partial output\n";
-$write_row=new ReflectionMethod(Roxy_Sub_Check::class,'put_private_scan_export_row');$write_row->setAccessible(true);$expected_handle=fopen('php://temp','w+b');fputcsv($expected_handle,['column','value,with comma'],',','"','');rewind($expected_handle);$expected_row=stream_get_contents($expected_handle);fclose($expected_handle);
+$write_row=new ReflectionMethod(Roxy_Sub_Check::class,'put_private_scan_export_row');if (PHP_VERSION_ID < 80100) $write_row->setAccessible(true);$expected_handle=fopen('php://temp','w+b');fputcsv($expected_handle,['column','value,with comma'],',','"','');rewind($expected_handle);$expected_row=stream_get_contents($expected_handle);fclose($expected_handle);
 $short_stream=fopen('roxyshort://successful-short-write','w');ShortWriteStream::$stop_after=0;$write_row->invoke(null,$short_stream,['column','value,with comma']);fclose($short_stream);
 if(ShortWriteStream::$data!==$expected_row||ShortWriteStream::$writes<2)throw new RuntimeException('Repeated short writes must complete the entire CSV row');
 $short_stream=fopen('roxyshort://failed-short-write','w');ShortWriteStream::$stop_after=1;$write_failed=false;

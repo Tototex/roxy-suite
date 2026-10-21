@@ -118,7 +118,7 @@ try {
   $check($overnight_found, 'rental allocation lookup on May 5 includes prior-day booking windows crossing midnight');
 
   $method = new ReflectionMethod($reporter, 'rebalance_concessions_for_report_dates');
-  $method->setAccessible(true);
+  if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
   $result = $namespace . '\\Square';
   try {
     $result::with_sale_snapshot(static fn() => $method->invoke(null, [['report_date'=>$date],['report_date'=>$date]], $dates[1]));
@@ -137,7 +137,7 @@ try {
   $check(class_exists($reporter), 'candidate Reporter loaded under an isolated namespace');
   $check($result::$calls === $dates, 'unique sorted target/lookback dates served the actual allocation');
   $method = new ReflectionMethod($reporter, 'rebalance_concessions_for_date');
-  $method->setAccessible(true);
+  if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
 
   $overnight_date = '2038-05-05';
   $result::$order_fixtures[$overnight_date] = [[
@@ -230,7 +230,7 @@ try {
   $check($protected_refresh_failed && $wpdb->last_error === '' && (string)$protected === '99.33', 'actual protected amount above the source total is reported and preserved');
 
   $apply_method = new ReflectionMethod($reporter, 'apply_concessions_to_reports');
-  $apply_method->setAccessible(true);
+  if (PHP_VERSION_ID < 80100) $apply_method->setAccessible(true);
   $fixture_square = $result;
   $la = new DateTimeZone('America/Los_Angeles');
   $components = [

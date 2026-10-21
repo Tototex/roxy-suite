@@ -12,8 +12,8 @@ eval($code);
 $original=$wpdb->prefix;
 $table=$original.'stability_schema_'.bin2hex(random_bytes(6)).'_roxy_member_scans';
 $check=static function($ok,$message){if(!$ok)throw new RuntimeException($message);echo "PASS_SCHEMA: $message\n";};
-$reset=static function(){foreach(['schema_ready','schema_attempted'] as $name){$property=new ReflectionProperty(SchemaFixture_Roxy_Sub_Check::class,$name);$property->setAccessible(true);$property->setValue(null,false);}};
-$create=new ReflectionMethod(SchemaFixture_Roxy_Sub_Check::class,'create_log_table');$create->setAccessible(true);
+$reset=static function(){foreach(['schema_ready','schema_attempted'] as $name){$property=new ReflectionProperty(SchemaFixture_Roxy_Sub_Check::class,$name);if (PHP_VERSION_ID < 80100) $property->setAccessible(true);$property->setValue(null,false);}};
+$create=new ReflectionMethod(SchemaFixture_Roxy_Sub_Check::class,'create_log_table');if (PHP_VERSION_ID < 80100) $create->setAccessible(true);
 try {
     $wpdb->prefix=substr($table,0,-strlen('roxy_member_scans'));
     $check($wpdb->query("CREATE TABLE `$table` (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, scanned_at DATETIME NOT NULL, subscription_id BIGINT UNSIGNED NOT NULL, PRIMARY KEY(id))")!==false,'isolated legacy schema created');

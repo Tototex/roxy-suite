@@ -36,7 +36,7 @@ namespace {
   require_once __DIR__ . '/../includes/modules/grosses/includes/class-roxy-grosses-settings.php';
 
   $render = new \ReflectionMethod(\RoxyGrosses\Settings::class, 'render_cashflow_tab');
-  $render->setAccessible(true);
+  if (PHP_VERSION_ID < 80100) $render->setAccessible(true);
   $_GET = [];
   ob_start();
   $render->invoke(null, '2026-10-16');

@@ -36,7 +36,7 @@ foreach ([
   'RoxyGrosses\\RefundSnapshot',
 ] as $class) {
   $method = new ReflectionMethod($class, 'is_list');
-  $method->setAccessible(true);
+  if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
   foreach ($cases as [$value, $expected, $label]) {
     $check($method->invoke(null, $value) === $expected, $class . ' ' . $label);
   }

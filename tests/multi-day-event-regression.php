@@ -278,7 +278,7 @@ try {
 
   $cart_contents=[];
   $price_method=new ReflectionMethod(\RoxyST\Events::class,'allocated_prices');
-  $price_method->setAccessible(true);
+  if (PHP_VERSION_ID < 80100) $price_method->setAccessible(true);
   $unit_prices=$price_method->invoke(null,45.0,6);
   $check(array_sum($unit_prices)===45.0,'all-screenings package allocation sums exactly to the advertised price');
   $bundle_id=wp_generate_uuid4();$expected_ids=$screenings;
@@ -353,7 +353,7 @@ try {
 
   wp_update_post(['ID'=>(int)$event_id,'post_status'=>'draft']);
   $publication_cache = new \ReflectionProperty(\RoxyST\Events::class, 'published_in_request');
-  $publication_cache->setAccessible(true);
+  if (PHP_VERSION_ID < 80100) $publication_cache->setAccessible(true);
   $cached_published_events = $publication_cache->getValue();
   $check(get_post_status((int)$event_id) === 'draft'
     && count(array_filter($screenings,static fn($id)=>get_post_status($id)==='publish'))===0
@@ -398,7 +398,7 @@ try {
   };
   add_filter('wp_insert_post_data', $block_demotion, 10, 2);
   $published_cache = new \ReflectionProperty(\RoxyST\Events::class, 'published_in_request');
-  $published_cache->setAccessible(true);
+  if (PHP_VERSION_ID < 80100) $published_cache->setAccessible(true);
   $published_ids = $published_cache->getValue();
   unset($published_ids[(int)$event_id]);
   $published_cache->setValue(null, $published_ids);

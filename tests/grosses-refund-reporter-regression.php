@@ -86,7 +86,7 @@ namespace {
   };
   $invoke = static function (string $date, array $showings, ?\RoxyGrosses\RefundSnapshot $snapshot = null): array {
     $method = new \ReflectionMethod(\RoxyGrosses\Reporter::class, 'build_reports_for_date_showings');
-    $method->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
     return $method->invoke(null, $date, $showings, $snapshot);
   };
   $adjustment = static function (string $order_id, string $line_uid, int $quantity): array {

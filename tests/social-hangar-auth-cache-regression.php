@@ -26,7 +26,7 @@ namespace {
     $GLOBALS['hangar_response'] = ['code'=>200, 'cookies'=>['session-cookie']];
     require dirname(__DIR__) . '/includes/modules/social-publisher/includes/class-roxy-social-hangar.php';
     $method = new \ReflectionMethod(\RoxySocial\Hangar::class, 'login_cookies');
-    $method->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
     $checks = 0;
     $check = static function (bool $condition, string $message) use (&$checks): void {
         if (!$condition) throw new \RuntimeException($message);

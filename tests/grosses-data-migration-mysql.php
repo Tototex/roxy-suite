@@ -146,7 +146,7 @@ try {
   $old_cursor_title=sanitize_text_field($boundary_title);
   $old_cursor_remaining=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$history} WHERE report_date=%s AND (film_title>%s OR (film_title=%s AND id>%d))",$cursor_date,$old_cursor_title,$old_cursor_title,$boundary_id));
   $assert($boundary_id===2000&&$old_cursor_remaining===0,'fixture reproduces the old sanitized cursor omitting the lower-ID following row');
-  $cursor_migration=new ReflectionMethod($store,'migrate_history_to_entries');$cursor_migration->setAccessible(true);$cursor_migration->invoke(null);
+  $cursor_migration=new ReflectionMethod($store,'migrate_history_to_entries');if (PHP_VERSION_ID < 80100) $cursor_migration->setAccessible(true);$cursor_migration->invoke(null);
   $cursor_entry_count=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$entries} WHERE report_date=%s AND source_type=%s",$cursor_date,'saved_report_migration'));
   $cursor_collision_count=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$entries} WHERE report_date=%s AND showing_id IN (%d,%d)",$cursor_date,19700100,19700101));
   if($wpdb->last_error!==''||$cursor_entry_count!==101||$cursor_collision_count!==2)throw new RuntimeException(sprintf('Legacy-title cursor regression failed: source=%d migrated=%d collision_pair=%d sql_error=%s',$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$history} WHERE report_date=%s",$cursor_date)),$cursor_entry_count,$cursor_collision_count,$wpdb->last_error));

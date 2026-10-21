@@ -65,7 +65,7 @@ namespace {
     add_filter('pre_wp_mail', $mail_interceptor, PHP_INT_MAX, 2);
 
     $method = new \ReflectionMethod(\RoxyGrosses\Reporter::class, 'send_live_grosses_email');
-    $method->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
     $recipients = ['live-report@example.invalid'];
     $row = [
       'id' => 7412,
@@ -108,7 +108,7 @@ namespace {
     // Grosses sender boundary, with WordPress rejecting raw Unicode for the
     // connection charset. The message is intercepted before mail transport.
     $daily_sender = new \ReflectionMethod(\RoxyGrosses\Reporter::class, 'send_email');
-    $daily_sender->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $daily_sender->setAccessible(true);
     $daily_rows = [[
       'report_date' => '2039-07-18', 'show_time' => '19:30', 'film_title' => 'Fixture Feature',
       'general_qty' => 2, 'discount_qty' => 1, 'group_qty' => 0, 'total_tickets' => 3, 'gross_total' => 32.00,

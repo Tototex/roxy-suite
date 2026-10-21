@@ -79,7 +79,7 @@ foreach(['bad_cost'=>['unit_cost'=>'1.555'],'overflow'=>['target_stock'=>'100000
 check(\RoxyInventory\Admin::product_rows_from_submission(['product_rows_complete'=>'1','product_row_count'=>['1']])===null,'I9: array row count rejected safely');
 check(\RoxyInventory\Admin::product_rows_from_submission(['product_rows_complete'=>'1','product_row_count'=>'1','product_rows_json'=>['bad']])===null,'I9: non-string JSON submission rejected safely');
 
-$next = new \ReflectionMethod(\RoxyInventory\Scheduler::class, 'next_time'); $next->setAccessible(true);
+$next = new \ReflectionMethod(\RoxyInventory\Scheduler::class, 'next_time'); if (PHP_VERSION_ID < 80100) $next->setAccessible(true);
 foreach (['2026-10-31 23:01'=>'2026-11-01 23:00', '2026-03-07 23:01'=>'2026-03-08 23:00'] as $date => $expected) {
     $actual = (new \DateTimeImmutable('@' . $next->invoke(null, new \DateTimeImmutable($date, wp_timezone()))))->setTimezone(wp_timezone());
     check($actual->format('Y-m-d H:i') === $expected, 'I5: local schedule preserved across DST ' . $date);
@@ -108,9 +108,9 @@ unset($GLOBALS['event']);
 \RoxyInventory\Scheduler::sync_schedule();
 check(isset($GLOBALS['event']) && $GLOBALS['event']->schedule==='','I9: schedule retry succeeds after fault removal');
 
-$config = new \ReflectionProperty(\RoxySuite\Updater::class, 'config'); $config->setAccessible(true); $config->setValue(null, ['github_repo'=>'test/test','slug'=>'test']);
-$release = new \ReflectionProperty(\RoxySuite\Updater::class, 'release'); $release->setAccessible(true);
-$latest = new \ReflectionMethod(\RoxySuite\Updater::class, 'get_latest_release'); $latest->setAccessible(true);
+$config = new \ReflectionProperty(\RoxySuite\Updater::class, 'config'); if (PHP_VERSION_ID < 80100) $config->setAccessible(true); $config->setValue(null, ['github_repo'=>'test/test','slug'=>'test']);
+$release = new \ReflectionProperty(\RoxySuite\Updater::class, 'release'); if (PHP_VERSION_ID < 80100) $release->setAccessible(true);
+$latest = new \ReflectionMethod(\RoxySuite\Updater::class, 'get_latest_release'); if (PHP_VERSION_ID < 80100) $latest->setAccessible(true);
 foreach (['error', ['code'=>503,'body'=>'{}'], ['code'=>200,'body'=>'not json'], ['code'=>200,'body'=>'{"tag_name":"v1","assets":[]}']] as $response) {
     $GLOBALS['transients'] = []; $GLOBALS['calls'] = 0; $GLOBALS['response'] = $response; $release->setValue(null, null);
     check($latest->invoke(null) === null && $latest->invoke(null) === null && $GLOBALS['calls'] === 1, 'C5: failed release check backed off');

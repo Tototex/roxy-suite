@@ -18,18 +18,18 @@ class TestOrder {
     public function get_item($id) { return $id === 10 ? new TestItem() : false; }
 }
 require $root . '/includes/modules/show-tickets/includes/class-roxy-st-tickets.php';
-$state = new ReflectionMethod(\RoxyST\Tickets::class, 'state_for_order_status'); $state->setAccessible(true);
+$state = new ReflectionMethod(\RoxyST\Tickets::class, 'state_for_order_status'); if (PHP_VERSION_ID < 80100) $state->setAccessible(true);
 foreach (['pending','on-hold','checkout-draft','failed','cancelled','refunded','unknown'] as $status) check($state->invoke(null,$status) !== 'valid', 'T2: ' . $status . ' is not admissible');
 foreach (['processing','completed'] as $status) check($state->invoke(null,$status) === 'valid', 'T2: confirmed ' . $status . ' including $0 remains admissible');
 $order = new TestOrder(); $GLOBALS['orders'][1] = $order;
 foreach ([101,102,103] as $id) $GLOBALS['meta'][$id] = ['_roxy_ticket_order_id'=>1,'_roxy_ticket_order_item_id'=>10,'_roxy_ticket_state'=>'valid'];
-$can = new ReflectionMethod(\RoxyST\Tickets::class, 'can_check_in'); $can->setAccessible(true);
+$can = new ReflectionMethod(\RoxyST\Tickets::class, 'can_check_in'); if (PHP_VERSION_ID < 80100) $can->setAccessible(true);
 check($can->invoke(null,101), 'T2: valid paid ticket can be admitted');
 $order->status = 'on-hold'; check(!$can->invoke(null,101), 'T2: stale valid ticket cannot admit unpaid order');
 $order->status = 'processing'; $GLOBALS['meta'][101]['_roxy_ticket_order_id'] = 999;
 check(!$can->invoke(null,101), 'T2: missing order fails closed');
 $GLOBALS['meta'][101]['_roxy_ticket_order_id'] = 1;
-$sync = new ReflectionMethod(\RoxyST\Tickets::class, 'sync_item_refund_allocation'); $sync->setAccessible(true);
+$sync = new ReflectionMethod(\RoxyST\Tickets::class, 'sync_item_refund_allocation'); if (PHP_VERSION_ID < 80100) $sync->setAccessible(true);
 $order->refunded = 1;
 check(!$can->invoke(null,103), 'T3: historical refund protected before resync');
 $sync->invoke(null,$order,10,[101,102,103],'valid');

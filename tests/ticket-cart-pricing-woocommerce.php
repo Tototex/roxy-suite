@@ -13,7 +13,7 @@ $assert = static function ($ok, $label) use (&$checks) {
 $reset = static function () {
     foreach (['price_changed_in_request'=>false, 'review_notice_added'=>false, 'changes'=>[]] as $property=>$value) {
         $r = new ReflectionProperty(RoxyST\CartPricing::class, $property);
-        $r->setAccessible(true); $r->setValue(null, $value);
+        if (PHP_VERSION_ID < 80100) $r->setAccessible(true); $r->setValue(null, $value);
     }
 };
 // Exercise installed Store API's legacy-notice bridge without unrelated item/coupon

@@ -69,7 +69,7 @@ namespace {
     $root = $argv[1] ?? dirname(__DIR__);
     require $root . '/includes/modules/requested-showings/includes/class-roxy-rs-conversion.php';
     $charge = new \ReflectionMethod('RoxyRS\\Conversion', 'charge_order_with_saved_token');
-    $charge->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $charge->setAccessible(true);
     $checks = 0;
     $assert = static function ($ok, $label) use (&$checks) { if (!$ok) throw new \RuntimeException($label); $checks++; echo 'PASS: ' . $label . PHP_EOL; };
     $reset = static function () {

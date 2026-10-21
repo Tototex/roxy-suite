@@ -41,7 +41,7 @@ try {
   // A connection drop implicitly rolls back its open transaction and releases
   // its named locks. The stale writer must not continue on wpdb's replacement
   // connection or try to clean up the old transaction there.
-  $reconnect=new \RoxyST\FixtureIssuance(123);$reconnect_lock=(new ReflectionProperty($reconnect,'lock'));$reconnect_lock->setAccessible(true);$reconnect_key=$reconnect_lock->getValue($reconnect);$reconnect_id=0;$reconnect_rejected=false;
+  $reconnect=new \RoxyST\FixtureIssuance(123);$reconnect_lock=(new ReflectionProperty($reconnect,'lock'));if (PHP_VERSION_ID < 80100) $reconnect_lock->setAccessible(true);$reconnect_key=$reconnect_lock->getValue($reconnect);$reconnect_id=0;$reconnect_rejected=false;
   try {
     $reconnect->run(static function($operation)use($wpdb,&$reconnect_id,&$reconnect_rejected){
       $id=$operation->create('MUST ROLLBACK AFTER RECONNECT');
@@ -65,13 +65,13 @@ try {
     if(!$lock_released)usleep(10000);
   } while(!$lock_released&&microtime(true)<$lock_deadline);
   $check($lock_released,'disconnect releases the old ticket lock without stale cleanup on the replacement connection');
-  $held=new \RoxyST\FixtureIssuance(123);$lock=(new ReflectionProperty($held,'lock'));$lock->setAccessible(true);$key=$lock->getValue($held);
+  $held=new \RoxyST\FixtureIssuance(123);$lock=(new ReflectionProperty($held,'lock'));if (PHP_VERSION_ID < 80100) $lock->setAccessible(true);$key=$lock->getValue($held);
   $check((string)$second->get_var($second->prepare('SELECT GET_LOCK(%s,0)',$key))==='1','second connection acquires competing order lock');
   try{try{$held->run(static fn()=>null);throw new RuntimeException('Contended operation ran');}catch(RuntimeException $e){$check($e->getMessage()==='Ticket issuance is busy','overlapping order operation is blocked');}}
   finally{$second->get_var($second->prepare('SELECT RELEASE_LOCK(%s)',$key));}
   $group=new \RoxyST\FixtureIssuance([456,123],['private-group','private-showing']);
   $reverse=new \RoxyST\FixtureIssuance([123,456],['private-showing','private-group']);
-  $locks=new ReflectionProperty($group,'locks');$locks->setAccessible(true);$keys=$locks->getValue($group);
+  $locks=new ReflectionProperty($group,'locks');if (PHP_VERSION_ID < 80100) $locks->setAccessible(true);$keys=$locks->getValue($group);
   $check($keys===$locks->getValue($reverse)&&count($keys)===4,'multi-scope group lock order is deterministic across reversed input');
   $blocked=end($keys);$second->get_var($second->prepare('SELECT GET_LOCK(%s,0)',$blocked));
   try {try {$group->run(static fn()=>null);throw new RuntimeException('Contended group ran');}catch(RuntimeException $e){$check($e->getMessage()==='Ticket issuance is busy','group contention refuses all mutations');}}
@@ -80,7 +80,7 @@ try {
   (new \RoxyST\FixtureIssuance(123))->run(static function($operation){$operation->transactional_order_meta(123,'_roxy_seat_hold_managed',1);});
   $check((int)maybe_unserialize($wpdb->get_var("SELECT meta_value FROM `{$wpdb->postmeta}` WHERE post_id=123 AND meta_key='_roxy_seat_hold_managed'"))===1,'legacy transactional order metadata remains on the verified postmeta path');
   (new \RoxyST\FixtureIssuance(123))->run(static function($operation)use($second,$wpdb,$check){
-    $predicate=new ReflectionMethod($operation,'predicate');$predicate->setAccessible(true);
+    $predicate=new ReflectionMethod($operation,'predicate');if (PHP_VERSION_ID < 80100) $predicate->setAccessible(true);
     $guard=$predicate->invoke($operation);
     $result=$second->query("INSERT INTO `{$wpdb->postmeta}` (post_id,meta_key,meta_value) SELECT 999,'_stray','blocked' FROM DUAL WHERE $guard");
     $check($result===0,'same guarded SQL replayed by another connection cannot write');

@@ -124,7 +124,7 @@ resetfixture(null,encoded(['counts'=>[countrow('-2.5')]]));check(\RoxyInventory\
 resetfixture(null,encoded(['counts'=>[]]));check(\RoxyInventory\Square::pull()['v1']['on_hand']===0,'explicitly empty counts legitimately mean no stock');
 resetfixture(null,encoded((object)[]));rejects('missing terminal counts collection is not zero stock');
 resetfixture(encoded((object)[]));rejects('successful empty catalog is not treated as a complete inventory pull');
-$method=new ReflectionMethod(\RoxyInventory\Square::class,'page_budget');$method->setAccessible(true);
+$method=new ReflectionMethod(\RoxyInventory\Square::class,'page_budget');if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
 foreach ([[microtime(true)-1,0],[microtime(true)+10,100]] as [$deadline,$pages]) { $failed=false;try{$method->invokeArgs(null,[$deadline,&$pages]);}catch(Throwable $e){$failed=true;}check($failed,'expired/page-count budget fails closed'); }
 echo 'Passed '.$checks.' isolated inventory response checks.'."\n";
 }

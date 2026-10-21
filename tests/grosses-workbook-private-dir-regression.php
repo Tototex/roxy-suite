@@ -72,21 +72,21 @@ $source = str_replace('namespace RoxyGrosses;', 'namespace ' . $namespace . ';',
 eval('?>' . $source);
 
 $root_method = new ReflectionMethod($namespace . '\\Workbook', 'private_root_dir');
-$root_method->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $root_method->setAccessible(true);
 $templates_method = new ReflectionMethod($namespace . '\\Workbook', 'private_templates_dir');
-$templates_method->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $templates_method->setAccessible(true);
 $workbooks_method = new ReflectionMethod($namespace . '\\Workbook', 'private_workbooks_dir');
-$workbooks_method->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $workbooks_method->setAccessible(true);
 $move_method = new ReflectionMethod($namespace . '\\Workbook', 'move_file_to_private_storage');
-$move_method->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $move_method->setAccessible(true);
 $set_template_method = new ReflectionMethod($namespace . '\\Workbook', 'set_uploaded_template');
-$set_template_method->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $set_template_method->setAccessible(true);
 $ensure_template_method = new ReflectionMethod($namespace . '\\Workbook', 'ensure_uploaded_template_private');
-$ensure_template_method->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $ensure_template_method->setAccessible(true);
 $is_private_method = new ReflectionMethod($namespace . '\\Workbook', 'is_private_path');
-$is_private_method->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $is_private_method->setAccessible(true);
 $safe_template_method = new ReflectionMethod($namespace . '\\Workbook', 'is_safe_uploaded_template_file');
-$safe_template_method->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $safe_template_method->setAccessible(true);
 $checks = 0;
 $check = static function (bool $condition, string $label) use (&$checks): void {
     if (!$condition) throw new RuntimeException('FAIL: ' . $label);
@@ -161,7 +161,7 @@ try {
     if (!symlink($public_target, $private_root_link)) throw new RuntimeException('Could not create private-root symlink fixture.');
     $root_link_rejected = false;
     $ensure_method = new ReflectionMethod($namespace . '\\Workbook', 'ensure_private_directory');
-    $ensure_method->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $ensure_method->setAccessible(true);
     try { $ensure_method->invoke(null, $private_root_link); }
     catch (RuntimeException $error) { $root_link_rejected = true; }
     $check($root_link_rejected && !is_file($public_target . DIRECTORY_SEPARATOR . 'index.html'), 'symlinked private root is rejected without writing into its target');

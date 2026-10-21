@@ -41,7 +41,7 @@ $code=str_replace(['self::invalidate_door_stats_cache($showing_id);','self::inva
 eval($code);
 $GLOBALS['order']=new TestOrder;$GLOBALS['reserved']=[101,102,103];
 $reset=static function(){Roxy_Sub_Check::$logs=[];Roxy_Sub_Check::$fail=false;foreach([101,102,103] as $id)$GLOBALS['meta'][$id]=['_roxy_ticket_state'=>'valid','_roxy_ticket_order_id'=>1,'_roxy_ticket_order_item_id'=>10,'_roxy_ticket_showing_id'=>50,'_roxy_ticket_type'=>'subscriber','_roxy_ticket_customer_email'=>'fixture@example.test'];};
-$admit=new ReflectionMethod(\RoxyST\Tickets::class,'member_admission_payload');$admit->setAccessible(true);
+$admit=new ReflectionMethod(\RoxyST\Tickets::class,'member_admission_payload');if (PHP_VERSION_ID < 80100) $admit->setAccessible(true);
 $reset();$GLOBALS['meta'][101]['_roxy_checked_in']=1;$GLOBALS['meta'][101]['_roxy_ticket_state']='checked_in';$GLOBALS['order']->refunded=1;
 $result=$admit->invoke(null,1,50,3,'manual_admit');
 check($result['ok']&&$result['payload']['admit_quantity']===1&&Roxy_Sub_Check::$logs[0][0]===1,'reserved admission logs only one actually changed, not three requested');
@@ -63,7 +63,7 @@ check($result['ok']&&$result['payload']['admit_quantity']===1,'walk-up request c
 $GLOBALS['nonce_args']=[];$_POST=['nonce'=>'fixture','visit_id'=>'223','subscription_id'=>'7','showing_id'=>'50'];
 try{\RoxyST\Tickets::ajax_member_walkup_undo();}catch(JsonResult $json){$undo_payload=$json->payload;}
 check(($GLOBALS['issuance_scope']??'')==='walkup:50' && ($GLOBALS['walkup_undo_args']??[])===[223,7,50] && ($GLOBALS['nonce_args'][0]??[])===['roxy_st_door_checkin','nonce'] && ($undo_payload['audit']['undo_audit_id']??0)===999,'walk-up Undo AJAX endpoint uses the showing lock, exact visit identity, and Door Mode nonce');
-$render=new ReflectionMethod(\RoxyST\Tickets::class,'render_walkup_undo_form');$render->setAccessible(true);ob_start();$render->invoke(null,223,7,50);$undo_form=ob_get_clean();
+$render=new ReflectionMethod(\RoxyST\Tickets::class,'render_walkup_undo_form');if (PHP_VERSION_ID < 80100) $render->setAccessible(true);ob_start();$render->invoke(null,223,7,50);$undo_form=ob_get_clean();
 check(str_contains($undo_form,'roxy_st_undo_member_walkup') && str_contains($undo_form,'name="visit_id" value="223"') && str_contains($undo_form,'name="subscription_id" value="7"') && str_contains($undo_form,'name="showing_id" value="50"') && str_contains($undo_form,'Undo one walk-up arrival'),'manual member-admit screen renders a nonce-protected exact-visit Undo form');
 $GLOBALS['walkup']=0;Roxy_Sub_Check::$fail=true;$result=$admit->invoke(null,1,50,3,'manual_admit');
 check(!$result['ok']&&$result['payload']['admit_quantity']===0,'failed member log reports zero admission');

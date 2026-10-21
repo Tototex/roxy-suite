@@ -141,7 +141,7 @@ if (($argv[1] ?? '') === '--worker') {
       $_POST=['order_id'=>73,'checked_inbox'=>$case==='reconcile_no_attestation'?'':'1','delivery_outcome'=>match($case){'reconcile_manager'=>'manager_received','reconcile_vendor'=>'vendor_received','reconcile_not_delivered'=>'not_delivered','reconcile_invalid'=>'other',default=>'vendor_received'}];
       $call=static fn()=>$admin::reconcile_email_send(); break;
     case 'decision_log_failure':
-      $expires=time()+600; $decision_method=new ReflectionMethod($admin,'decision_token'); $decision_method->setAccessible(true); $token=$decision_method->invoke(null,73,'ordered',$expires);
+      $expires=time()+600; $decision_method=new ReflectionMethod($admin,'decision_token'); if (PHP_VERSION_ID < 80100) $decision_method->setAccessible(true); $token=$decision_method->invoke(null,73,'ordered',$expires);
       $_POST=['order_id'=>73,'decision'=>'ordered','expires'=>$expires,'token'=>$token,'_wpnonce'=>'fixture'];
       $call=static fn()=>$admin::order_decision(); break;
     default: throw new RuntimeException('Unknown subprocess case: '.$case);

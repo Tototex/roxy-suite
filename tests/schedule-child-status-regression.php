@@ -156,7 +156,7 @@ namespace {
   });
 
   schedule_test('shared duplicate-weekend publication decision checks authority and source state', function() {
-    $status=new \ReflectionMethod(\RoxyST\CPT::class,'generated_post_status'); $status->setAccessible(true);
+    $status=new \ReflectionMethod(\RoxyST\CPT::class,'generated_post_status'); if (PHP_VERSION_ID < 80100) $status->setAccessible(true);
     foreach ([['publish',true,'publish'],['publish',false,'draft'],['private',true,'private'],['pending',true,'pending'],['future',true,'draft']] as [$source_status,$allowed,$expected]) {
       $GLOBALS['schedule_publish_allowed']=$allowed;
       check_schedule($status->invoke(null,(object)['post_status'=>$source_status])===$expected,'shared generation status should preserve publication boundary');
@@ -234,7 +234,7 @@ namespace {
   });
 
   schedule_test('weekend admin selection rejects impossible and DST-gap local dates', function() {
-    $anchor=new \ReflectionMethod(\RoxyST\CPT::class,'weekend_anchor_from_start'); $anchor->setAccessible(true);
+    $anchor=new \ReflectionMethod(\RoxyST\CPT::class,'weekend_anchor_from_start'); if (PHP_VERSION_ID < 80100) $anchor->setAccessible(true);
     check_schedule($anchor->invoke(null,'2026-02-30T19:30')===null,'impossible saved date has no weekend anchor');
     check_schedule($anchor->invoke(null,'2026-03-08T02:30')===null,'nonexistent spring DST time has no weekend anchor');
     check_schedule($anchor->invoke(null,'2026-03-06T19:30') instanceof \DateTimeImmutable,'valid Friday retains local weekend anchor');
@@ -261,7 +261,7 @@ namespace {
   });
 
   schedule_test('scheduled ticket price change dates shift seven local days across DST', function() {
-    $shift=new \ReflectionMethod(\RoxyST\CPT::class,'shift_local_datetime_days'); $shift->setAccessible(true);
+    $shift=new \ReflectionMethod(\RoxyST\CPT::class,'shift_local_datetime_days'); if (PHP_VERSION_ID < 80100) $shift->setAccessible(true);
     check_schedule($shift->invoke(null,'2026-03-01T19:30',7)==='2026-03-08T19:30','spring DST transition preserves local price-change time');
     check_schedule($shift->invoke(null,'2026-10-25T19:30',7)==='2026-11-01T19:30','fall DST transition preserves local price-change time');
     check_schedule($shift->invoke(null,'2026-02-30T19:30',7)===null,'invalid saved price-change date refuses to create a shifted value');
@@ -285,7 +285,7 @@ namespace {
       '_roxy_live_change_at_2'=>'2026-03-01T18:30',
       '_roxy_live_future_price_2'=>'30',
     ];
-    $duplicate=new \ReflectionMethod(\RoxyST\CPT::class,'duplicate_showing_to_next_weekend'); $duplicate->setAccessible(true);
+    $duplicate=new \ReflectionMethod(\RoxyST\CPT::class,'duplicate_showing_to_next_weekend'); if (PHP_VERSION_ID < 80100) $duplicate->setAccessible(true);
     $id=$duplicate->invoke(null,$source->ID);
     check_schedule($id>0,'valid source showing creates one duplicate');
     check_schedule(($GLOBALS['schedule_meta'][$id]['_roxy_start']??'')==='2026-03-08T19:30','duplicate showing date advances seven local days');

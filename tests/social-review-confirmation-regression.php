@@ -36,7 +36,7 @@ namespace {
     }
     \RoxySocial\Store::$status='needs_review';\RoxySocial\Store::$writes=0;$_POST['draft_revision']='stale';
     try{\RoxySocial\Admin::handle_status();}catch(RedirectResult $e){check(\RoxySocial\Store::$writes===0&&str_contains($e->getMessage(),'status_changed=0'),'confirmed but stale form still cannot approve a changed draft');}
-    $render=new \ReflectionMethod(\RoxySocial\Admin::class,'action_link');$render->setAccessible(true);
+    $render=new \ReflectionMethod(\RoxySocial\Admin::class,'action_link');if (PHP_VERSION_ID < 80100) $render->setAccessible(true);
     ob_start();$render->invoke(null,1,'approved','Approve after remote review',true,str_repeat('a',64));$html=ob_get_clean();
     check(str_contains($html,'method="post"')&&str_contains($html,'name="remote_review_confirmed" value="1"')&&!str_contains($html,'<a '),'Needs Review approval is an explicit POST form, not a prefetchable GET link');
 }

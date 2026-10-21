@@ -66,7 +66,7 @@ $html = roxy_will_call_showing_dropdown(0,true,2);
 check(strpos($html,'value="398"')!==false && $GLOBALS['last_query']['offset']===400, 'T12: final archive page returns remaining older showings');
 check(strpos($html,'Older showings')===false && strpos($html,'Newer showings')!==false, 'T12: final archive page does not offer an empty next page');
 date_default_timezone_set('UTC');
-$schema = new \ReflectionMethod(\RoxyST\Frontend::class,'schema_start_date'); $schema->setAccessible(true);
+$schema = new \ReflectionMethod(\RoxyST\Frontend::class,'schema_start_date'); if (PHP_VERSION_ID < 80100) $schema->setAccessible(true);
 $structured_start = '2026-10-03T19:30';
 $structured_schema = $schema->invoke(null, $structured_start);
 check($structured_schema === '2026-10-03T19:30:00-07:00', 'T16: local evening not converted as UTC');
@@ -79,6 +79,6 @@ check($schema->invoke(null,'2026-11-07T19:30') === '2026-11-07T19:30:00-08:00', 
 check($schema->invoke(null,'not a date') === '', 'T16: malformed schema date safely omitted');
 check($schema->invoke(null,'2026-02-30T19:30') === '', 'T16: impossible calendar date omitted instead of normalized');
 check($schema->invoke(null,'2026-03-08T02:30') === '', 'T16: nonexistent spring DST local time omitted instead of shifted');
-$weekend = new \ReflectionMethod(\RoxyST\CPT::class,'weekend_anchor_from_start'); $weekend->setAccessible(true);
+$weekend = new \ReflectionMethod(\RoxyST\CPT::class,'weekend_anchor_from_start'); if (PHP_VERSION_ID < 80100) $weekend->setAccessible(true);
 check($weekend->invoke(null,'2026-10-02T01:00')->format('Y-m-d') === '2026-10-02', 'T16: early Friday remains Friday, not UTC Thursday');
 }

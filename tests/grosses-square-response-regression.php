@@ -42,7 +42,7 @@ namespace {
   foreach([null,'',[],str_repeat('x',10001)] as $cursor)must_fail([response(['cursor'=>$cursor])],'invalid cursor fails closed');
   $pages=[];for($n=1;$n<=101;$n++)$pages[]=response(['cursor'=>'cursor-'.$n]);
   must_fail($pages,'page limit throws instead of returning incomplete totals');check(count($GLOBALS['calls'])===100,'page cap prevents request 101');
-  $window=new \ReflectionMethod(\RoxyGrosses\Square::class,'date_window');$window->setAccessible(true);
+  $window=new \ReflectionMethod(\RoxyGrosses\Square::class,'date_window');if (PHP_VERSION_ID < 80100) $window->setAccessible(true);
   foreach(['2026-02-30','2026-13-01','2026-1-1','2026-10-03junk',''] as $date){try{$window->invoke(null,$date,'America/Los_Angeles');throw new \LogicException('Expected invalid date');}catch(\RuntimeException $e){check(true,'invalid date cannot silently roll into another day');}}
   foreach(['2026-03-08'=>23,'2026-11-01'=>25] as $date=>$hours){[$start,$end]=$window->invoke(null,$date,'America/Los_Angeles');check((strtotime($end)-strtotime($start))/3600===$hours,'site calendar window preserves '.$hours.'-hour DST day');}
   reset_fixture([response(['orders'=>[['id'=>'range-a']],'cursor'=>'next']),response(['orders'=>[['id'=>'range-b']]])]);

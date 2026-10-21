@@ -6,7 +6,7 @@ $source = file_get_contents($suite_stage . '/includes/modules/show-tickets/inclu
 $source = preg_replace('/^<\?php\s*/', '', $source, 1);
 $source = str_replace('class Tickets {', 'class StabilityTickets {', $source);
 eval($source);
-$can = new ReflectionMethod(\RoxyST\StabilityTickets::class, 'can_check_in'); $can->setAccessible(true);
+$can = new ReflectionMethod(\RoxyST\StabilityTickets::class, 'can_check_in'); if (PHP_VERSION_ID < 80100) $can->setAccessible(true);
 $tickets = get_posts(['post_type'=>\RoxyST\Tickets::POST_TYPE,'post_status'=>'publish','numberposts'=>50,'fields'=>'ids','meta_key'=>\RoxyST\Tickets::META_STATE,'meta_value'=>'valid']);
 $counts = ['sample'=>count($tickets),'paid_allowed'=>0,'unpaid_blocked'=>0,'missing_or_refunded_blocked'=>0,'paid_unexpected_block'=>0];
 foreach ($tickets as $id) {

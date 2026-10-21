@@ -80,10 +80,10 @@ function c6_check(bool $condition, string $message): void {
 function c6_reset_module_cache(): void {
     $class = new ReflectionClass(\RoxySuite\Governance::class);
     $loaded = $class->getProperty('module_flags_loaded');
-    $loaded->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $loaded->setAccessible(true);
     $loaded->setValue(null, false);
     $flags = $class->getProperty('module_flags');
-    $flags->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $flags->setAccessible(true);
     $flags->setValue(null, null);
 }
 

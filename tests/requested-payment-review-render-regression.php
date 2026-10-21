@@ -134,7 +134,7 @@ $set_order(new WC_Order([], 'checkout'));
 $check($render() === '', 'unrelated WooCommerce orders reveal no Requested Showings panel');
 
 $url_method = new ReflectionMethod(\RoxyRS\Conversion::class, 'verified_review_order_admin_url');
-$url_method->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $url_method->setAccessible(true);
 $backing = ['id' => 77, 'user_id' => 999];
 $link_order = new WC_Order($identity_meta, 'roxy_requested_showings', false, 9001, 999);
 $verified_url = static fn($order, int $order_id = 9001, int $request_id = 55, array $linked_backing = ['id' => 77, 'user_id' => 999])

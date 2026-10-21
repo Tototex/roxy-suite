@@ -32,9 +32,9 @@ function wp_upload_dir($time = null, $create = true) { global $uploads; return [
 function wp_mkdir_p($dir) { return is_dir($dir) || @mkdir($dir, 0700, true); }
 require __DIR__ . '/../includes/modules/show-tickets/includes/class-roxy-st-log.php';
 $method = new ReflectionMethod('RoxyST\\Log', 'uploads_log_path');
-$method->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
 $write = new ReflectionMethod('RoxyST\\Log', 'write_file');
-$write->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $write->setAccessible(true);
 $checks = 0;
 $check = static function ($ok, string $message) use (&$checks): void {
   $checks++;

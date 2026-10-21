@@ -12,7 +12,7 @@ namespace {
     require_once $health_file;
 
     $method = new \ReflectionMethod(\RoxySuite\Health::class, 'advertiser_monthly_freshness');
-    $method->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
     $checks = 0;
     $check = static function (string $name, array $settings, $marker, string $now, string $expected) use ($method, &$checks): void {
         $item = $method->invoke(null, $settings, $marker, new \DateTimeImmutable($now));

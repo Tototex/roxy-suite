@@ -12,7 +12,7 @@ namespace {
   $root=$argv[1]??dirname(__DIR__);
   require $argv[2]??$root.'/includes/modules/grosses/includes/class-roxy-grosses-reporter.php';
   $methods=[];
-  foreach(['square_line_item_concession_cents','square_line_item_total_cents','square_line_item_total','square_in_store_purchase_total_for_date'] as $name){$methods[$name]=new ReflectionMethod(RoxyGrosses\Reporter::class,$name);$methods[$name]->setAccessible(true);}
+  foreach(['square_line_item_concession_cents','square_line_item_total_cents','square_line_item_total','square_in_store_purchase_total_for_date'] as $name){$methods[$name]=new ReflectionMethod(RoxyGrosses\Reporter::class,$name);if (PHP_VERSION_ID < 80100) $methods[$name]->setAccessible(true);}
   $money=static fn(int $amount):array=>['amount'=>$amount,'currency'=>'USD'];
   $count=0;
   $assert=static function($ok,$label)use(&$count){if(!$ok)throw new RuntimeException($label);echo "PASS: $label\n";$count++;};

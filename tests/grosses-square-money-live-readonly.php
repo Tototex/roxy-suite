@@ -2,8 +2,8 @@
 /** WP-CLI, actual Square reads only; prints no receipt/customer identifiers. */
 $source=str_replace('namespace RoxyGrosses;','namespace RoxyGrossesMoneyReadonly;',file_get_contents($args[0]));
 eval('?>'.$source);
-$net=new ReflectionMethod(RoxyGrossesMoneyReadonly\Reporter::class,'square_line_item_concession_cents');$net->setAccessible(true);
-$total=new ReflectionMethod(RoxyGrossesMoneyReadonly\Reporter::class,'square_line_item_total_cents');$total->setAccessible(true);
+$net=new ReflectionMethod(RoxyGrossesMoneyReadonly\Reporter::class,'square_line_item_concession_cents');if (PHP_VERSION_ID < 80100) $net->setAccessible(true);
+$total=new ReflectionMethod(RoxyGrossesMoneyReadonly\Reporter::class,'square_line_item_total_cents');if (PHP_VERSION_ID < 80100) $total->setAccessible(true);
 $now=new DateTimeImmutable('now',new DateTimeZone(RoxyGrosses\Settings::get_report_timezone()));
 $count=0;
 for($back=1;$back<=3;$back++) {

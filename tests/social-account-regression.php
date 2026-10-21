@@ -13,7 +13,7 @@ class RedirectResult extends RuntimeException{}
 function wp_safe_redirect($url){throw new RedirectResult($url);}
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS: $label\n";}
 $root=$argv[1]??dirname(__DIR__);require $root.'/includes/modules/social-publisher/includes/class-roxy-social-secrets.php';require $root.'/includes/modules/social-publisher/includes/class-roxy-social-meta.php';
-$select=new ReflectionMethod(\RoxySocial\Meta::class,'connected_page');$select->setAccessible(true);
+$select=new ReflectionMethod(\RoxySocial\Meta::class,'connected_page');if (PHP_VERSION_ID < 80100) $select->setAccessible(true);
 $response=static function($data,$status=200){return ['status'=>$status,'body'=>json_encode($data)];};
 $wrong=['id'=>'11','name'=>'Other business','access_token'=>'wrong-fixture','instagram_business_account'=>['id'=>'111']];
 $right=['id'=>'22','name'=>'Intended business','access_token'=>'right-fixture','instagram_business_account'=>['id'=>'222','username'=>'fixture']];

@@ -14,15 +14,15 @@ eval('?>' . $conversion_source);
 $conversion = $namespace . '\\Conversion';
 $conversion::init();
 $set_gross = new ReflectionMethod($conversion, 'set_agreed_gross');
-$set_gross->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $set_gross->setAccessible(true);
 $set_fee = new ReflectionMethod($conversion, 'set_agreed_fee_gross');
-$set_fee->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $set_fee->setAccessible(true);
 $verify_items = new ReflectionMethod($conversion, 'verify_agreement_items');
-$verify_items->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $verify_items->setAccessible(true);
 $agreement_items_hash = new ReflectionMethod($conversion, 'agreement_items_hash');
-$agreement_items_hash->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $agreement_items_hash->setAccessible(true);
 $verified_marker = new ReflectionMethod($conversion, 'has_verified_agreement_marker');
-$verified_marker->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $verified_marker->setAccessible(true);
 
 $checks = 0;
 $check = static function (bool $condition, string $label) use (&$checks): void {

@@ -152,9 +152,9 @@ try {
     'movie preview excludes concessions that the complete candidate set assigns to a closer persisted rental row');
 
   $apply = new ReflectionMethod($reporter, 'apply_concessions_to_reports');
-  $apply->setAccessible(true);
+  if (PHP_VERSION_ID < 80100) $apply->setAccessible(true);
 $group_orders = new ReflectionMethod($reporter, 'square_orders_grouped_by_local_date');
-$group_orders->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $group_orders->setAccessible(true);
 $local_date_groups = $group_orders->invoke(null, [
   ['id' => 'range-boundary', 'closed_at' => '2039-01-22T08:30:00Z'],
   ['id' => 'same-local-day', 'closed_at' => '2039-01-22T20:00:00-08:00'],

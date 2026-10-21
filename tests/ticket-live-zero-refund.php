@@ -11,7 +11,7 @@ $item = reset($items); $item_id = (int)$item->get_id();
 if ((int)$item->get_quantity() !== 3 || (float)$item->get_total() !== 0.0) throw new RuntimeException('Expected three discounted tickets');
 // Keep fixture-only refund/status messages from being emailed during these transitions.
 add_filter('pre_wp_mail',static fn()=>true);
-$can = new ReflectionMethod(\RoxyST\Tickets::class,'can_check_in'); $can->setAccessible(true);
+$can = new ReflectionMethod(\RoxyST\Tickets::class,'can_check_in'); if (PHP_VERSION_ID < 80100) $can->setAccessible(true);
 $check = static function($ok,$label) { if (!$ok) throw new RuntimeException($label); echo "PASS: $label\n"; };
 $ticket_ids = \RoxyST\Tickets::get_order_ticket_ids($test_id);
 $check(count($ticket_ids)===3,'three tickets issued through real checkout');

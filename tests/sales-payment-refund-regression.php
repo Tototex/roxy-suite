@@ -75,7 +75,7 @@ $check = static function ($ok, string $label) use (&$checks): void {
 };
 $calculate = static function (int $id=42) use ($sales): array {
   $method = new ReflectionMethod($sales, 'calculate_showing_stats');
-  $method->setAccessible(true);
+  if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
   return $method->invoke(null, 501);
 };
 $single_order = static function (string $status, bool $paid, int $qty=1, float $total=0.0, array $refund_qty=[], array $refund_total=[]) use ($item,$order): void {
@@ -231,7 +231,7 @@ unset($GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_compl
 $GLOBALS['sales_fixture_orders'][42]->meta=[];
 $GLOBALS['sales_fixture_order_save_failure'] = true;
 $legacy_scan = new ReflectionMethod($sales, 'find_and_tag_legacy_orders_for_showing');
-$legacy_scan->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $legacy_scan->setAccessible(true);
 $tag_failure = false;
 try { $legacy_scan->invoke(null, $showing_id, [701=>'adult']); } catch (Throwable $e) { $tag_failure = true; }
 unset($GLOBALS['sales_fixture_order_save_failure']);

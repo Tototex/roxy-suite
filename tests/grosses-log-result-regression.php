@@ -17,7 +17,7 @@ foreach ($cases as $index => [$row, $expected]) {
 echo count($cases) . " Grosses log result checks passed.\n";
 
 $where = new ReflectionMethod('RoxyGrosses\\Store', 'log_where_sql');
-$where->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $where->setAccessible(true);
 $sql_for = static function (array $filters) use ($where): string {
     return $where->invoke(null, $filters)[0];
 };

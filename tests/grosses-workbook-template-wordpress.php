@@ -13,7 +13,7 @@ $source = str_replace('namespace RoxyGrosses;', 'namespace ' . $namespace . ';',
 eval('?>' . $source);
 $workbook = $namespace . '\\Workbook';
 $validate = new ReflectionMethod($workbook, 'validate_template_package');
-$validate->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $validate->setAccessible(true);
 
 $dir = rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'roxy-template-check-' . bin2hex(random_bytes(12));
 if (!mkdir($dir, 0700)) throw new RuntimeException('Could not create private test fixture directory.');

@@ -117,7 +117,7 @@ try {
         $assert($owner_connection > 0 && $contender_connection > 0 && $owner_connection !== $contender_connection,
             'capacity contention uses two independent MySQL connections');
         $capacity_writer = new ReflectionMethod(RoxyST\CPT::class, 'save_capacity_with_seat_lock');
-        $capacity_writer->setAccessible(true);
+        if (PHP_VERSION_ID < 80100) $capacity_writer->setAccessible(true);
         $contended_save = $capacity_writer->invoke(null, $showing_id, 4);
         $assert($contended_save === false, 'a competing capacity change fails while another connection holds the showing seat lease');
         $stored_capacity = (int) $contender_db->get_var($contender_db->prepare(

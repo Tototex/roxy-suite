@@ -51,7 +51,7 @@ namespace {
   function ticket_test($name, $callback) {
     foreach (['price_changed_in_request'=>false,'review_notice_added'=>false,'changes'=>[]] as $property=>$value) {
       $reflection=new \ReflectionProperty(\RoxyST\CartPricing::class,$property);
-      $reflection->setAccessible(true); $reflection->setValue(null,$value);
+      if (PHP_VERSION_ID < 80100) $reflection->setAccessible(true); $reflection->setValue(null,$value);
     }
     clear_notices(); $callback(); echo "ok - $name\n";
   }
@@ -152,9 +152,9 @@ namespace {
     ticket_check(count(array_filter(notices(),static function($n){return $n[1]==='error';}))===1,'review error should be deduped in the request');
 
     $changed=new \ReflectionProperty(\RoxyST\CartPricing::class,'price_changed_in_request');
-    $changed->setAccessible(true); $changed->setValue(null,false);
+    if (PHP_VERSION_ID < 80100) $changed->setAccessible(true); $changed->setValue(null,false);
     $reviewed=new \ReflectionProperty(\RoxyST\CartPricing::class,'review_notice_added');
-    $reviewed->setAccessible(true); $reviewed->setValue(null,false);
+    if (PHP_VERSION_ID < 80100) $reviewed->setAccessible(true); $reviewed->setValue(null,false);
     clear_notices(); \RoxyST\CartPricing::reprice($cart); \RoxyST\CartPricing::require_price_review();
     ticket_check(count(notices())===0,'accepted baseline should pass on a later request');
 

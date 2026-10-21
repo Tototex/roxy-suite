@@ -21,9 +21,9 @@ namespace {
 
     require dirname(__DIR__) . '/includes/modules/social-publisher/includes/class-roxy-social-hangar.php';
     $assign = new \ReflectionMethod(\RoxySocial\Hangar::class, 'assign_featured_image');
-    $assign->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $assign->setAccessible(true);
     $tag = new \ReflectionMethod(\RoxySocial\Hangar::class, 'tag_imported_attachment');
-    $tag->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $tag->setAccessible(true);
     $checks = 0;
     $check = static function (bool $ok, string $label) use (&$checks): void {
         if (!$ok) throw new \RuntimeException('FAIL: ' . $label);

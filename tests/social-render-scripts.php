@@ -13,7 +13,7 @@ $scripts=[];
 foreach(['featured','hangar','drafts'] as $kind){
     ob_start();
     if($kind==='featured')\RoxySocial\FixtureAdmin::render_showing_media_picker(30411);
-    elseif($kind==='hangar') {$method=new ReflectionMethod(\RoxySocial\FixtureAdmin::class,'render_hangar_page');$method->setAccessible(true);$method->invoke(null);}
+    elseif($kind==='hangar') {$method=new ReflectionMethod(\RoxySocial\FixtureAdmin::class,'render_hangar_page');if (PHP_VERSION_ID < 80100) $method->setAccessible(true);$method->invoke(null);}
     else {$_GET=[];\RoxySocial\FixtureAdmin::render_page();}
     $html=ob_get_clean();
     preg_match_all('/<script\b[^>]*>([\s\S]*?)<\/script>/i',$html,$matches);

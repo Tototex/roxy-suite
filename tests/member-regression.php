@@ -90,7 +90,7 @@ $GLOBALS['wpdb']->fail=true;
 $search_failed=false;try{Roxy_Sub_Check::search_members('fixture1@',5);}catch(RuntimeException $error){$search_failed=true;}
 check($search_failed,'subscription query failure is surfaced instead of misreported as no subscribers');
 $GLOBALS['wpdb']->fail=false;
-$dashboard_action=new ReflectionMethod(\RoxySuite\Members_Dashboard::class,'handle_member_actions');$dashboard_action->setAccessible(true);
+$dashboard_action=new ReflectionMethod(\RoxySuite\Members_Dashboard::class,'handle_member_actions');if (PHP_VERSION_ID < 80100) $dashboard_action->setAccessible(true);
 $_POST=['roxy_members_action_nonce'=>'fixture','roxy_members_action'=>'save_photo','subscription_id'=>42,'attachment_id'=>77];ob_start();$dashboard_action->invoke(null);$photo_notice=ob_get_clean();
 check(($GLOBALS['test_sub_meta'][42]['_roxy_member_photo_id']??0)===77&&str_contains($photo_notice,'Member photo updated.'),'member dashboard persists photo metadata through subscription CRUD');
 check(($GLOBALS['member_post_meta'][77][Roxy_Sub_Check::META_PHOTO_PRIVATE]??'')==='1','member dashboard protects an attachment before saving its subscription reference');
@@ -140,12 +140,12 @@ foreach([2=>'canceled',3=>'expired'] as $sub_id=>$label) {
 }
 $show_table_calls=count(array_filter($GLOBALS['wpdb']->queries,fn($s)=>str_contains($s,'SHOW TABLES')));
 check($show_table_calls===1,'operational calls check schema once per request, no repeated dbDelta');
-$stats=new ReflectionMethod(\RoxySuite\Members_Dashboard::class,'scan_stats_map');$stats->setAccessible(true);
+$stats=new ReflectionMethod(\RoxySuite\Members_Dashboard::class,'scan_stats_map');if (PHP_VERSION_ID < 80100) $stats->setAccessible(true);
 $map=$stats->invoke(null,[1]);$query=end($GLOBALS['wpdb']->queries);
 check($map[1]['month']===3&&str_contains($query,'THEN quantity')&&str_contains($query,'SUM(quantity) AS visits_lifetime')&&str_contains($query,'is_active=1')&&str_contains($query,'nfc_admit_reserved'),'dashboard metrics sum admitted people, excluding lookup/inactive scans');
 $_GET=['page'=>'roxy-ticket-ops','tab'=>'member-check-log','sub'=>1];ob_start();Roxy_Sub_Check::render_scan_log_page();$html=ob_get_clean();
 check(str_contains($html,'name="tab" value="member-check-log"')&&str_contains($html,'tab=member-check-log'),'log filter and navigation preserve unified tab');
 check(str_contains($html,'admin-post.php?action=roxy_sub_export_scans')&&str_contains($html,'_wpnonce=test'),'CSV export routes before admin HTML with nonce');
-$stamp=new ReflectionMethod(Roxy_Sub_Check::class,'scan_timestamp');$stamp->setAccessible(true);
+$stamp=new ReflectionMethod(Roxy_Sub_Check::class,'scan_timestamp');if (PHP_VERSION_ID < 80100) $stamp->setAccessible(true);
 check($stamp->invoke(null,'not-a-date')===0&&$stamp->invoke(null,'2026-02-30 10:00:00')===0,'malformed historic log dates do not crash history');
 echo "NOTE: admission concurrency/undo reconciliation and dashboard query pagination remain separate open findings.\n";

@@ -45,7 +45,7 @@ for ($i = 0; $i < 240; $i++) {
 }
 
 $method = new ReflectionMethod(Roxy_Sub_Check::class, 'search_member_subscription_ids');
-$method->setAccessible(true);
+if (PHP_VERSION_ID < 80100) $method->setAccessible(true);
 $by_email = $method->invoke(null, 'needleunique@', 10);
 sort($by_email);
 $expected = [$active_id, $pending_cancel_id];

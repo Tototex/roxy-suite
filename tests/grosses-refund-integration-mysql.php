@@ -110,7 +110,7 @@ try {
   $build = static function (array $reconciled) use ($snapshot_class, $reporter, $date, $showing_id): array {
     $snapshot = new $snapshot_class(); $snapshot->result[$date] = $reconciled;
     $reflection = new ReflectionMethod($reporter, 'build_reports_for_date_showings');
-    $reflection->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $reflection->setAccessible(true);
     return $reflection->invoke(null, $date, [[
       'id'=>$showing_id,'title'=>'Fixture Film','time_label'=>'7:00 PM',
       'start_at'=>new DateTimeImmutable($date . ' 19:00:00', new DateTimeZone('America/Los_Angeles')),
@@ -142,7 +142,7 @@ try {
   $zero_sale = ['id'=>'sale-zero','closed_at'=>$zero_date . 'T19:00:00-07:00','line_items'=>[['uid'=>'ticket-z','name'=>'General','quantity'=>0]]];
   $zero_snapshot = new $snapshot_class();
   $zero_snapshot->result[$zero_date] = ['orders'=>[$zero_sale],'adjustments'=>[['source_order_id'=>'sale-zero','source_line_item_uid'=>'ticket-z','quantity'=>2]],'issues'=>[]];
-  $reflection = new ReflectionMethod($reporter, 'build_reports_for_date_showings'); $reflection->setAccessible(true);
+  $reflection = new ReflectionMethod($reporter, 'build_reports_for_date_showings'); if (PHP_VERSION_ID < 80100) $reflection->setAccessible(true);
   $zero_rows = $reflection->invoke(null, $zero_date, [['id'=>$zero_show,'title'=>'Fixture Film','time_label'=>'7:00 PM','start_at'=>new DateTimeImmutable($zero_date . ' 19:00:00', new DateTimeZone('America/Los_Angeles'))]], $zero_snapshot, true);
   $zero = $zero_rows[0];
   $check(!empty($zero['refund_adjusted']) && (int)$zero['total_tickets']===0 && (float)$zero['gross_total']===0.0, 'full return builds an explicit zero-ticket corrected row without price evidence');

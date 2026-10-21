@@ -72,7 +72,7 @@ $check = static function (bool $ok, string $label) use (&$checks): void {
 };
 $invoke = static function (string $method, array $args) {
     $reflection = new ReflectionMethod(\RoxyRS\Conversion::class, $method);
-    $reflection->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $reflection->setAccessible(true);
     return $reflection->invoke(null, ...$args);
 };
 

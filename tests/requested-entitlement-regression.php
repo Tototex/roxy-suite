@@ -434,7 +434,7 @@ namespace {
     check_fixture(count($wpdb->rows) === 1 && (int) $wpdb->rows[1]['general_qty'] === 1 && (int) $wpdb->rows[1]['charge_total'] === 1200, 'paid-only backing path remains unchanged without subscriber membership');
 
     $convert = new \ReflectionMethod('RoxyRS\\Conversion', 'convert_backing_to_order');
-    $convert->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $convert->setAccessible(true);
     if (in_array('--missing-walkup-reader', $_SERVER['argv'] ?? [], true)) {
         reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing();
         $unavailable = $convert->invoke(null, 501, 801, ['id'=>1,'request_id'=>501,'user_id'=>77,'subscriber_qty'=>1,'charge_total'=>0]);
