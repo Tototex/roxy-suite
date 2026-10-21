@@ -30,7 +30,8 @@ try {
   $screening_id = $ids[0];
   if (get_post_status($screening_id) !== 'draft') throw new RuntimeException('The private test screening was unexpectedly published.');
   if ((string)get_post_meta($screening_id, '_roxy_start', true) !== $start) throw new RuntimeException('The draft screening start time did not persist.');
-  if (get_transient('roxy_st_event_invalid_' . get_current_user_id())) throw new RuntimeException('The room-lock write returned an error.');
+  $save_error = (string) get_transient('roxy_st_event_invalid_' . get_current_user_id());
+  if ($save_error !== '') throw new RuntimeException('The room-lock write returned an error: ' . $save_error);
   echo "PASS: One private event screening was saved through the protected room-time lock." . PHP_EOL;
 } finally {
   if ($screening_id && get_post_status($screening_id)) wp_delete_post($screening_id, true);
