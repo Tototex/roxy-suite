@@ -174,6 +174,23 @@ try{
   \RoxyST\Sales::clear_showing_cache($show);$refunded_stats=\RoxyST\Sales::get_showing_stats($show);
   $check((int)($refunded_stats['sold_qty']??-1)===3,'a later refund reduces four reportable tickets across both fixture orders to three');
   $check(\RoxyST\IssuanceFixtureTickets::count_checked_in_for_showing($show)===3&&count(array_filter($ids,static fn($id)=>(int)get_post_meta($id,'_roxy_checked_in',true)===1))===3,'a later refund preserves all three actual door check-ins separately from reportable sales');
+  $refunded_ticket=0;foreach($ids as $ticket_id)if((int)get_post_meta($ticket_id,\RoxyST\IssuanceFixtureTickets::META_REFUNDED,true)===1){$refunded_ticket=(int)$ticket_id;break;}
+  $check($refunded_ticket>0,'fixture identifies the specific ticket allocated to the actual refund');
+  if(!class_exists('RoxyST\\Sales'))throw new RuntimeException('Show Tickets Sales class is unavailable for refund-deletion reconciliation.');
+  $deleted_refund_id=(int)$refund->get_id();$refund->delete(true);
+  $check(!wc_get_order($deleted_refund_id),'actual Woo zero-dollar refund is deleted before dispatching the installed deletion event');
+  add_action('woocommerce_refund_deleted',[\RoxyST\Sales::class,'on_refund_deleted'],20,2);
+  add_action('woocommerce_refund_deleted',[\RoxyST\IssuanceFixtureTickets::class,'on_refund_deleted'],30,2);
+  try{do_action('woocommerce_refund_deleted',$deleted_refund_id,(int)$order->get_id());}
+  finally{
+    remove_action('woocommerce_refund_deleted',[\RoxyST\Sales::class,'on_refund_deleted'],20);
+    remove_action('woocommerce_refund_deleted',[\RoxyST\IssuanceFixtureTickets::class,'on_refund_deleted'],30);
+  }
+  $refund=null;
+  $check((int)get_post_meta($refunded_ticket,\RoxyST\IssuanceFixtureTickets::META_REFUNDED,true)===0&&get_post_meta($refunded_ticket,'_roxy_ticket_state',true)==='checked_in','refund-deletion listener clears the obsolete ticket refund allocation and preserves the actual admission');
+  $check(\RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($refunded_ticket,'ticket')&&get_post_meta($refunded_ticket,'_roxy_ticket_state',true)==='valid','Undo succeeds after actual refund deletion restores the ticket allocation');
+  \RoxyST\Sales::clear_showing_cache($show);$restored_stats=\RoxyST\Sales::get_showing_stats($show);
+  $check((int)($restored_stats['sold_qty']??-1)===4&&\RoxyST\IssuanceFixtureTickets::count_checked_in_for_showing($show)===2,'refund deletion restores the reportable ticket quantity while explicit Undo changes attendance only');
   $order->update_status('cancelled');$check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'cancellation reconciles with original identities');
   $check(count(array_filter($ids,static fn($id)=>get_post_meta($id,'_roxy_ticket_state',true)==='valid'))===0,'cancelled fixture has no valid tickets');
   update_post_meta($ids[2],'_roxy_ticket_order_id',999999999);
