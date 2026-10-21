@@ -19,6 +19,22 @@ foreach ([$settings_path, $workbook_path] as $path) {
         throw new RuntimeException('Could not isolate Grosses settings/workbook source.');
     }
     $source = str_replace('namespace RoxyGrosses;', 'namespace ' . $namespace . ';', $source);
+    if ($path === $workbook_path) {
+        // The real admin handler redirects with exit. Make only that final
+        // redirect return in this isolated fixture so the request result can
+        // be asserted without changing production behavior.
+        $redirect = 'wp_safe_redirect($url);' . "\n    exit;";
+        if (substr_count($source, $redirect) !== 1) {
+            throw new RuntimeException('Could not isolate the workbook upload redirect for request testing.');
+        }
+        $source = str_replace($redirect, 'wp_safe_redirect($url);' . "\n    return;", $source);
+        $namespace_declaration = 'namespace ' . $namespace . ';';
+        $source = str_replace(
+            $namespace_declaration,
+            $namespace_declaration . "\nfunction roxy_suite_user_can_access_admin(): bool { return !empty($GLOBALS['roxy_workbook_request_authorized']); }\nfunction wp_handle_upload(array $file, array $overrides = []): array { $path = (string) ($GLOBALS['roxy_workbook_upload_path'] ?? ''); return is_file($path) ? ['file' => $path] : ['error' => 'Synthetic upload fixture is missing.']; }",
+            $source
+        );
+    }
     eval('?>' . $source);
 }
 $source = file_get_contents($scheduler_path);
@@ -58,6 +74,11 @@ $upload_source = '';
 $invalid_source = '';
 $retained_upload_path = '';
 $retained_upload_source = '';
+$request_upload_source = '';
+$request_private_path = '';
+$prior_request = $_REQUEST;
+$prior_post = $_POST;
+$prior_files = $_FILES;
 $checks = 0;
 $check = static function (bool $condition, string $label) use (&$checks): void {
     if (!$condition) throw new RuntimeException('FAIL: ' . $label);
@@ -254,6 +275,67 @@ try {
         'settings read-back failure preserves the existing reference and retains the new private copy safely');
     $check(count($store_class::$logs) === 1,
         'settings read-back failure does not record a success audit entry');
+
+    // Exercise the actual admin-post handler, including its capability and
+    // nonce gates, upload-result handoff, private move, settings write, audit
+    // log, and redirect. The upload API is replaced only in this isolated
+    // namespace because WP-CLI cannot create a PHP is_uploaded_file() request.
+    $request_upload_source = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'roxy-workbook-request-source-' . bin2hex(random_bytes(8)) . '.xlsx';
+    $zip = new ZipArchive();
+    if ($zip->open($request_upload_source, ZipArchive::CREATE | ZipArchive::EXCL) !== true) throw new RuntimeException('Could not create synthetic admin-request workbook.');
+    foreach ([
+        '[Content_Types].xml' => '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+        '_rels/.rels' => '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>',
+        'xl/workbook.xml' => '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>',
+        'xl/worksheets/sheet3.xml' => '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>',
+        'xl/worksheets/sheet4.xml' => '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>',
+    ] as $entry => $xml) {
+        if (!$zip->addFromString($entry, $xml)) throw new RuntimeException('Could not add synthetic admin-request workbook part.');
+    }
+    if (!$zip->close()) throw new RuntimeException('Could not finish synthetic admin-request workbook.');
+
+    $request_upload_name = 'synthetic-admin-request-' . bin2hex(random_bytes(4)) . '.xlsx';
+    $redirect_location = '';
+    $redirect_filter = static function ($location) use (&$redirect_location) {
+        $redirect_location = (string) $location;
+        return false;
+    };
+    add_filter('wp_redirect', $redirect_filter, 999, 2);
+    $GLOBALS['roxy_workbook_request_authorized'] = true;
+    $GLOBALS['roxy_workbook_upload_path'] = $request_upload_source;
+    $_REQUEST = ['_wpnonce' => wp_create_nonce('roxy_grosses_upload_template')];
+    $_POST = ['action' => 'roxy_grosses_upload_template'];
+    $_FILES = ['workbook_template' => [
+        'name' => $request_upload_name,
+        'type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'tmp_name' => $request_upload_source,
+        'error' => UPLOAD_ERR_OK,
+        'size' => filesize($request_upload_source),
+    ]];
+    try {
+        $workbook_class::handle_upload_template();
+    } finally {
+        remove_filter('wp_redirect', $redirect_filter, 999);
+        unset($GLOBALS['roxy_workbook_request_authorized']);
+        unset($GLOBALS['roxy_workbook_upload_path']);
+        $_REQUEST = $prior_request;
+        $_POST = $prior_post;
+        $_FILES = $prior_files;
+    }
+    parse_str((string) parse_url($redirect_location, PHP_URL_QUERY), $redirect_query);
+    $check(($redirect_query['roxy_grosses_notice'] ?? '') === 'success'
+        && ($redirect_query['tab'] ?? '') === 'workbook'
+        && ($redirect_query['message'] ?? '') === 'Workbook template uploaded successfully.',
+        'admin upload handler accepts the valid nonce and redirects with the successful workbook notice');
+    $request_settings = get_option($option_key, []);
+    $request_private_path = (string) ($request_settings['workbook_template_upload']['path'] ?? '');
+    $check($request_private_path !== '' && dirname($request_private_path) === $private_dir
+        && is_file($request_private_path)
+        && !is_file($request_upload_source),
+        'admin upload handler moves the synthetic upload into private storage and persists its reference');
+    $check(count($store_class::$logs) === 2
+        && ($store_class::$logs[1][0] ?? '') === 'upload_workbook_template',
+        'admin upload handler writes exactly one success audit entry');
 } finally {
     if ($file_path !== '' && is_file($file_path)) @unlink($file_path);
     if ($stored_upload_path !== '' && is_file($stored_upload_path)) @unlink($stored_upload_path);
@@ -261,6 +343,8 @@ try {
     if ($invalid_source !== '' && is_file($invalid_source)) @unlink($invalid_source);
     if ($retained_upload_path !== '' && is_file($retained_upload_path)) @unlink($retained_upload_path);
     if ($retained_upload_source !== '' && is_file($retained_upload_source)) @unlink($retained_upload_source);
+    if ($request_private_path !== '' && is_file($request_private_path)) @unlink($request_private_path);
+    if ($request_upload_source !== '' && is_file($request_upload_source)) @unlink($request_upload_source);
     if ($prior_row !== null) {
         $wpdb->update($wpdb->options, $prior_row, ['option_name' => $option_key], ['%s', '%s'], ['%s']);
     } else {
