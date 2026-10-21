@@ -550,6 +550,35 @@ final class Store {
             ));
             if ($wpdb->last_error !== '' || $download_reference !== null) return true;
         }
+        // WP Mail SMTP retains recent message/error content. A temporary
+        // media URL in that log is still externally referenced, so preserve
+        // the upload until the log no longer points to it.
+        $smtp_events_table = $wpdb->prefix . 'wpmailsmtp_debug_events';
+        if (!is_string($smtp_events_table) || !preg_match('/^[A-Za-z0-9_]+$/D', $smtp_events_table)) return true;
+        static $smtp_events_table_exists = [];
+        if (!array_key_exists($smtp_events_table, $smtp_events_table_exists)) {
+            $wpdb->last_error = '';
+            $smtp_events_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($smtp_events_table)));
+            if ($wpdb->last_error !== '') return true;
+            $smtp_events_table_exists[$smtp_events_table] = $smtp_events_exists === $smtp_events_table;
+        }
+        if ($smtp_events_table_exists[$smtp_events_table]) {
+            $url_path = parse_url($url, PHP_URL_PATH);
+            if (!is_string($url_path) || $url_path === '') return true;
+            $smtp_patterns = [
+                '%' . $wpdb->esc_like($url) . '%',
+                '%' . $wpdb->esc_like(str_replace('/', '\\/', $url)) . '%',
+                '%' . $wpdb->esc_like($url_path) . '%',
+                '%' . $wpdb->esc_like(str_replace('/', '\\/', $url_path)) . '%',
+            ];
+            $smtp_clauses = array_fill(0, count($smtp_patterns), 'content LIKE %s');
+            $wpdb->last_error = '';
+            $smtp_reference = $wpdb->get_var($wpdb->prepare(
+                'SELECT id FROM ' . $smtp_events_table . ' WHERE ' . implode(' OR ', $smtp_clauses) . ' LIMIT 1',
+                ...$smtp_patterns
+            ));
+            if ($wpdb->last_error !== '' || $smtp_reference !== null) return true;
+        }
         $patterns = [
             '%' . $wpdb->esc_like($url) . '%',
             '%' . str_replace('/', '%', $wpdb->esc_like($url)) . '%',

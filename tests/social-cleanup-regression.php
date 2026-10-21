@@ -31,6 +31,9 @@ final class CleanupWpdb {
     public bool $woocommerce_download_directories_table_exists = true;
     public bool $woocommerce_download_directories_query_error = false;
     public array $woocommerce_download_directory_urls = [];
+    public bool $smtp_events_table_exists = true;
+    public bool $smtp_events_query_error = false;
+    public array $smtp_event_contents = [];
     public string $fail_reference_table = '';
     public bool $lock_busy = false;
     public array $busy_lock_names = [];
@@ -139,6 +142,10 @@ final class CleanupWpdb {
             if ($this->reference_query_error) { $this->last_error = 'fixture WooCommerce download-directory table check failed'; return null; }
             return $this->woocommerce_download_directories_table_exists ? 'wp_wc_product_download_directories' : null;
         }
+        if (strpos($unescaped_query, 'SHOW TABLES LIKE') !== false && strpos($unescaped_query, 'wp_wpmailsmtp_debug_events') !== false) {
+            if ($this->reference_query_error) { $this->last_error = 'fixture SMTP event table check failed'; return null; }
+            return $this->smtp_events_table_exists ? 'wp_wpmailsmtp_debug_events' : null;
+        }
         if (strpos($unescaped_query, 'FROM wp_yoast_indexable') !== false) {
             if ($this->reference_query_error) { $this->last_error = 'fixture Yoast reference query failed'; return null; }
             preg_match("/open_graph_image_id = '(\\d+)'/", $query, $open_graph);
@@ -163,6 +170,18 @@ final class CleanupWpdb {
             preg_match_all('/LIKE \'(.*?)\'/s', $query, $matches);
             $patterns = array_map(static fn($pattern) => stripslashes($pattern), $matches[1] ?? []);
             foreach ($this->woocommerce_download_directory_urls as $value) {
+                foreach ($patterns as $pattern) {
+                    $like_regex = '/^' . str_replace('%', '.*', preg_quote($pattern, '/')) . '$/s';
+                    if ($pattern !== '' && preg_match($like_regex, (string) $value)) return 1;
+                }
+            }
+            return null;
+        }
+        if (strpos($unescaped_query, 'FROM wp_wpmailsmtp_debug_events') !== false) {
+            if ($this->smtp_events_query_error) { $this->last_error = 'fixture SMTP event query failed'; return null; }
+            preg_match_all('/LIKE \'(.*?)\'/s', $query, $matches);
+            $patterns = array_map(static fn($pattern) => stripslashes($pattern), $matches[1] ?? []);
+            foreach ($this->smtp_event_contents as $value) {
                 foreach ($patterns as $pattern) {
                     $like_regex = '/^' . str_replace('%', '.*', preg_quote($pattern, '/')) . '$/s';
                     if ($pattern !== '' && preg_match($like_regex, (string) $value)) return 1;
@@ -326,6 +345,15 @@ check_cleanup(\RoxySocial\Store::cleanup_expired() === 0 && isset($wpdb->attachm
 fixture(); $wpdb->woocommerce_download_directories_query_error = true;
 check_cleanup(\RoxySocial\Store::cleanup_expired() === 0 && isset($wpdb->attachments[42]) && $wpdb->rows[1]['temporary_attachment_id'] === 42,
     'WooCommerce download-directory query failure preserves candidate and retry pointer');
+fixture(); $wpdb->smtp_event_contents = ['Message body linked image https://fixture.invalid/uploads/clip.mp4'];
+check_cleanup(\RoxySocial\Store::cleanup_expired() === 0 && isset($wpdb->attachments[42]) && $wpdb->rows[1]['temporary_attachment_id'] === 42,
+    'WP Mail SMTP debug-event URL reference prevents attachment deletion');
+fixture(); $wpdb->smtp_event_contents = ['{"body":"/uploads/clip.mp4"}'];
+check_cleanup(\RoxySocial\Store::cleanup_expired() === 0 && isset($wpdb->attachments[42]) && $wpdb->rows[1]['temporary_attachment_id'] === 42,
+    'WP Mail SMTP debug-event path reference prevents attachment deletion');
+fixture(); $wpdb->smtp_events_query_error = true;
+check_cleanup(\RoxySocial\Store::cleanup_expired() === 0 && isset($wpdb->attachments[42]) && $wpdb->rows[1]['temporary_attachment_id'] === 42,
+    'WP Mail SMTP debug-event query failure preserves candidate and retry pointer');
 
 fixture();
 $wpdb->rows[2] = ['id'=>2,'status'=>'draft','post_text'=>'','scheduled_for'=>'2026-10-07 12:00:00','media_type'=>'video','media_url'=>'','media_urls'=>null,'temporary_attachment_id'=>null,'cleanup_after'=>null,'created_at'=>'2026-10-06 12:00:00','updated_at'=>'2026-10-06 12:00:00'];
