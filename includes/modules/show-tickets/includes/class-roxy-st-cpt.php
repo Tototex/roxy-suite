@@ -252,7 +252,9 @@ class CPT {
     $checked_in = Tickets::count_checked_in_for_showing((int) $post->ID);
     $not_checked_in = max(0, (int) ($stats['sold_qty'] ?? 0) - $checked_in);
     echo self::dashboard_card('Orders', number_format_i18n((int) ($stats['order_count'] ?? 0)));
-    echo self::dashboard_card('Revenue', wc_price((float) ($stats['gross_revenue'] ?? 0)));
+    echo self::dashboard_card('Gross Revenue', wc_price((float) ($stats['gross_revenue'] ?? 0)));
+    echo self::dashboard_card('Refunds', wc_price((float) ($stats['refunded_revenue'] ?? 0)));
+    echo self::dashboard_card('Net Revenue', wc_price((float) ($stats['net_revenue'] ?? 0)));
     echo self::dashboard_card('Subscriber Seats', number_format_i18n((int) ($stats['subscriber_qty'] ?? 0)));
     echo self::dashboard_card('Checked In', number_format_i18n((int) $checked_in));
     echo self::dashboard_card('Not Yet Checked In', number_format_i18n((int) $not_checked_in));
@@ -260,7 +262,7 @@ class CPT {
 
     if (!empty($stats['ticket_types']) && is_array($stats['ticket_types'])) {
       echo '<div style="grid-column:1/-1;max-width:860px">';
-      echo '<table class="widefat striped" style="max-width:860px"><thead><tr><th>Ticket Type</th><th>Sold</th><th>Revenue</th></tr></thead><tbody>';
+      echo '<table class="widefat striped" style="max-width:860px"><thead><tr><th>Ticket Type</th><th>Sold</th><th>Gross Revenue</th></tr></thead><tbody>';
       foreach ($stats['ticket_types'] as $row) {
         echo '<tr>';
         echo '<td>' . esc_html((string) ($row['label'] ?? 'Ticket')) . '</td>';

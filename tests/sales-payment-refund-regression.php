@@ -387,4 +387,13 @@ $stats=$calculate();
 $check($stats['sold_qty']===2 && $stats['order_count']===2,
   'an incomplete historical scan merges newly discovered orders with already-tagged orders without double-counting');
 
+$cpt_source = file_get_contents(__DIR__ . '/../includes/modules/show-tickets/includes/class-roxy-st-cpt.php');
+$check(is_string($cpt_source)
+  && str_contains($cpt_source, "dashboard_card('Gross Revenue', wc_price((float) (\$stats['gross_revenue'] ?? 0)))")
+  && str_contains($cpt_source, "dashboard_card('Refunds', wc_price((float) (\$stats['refunded_revenue'] ?? 0)))")
+  && str_contains($cpt_source, "dashboard_card('Net Revenue', wc_price((float) (\$stats['net_revenue'] ?? 0)))")
+  && str_contains($cpt_source, '<th>Gross Revenue</th>')
+  && !str_contains($cpt_source, "dashboard_card('Revenue', wc_price((float) (\$stats['gross_revenue'] ?? 0)))"),
+  'admin sales dashboard distinguishes original gross, refunds and net revenue after ticket refunds');
+
 echo "Passed {$checks} isolated Sales payment/refund checks. No provider or database access.\n";
