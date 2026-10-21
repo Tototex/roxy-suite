@@ -1,5 +1,11 @@
 # Stability remediation tracker
 
+## Follow-up verification — 2026-10-21
+
+- **T1 product-sync connection loss:** an isolated disposable WordPress/Woo/MySQL fixture now forces a real connection close immediately after the ticket product insert. It verifies that the partially synchronized product is not purchasable and has no showing mapping, a bounded retry is queued, then retry reuses the same product identity and makes it eligible without a duplicate. The fixture passed in both PHP 8.3 and 8.5 integration jobs; the complete 15-job workflow [39534551165](https://github.com/Tototex/roxy-suite/actions/runs/39534551165) passed. This covers the injected disconnect point, not every possible network failure during COMMIT or unmanaged writer.
+- **T3 refund deletion:** the private Woo issuance fixture now deletes a real zero-dollar itemized refund, dispatches the installed Woo deletion event to Sales and Tickets listeners, confirms the refunded ticket returns to its prior admission state, then confirms explicit Undo succeeds and attendance decreases independently of the restored sale quantity. It passed in [workflow 39535149186](https://github.com/Tototex/roxy-suite/actions/runs/39535149186). All orders/refunds/tickets were created only in disposable CI; no production order, report, or historical record changed.
+- **I9 inventory fault boundary:** a read-only second-pass review found no path that marks a failed Square pull successful, persists a partial inventory pull, or automatically resends a vendor email after uncertain delivery. Existing pagination/transaction/connection-lock tests cover the examined failure paths. A connection loss during COMMIT can still leave the caller uncertain whether an atomic transaction committed; later pulls reconcile from Square. Email delivery remains inherently uncertain if the provider accepts a message but loses its acknowledgment, so inbox-based human reconciliation remains required. No production or provider action was performed.
+
 ## Status reconciliation (2026-10-20)
 
 The table below retains `In progress` where broader verification or residual boundaries remain, but that state should not be read as proof that the original defect is still present. Current-source and regression review supports these narrower conclusions:
