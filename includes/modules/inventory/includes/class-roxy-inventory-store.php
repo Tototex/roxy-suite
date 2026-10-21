@@ -382,7 +382,10 @@ class Store {
         $order = self::order($id);
         if (!$order || !in_array($status, $allowed[$order['status']] ?? [], true)) return false;
         if ($status === 'cancelled' && (string) $order['status'] === 'ordered') self::preserve_cancelled_receipt_reviews($order);
-        return $wpdb->update(self::orders_table(), ['status' => $status], ['id' => $id, 'status' => $order['status']]) === 1;
+        $updated = $wpdb->update(self::orders_table(), ['status' => $status], ['id' => $id, 'status' => $order['status']]);
+        self::checked_write($updated);
+        if ($updated !== 1) throw new \RuntimeException('Order status could not be changed; no partial changes were saved.');
+        return true;
         });
     }
 

@@ -308,6 +308,14 @@ eval($vendor_map_code);
             && (float)($first_lines[0]['square_receipt_review_stock_to'] ?? -1) === 9.0,
             'ambiguous receipt pull durably records the event and original stock delta for review on each matching line');
         $second_payload_before_cancel = (string)$second_order['payload'];
+        $cancel_failure = $inject_trigger('cancel', $tables['orders'], 'BEFORE', 'UPDATE', "OLD.id = {$second_order_id} AND NEW.status = 'cancelled'");
+        $before_cancel_failure = $snapshot();
+        $cancel_failed = false;
+        try { \RoxyInventorySyncFixture\Store::update_order_status($second_order_id, 'cancelled'); }
+        catch (Throwable $error) { $cancel_failed = true; }
+        $check($cancel_failed && hash_equals($before_cancel_failure, $snapshot()),
+            'injected cancellation status failure rolls back the status and every propagated receipt marker');
+        $drop_trigger($cancel_failure);
         $check(\RoxyInventorySyncFixture\Store::update_order_status($second_order_id, 'cancelled'),
             'real Store transition explicitly cancels one ambiguous order');
         $receipt_changes = [];
