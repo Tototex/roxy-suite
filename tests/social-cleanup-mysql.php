@@ -6,7 +6,7 @@ $path=$args[0]??'';if(!is_file($path))throw new RuntimeException('Candidate Stor
 $namespace='SocialCleanup53_'.bin2hex(random_bytes(4));
 $suffix='fixture_social_cleanup53_'.bin2hex(random_bytes(5));$table=$wpdb->prefix.$suffix;$queue_suffix=$suffix.'_queue';$queue_table=$wpdb->prefix.$queue_suffix;$poster_queue_suffix=$suffix.'_poster_queue';$poster_queue_table=$wpdb->prefix.$poster_queue_suffix;
 $yoast_table=$wpdb->prefix.'fixture_yoast_indexable_'.$suffix;
-$reference_posts=$wpdb->prefix.'roxy_cleanup_fixture_posts_'.$suffix;
+$reference_posts=$wpdb->prefix.'rcp_'.$suffix;
 $production=$wpdb->prefix.'roxy_social_posts';
 $before=hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)));
 $code=file_get_contents($path);
