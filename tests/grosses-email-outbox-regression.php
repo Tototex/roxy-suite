@@ -87,6 +87,14 @@ try {
   try { $outbox::claim('grosses:missing-index', 'daily_report', 98, '2039-04-04', ['report' => 'fixture'], ['trigger' => 'manual']); }
   catch (RuntimeException $error) { $missing_index_claim_blocked = true; }
   $missing_index_claim_count = (int) $fixture_db->get_var($fixture_db->prepare("SELECT COUNT(*) FROM `{$table}` WHERE key_hash = %s", hash('sha256', 'grosses:missing-index')));
+  if ($fixture_db->query('ALTER TABLE `' . $table . '` ADD UNIQUE KEY logical_send (key_hash, source_id)') === false) throw new RuntimeException('Could not create composite private logical-send index for integrity fixture.');
+  $composite_index_schema_ready = $outbox::ensure_schema(false);
+  $composite_index_claim_blocked = false;
+  try { $outbox::claim('grosses:composite-index', 'daily_report', 99, '2039-04-04', ['report' => 'fixture'], ['trigger' => 'manual']); }
+  catch (RuntimeException $error) { $composite_index_claim_blocked = true; }
+  $composite_index_claim_count = (int) $fixture_db->get_var($fixture_db->prepare("SELECT COUNT(*) FROM `{$table}` WHERE key_hash = %s", hash('sha256', 'grosses:composite-index')));
+  $forced_composite_index_schema_ready = $outbox::ensure_schema(true);
+  if ($fixture_db->query('ALTER TABLE `' . $table . '` DROP INDEX logical_send') === false) throw new RuntimeException('Could not remove composite private logical-send index after integrity fixture.');
   if ($fixture_db->query('ALTER TABLE `' . $table . '` ADD UNIQUE KEY logical_send (key_hash)') === false) throw new RuntimeException('Could not restore private logical-send index after integrity fixture.');
   $restored_index_schema_ready = $outbox::ensure_schema(true);
   remove_filter('pre_option_roxy_grosses_email_outbox_schema_version', $schema_option_filter, PHP_INT_MAX);
@@ -94,6 +102,9 @@ try {
   $check(!$missing_index_schema_ready && $missing_index_claim_blocked && $missing_index_claim_count === 0,
     'cached schema marker fails closed when the unique logical-send index is missing');
   $check($restored_index_schema_ready, 'forced verification accepts the restored private unique index');
+  $check(!$composite_index_schema_ready && $composite_index_claim_blocked && $composite_index_claim_count === 0
+    && !$forced_composite_index_schema_ready,
+    'cached and forced schema checks reject a composite logical-send index before any claim can be written');
 
   $logical_key = 'grosses:daily:2039-04-05';
   $unicode_subject = 'Fixture report ' . "\u{2014}" . ' manager ' . "\u{2019}" . ' 🍿';

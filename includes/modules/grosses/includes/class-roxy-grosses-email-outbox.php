@@ -100,6 +100,22 @@ final class EmailOutbox {
     return $date;
   }
 
+  /** The idempotency guarantee requires one full-column, single-column unique index. */
+  private static function has_unique_logical_send_index($indexes): bool {
+    if (!is_array($indexes)) return false;
+    $logical_send_rows = [];
+    foreach ($indexes as $index) {
+      if (is_array($index) && ($index['Key_name'] ?? '') === 'logical_send') $logical_send_rows[] = $index;
+    }
+    if (count($logical_send_rows) !== 1) return false;
+    $index = $logical_send_rows[0];
+    return (int) ($index['Non_unique'] ?? 1) === 0
+      && (int) ($index['Seq_in_index'] ?? 0) === 1
+      && ($index['Column_name'] ?? '') === 'key_hash'
+      && array_key_exists('Sub_part', $index)
+      && $index['Sub_part'] === null;
+  }
+
   /** Create and verify the required InnoDB table. Safe to call repeatedly. */
   public static function ensure_schema(bool $force_verify = false): bool {
     global $wpdb;
@@ -119,12 +135,9 @@ final class EmailOutbox {
         if ($existing_table === $table_name) {
           $indexes = $wpdb->get_results('SHOW INDEX FROM ' . $table, ARRAY_A);
           if (!is_array($indexes) || !empty($wpdb->last_error)) throw self::storage_error('cached schema index check');
-          foreach ($indexes as $index) {
-            if (($index['Key_name'] ?? '') === 'logical_send' && (int) ($index['Non_unique'] ?? 1) === 0
-              && ($index['Column_name'] ?? '') === 'key_hash') {
-              self::$verified_table_name = $table_name;
-              return true;
-            }
+          if (self::has_unique_logical_send_index($indexes)) {
+            self::$verified_table_name = $table_name;
+            return true;
           }
           return false;
         }
@@ -157,11 +170,7 @@ final class EmailOutbox {
       if (!is_array($indexes) || !empty($wpdb->last_error)) throw self::storage_error('index verification');
       $columns = $wpdb->get_results('SHOW COLUMNS FROM ' . $table, ARRAY_A);
       if (!is_array($columns) || !empty($wpdb->last_error)) throw self::storage_error('column verification');
-      $unique_key = false;
-      foreach ($indexes as $index) {
-        if (($index['Key_name'] ?? '') === 'logical_send' && (int) ($index['Non_unique'] ?? 1) === 0
-          && ($index['Column_name'] ?? '') === 'key_hash') $unique_key = true;
-      }
+      $unique_key = self::has_unique_logical_send_index($indexes);
       $column_names = array_column($columns, 'Field');
       $required_columns = ['id', 'key_hash', 'created_at', 'updated_at', 'kind', 'source_id', 'report_date', 'status', 'payload_json', 'context_json', 'error_text'];
       $valid = $unique_key && count(array_diff($required_columns, $column_names)) === 0;
