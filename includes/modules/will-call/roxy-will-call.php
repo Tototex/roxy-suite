@@ -1468,6 +1468,9 @@ add_action('wp_ajax_roxy_will_call_save', function () {
 
   if ($used_qty < 0) $used_qty = 0;
   $checked_in = $used_qty > 0 ? 1 : 0;
+  if (!isset($_POST['baseline_used']) || !ctype_digit((string) $_POST['baseline_used'])) {
+    wp_send_json_error(['message'=>'Attendance baseline is invalid. Refresh before changing attendance.','conflict'=>true]);
+  }
 
   $issued_at=(float)($_POST['issued_at']??0)/1000;
   if ($issued_at < time()-2*HOUR_IN_SECONDS || $issued_at > time()+300) wp_send_json_error(['message'=>'This queued admission is expired. Refresh before changing attendance.','conflict'=>true]);
@@ -1486,14 +1489,6 @@ add_action('wp_ajax_roxy_will_call_save', function () {
   foreach($fresh['rows'] as $row) if($row['customer_key']===$customer_key) $matching=$row;
   if(!$matching || $used_qty > (int)$matching['qty']) wp_send_json_error(['message'=>'Customer or paid ticket quantity changed. Refresh the list.','conflict'=>true]);
   try {
-    $current_map=roxy_will_call_authoritative_checkins($context_id,roxy_will_call_get_checkins_map($context_id));
-  } catch (Throwable $e) {
-    wp_send_json_error(['message'=>'Will Call could not verify saved attendance or ticket records. No attendance was changed; refresh and try again.','conflict'=>true]);
-    return;
-  }
-  $current_used=(int)($current_map[$customer_key]['used_qty']??0);
-  if (!isset($_POST['baseline_used']) || !ctype_digit((string)$_POST['baseline_used']) || (int)$_POST['baseline_used'] !== $current_used) wp_send_json_error(['message'=>'Another admission changed this customer. Refresh before retrying.','conflict'=>true]);
-  try {
     $updated_ticket_ids=\RoxyST\Tickets::apply_will_call_group($ticket_ids,$used_qty,($_POST['allow_undo']??'')==='1',[
       'context_id'=>$context_id,'customer_key'=>$customer_key,'baseline_used'=>(int)$_POST['baseline_used'],
     ],static function()use($context_id,$customer_key,$ticket_ids,$products,$used_qty):void {
@@ -1504,7 +1499,7 @@ add_action('wp_ajax_roxy_will_call_save', function () {
       foreach($list['rows'] as $row)if($row['customer_key']===$customer_key)$match=$row;
       if(!$match || $used_qty>(int)$match['qty'])throw new RuntimeException('Customer or paid ticket quantity changed. Refresh the list.');
     });
-  } catch (Throwable $e) {wp_send_json_error(['message'=>$e->getMessage(),'conflict'=>true]);}
+  } catch (Throwable $e) {wp_send_json_error(['message'=>'No attendance was changed. '.$e->getMessage(),'conflict'=>true]);}
 
   wp_send_json_success([
     'saved' => true,

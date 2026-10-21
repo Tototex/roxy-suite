@@ -203,7 +203,9 @@ unset($GLOBALS['checkins_empty']);
 $save=$GLOBALS['actions']['wp_ajax_roxy_will_call_save'];
 $GLOBALS['meta']=[]; $GLOBALS['baseline']=0;
 $_POST=['nonce'=>'test','context_id'=>8,'customer_key'=>$key,'used_qty'=>1,'baseline_used'=>'0','issued_at'=>(int)(microtime(true)*1000)];
-try{$save();}catch(JsonResult $e){check($e->success,'valid legacy customer admits within paid unrefunded quantity');}
+$GLOBALS['get_posts_calls']=0;
+try{$save();}catch(JsonResult $e){$first_save_success=$e->success;}
+check(($first_save_success??false)&&$GLOBALS['get_posts_calls']===2,'attendance baseline is checked under the ticket lock and the save avoids a redundant whole-showing ticket scan');
 $_POST['baseline_used']='1';$_POST['used_qty']=0;
 try{$save();}catch(JsonResult $e){check(!$e->success&&$GLOBALS['baseline']===1,'legacy decrease also requires explicit undo');}
 $_POST['used_qty']=1;
@@ -227,7 +229,7 @@ $GLOBALS['wpdb']->last_error='';$GLOBALS['checkins_query_fail']=true;$before=$GL
 try{$save();}catch(JsonResult $e){$saved_query_error=!$e->success && $GLOBALS['wpdb']->writes===$before && $GLOBALS['meta']===$ticket_state_before && strpos($e->data['message'],'No attendance was changed')!==false;}
 unset($GLOBALS['checkins_query_fail']);$GLOBALS['wpdb']->last_error='';
 check($saved_query_error,'saved check-in query failure returns a clear error and leaves ticket admissions and aggregate counts unchanged');
-unset($GLOBALS['checkins_query_fail']);$GLOBALS['wpdb']->last_error='';$GLOBALS['get_posts_calls']=0;$GLOBALS['get_posts_fail_call']=3;$before=$GLOBALS['wpdb']->writes;$ticket_state_before=$GLOBALS['meta'];$locked_ticket_query_error=false;
+unset($GLOBALS['checkins_query_fail']);$GLOBALS['wpdb']->last_error='';$GLOBALS['get_posts_calls']=0;$GLOBALS['get_posts_fail_call']=2;$before=$GLOBALS['wpdb']->writes;$ticket_state_before=$GLOBALS['meta'];$locked_ticket_query_error=false;
 try{$save();}catch(JsonResult $e){$locked_ticket_query_error=!$e->success && $GLOBALS['wpdb']->writes===$before && $GLOBALS['meta']===$ticket_state_before && strpos($e->data['message'],'Group admission was not saved')!==false;}
 unset($GLOBALS['get_posts_fail_call']);
 check($locked_ticket_query_error,'ticket-ID read failure during the locked pre-commit validation aborts without changing ticket or summary attendance');

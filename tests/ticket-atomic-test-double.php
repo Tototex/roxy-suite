@@ -14,7 +14,7 @@ namespace RoxyST {
       if($remove)\delete_post_meta($id,$key);else \update_post_meta($id,$key,$value);
     }
     public function tickets_for_item(int $order_id,int $item_id):array{return $GLOBALS['tickets_by_item'][$order_id][$item_id]??[101,102,103];}
-    public function will_call_quantity(int $id,string $key):int{return (int)($GLOBALS['baseline']??0);}
+    public function will_call_quantity(int $id,string $key):int{if(!empty($GLOBALS['checkins_query_fail']))throw new \RuntimeException('fixture check-in query failure');return (int)($GLOBALS['baseline']??0);}
     public function member_visit(array $row):bool{return true;}
     public function member_visit_id():int{return 1;}
     public function undo_member_walkup(int $visit,int $sub,int $show):array {$GLOBALS['walkup_undo_args']=[$visit,$sub,$show];return ['quantity_after'=>0,'replacement_visit_id'=>0,'undo_audit_id'=>999,'undone_at'=>'2026-10-08 12:00:00','undone_by'=>1];}
