@@ -36,6 +36,14 @@ final class FakeWooRefund {
   public function get_amount() { return $this->amount; }
   public function get_date_created(): ?\DateTimeInterface { return $this->created; }
 }
+final class FakeMalformedWooRefund {
+  public function get_id(): int { return 11; }
+  public function get_parent_id(): int { return 101; }
+  public function get_refunded_payment() { return null; }
+  public function get_currency(): string { return 'USD'; }
+  public function get_amount() { return '1.00'; }
+  public function get_date_created(): \DateTimeInterface { return new \DateTimeImmutable('2026-08-14T07:30:00Z'); }
+}
 final class FakeWooCollectionOrder {
   public function __construct(
     private int $id,
@@ -229,6 +237,7 @@ namespace {
   $expect_throw(static fn() => \RoxyGrosses\WooRefundEvents::from_order_refunds([new \RoxyGrosses\FakeWooRefund(11, 101, true, 'USD', '1.001', new \DateTimeImmutable('2026-08-14T07:30:00Z'))]), 'Woo refund fractional cents fail closed');
   $expect_throw(static fn() => \RoxyGrosses\WooRefundEvents::from_order_refunds([new \RoxyGrosses\FakeWooRefund(11, 101, true, 'CAD', '1.00', new \DateTimeImmutable('2026-08-14T07:30:00Z'))]), 'Woo refund non-USD currency fails closed');
   $expect_throw(static fn() => \RoxyGrosses\WooRefundEvents::from_order_refunds([new \RoxyGrosses\FakeWooRefund(11, 101, true, 'USD', '1.00', null)]), 'Woo refund without creation timestamp fails closed');
+  $expect_throw(static fn() => \RoxyGrosses\WooRefundEvents::from_order_refunds([new \RoxyGrosses\FakeMalformedWooRefund()]), 'Woo refund malformed payment-processing flag fails closed instead of disappearing from cashflow review');
   $woo_collections = \RoxyGrosses\WooCollectionEvents::from_orders([
     new \RoxyGrosses\FakeWooCollectionOrder(201, 'stripe', true, 'USD', '42.37', new \DateTimeImmutable('2026-10-03T06:30:00Z'), 'ch_private_1'),
     new \RoxyGrosses\FakeWooCollectionOrder(202, 'stripe', false, 'USD', '99.00', new \DateTimeImmutable('2026-10-03T06:40:00Z'), 'pending_1'),

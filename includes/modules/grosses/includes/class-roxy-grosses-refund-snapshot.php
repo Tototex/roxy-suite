@@ -327,7 +327,9 @@ final class WooRefundEvents {
         throw new \RuntimeException('WooCommerce returned a duplicate or invalid refund identity.');
       }
       $seen[$id] = true;
-      if ($refund->get_refunded_payment() !== true) continue;
+      $payment_api_processed = $refund->get_refunded_payment();
+      if (!is_bool($payment_api_processed)) throw new \RuntimeException('WooCommerce returned an invalid payment-processing flag for a refund.');
+      if (!$payment_api_processed) continue;
       if ($allowed !== null) {
         $gateway = self::parent_gateway($order_id, $gateway_cache, 'refunded order');
         if (!isset($allowed[$gateway])) continue;
