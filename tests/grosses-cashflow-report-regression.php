@@ -108,7 +108,7 @@ namespace {
       default: return (object) ['orders' => $rows, 'total_pages' => $pages];
     }
   }
-  function wc_get_order(int $id) { return $GLOBALS['wc_parent_orders'][$id] ?? false; }
+  function wc_get_order(int $id) { $GLOBALS['wc_parent_order_reads'][$id] = ($GLOBALS['wc_parent_order_reads'][$id] ?? 0) + 1; return $GLOBALS['wc_parent_orders'][$id] ?? false; }
   function is_wp_error($value): bool { return false; }
 
   require_once __DIR__ . '/../includes/modules/grosses/includes/class-roxy-grosses-refund-snapshot.php';
@@ -162,7 +162,10 @@ namespace {
     100 => new \RoxyGrosses\FakeOrder(100, 'cash', '9.00', 'cash-ref', new \DateTimeImmutable('2026-10-03T01:00:00Z')),
   ];
   $GLOBALS['wc_page_counts'] = ['shop_order' => 1, 'shop_order_refund' => 1];
+  $GLOBALS['wc_parent_order_reads'] = [];
   $report = \RoxyGrosses\CashflowReport::for_day('2026-10-02');
+  $assert(($GLOBALS['wc_parent_order_reads'][21] ?? 0) === 1 && array_sum($GLOBALS['wc_parent_order_reads']) === 5,
+    'financial refund and manual-review passes share one parent gateway lookup per Woo order');
   $late_review_order = new \RoxyGrosses\FakeOrder(28, 'stripe', '17.00', 'late-cutoff-charge', new \DateTimeImmutable('2026-10-03T01:30:00Z'), false, ['_roxy_seat_review'=>'1','_roxy_seat_review_reason'=>'sales_cutoff'], 'on-hold');
   $late_review_events = \RoxyGrosses\WooCollectionEvents::from_orders([$late_review_order], ['stripe']);
   $assert(count($late_review_events) === 1 && $late_review_events[0]['order_id'] === 28 && $late_review_events[0]['amount_cents'] === 1700,

@@ -160,7 +160,8 @@ final class CashflowReport {
     $woo_orders = self::woo_objects('shop_order', 'date_paid', $start_timestamp, $end_timestamp);
     $woo_refund_rows = self::woo_objects('shop_order_refund', 'date_created', $start_timestamp, $end_timestamp);
     $woo_collections = WooCollectionEvents::from_orders($woo_orders, $gateways);
-    $woo_refunds = WooRefundEvents::from_order_refunds($woo_refund_rows, $gateways);
+    $woo_refund_gateway_cache = new WooRefundGatewayCache();
+    $woo_refunds = WooRefundEvents::from_order_refunds($woo_refund_rows, $gateways, $woo_refund_gateway_cache);
     if (!method_exists(Square::class, 'fetch_orders_for_date')) throw new \RuntimeException('Square order review is unavailable.');
     $square_orders = Square::fetch_orders_for_date($report_date);
     if (!is_array($square_orders) || !self::is_list($square_orders)) throw new \RuntimeException('Square returned an incomplete order review list.');
@@ -222,7 +223,7 @@ final class CashflowReport {
     }
     $review_exceptions = [
       'woocommerce_manual_refunds' => array_values(array_filter(
-        WooRefundEvents::manual_review_exceptions($woo_refund_rows, $gateways),
+        WooRefundEvents::manual_review_exceptions($woo_refund_rows, $gateways, $woo_refund_gateway_cache),
         static fn(array $event): bool => ($event['date'] ?? '') === $report_date
       )),
       'square_returns_and_exchanges' => array_values(array_filter(

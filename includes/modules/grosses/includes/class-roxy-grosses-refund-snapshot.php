@@ -271,6 +271,12 @@ final class RefundSnapshot {
   }
 }
 
+/** Request-scoped memoization shared by both refund report passes. */
+final class WooRefundGatewayCache {
+  /** @var array<int,string> */
+  public array $gateways_by_order = [];
+}
+
 /** Read-only normalization for WooCommerce refunds processed through a payment API. */
 final class WooRefundEvents {
   private static function is_list(array $value): bool {
@@ -294,7 +300,7 @@ final class WooRefundEvents {
   }
 
   /** API-confirmed refund events; manual refund records are deliberately excluded. */
-  public static function from_order_refunds(array $refunds, ?array $allowed_gateways = null): array {
+  public static function from_order_refunds(array $refunds, ?array $allowed_gateways = null, ?WooRefundGatewayCache $gateway_cache = null): array {
     if (!self::is_list($refunds)) throw new \RuntimeException('WooCommerce returned an invalid refund list.');
     if ($allowed_gateways !== null) {
       if (!self::is_list($allowed_gateways) || !$allowed_gateways || !function_exists('wc_get_order')) throw new \RuntimeException('WooCommerce refund gateway verification is unavailable.');
@@ -307,7 +313,7 @@ final class WooRefundEvents {
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $events = [];
     $seen = [];
-    $parent_gateway_cache = [];
+    $gateway_cache ??= new WooRefundGatewayCache();
     foreach ($refunds as $refund) {
       if (!is_object($refund)
         || !method_exists($refund, 'get_id') || !method_exists($refund, 'get_parent_id')
@@ -323,13 +329,7 @@ final class WooRefundEvents {
       $seen[$id] = true;
       if ($refund->get_refunded_payment() !== true) continue;
       if ($allowed !== null) {
-        if (!array_key_exists($order_id, $parent_gateway_cache)) {
-          $parent = wc_get_order($order_id);
-          if (!is_object($parent) || !method_exists($parent, 'get_payment_method')) throw new \RuntimeException('WooCommerce could not verify the payment gateway for a refunded order.');
-          $parent_gateway_cache[$order_id] = $parent->get_payment_method();
-        }
-        $gateway = $parent_gateway_cache[$order_id];
-        if (!is_string($gateway) || $gateway === '') throw new \RuntimeException('WooCommerce refunded order has an invalid payment gateway.');
+        $gateway = self::parent_gateway($order_id, $gateway_cache, 'refunded order');
         if (!isset($allowed[$gateway])) continue;
       }
       if ($refund->get_currency() !== 'USD') throw new \RuntimeException('WooCommerce refund uses an unsupported currency.');
@@ -354,7 +354,7 @@ final class WooRefundEvents {
   }
 
   /** Read-only manual refund records for operator review; never financial events. */
-  public static function manual_review_exceptions(array $refunds, array $allowed_gateways): array {
+  public static function manual_review_exceptions(array $refunds, array $allowed_gateways, ?WooRefundGatewayCache $gateway_cache = null): array {
     if (!self::is_list($refunds)) throw new \RuntimeException('WooCommerce returned an invalid refund list for manual-refund review.');
     if (!self::is_list($allowed_gateways) || !$allowed_gateways || !function_exists('wc_get_order')) throw new \RuntimeException('WooCommerce manual-refund gateway verification is unavailable.');
     $allowed = [];
@@ -365,7 +365,7 @@ final class WooRefundEvents {
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $exceptions = [];
     $seen = [];
-    $parent_gateway_cache = [];
+    $gateway_cache ??= new WooRefundGatewayCache();
     foreach ($refunds as $refund) {
       if (!is_object($refund)
         || !method_exists($refund, 'get_id') || !method_exists($refund, 'get_parent_id')
@@ -382,13 +382,7 @@ final class WooRefundEvents {
       $processed = $refund->get_refunded_payment();
       if (!is_bool($processed)) throw new \RuntimeException('WooCommerce returned an invalid payment-processing flag for a refund.');
       if ($processed) continue;
-      if (!array_key_exists($order_id, $parent_gateway_cache)) {
-        $parent = wc_get_order($order_id);
-        if (!is_object($parent) || !method_exists($parent, 'get_payment_method')) throw new \RuntimeException('WooCommerce could not verify the payment gateway for a manual refund.');
-        $parent_gateway_cache[$order_id] = $parent->get_payment_method();
-      }
-      $gateway = $parent_gateway_cache[$order_id];
-      if (!is_string($gateway) || $gateway === '') throw new \RuntimeException('WooCommerce manual-refund parent has an invalid payment gateway.');
+      $gateway = self::parent_gateway($order_id, $gateway_cache, 'manual-refund parent');
       if (!isset($allowed[$gateway])) continue;
       if ($refund->get_currency() !== 'USD') throw new \RuntimeException('WooCommerce manual refund uses an unsupported currency.');
       $amount_cents = abs(self::amount_cents($refund->get_amount()));
@@ -405,6 +399,17 @@ final class WooRefundEvents {
     }
     usort($exceptions, static fn(array $a, array $b): int => [$a['created_at'], $a['refund_id']] <=> [$b['created_at'], $b['refund_id']]);
     return $exceptions;
+  }
+
+  private static function parent_gateway(int $order_id, WooRefundGatewayCache $cache, string $context): string {
+    if (!array_key_exists($order_id, $cache->gateways_by_order)) {
+      $parent = wc_get_order($order_id);
+      if (!is_object($parent) || !method_exists($parent, 'get_payment_method')) throw new \RuntimeException('WooCommerce could not verify the payment gateway for a ' . $context . '.');
+      $gateway = $parent->get_payment_method();
+      if (!is_string($gateway) || $gateway === '') throw new \RuntimeException('WooCommerce ' . $context . ' has an invalid payment gateway.');
+      $cache->gateways_by_order[$order_id] = $gateway;
+    }
+    return $cache->gateways_by_order[$order_id];
   }
 }
 
