@@ -150,11 +150,13 @@ final class Holds {
       if($captured!==self::snapshot((int)$order->get_id()))throw new \RuntimeException('Showing mapping changed during confirmation');
       $now=current_datetime()->getTimestamp();
       foreach($captured['shows'] as $showing_id=>$_) {
+        if(!Eligibility::showing_is_public((int)$showing_id))throw new \RuntimeException('Ticket payment arrived after the showing was withdrawn from sale; manager review is required.');
         $cutoff=Eligibility::showing_sales_cutoff_timestamp((int)$showing_id);
         if($cutoff===null || $now >= $cutoff)throw new \RuntimeException('Ticket payment arrived after the showing sales cutoff; manager review is required.');
       }
       if(!self::claim($order))return;
       if($captured!==self::snapshot((int)$order->get_id()))throw new \RuntimeException('Showing mapping changed during confirmation');
+      foreach($captured['shows'] as $showing_id=>$_)if(!Eligibility::showing_is_public((int)$showing_id))throw new \RuntimeException('Ticket payment arrived after the showing was withdrawn from sale; manager review is required.');
       $lease->assert_owner();
       self::$save_leases[spl_object_id($order)][]=$lease;
       $lease=null;
@@ -163,7 +165,8 @@ final class Holds {
     } catch(\Throwable $e) {
       $order->set_status('on-hold');
       $order->update_meta_data('_roxy_seat_review',1);
-      $order->update_meta_data('_roxy_seat_review_reason',str_contains($e->getMessage(),'showing sales cutoff')?'sales_cutoff':'seat_availability');
+      $reason=str_contains($e->getMessage(),'showing was withdrawn')?'showing_unpublished':(str_contains($e->getMessage(),'showing sales cutoff')?'sales_cutoff':'seat_availability');
+      $order->update_meta_data('_roxy_seat_review_reason',$reason);
       Log::error('Ticket order requires seat review; no automatic refund',['order_id'=>(int)$order->get_id()]);
     } finally{if($lease)$lease->release_lease();}
   }
@@ -182,6 +185,10 @@ final class Holds {
 
   public static function review_notice($order): void {
     if(!$order || (int)$order->get_meta('_roxy_seat_review',true)!==1)return;
+    if($order->get_meta('_roxy_seat_review_reason',true)==='showing_unpublished') {
+      echo '<p class="notice notice-warning">Ticket payment arrived after the showing was withdrawn from sale. Payment evidence is preserved, admission is blocked, and no automatic refund was made. Review this payment with a manager.</p>';
+      return;
+    }
     if($order->get_meta('_roxy_seat_review_reason',true)==='sales_cutoff') {
       echo '<p class="notice notice-warning">Payment confirmation arrived after online ticket sales ended for a showing. Ticket admission is blocked; payment evidence is preserved and no automatic refund was made. Review this payment with a manager. Do not issue tickets after the cutoff.</p>';
       return;

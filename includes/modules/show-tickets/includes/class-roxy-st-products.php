@@ -4,10 +4,15 @@ namespace RoxyST;
 if (!defined('ABSPATH')) exit;
 
 class Products {
+  private static array $showing_change_leases = [];
+
   public static function init(): void {
     add_action('save_post_' . CPT::POST_TYPE, [__CLASS__, 'on_showing_saved'], 20, 2);
     add_action('transition_post_status', [__CLASS__, 'on_status_changed'], 20, 3);
     add_action('before_delete_post', [__CLASS__, 'on_showing_deleted'], 20, 2);
+    add_filter('wp_insert_post_data', [__CLASS__, 'guard_showing_status_change'], 1, 4);
+    add_filter('pre_delete_post', [__CLASS__, 'guard_showing_delete'], 1, 3);
+    add_action('admin_notices', [__CLASS__, 'show_status_change_notice']);
     add_action('roxy_st_sync_products_retry', [__CLASS__, 'retry_product_sync'], 10, 2);
     add_action('init', [__CLASS__, 'ensure_reconciliation_schedule'], 20);
     add_action('roxy_st_reconcile_products', [__CLASS__, 'reconcile_published_showings'], 10, 1);
@@ -98,11 +103,109 @@ class Products {
   }
 
   public static function on_status_changed(string $new, string $old, $post): void {
-    if ($post->post_type === CPT::POST_TYPE && $new !== 'publish') self::deactivate_showing_products((int)$post->ID);
+    if (!$post || ($post->post_type ?? '') !== CPT::POST_TYPE) return;
+    $id = (int) $post->ID;
+    try {
+      if ($new !== 'publish') self::deactivate_showing_products($id);
+    } finally {
+      self::release_showing_change_lease($id);
+    }
   }
 
   public static function on_showing_deleted(int $id, $post = null): void {
-    if (get_post_type($id) === CPT::POST_TYPE) self::deactivate_showing_products($id);
+    if (get_post_type($id) !== CPT::POST_TYPE) return;
+    try {
+      self::deactivate_showing_products($id);
+    } finally {
+      self::release_showing_change_lease($id);
+    }
+  }
+
+  /** Serialize public showing withdrawal with ticket confirmation and seat admission. */
+  public static function guard_showing_status_change(array $data, array $postarr, array $unsanitized_postarr = [], bool $update = false): array {
+    $id = isset($postarr['ID']) && is_scalar($postarr['ID']) && !is_bool($postarr['ID']) ? (int) $postarr['ID'] : 0;
+    if ($id <= 0 || ($data['post_type'] ?? '') !== CPT::POST_TYPE || !isset($data['post_status'])) return $data;
+    $new_status = (string) $data['post_status'];
+    if ($new_status === 'publish' || isset(self::$showing_change_leases[$id])) return $data;
+
+    global $wpdb;
+    if (!isset($wpdb->posts) || !is_string($wpdb->posts) || !preg_match('/^[A-Za-z0-9_]+$/D', $wpdb->posts)) {
+      throw new \RuntimeException('Could not verify the current showing status; no status change was made.');
+    }
+    $wpdb->last_error = '';
+    $current_status = $wpdb->get_var($wpdb->prepare(
+      "SELECT post_status FROM {$wpdb->posts} WHERE ID = %d AND post_type = %s",
+      $id,
+      CPT::POST_TYPE
+    ));
+    if ($wpdb->last_error !== '' || !is_string($current_status) || $current_status === '') {
+      throw new \RuntimeException('Could not verify the current showing status; no status change was made.');
+    }
+    if ($current_status !== 'publish') return $data;
+
+    try {
+      if (!class_exists(Issuance::class)) throw new \RuntimeException('The ticket seat lock is unavailable.');
+      $lease = new Issuance([], 'walkup:' . $id);
+      $lease->acquire_lease();
+      self::$showing_change_leases[$id] = $lease;
+      if (count(self::$showing_change_leases) === 1) register_shutdown_function([__CLASS__, 'release_all_showing_change_leases']);
+      return $data;
+    } catch (\Throwable $error) {
+      $data['post_status'] = $current_status;
+      self::record_status_change_block($id);
+      Log::warn('ticket showing status change blocked because the seat lock is unavailable', ['showing_id' => $id]);
+      return $data;
+    }
+  }
+
+  /** Refuse permanent deletion if an in-flight ticket confirmation owns the showing seat lock. */
+  public static function guard_showing_delete($delete, $post, $force_delete = false) {
+    if ($delete !== null || !$post || ($post->post_type ?? '') !== CPT::POST_TYPE) return $delete;
+    $id = (int) $post->ID;
+    if ($id <= 0 || isset(self::$showing_change_leases[$id])) return $delete;
+    try {
+      if (!class_exists(Issuance::class)) throw new \RuntimeException('The ticket seat lock is unavailable.');
+      $lease = new Issuance([], 'walkup:' . $id);
+      $lease->acquire_lease();
+      self::$showing_change_leases[$id] = $lease;
+      if (count(self::$showing_change_leases) === 1) register_shutdown_function([__CLASS__, 'release_all_showing_change_leases']);
+      return $delete;
+    } catch (\Throwable $error) {
+      self::record_status_change_block($id);
+      Log::warn('ticket showing deletion blocked because the seat lock is unavailable', ['showing_id' => $id]);
+      return false;
+    }
+  }
+
+  public static function release_all_showing_change_leases(): void {
+    foreach (self::$showing_change_leases as $id => $lease) self::release_showing_change_lease((int) $id);
+  }
+
+  private static function release_showing_change_lease(int $id): void {
+    if (empty(self::$showing_change_leases[$id])) return;
+    $lease = self::$showing_change_leases[$id];
+    unset(self::$showing_change_leases[$id]);
+    $lease->release_lease();
+  }
+
+  private static function record_status_change_block(int $id): void {
+    $user_id = function_exists('get_current_user_id') ? (int) get_current_user_id() : 0;
+    if ($user_id > 0 && function_exists('set_transient')) {
+      set_transient('roxy_st_status_lock_notice_' . $user_id, $id, MINUTE_IN_SECONDS);
+    }
+  }
+
+  public static function show_status_change_notice(): void {
+    $user_id = function_exists('get_current_user_id') ? (int) get_current_user_id() : 0;
+    if ($user_id <= 0 || !function_exists('get_transient') || !function_exists('delete_transient')) return;
+    $key = 'roxy_st_status_lock_notice_' . $user_id;
+    $id = get_transient($key);
+    if (!is_scalar($id) || (int) $id <= 0) return;
+    delete_transient($key);
+    echo '<div class="notice notice-error"><p>' . esc_html(sprintf(
+      'Showing #%d could not be withdrawn or deleted because ticket activity is in progress. No status change was made; please try again shortly.',
+      (int) $id
+    )) . '</p></div>';
   }
 
   private static function deactivate_showing_products(int $id): void {

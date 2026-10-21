@@ -19,6 +19,7 @@ $digest=static fn()=>hash('sha256',wp_json_encode([$wpdb->get_results("SELECT * 
 try {
  $show=wp_insert_post(['post_type'=>'roxy_showing','post_status'=>'draft','post_title'=>$label],true);if(is_wp_error($show))throw new RuntimeException('Private showing failed');$created[]=$show;update_post_meta($show,'_roxy_capacity',1);update_post_meta($show,'_roxy_start',wp_date('Y-m-d\\TH:i',time()+7200));update_post_meta($show,'_roxy_duration_minutes','60');
  $p=new WC_Product_Simple();$p->set_name($label);$p->set_status('draft');$p->set_catalog_visibility('hidden');$p->set_regular_price('0');$pid=$p->save();$created[]=$pid;update_post_meta($pid,ROXY_ST_META_SHOWING_ID,$show);update_post_meta($pid,ROXY_ST_META_TICKET_TYPE,'adult');
+ if($wpdb->update($wpdb->posts,['post_status'=>'publish'],['ID'=>$show])!==1)throw new RuntimeException('Private showing could not be published for checkout tests');clean_post_cache($show);
  $make=static function($customer=0)use($p,$label,&$orders){$o=wc_create_order(['status'=>'pending','customer_id'=>$customer,'customer_note'=>$label]);if(is_wp_error($o))throw new RuntimeException('Private order failed');$orders[]=$o;$o->add_product($p,1);$o->calculate_totals();$o->save();return $o;};
  $a=$make();$b=$make();$qty=static fn()=>\RoxyST\FixtureReservations::quantity_for_showing($show);
  $check($qty()===0,'unmanaged pending orders do not acquire holds accidentally');
@@ -42,6 +43,12 @@ try {
  \RoxyST\FixtureHolds::claim($b);$check($qty()===1,'another order can claim the expired seat');
  $a=wc_get_order($a->get_id());$a->set_transaction_id('PRIVATE-NO-CHARGE');$a->set_date_paid(time());$a->update_status('processing');$a=wc_get_order($a->get_id());
  $check($a->get_status()==='on-hold'&&(int)$a->get_meta('_roxy_seat_review',true)===1,'late payment with no seat is retained on-hold for manager review');
+ $b=wc_get_order($b->get_id());$wpdb->update($wpdb->posts,['post_status'=>'draft'],['ID'=>$show]);clean_post_cache($show);
+ $b->set_transaction_id('PRIVATE-WITHDRAWN-SHOW');$b->set_date_paid(time());$b->update_status('processing');$b=wc_get_order($b->get_id());
+ $check($b->get_status()==='on-hold'&&(int)$b->get_meta('_roxy_seat_review',true)===1&&$b->get_meta('_roxy_seat_review_reason',true)==='showing_unpublished'&&$b->get_transaction_id()==='PRIVATE-WITHDRAWN-SHOW'&&$b->get_date_paid()!==null,'paid order for an unpublished showing remains on-hold with payment evidence preserved');
+ ob_start();\RoxyST\FixtureHolds::review_notice($b);$withdrawn_notice=(string)ob_get_clean();
+ $check(str_contains($withdrawn_notice,'showing was withdrawn from sale')&&str_contains($withdrawn_notice,'no automatic refund was made'),'unpublished-showing review notice gives specific no-auto-refund guidance');
+ $wpdb->update($wpdb->posts,['post_status'=>'publish'],['ID'=>$show]);clean_post_cache($show);\RoxyST\FixtureHolds::release($b);
  $check($a->get_transaction_id()==='PRIVATE-NO-CHARGE'&&$a->get_date_paid()!==null,'late-payment review preserves payment evidence without refund');
  $check(\RoxyST\HoldFixtureTickets::sync_order_tickets($a->get_id()),'review order projection still saves safely');
  $ids=\RoxyST\HoldFixtureTickets::get_order_ticket_ids($a->get_id());$check(count($ids)===1&&!\RoxyST\HoldFixtureTickets::ticket_is_eligible($ids[0]),'review order cannot issue an eligible admission');

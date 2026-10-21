@@ -41,9 +41,10 @@ class TicketFixtureDB {
     public array $rows=[];
     public $last_prepared=null;
     public function prepare($sql,...$args){$this->last_prepared=['sql'=>$sql,'args'=>$args];return $this->last_prepared;}
+    public function get_var($query){$this->last_error='';if($GLOBALS['db_status_fail']){$this->last_error='fixture status read failure';return false;}$sql=$query['sql']??'';$args=$query['args']??[];if(strpos($sql,'SELECT post_status FROM fixture_posts')===0){$id=(int)($args[0]??0);return ($GLOBALS['types'][$id]??'')===RoxyST\CPT::POST_TYPE?($GLOBALS['statuses'][$id]??null):null;}return null;}
     public function get_col($query){return $GLOBALS['db_query_fail']?false:$this->rows;}
 }
-$GLOBALS['wpdb']=new TicketFixtureDB(); $GLOBALS['db_query_fail']=false;
+$GLOBALS['wpdb']=new TicketFixtureDB(); $GLOBALS['db_query_fail']=false; $GLOBALS['db_status_fail']=false;
 class WooCommerce {} class WP_Error { private $message; function __construct($code,$message){$this->message=$message;} function get_error_message(){return $this->message;} }
 function is_wp_error($v){return $v instanceof WP_Error;}
 function __($s,...$args){return $s;}
@@ -108,7 +109,7 @@ class WP_Query {
 function check($ok,$label){if(!$ok)throw new RuntimeException($label); echo "PASS: $label\n";}
 require $fixture.'class-roxy-st-cpt.php'; require $fixture.'class-roxy-st-products.php'; require $fixture.'class-roxy-st-eligibility.php'; require $fixture.'class-roxy-st-capacity.php'; require $fixture.'class-roxy-st-tickets.php'; require $fixture.'class-roxy-st-frontend.php';
 \RoxyST\Eligibility::init(); \RoxyST\Products::init();
-check(isset($GLOBALS['hooks']['woocommerce_is_purchasable'],$GLOBALS['hooks']['woocommerce_checkout_process'],$GLOBALS['hooks']['woocommerce_check_cart_items'],$GLOBALS['hooks']['transition_post_status'],$GLOBALS['hooks']['before_delete_post'],$GLOBALS['hooks']['roxy_st_sync_products_retry'],$GLOBALS['hooks']['roxy_st_reconcile_products']), 'all managed publication and checkout hooks registered');
+check(isset($GLOBALS['hooks']['woocommerce_is_purchasable'],$GLOBALS['hooks']['woocommerce_checkout_process'],$GLOBALS['hooks']['woocommerce_check_cart_items'],$GLOBALS['hooks']['transition_post_status'],$GLOBALS['hooks']['before_delete_post'],$GLOBALS['hooks']['wp_insert_post_data'],$GLOBALS['hooks']['pre_delete_post'],$GLOBALS['hooks']['roxy_st_sync_products_retry'],$GLOBALS['hooks']['roxy_st_reconcile_products']), 'all managed publication, deletion, and checkout hooks registered');
 
 $GLOBALS['scheduled_events']=[];
 \RoxyST\Products::ensure_reconciliation_schedule();
@@ -407,6 +408,29 @@ check(!\RoxyST\Eligibility::validate_add(true,101,1),'direct cart add blocked');
 \RoxyST\Products::on_status_changed('draft','publish',(object)['ID'=>1,'post_type'=>'roxy_showing']);
 check($GLOBALS['statuses'][101]==='draft' && $GLOBALS['statuses'][102]==='draft' && $GLOBALS['statuses'][103]==='draft','deactivation covers canonical and duplicate product identities');
 check($GLOBALS['statuses'][200]==='publish','deactivation preserves unrelated product');
+$GLOBALS['statuses'][1]='publish'; $GLOBALS['statuses'][101]='publish'; $GLOBALS['statuses'][102]='publish'; $GLOBALS['statuses'][103]='publish';
+$lease_acquired_before_status_read=\RoxyST\Issuance::$lease_acquired; $GLOBALS['db_status_fail']=true; $status_read_failed=false;
+try {\RoxyST\Products::guard_showing_status_change(['post_type'=>'roxy_showing','post_status'=>'draft'],['ID'=>1],[],true);} catch(RuntimeException $e) {$status_read_failed=true;}
+$GLOBALS['db_status_fail']=false;
+check($status_read_failed && $GLOBALS['statuses'][1]==='publish' && \RoxyST\Issuance::$lease_acquired===$lease_acquired_before_status_read,'unreadable current status aborts instead of guessing or changing publication state');
+$GLOBALS['types'][3]='roxy_showing'; $GLOBALS['statuses'][3]='auto-draft';
+$auto_draft_status=\RoxyST\Products::guard_showing_status_change(['post_type'=>'roxy_showing','post_status'=>'draft'],['ID'=>3],[],true);
+check(($auto_draft_status['post_status']??'')==='draft' && \RoxyST\Issuance::$lease_acquired===$lease_acquired_before_status_read,'new auto-draft showing can be saved as draft without taking a public-show lock');
+\RoxyST\Issuance::$lease_fail=true;
+$blocked_status=\RoxyST\Products::guard_showing_status_change(['post_type'=>'roxy_showing','post_status'=>'draft'],['ID'=>1],[],true);
+check(($blocked_status['post_status']??'')==='publish' && ($GLOBALS['transients']['roxy_st_status_lock_notice_7']??0)===1,'showing demotion is refused and reported when a ticket confirmation owns the seat lock');
+$blocked_delete=\RoxyST\Products::guard_showing_delete(null,(object)['ID'=>1,'post_type'=>'roxy_showing']);
+check($blocked_delete===false,'showing deletion is refused while the shared seat lock is unavailable');
+\RoxyST\Issuance::$lease_fail=false;
+$lease_acquired_before=\RoxyST\Issuance::$lease_acquired; $lease_released_before=\RoxyST\Issuance::$lease_released;
+$leased_status=\RoxyST\Products::guard_showing_status_change(['post_type'=>'roxy_showing','post_status'=>'draft'],['ID'=>1],[],true);
+check(($leased_status['post_status']??'')==='draft' && \RoxyST\Issuance::$lease_acquired===$lease_acquired_before+1,'showing demotion obtains the shared seat lock before WordPress writes its status');
+\RoxyST\Products::on_status_changed('draft','publish',(object)['ID'=>1,'post_type'=>'roxy_showing']);
+check($GLOBALS['statuses'][101]==='draft' && \RoxyST\Issuance::$lease_released===$lease_released_before+1,'demotion drafts ticket products before releasing the shared seat lock');
+$delete_lease=\RoxyST\Products::guard_showing_delete(null,(object)['ID'=>1,'post_type'=>'roxy_showing']);
+check($delete_lease===null && \RoxyST\Issuance::$lease_acquired===$lease_acquired_before+2,'showing deletion acquires the shared seat lock');
+\RoxyST\Products::on_showing_deleted(1);
+check(\RoxyST\Issuance::$lease_released===$lease_released_before+2,'showing deletion holds the shared seat lock through product deactivation');
 $GLOBALS['statuses'][101]='publish'; \RoxyST\Products::on_showing_deleted(1);
 check($GLOBALS['statuses'][101]==='draft','permanent showing deletion deactivates linked product');
 $columns=\RoxyST\CPT::admin_columns(['cb'=>'','title'=>'Title']);
