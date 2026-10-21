@@ -18,7 +18,7 @@ class Conversion {
         add_action('admin_post_roxy_rs_approve_request', [__CLASS__, 'handle_approve_request']);
         add_action('admin_post_roxy_rs_fail_request', [__CLASS__, 'handle_fail_request']);
         add_action('post_submitbox_misc_actions', [__CLASS__, 'render_submitbox_actions']);
-        add_action('add_meta_boxes_shop_order', [__CLASS__, 'register_payment_review_metabox']);
+        add_action('add_meta_boxes', [__CLASS__, 'register_payment_review_metabox']);
         add_filter('woocommerce_order_formatted_line_subtotal', [__CLASS__, 'format_agreed_gross_line'], 10, 3);
         add_filter('woocommerce_get_order_item_totals', [__CLASS__, 'format_agreed_gross_totals'], 10, 3);
         add_filter('woocommerce_get_formatted_order_total', [__CLASS__, 'format_agreed_gross_order_total'], 10, 4);
@@ -107,20 +107,34 @@ class Conversion {
 
     /** Add a read-only reconciliation panel to Requested Showing WooCommerce orders. */
     public static function register_payment_review_metabox(): void {
+        $screen = 'shop_order';
+        $order_util = '\\Automattic\\WooCommerce\\Utilities\\OrderUtil';
+        if (class_exists($order_util) && method_exists($order_util, 'custom_orders_table_usage_is_enabled')) {
+            try {
+                if ($order_util::custom_orders_table_usage_is_enabled() === true && function_exists('wc_get_page_screen_id')) {
+                    $screen = wc_get_page_screen_id('shop-order');
+                }
+            } catch (\Throwable $error) {
+                // Keep the legacy screen registration as a safe fallback; order
+                // reads below still use WooCommerce CRUD.
+            }
+        }
         add_meta_box(
             'roxy_rs_payment_review',
             'Requested Showing Payment Review',
             [__CLASS__, 'render_payment_review_metabox'],
-            'shop_order',
+            $screen,
             'side',
             'high'
         );
     }
 
-    public static function render_payment_review_metabox($post): void {
-        $order_id = is_object($post) && isset($post->ID) ? (int) $post->ID : 0;
+    public static function render_payment_review_metabox($post_or_order): void {
+        $order_id = $post_or_order instanceof \WC_Order
+            ? (int) $post_or_order->get_id()
+            : (is_object($post_or_order) && isset($post_or_order->ID) ? (int) $post_or_order->ID : 0);
         if ($order_id <= 0 || !current_user_can('edit_shop_order', $order_id) || !function_exists('wc_get_order')) return;
-        $order = wc_get_order($order_id);
+        $order = $post_or_order instanceof \WC_Order ? $post_or_order : wc_get_order($order_id);
         if (!$order instanceof \WC_Order || (int) $order->get_id() !== $order_id
             || $order->get_created_via() !== 'roxy_requested_showings') return;
 
@@ -213,6 +227,7 @@ class Conversion {
         if (!$order instanceof \WC_Order || $expected_order_id <= 0 || $request_id <= 0 || $backing_id <= 0 || $customer_id <= 0
             || !method_exists($order, 'get_id') || !method_exists($order, 'get_customer_id')
             || !method_exists($order, 'get_created_via') || !method_exists($order, 'get_meta')
+            || !method_exists($order, 'get_edit_order_url')
             || (int) $order->get_id() !== $expected_order_id
             || $order->get_created_via() !== 'roxy_requested_showings'
             || (int) $order->get_customer_id() !== $customer_id
@@ -221,7 +236,8 @@ class Conversion {
             return '';
         }
 
-        return admin_url('post.php?post=' . $expected_order_id . '&action=edit');
+        $url = $order->get_edit_order_url();
+        return is_string($url) ? $url : '';
     }
 
     public static function actions_markup(int $request_id): string {
@@ -358,7 +374,7 @@ class Conversion {
         }
         if (!class_exists('\\RoxySuite\\Compatibility')
             || (\RoxySuite\Compatibility::order_storage_status()['status'] ?? '') !== 'pass') {
-            return new \WP_Error('order_storage_unsupported', 'WooCommerce order storage is unsupported or could not be verified. No showing or order was created. Restore verified post-based storage before retrying.');
+            return new \WP_Error('order_storage_unsupported', 'WooCommerce order storage is unsupported or could not be verified. No showing or order was created. Verify the WooCommerce storage configuration before retrying.');
         }
 
         $target_at = (string) get_post_meta($request_id, CPT::META_TARGET_AT, true);

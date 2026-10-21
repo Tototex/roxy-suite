@@ -500,11 +500,11 @@ namespace {
     reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing();
     $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_TARGET_AT] = '2026-10-30 19:00';
     \Automattic\WooCommerce\Utilities\OrderUtil::$enabled = true;
-    $hpos_approval = \RoxyRS\Conversion::approve_request(501);
-    check_fixture(is_wp_error($hpos_approval) && $hpos_approval->get_error_code() === 'order_storage_unsupported'
-        && \RoxyRS\ConversionClaims::$started === [] && $GLOBALS['fixture_order_creates'] === 0
-        && $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'active',
-        'HPOS blocks conversion before request closure, showing creation, or order creation');
+    $hpos_status = \RoxySuite\Compatibility::order_storage_status();
+    check_fixture(($hpos_status['status'] ?? '') === 'pass' && ($hpos_status['value'] ?? '') === 'HPOS custom order tables'
+        && !\RoxySuite\Compatibility::supports_legacy_order_storage(),
+        'HPOS is supported while legacy-only query optimizations remain disabled');
+    \Automattic\WooCommerce\Utilities\OrderUtil::$enabled = false;
 
     $approval_write_faults = [
         'failed status write' => 'fixture_approval_status_write_error',

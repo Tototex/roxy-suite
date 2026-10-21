@@ -21,8 +21,8 @@ try {
     throw new RuntimeException('The active Show Tickets module did not load.');
   }
   $storage_guard = \RoxySuite\Compatibility::order_storage_status();
-  $check(($storage_guard['status'] ?? '') === 'fail',
-    'the production HPOS unsupported guard remains active inside the test-only override');
+  $check(($storage_guard['status'] ?? '') === 'pass' && ($storage_guard['value'] ?? '') === 'HPOS custom order tables',
+    'production diagnostics recognize authoritative HPOS while the isolated marker contract runs');
   add_filter('pre_wp_mail', $mail_filter, PHP_INT_MAX, 2);
 
   $showing_id = (int) wp_insert_post([

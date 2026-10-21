@@ -8,6 +8,11 @@ if (!defined('WP_CLI') || !WP_CLI) exit(1);
 
 $root = rtrim((string) ($args[0] ?? ''), '/\\');
 if ($root === '' || !is_file($root . '/roxy-suite.php')) throw new RuntimeException('Roxy Suite fixture root is required.');
+$storage_mode = strtolower((string) ($args[1] ?? 'legacy'));
+if (!in_array($storage_mode, ['legacy', 'hpos'], true)) throw new RuntimeException('Requested Showings storage mode must be legacy or hpos.');
+$using_hpos = class_exists('Automattic\\WooCommerce\\Utilities\\OrderUtil')
+    && \Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled();
+if (($storage_mode === 'hpos') !== $using_hpos) throw new RuntimeException('Fixture storage mode mismatch: expected ' . $storage_mode . '.');
 if (!class_exists('WooCommerce') || !class_exists('RoxyRS\\Frontend') || !class_exists('RoxyRS\\Conversion')
     || !class_exists('RoxyRS\\Agreement') || !class_exists('RoxyST\\Capacity') || !class_exists('RoxyST\\Holds')
     || !class_exists('Roxy_Sub_Check') || !method_exists('Roxy_Sub_Check', 'walkup_quantity_for_showing')) {
@@ -94,10 +99,6 @@ register_shutdown_function(static function () use (&$endpoint_started, &$request
 });
 
 try {
-    if (class_exists('Automattic\\WooCommerce\\Utilities\\OrderUtil')
-        && Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled()) {
-        throw new RuntimeException('The fixture requires classic order storage, the currently supported storage mode.');
-    }
     $entitlement_check = static function (array $subscriptions) use (&$user_id, $check): int {
         $GLOBALS['r2_lifecycle_subscriptions'][$user_id] = $subscriptions;
         return \RoxyST\Capacity::subscription_entitlement_count($user_id);

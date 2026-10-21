@@ -686,8 +686,8 @@ class Roxy_Sub_Check {
     // Do the selective lookup in SQL and hydrate only the bounded matches via
     // wcs_get_subscription() in search_members(). Walking every active
     // subscription through wcs_get_subscriptions() makes a no-match search
-    // unbounded. This query intentionally uses post storage: the Suite
-    // declares HPOS unsupported until its order paths are fully certified.
+    // unbounded. This selective SQL query is only used when Woo Subscriptions
+    // confirms legacy post-based storage; HPOS uses its CRUD-backed search.
     $sql = "SELECT p.ID
       FROM {$wpdb->posts} p
       WHERE p.post_type = 'shop_subscription'

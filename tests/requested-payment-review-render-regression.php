@@ -21,6 +21,19 @@ class WC_Order {
     public function get_total(): float { return $this->total; }
     public function get_currency(): string { return $this->currency; }
     public function get_status(): string { return $this->paid ? 'processing' : 'on-hold'; }
+    public function get_edit_order_url(): string {
+        return RequestedReviewOrderUtil::$hpos
+            ? 'https://example.test/wp-admin/admin.php?page=wc-orders&action=edit&id=' . $this->id
+            : 'https://example.test/wp-admin/post.php?post=' . $this->id . '&action=edit';
+    }
+}
+
+class RequestedReviewOrderUtil {
+    public static bool $hpos = false;
+    public static function custom_orders_table_usage_is_enabled(): bool { return self::$hpos; }
+}
+if (!class_exists('Automattic\\WooCommerce\\Utilities\\OrderUtil')) {
+    eval('namespace Automattic\\WooCommerce\\Utilities; class OrderUtil { public static function custom_orders_table_usage_is_enabled(): bool { return \\RequestedReviewOrderUtil::$hpos; } }');
 }
 
 $GLOBALS['requested_payment_review_orders'] = [];
@@ -31,6 +44,7 @@ function current_user_can(string $capability, int $object_id = 0): bool {
 }
 function wc_get_order(int $order_id) { return $GLOBALS['requested_payment_review_orders'][$order_id] ?? false; }
 function add_meta_box(...$args): void { $GLOBALS['requested_payment_review_metaboxes'][] = $args; }
+function wc_get_page_screen_id(string $screen): string { return 'woocommerce_page_wc-orders'; }
 function wc_price(float $amount, array $args = []): string { return '$' . number_format($amount, 2); }
 function wc_get_order_status_name(string $status): string { return ucfirst($status); }
 function esc_html(string $value): string { return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
@@ -70,6 +84,10 @@ $identity_meta = ['_roxy_rs_request_id' => 55, '_roxy_rs_backing_id' => 77];
 \RoxyRS\Conversion::register_payment_review_metabox();
 $box = $GLOBALS['requested_payment_review_metaboxes'][0] ?? [];
 $check(($box[0] ?? '') === 'roxy_rs_payment_review' && ($box[3] ?? '') === 'shop_order', 'review panel registers only on the WooCommerce order screen');
+\RequestedReviewOrderUtil::$hpos = true;
+\RoxyRS\Conversion::register_payment_review_metabox();
+$hpos_box = $GLOBALS['requested_payment_review_metaboxes'][1] ?? [];
+$check(($hpos_box[3] ?? '') === 'woocommerce_page_wc-orders', 'review panel also registers on the HPOS order editor screen');
 
 $set_order(new WC_Order($identity_meta + [
     '_roxy_seat_review' => '1',
@@ -78,6 +96,11 @@ $set_order(new WC_Order($identity_meta + [
 ]));
 $html = $render();
 $check(str_contains($html, 'Payment may need manual reconciliation'), 'uncertain attempt is visibly marked for manager review');
+$hpos_html = '';
+ob_start();
+\RoxyRS\Conversion::render_payment_review_metabox($GLOBALS['requested_payment_review_orders'][9001]);
+$hpos_html = (string) ob_get_clean();
+$check(str_contains($hpos_html, 'Payment may need manual reconciliation') && str_contains($hpos_html, 'ID 9001'), 'HPOS WC_Order callback renders the same protected review details');
 $check(str_contains($html, '9001') && str_contains($html, 'ID 9001') && str_contains($html, '$18.00') && str_contains($html, '55 / 77'), 'order, amount, request and backing identifiers are shown');
 $check(str_contains($html, 'Do not retry conversion') && str_contains($html, 'read-only')
     && !str_contains($html, '<button') && !str_contains($html, '<form') && !str_contains($html, 'name="decision"'), 'panel warns against an unsafe retry and renders no action controls');
@@ -139,7 +162,9 @@ $backing = ['id' => 77, 'user_id' => 999];
 $link_order = new WC_Order($identity_meta, 'roxy_requested_showings', false, 9001, 999);
 $verified_url = static fn($order, int $order_id = 9001, int $request_id = 55, array $linked_backing = ['id' => 77, 'user_id' => 999])
     => $url_method->invoke(null, $order, $order_id, $request_id, $linked_backing);
-$check($verified_url($link_order, 9001, 55, $backing) === 'https://example.test/wp-admin/post.php?post=9001&action=edit', 'approval review link is generated for the matching requested-showing backing order');
+$check($verified_url($link_order, 9001, 55, $backing) === 'https://example.test/wp-admin/admin.php?page=wc-orders&action=edit&id=9001', 'approval review link uses the HPOS-aware Woo order editor URL');
+\RequestedReviewOrderUtil::$hpos = false;
+$check($verified_url($link_order, 9001, 55, $backing) === 'https://example.test/wp-admin/post.php?post=9001&action=edit', 'approval review link retains the classic Woo order editor URL');
 $check($verified_url(new WC_Order($identity_meta, 'checkout'), 9001, 55, $backing) === '', 'approval review link rejects unrelated Woo order types');
 $check($verified_url(new WC_Order($identity_meta, 'roxy_requested_showings', false, 9002), 9001, 55, $backing) === '', 'approval review link rejects order ID mismatch');
 $check($verified_url(new WC_Order($identity_meta, 'roxy_requested_showings', false, 9001, 1000), 9001, 55, $backing) === '', 'approval review link rejects a different backing owner');
