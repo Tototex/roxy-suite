@@ -22,6 +22,13 @@ namespace RoxyGrosses {
 namespace {
   define('ABSPATH', '/home1/anrvxfmy/public_html/');
   define('WP_CONTENT_DIR', ABSPATH . 'wp-content');
+  $GLOBALS['wpdb'] = new class {
+    public string $prefix = 'fixture_';
+    public string $last_error = '';
+    public function prepare($query, ...$args) { return $query; }
+    public function esc_like($value) { return addcslashes((string) $value, '_%\\'); }
+    public function get_var($query) { $this->last_error = ''; return null; } // Inventory is not installed in this isolated attachment fixture.
+  };
   function wp_date($format) { return '2026-10-05'; }
   function sanitize_title($title) { return strtolower(preg_replace('/[^a-zA-Z0-9-]/', '-', $title)); }
   function number_format_i18n($value) { return number_format($value); }
