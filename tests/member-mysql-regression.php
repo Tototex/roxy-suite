@@ -35,6 +35,9 @@ try{
     $check($log->invoke(null,$sub,null,'active',1,2147483016,'manual_admit_walkup',2),'actual member log write result checked');
     $check($wpdb->query("ALTER TABLE `$table` DROP COLUMN source")!==false,'fixture-only failure injected');
     $check(!$log->invoke(null,$sub,null,'active',1,2147483016,'manual_admit_walkup',2),'actual SQL log failure returns false');
+    $history_failed=false;
+    try{Stability_Roxy_Sub_Check::showing_admit_rows(2147483016);}catch(RuntimeException $error){$history_failed=$error->getMessage()==='Membership arrival records could not be read.';}
+    $check($history_failed,'member arrival history read failure is explicit instead of appearing as an empty attendance list');
 }finally{
     $wpdb->prefix=$original_prefix;$wpdb->query("DROP TEMPORARY TABLE IF EXISTS `$table`");$wpdb->suppress_errors($errors);
 }

@@ -860,9 +860,12 @@ class Roxy_Sub_Check {
       ),
       ARRAY_A
     );
+    if ($wpdb->last_error !== '' || !is_array($rows)) {
+      throw new RuntimeException('Membership arrival records could not be read.');
+    }
 
     $out = [];
-    foreach ((array) $rows as $row) {
+    foreach ($rows as $row) {
       $sub_id = (int) ($row['subscription_id'] ?? 0);
       if ($sub_id <= 0) continue;
       $payload = self::get_member_payload($sub_id, false);
