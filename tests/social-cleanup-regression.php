@@ -101,7 +101,7 @@ final class CleanupWpdb {
         $rows = [];
         foreach ($this->rows as $row) {
             if ((int) ($row['id'] ?? 0) > $after_id && (int) ($row['id'] ?? 0) <= $upper_id && !empty($row['cleanup_after']) && $row['cleanup_after'] <= $local_cutoff
-                && in_array($row['status'], ['posted', 'skipped'], true) && !empty($row['temporary_attachment_id'])) {
+                && in_array($row['status'], ['posted', 'skipped', 'removed'], true) && !empty($row['temporary_attachment_id'])) {
                 $rows[] = ['id' => $row['id'], 'temporary_attachment_id' => $row['temporary_attachment_id'], 'cleanup_after' => $row['cleanup_after']];
             }
         }
@@ -160,7 +160,7 @@ final class CleanupWpdb {
             preg_match('/cleanup_after <= \'([^\']+)\'/i', $query, $cutoff);
             $local_cutoff = stripslashes($cutoff[1] ?? '');
             $ids = [];
-            foreach ($this->rows as $row) if (!empty($row['cleanup_after']) && $row['cleanup_after'] <= $local_cutoff && in_array($row['status'], ['posted', 'skipped'], true) && !empty($row['temporary_attachment_id'])) $ids[] = (int) $row['id'];
+            foreach ($this->rows as $row) if (!empty($row['cleanup_after']) && $row['cleanup_after'] <= $local_cutoff && in_array($row['status'], ['posted', 'skipped', 'removed'], true) && !empty($row['temporary_attachment_id'])) $ids[] = (int) $row['id'];
             return $ids ? max($ids) : 0;
         }
         if (strpos($query, 'GET_LOCK(') !== false) {
@@ -332,8 +332,11 @@ $wpdb->meta[43] = ['_roxy_social_temporary'=>'1', '_roxy_hangar_asset_id'=>'901'
 $wpdb->rows[3] = ['id'=>3, 'status'=>'failed', 'temporary_attachment_id'=>44, 'cleanup_after'=>'2026-10-06 11:00:00', 'media_url'=>''];
 $wpdb->attachments[44] = (object) ['ID'=>44, 'post_type'=>'attachment'];
 $wpdb->meta[44] = ['_roxy_social_temporary'=>'1', '_roxy_hangar_asset_id'=>'902'];
-check_cleanup(\RoxySocial\Store::cleanup_expired() === 1, 'owned expired attachment is deleted');
-check_cleanup(!isset($wpdb->attachments[42]) && $wpdb->rows[1]['temporary_attachment_id'] === null && isset($wpdb->attachments[43]) && isset($wpdb->attachments[44]), 'successful delete clears pointer and future/failed rows stay');
+$wpdb->rows[4] = ['id'=>4, 'status'=>'removed', 'temporary_attachment_id'=>45, 'cleanup_after'=>'2026-10-06 11:00:00', 'media_url'=>''];
+$wpdb->attachments[45] = (object) ['ID'=>45, 'post_type'=>'attachment'];
+$wpdb->meta[45] = ['_roxy_social_temporary'=>'1', '_roxy_hangar_asset_id'=>'903'];
+check_cleanup(\RoxySocial\Store::cleanup_expired() === 2, 'owned expired attachments for posted and confirmed-removed rows are deleted');
+check_cleanup(!isset($wpdb->attachments[42], $wpdb->attachments[45]) && $wpdb->rows[1]['temporary_attachment_id'] === null && $wpdb->rows[4]['temporary_attachment_id'] === null && isset($wpdb->attachments[43]) && isset($wpdb->attachments[44]), 'successful delete clears pointers while future and failed rows stay');
 $initial_candidate_query = '';
 foreach ($wpdb->queries as $candidate_query) if (strpos($candidate_query, 'SELECT id, temporary_attachment_id, cleanup_after') !== false) $initial_candidate_query = $candidate_query;
 check_cleanup(strpos($initial_candidate_query, "'2026-10-06 12:00:00'") !== false && strpos($initial_candidate_query, 'LIMIT 100') !== false, 'candidate query uses local cutoff and bounded batch');

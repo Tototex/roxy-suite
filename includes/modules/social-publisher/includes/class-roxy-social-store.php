@@ -359,14 +359,14 @@ final class Store {
         $cursor = max(0, $after_id ?? 0);
         if ($upper_id === null) {
             $wpdb->last_error = '';
-            $upper_id = $wpdb->get_var($wpdb->prepare('SELECT COALESCE(MAX(id), 0) FROM ' . $table . ' WHERE cleanup_after IS NOT NULL AND cleanup_after <= %s AND status IN ("posted", "skipped") AND temporary_attachment_id IS NOT NULL', $cutoff));
+            $upper_id = $wpdb->get_var($wpdb->prepare('SELECT COALESCE(MAX(id), 0) FROM ' . $table . ' WHERE cleanup_after IS NOT NULL AND cleanup_after <= %s AND status IN ("posted", "skipped", "removed") AND temporary_attachment_id IS NOT NULL', $cutoff));
             if ($wpdb->last_error !== '' || !is_numeric($upper_id)) return $detached_deleted;
         }
         $upper_id = max(0, (int) $upper_id);
         if ($upper_id <= $cursor) return $detached_deleted;
         $deleted = 0;
         $wpdb->last_error = '';
-        $rows = $wpdb->get_results($wpdb->prepare('SELECT id, temporary_attachment_id, cleanup_after FROM ' . $table . ' WHERE cleanup_after IS NOT NULL AND cleanup_after <= %s AND status IN ("posted", "skipped") AND temporary_attachment_id IS NOT NULL AND id > %d AND id <= %d ORDER BY id ASC LIMIT 100', $cutoff, $cursor, $upper_id), ARRAY_A);
+        $rows = $wpdb->get_results($wpdb->prepare('SELECT id, temporary_attachment_id, cleanup_after FROM ' . $table . ' WHERE cleanup_after IS NOT NULL AND cleanup_after <= %s AND status IN ("posted", "skipped", "removed") AND temporary_attachment_id IS NOT NULL AND id > %d AND id <= %d ORDER BY id ASC LIMIT 100', $cutoff, $cursor, $upper_id), ARRAY_A);
         if ($wpdb->last_error !== '' || !is_array($rows) || !$rows) return $detached_deleted;
         $ids = array_map(static fn($row): int => is_array($row) ? (int) ($row['id'] ?? 0) : 0, $rows);
         $next_cursor = max($ids);
@@ -382,7 +382,7 @@ final class Store {
                 if (!$claim) { self::release_publish_lock($media_claim); continue; }
                 try {
                     $fresh = self::find($id);
-                    if (!$fresh || !in_array((string) ($fresh['status'] ?? ''), ['posted', 'skipped'], true)
+                    if (!$fresh || !in_array((string) ($fresh['status'] ?? ''), ['posted', 'skipped', 'removed'], true)
                         || (int) ($fresh['temporary_attachment_id'] ?? 0) !== $attachment_id
                         || (string) ($fresh['cleanup_after'] ?? '') !== (string) ($row['cleanup_after'] ?? '')
                         || (string) ($fresh['cleanup_after'] ?? '') === '' || (string) $fresh['cleanup_after'] > $cutoff) continue;
@@ -1037,16 +1037,43 @@ final class Store {
 
     public static function update_publish_result(int $id, string $status, string $error = '', string $facebook_id = '', string $instagram_id = '', ?array $claim = null): bool {
         global $wpdb;
+        $media_claim = null;
+        $cleanup_deadline = null;
+        if ($status === 'removed') {
+            $row = self::find($id);
+            if (!$row) return false;
+            if (!empty($row['temporary_attachment_id'])) {
+                // Removal is called while holding the row lock. This second
+                // nonblocking lifecycle lock matches cleanup's lock discipline;
+                // on contention we fail closed and let the manager retry.
+                $media_claim = self::acquire_media_reference_lock();
+                if (!$media_claim) return false;
+                try {
+                    $deadline = current_datetime()->modify('+72 hours')->format('Y-m-d H:i:s');
+                    $existing = (string) ($row['cleanup_after'] ?? '');
+                    if ($existing !== '' && $existing > $deadline) $deadline = $existing;
+                    $cleanup_deadline = $deadline;
+                } catch (\Throwable $error) {
+                    self::release_publish_lock($media_claim);
+                    return false;
+                }
+            }
+        }
         $values = [
             'status' => sanitize_key($status),
             'last_error' => $error !== '' ? sanitize_textarea_field($error) : null,
             'updated_at' => current_time('mysql'),
         ];
+        if ($cleanup_deadline !== null) $values['cleanup_after'] = $cleanup_deadline;
         if ($facebook_id !== '') $values['facebook_post_id'] = sanitize_text_field($facebook_id);
         if ($instagram_id !== '') $values['instagram_media_id'] = sanitize_text_field($instagram_id);
         if ($status !== 'publishing') {
             $values['publish_attempt_token'] = null;
             $values['publish_worker_token'] = null;
+        }
+        if (isset($values['cleanup_after'])) {
+            try { return self::save_publish_values($id, $values, $claim, $media_claim); }
+            finally { self::release_publish_lock($media_claim); }
         }
         return self::save_publish_values($id, $values, $claim);
     }

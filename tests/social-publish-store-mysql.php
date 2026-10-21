@@ -26,7 +26,7 @@ final class PublishFixtureConnectionReadFailure {
 function roxy_publish_fixture_check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS: $label\n";}
 try {
     if($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($table))))throw new RuntimeException('Randomized fixture table already exists; refusing to reuse it');
-    if(false===$wpdb->query("CREATE TABLE `$table` (id BIGINT PRIMARY KEY, status VARCHAR(24), last_error TEXT NULL, updated_at DATETIME, facebook_post_id VARCHAR(190) NULL, instagram_media_id VARCHAR(190) NULL, instagram_container_id VARCHAR(190) NULL, publish_attempt_token CHAR(36) NULL, publish_worker_token CHAR(36) NULL) ENGINE=InnoDB"))throw new RuntimeException('Private fixture table creation failed');
+    if(false===$wpdb->query("CREATE TABLE `$table` (id BIGINT PRIMARY KEY, status VARCHAR(24), last_error TEXT NULL, updated_at DATETIME, facebook_post_id VARCHAR(190) NULL, instagram_media_id VARCHAR(190) NULL, instagram_container_id VARCHAR(190) NULL, temporary_attachment_id BIGINT NULL, cleanup_after DATETIME NULL, publish_attempt_token CHAR(36) NULL, publish_worker_token CHAR(36) NULL) ENGINE=InnoDB"))throw new RuntimeException('Private fixture table creation failed');
     $wpdb->prefix=$fixture_prefix;
     $wpdb->insert($table,['id'=>1,'status'=>'approved','updated_at'=>current_time('mysql')]);
     roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::compare_publish_status(1,'approved','publishing'),'atomic status claim wins once');
@@ -34,6 +34,13 @@ try {
     $wpdb->insert($table,['id'=>2,'status'=>'needs_review','last_error'=>'previous ambiguous result','updated_at'=>current_time('mysql')]);
     roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::compare_publish_status(2,'needs_review','approved')
         &&\RoxySocial\PublishFixtureStore::find(2)['last_error']===null,'explicit reviewed approval atomically clears the stale ambiguity marker');
+    $wpdb->insert($table,['id'=>5,'status'=>'needs_review','updated_at'=>current_time('mysql'),'temporary_attachment_id'=>88,'cleanup_after'=>null]);
+    $removed_claim=\RoxySocial\PublishFixtureStore::acquire_publish_lock(5);
+    $removed_saved=$removed_claim&&\RoxySocial\PublishFixtureStore::update_publish_result(5,'removed','','','',$removed_claim);
+    $removed_row=\RoxySocial\PublishFixtureStore::find(5);
+    roxy_publish_fixture_check($removed_saved&&$removed_row['status']==='removed'&&$removed_row['cleanup_after']>=current_datetime()->modify('+71 hours')->format('Y-m-d H:i:s')
+        &&(int)$removed_row['temporary_attachment_id']===88,'confirmed removal durably schedules owned media cleanup after the grace period');
+    if($removed_claim)\RoxySocial\PublishFixtureStore::release_publish_lock($removed_claim);
     $claim=\RoxySocial\PublishFixtureStore::acquire_publish_lock(1);
     roxy_publish_fixture_check($claim&&\RoxySocial\PublishFixtureStore::owns_publish_lock($claim),'actual connection owns named worker lock');
     roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::update_publish_result(1,'publishing','','123','',$claim),'owned guarded SQL durably persists ID');
