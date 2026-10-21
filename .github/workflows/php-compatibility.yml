@@ -593,7 +593,7 @@ jobs:
           coverage: none
 
       - name: Set up Node.js for JavaScript syntax regressions
-        if: matrix.php == '8.3'
+        if: matrix.php == '8.3' || matrix.php == '8.5'
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -619,6 +619,14 @@ jobs:
       - name: Run Door Mode JavaScript regression
         if: matrix.php == '8.3'
         run: node tests/member-door-js-regression.cjs "$GITHUB_WORKSPACE"
+
+      - name: Run Event Booking asset regression
+        if: matrix.php == '8.3' || matrix.php == '8.5'
+        run: node tests/booking-assets-regression.cjs "$GITHUB_WORKSPACE"
+
+      - name: Run Social picker safety regression
+        if: matrix.php == '8.3' || matrix.php == '8.5'
+        run: node tests/social-picker-regression.cjs "$GITHUB_WORKSPACE"
 
       - name: Inventory order-review cost UI regression
         run: node tests/inventory-cost-review-ui-regression.cjs "$GITHUB_WORKSPACE"
