@@ -4,7 +4,7 @@ if (!defined('ABSPATH')) exit;
 
 class Admin {
     public static function init(): void {
-        add_action('admin_menu', [__CLASS__, 'menu'], 11); add_action('admin_post_roxy_inventory_pull', [__CLASS__, 'pull']); add_action('admin_post_roxy_inventory_save_product', [__CLASS__, 'save_product']); add_action('admin_post_roxy_inventory_bulk_save', [__CLASS__, 'bulk_save']); add_action('admin_post_roxy_inventory_products_bulk_save', [__CLASS__, 'products_bulk_save']); add_action('admin_post_roxy_inventory_save_vendor', [__CLASS__, 'save_vendor']); add_action('admin_post_roxy_inventory_send_draft', [__CLASS__, 'send_draft']); add_action('admin_post_roxy_inventory_order_decision', [__CLASS__, 'order_decision']); add_action('admin_post_nopriv_roxy_inventory_order_decision', [__CLASS__, 'order_decision']); add_action('admin_post_roxy_inventory_save_order_items', [__CLASS__, 'save_order_items']); add_action('admin_post_roxy_inventory_cancel_order', [__CLASS__, 'cancel_order']); add_action('admin_post_roxy_inventory_reconcile_email_send', [__CLASS__, 'reconcile_email_send']); add_action('admin_post_roxy_inventory_save_settings', [__CLASS__, 'save_settings']);
+        add_action('admin_menu', [__CLASS__, 'menu'], 11); add_action('admin_post_roxy_inventory_pull', [__CLASS__, 'pull']); add_action('admin_post_roxy_inventory_save_product', [__CLASS__, 'save_product']); add_action('admin_post_roxy_inventory_bulk_save', [__CLASS__, 'bulk_save']); add_action('admin_post_roxy_inventory_products_bulk_save', [__CLASS__, 'products_bulk_save']); add_action('admin_post_roxy_inventory_save_vendor', [__CLASS__, 'save_vendor']); add_action('admin_post_roxy_inventory_send_draft', [__CLASS__, 'send_draft']); add_action('admin_post_roxy_inventory_order_decision', [__CLASS__, 'order_decision']); add_action('admin_post_nopriv_roxy_inventory_order_decision', [__CLASS__, 'order_decision']); add_action('admin_post_roxy_inventory_save_order_items', [__CLASS__, 'save_order_items']); add_action('admin_post_roxy_inventory_cancel_order', [__CLASS__, 'cancel_order']); add_action('admin_post_roxy_inventory_resolve_receipt_review', [__CLASS__, 'resolve_receipt_review']); add_action('admin_post_roxy_inventory_reconcile_email_send', [__CLASS__, 'reconcile_email_send']); add_action('admin_post_roxy_inventory_save_settings', [__CLASS__, 'save_settings']);
     }
     public static function menu(): void { if (roxy_suite_module_enabled('inventory')) add_submenu_page('roxy-suite','Inventory','Inventory',roxy_suite_admin_capability(),'roxy-inventory',[__CLASS__,'page']); }
     private static function guard(): void { if (!roxy_suite_user_can_access_admin()) wp_die('You do not have permission to access Inventory.'); }
@@ -152,6 +152,7 @@ JS;
             }
         }
         if ((string) $selected['status'] === 'pending_manager') echo '<div class="notice notice-warning inline"><p>Email delivery for this submission may be unconfirmed. Check the manager/vendor inbox before retrying; cancel only if the order was not placed.</p></div>';
+        $receipt_reviews = [];
         echo '<p>Check each item as you add it to the vendor cart, then save your progress.</p>';
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">' . wp_nonce_field('roxy_inventory_save_order_items', '_wpnonce', true, false);
         echo '<input type="hidden" name="action" value="roxy_inventory_save_order_items"><input type="hidden" name="order_id" value="' . esc_attr((int) $selected['id']) . '">';
@@ -163,7 +164,17 @@ JS;
             $checked = !empty($line['added_to_cart']);
             if (!empty($line['square_receipt_event_id'])) echo '<tr><td colspan="6"><small>Square recorded a receipt of '.esc_html((string)($line['square_receipt_quantity']??'')).' units for '.esc_html((string)($line['product']??'')).' at '.esc_html((string)($line['square_receipt_created_at']??$line['stock_increase_detected_at']??'')).'. This receipt released the vendor for a new order; it does not confirm the whole order arrived.</small></td></tr>';
             elseif (!empty($line['stock_increase_detected_at'])) echo '<tr><td colspan="6"><small>Legacy stock increase observed for '.esc_html((string)($line['product']??'')).': '.esc_html((string)($line['stock_increase_from']??'')).' → '.esc_html((string)($line['stock_increase_to']??'')).' at '.esc_html((string)$line['stock_increase_detected_at']).'. This unlocks reordering; it does not confirm the whole order arrived.</small></td></tr>';
-            if (!empty($line['square_receipt_review_event_id'])) echo '<tr><td colspan="6"><small><strong>Receipt needs review:</strong> Square receipt '.esc_html((string)$line['square_receipt_review_event_id']).' on '.esc_html((string)($line['square_receipt_review_created_at']??'')).' matches more than one open vendor order for '.esc_html((string)($line['product']??'')).'. No matching order was reset. Resolve the duplicate order, then pull inventory again.</small></td></tr>';
+            if (!empty($line['square_receipt_review_event_id'])) {
+                $review_event_id=(string)$line['square_receipt_review_event_id'];
+                $review_variation=(string)($line['square_variation_id']??'');
+                $resolved_order=absint($line['square_receipt_review_resolved_order_id']??0);
+                if ($resolved_order > 0 && $resolved_order !== (int)$selected['id']) {
+                    echo '<tr><td colspan="6"><small><strong>Receipt assigned:</strong> Square receipt '.esc_html($review_event_id).' was manually attributed to order #'.esc_html((string)$resolved_order).'. This order was not reset by that receipt.</small></td></tr>';
+                } else {
+                    echo '<tr><td colspan="6"><small><strong>Receipt needs review:</strong> Square receipt '.esc_html($review_event_id).' on '.esc_html((string)($line['square_receipt_review_created_at']??'')).' matched multiple vendor orders for '.esc_html((string)($line['product']??'')).'. Cancelling another order does not identify which one received the stock; no order is reset automatically.</small></td></tr>';
+                    if ($review_variation !== '' && (string)$selected['status'] === 'ordered') $receipt_reviews[$review_variation.'|'.$review_event_id]=['variation_id'=>$review_variation,'event_id'=>$review_event_id,'product'=>(string)($line['product']??'')];
+                }
+            }
             if (!empty($line['cart_progress_at'])) echo '<tr><td colspan="6"><small>Cart progress last changed at '.esc_html((string)$line['cart_progress_at']).' by user #'.esc_html((string)($line['cart_progress_by']??'')).'.</small></td></tr>';
             $cost_known = self::cost_is_known($line);
             $cost_label = ($line['unit_cost_status'] ?? '') === 'free' ? 'Free' : ($cost_known ? '$' . number_format($unit_cost,2) . ' (' . ucfirst((string)($line['unit_cost_status'] ?? 'estimate')) . ')' : 'Unknown');
@@ -172,6 +183,13 @@ JS;
         }
         $selected_total_label = $selected_estimate['incomplete'] ? 'Incomplete — $' . number_format($selected_estimate['known_total'],2) . ' known' : '$' . number_format((float) $selected['estimated_total'],2);
         echo '</tbody><tfoot><tr><th colspan="5">Estimated total</th><th>' . esc_html($selected_total_label) . '</th></tr></tfoot></table><p>' . get_submit_button('Save cart progress', 'primary', 'submit', false) . ' <a class="button" href="' . esc_url(self::url('history')) . '">Close itemized view</a></p></form>';
+        if ($receipt_reviews && (string)$selected['status'] === 'ordered') {
+            echo '<h3>Resolve Square receipt</h3><p>Use this only after confirming this vendor received the product. The selection is recorded in order history and releases this vendor for reordering; other matching orders will remain blocked for this receipt.</p>';
+            foreach ($receipt_reviews as $review) {
+                echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin:8px 0" onsubmit="return confirm(\'Confirm this Square receipt belongs to this order? This will mark the order as stock increased.\');">' . wp_nonce_field('roxy_inventory_resolve_receipt_review','_wpnonce',true,false);
+                echo '<input type="hidden" name="action" value="roxy_inventory_resolve_receipt_review"><input type="hidden" name="order_id" value="' . esc_attr((int)$selected['id']) . '"><input type="hidden" name="variation_id" value="' . esc_attr($review['variation_id']) . '"><input type="hidden" name="receipt_event_id" value="' . esc_attr($review['event_id']) . '">' . get_submit_button('Assign receipt to this order — ' . $review['product'], 'secondary', 'submit', false) . '</form>';
+            }
+        }
         if (in_array((string) $selected['status'], ['pending_manager','approval_emailed','ordered'], true)) echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:8px" onsubmit="return confirm(\'Cancel this order and release the vendor for a new order?\');">' . wp_nonce_field('roxy_inventory_cancel_order','_wpnonce',true,false) . '<input type="hidden" name="action" value="roxy_inventory_cancel_order"><input type="hidden" name="order_id" value="' . esc_attr((int) $selected['id']) . '">' . get_submit_button('Cancel Order', 'secondary', 'submit', false) . '</form>';
     }
     private static function qty(array $p): float { if(($p['tracking_status']??'tracked')!=='tracked') return 0; $override = $p['override_qty'] === null || $p['override_qty']==='' ? null : (float)$p['override_qty']; if ($override !== null) return max(0,$override); $need=max(0,(float)$p['target_stock']-(float)$p['on_hand']); if ($need <= 0 || (float)$p['on_hand'] > (float)$p['reorder_point']) return 0; $pack=max(1,(float)$p['pack_size']); return ceil($need/$pack)*$pack; }
@@ -522,6 +540,22 @@ JS;
             self::redirect('history', 'Order #' . $order_id . ' was cancelled, but the activity log could not be saved. Do not repeat this action.', false, $order_id);
         }
         self::redirect('history', 'Order cancelled and vendor unlocked.', true, $order_id);
+    }
+    public static function resolve_receipt_review(): void {
+        self::guard();
+        check_admin_referer('roxy_inventory_resolve_receipt_review');
+        $order_id=absint($_POST['order_id']??0);
+        $variation_id=sanitize_text_field(wp_unslash($_POST['variation_id']??''));
+        $event_id=sanitize_text_field(wp_unslash($_POST['receipt_event_id']??''));
+        $order=Store::order($order_id);
+        if (!$order || (string)($order['status']??'')!=='ordered') self::redirect('history','This order is no longer awaiting receipt review.',false,$order_id);
+        try { $resolved=Store::resolve_receipt_review($order_id,$variation_id,$event_id,get_current_user_id(),current_time('mysql')); }
+        catch (\Throwable $error) { $resolved=false; }
+        if (!$resolved) self::redirect('history','Receipt attribution could not be verified or the order changed. Refresh Order History before retrying.',false,$order_id);
+        if (!Store::log('receipt_attribution','success','Square receipt '. $event_id .' for variation '. $variation_id .' was assigned to order #'. $order_id .' by user #'.get_current_user_id().'. Vendor released for reordering.')) {
+            self::redirect('history','Receipt was assigned to order #'.$order_id.', but its audit log could not be saved. Do not repeat this action.',false,$order_id);
+        }
+        self::redirect('history','Square receipt assigned to order #'.$order_id.'. Vendor released for reordering.',true,$order_id);
     }
     public static function email_send_is_stale(array $order): bool {
         if ((string) ($order['status'] ?? '') !== 'email_sending' || empty($order['created_at']) || !function_exists('wp_timezone')) return false;

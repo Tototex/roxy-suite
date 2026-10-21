@@ -268,6 +268,12 @@ eval($vendor_map_code);
             'submission_key' => null, 'created_at' => '2026-01-02 00:00:00',
         ]) !== 1) throw new RuntimeException('Could not seed second private ordered-product fixture.');
         $second_order_id = (int)$wpdb->insert_id;
+        if ($wpdb->insert($tables['orders'], [
+            'vendor' => 'Third Fixture Vendor', 'status' => 'ordered', 'estimated_total' => 18,
+            'minimum_amount' => 0, 'item_count' => 1, 'payload' => wp_json_encode([$order_line]),
+            'submission_key' => null, 'created_at' => '2026-01-03 00:00:00',
+        ]) !== 1) throw new RuntimeException('Could not seed third private ordered-product fixture.');
+        $third_order_id = (int)$wpdb->insert_id;
         $request_count = count($http_requests);
         $pulled = \RoxyInventorySyncFixture\Square::pull();
         $check(isset($pulled['sync-v'], $pulled['new-v']) && $pulled['sync-v']['on_hand'] === 9.0 && $pulled['new-v']['on_hand'] === 2.0,
@@ -289,7 +295,8 @@ eval($vendor_map_code);
             'successful retry deactivates only the missing Square product without erasing its prior stock');
         $order = $wpdb->get_row('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=1', ARRAY_A);
         $second_order = $wpdb->get_row($wpdb->prepare('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=%d', $second_order_id), ARRAY_A);
-        $check($order['status'] === 'ordered' && $second_order['status'] === 'ordered',
+        $third_order = $wpdb->get_row($wpdb->prepare('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=%d', $third_order_id), ARRAY_A);
+        $check($order['status'] === 'ordered' && $second_order['status'] === 'ordered' && $third_order['status'] === 'ordered',
             'one receipt qualifying for two distinct vendor orders releases neither, despite duplicate matching lines in the first order');
         $first_lines = json_decode((string)$order['payload'], true);
         $check(count($first_lines) === 2 && (float)($first_lines[0]['last_observed_on_hand'] ?? -1) === 9.0
@@ -308,12 +315,41 @@ eval($vendor_map_code);
             'persisted ambiguous receipt is reconciled after cancellation even when Square returns no new events');
         $order = $wpdb->get_row('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=1', ARRAY_A);
         $second_order = $wpdb->get_row($wpdb->prepare('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=%d', $second_order_id), ARRAY_A);
-        $check($order['status'] === 'stock_increased' && $second_order['status'] === 'cancelled',
-            'after one order is cancelled, the same receipt releases only the remaining matching order');
+        $third_order = $wpdb->get_row($wpdb->prepare('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=%d', $third_order_id), ARRAY_A);
+        $order_lines = json_decode((string)$order['payload'], true);
+        $third_lines = json_decode((string)$third_order['payload'], true);
+        $check($order['status'] === 'ordered' && $third_order['status'] === 'ordered' && $second_order['status'] === 'cancelled'
+            && ($order_lines[0]['square_receipt_review_event_id'] ?? '') === 'fixture-receipt'
+            && in_array($second_order_id,(array)($order_lines[0]['square_receipt_review_cancelled_order_ids']??[]),true)
+            && ($third_lines[0]['square_receipt_review_event_id'] ?? '') === 'fixture-receipt'
+            && in_array($second_order_id,(array)($third_lines[0]['square_receipt_review_cancelled_order_ids']??[]),true),
+            'cancelling one matching order persists ambiguity on every remaining open order instead of attributing the receipt');
+        $check(!\RoxyInventorySyncFixture\Store::resolve_receipt_review(1,'sync-v','wrong-receipt',77,'2026-02-01 13:00:00')
+            && $wpdb->get_var('SELECT status FROM `' . $tables['orders'] . '` WHERE id=1') === 'ordered',
+            'manager receipt resolution rejects an event not present on the selected order without changing its state');
+        $check(\RoxyInventorySyncFixture\Store::resolve_receipt_review(1,'sync-v','fixture-receipt',77,'2026-02-01 13:00:00'),
+            'authorized manager resolution explicitly attributes the ambiguous receipt to the chosen order');
+        $order = $wpdb->get_row('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=1', ARRAY_A);
+        $second_order = $wpdb->get_row($wpdb->prepare('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=%d', $second_order_id), ARRAY_A);
+        $third_order = $wpdb->get_row($wpdb->prepare('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=%d', $third_order_id), ARRAY_A);
+        $second_lines = json_decode((string)$second_order['payload'], true);
+        $third_lines = json_decode((string)$third_order['payload'], true);
+        $check($order['status'] === 'stock_increased' && $third_order['status'] === 'ordered' && $second_order['status'] === 'cancelled'
+            && ($third_lines[0]['square_receipt_review_resolved_event_id'] ?? '') === 'fixture-receipt'
+            && (int)($third_lines[0]['square_receipt_review_resolved_order_id'] ?? 0) === 1
+            && ($second_lines[0]['square_receipt_review_resolved_event_id'] ?? '') === 'fixture-receipt'
+            && (int)($second_lines[0]['square_receipt_review_resolved_order_id'] ?? 0) === 1
+            && (int)($second_lines[0]['square_receipt_review_resolved_by'] ?? 0) === 77,
+            'manual resolution releases only the selected order and records the decision on the related order');
         $check(\RoxyInventorySyncFixture\Square::pull() !== [], 'subsequent pull completes after the receipt reconciliation');
         $second_after_retry = $wpdb->get_row($wpdb->prepare('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=%d', $second_order_id), ARRAY_A);
-        $check($second_after_retry['status'] === 'cancelled' && (string)$second_after_retry['payload'] === $second_payload_before_cancel,
-            'later repeated receipt history never reopens or rewrites the cancelled order');
+        $third_after_retry = $wpdb->get_row($wpdb->prepare('SELECT status,payload FROM `' . $tables['orders'] . '` WHERE id=%d', $third_order_id), ARRAY_A);
+        $check($second_after_retry['status'] === 'cancelled'
+            && (string)$second_after_retry['payload'] !== $second_payload_before_cancel
+            && (int)(json_decode((string)$second_after_retry['payload'],true)[0]['square_receipt_review_resolved_order_id']??0) === 1
+            && $third_after_retry['status'] === 'ordered'
+            && (int)(json_decode((string)$third_after_retry['payload'],true)[0]['square_receipt_review_resolved_order_id']??0) === 1,
+            'later repeated receipt history preserves manager attribution and does not release another matching open order');
         $order_lines = json_decode((string)$order['payload'], true);
         $check($order['status'] === 'stock_increased'
             && ($order_lines[0]['square_receipt_event_id'] ?? '') === 'fixture-receipt'

@@ -381,8 +381,53 @@ class Store {
         ];
         $order = self::order($id);
         if (!$order || !in_array($status, $allowed[$order['status']] ?? [], true)) return false;
+        if ($status === 'cancelled' && (string) $order['status'] === 'ordered') self::preserve_cancelled_receipt_reviews($order);
         return $wpdb->update(self::orders_table(), ['status' => $status], ['id' => $id, 'status' => $order['status']]) === 1;
         });
+    }
+
+    /** Keep ambiguous Square receipt evidence on remaining orders when one matching order is cancelled. */
+    private static function preserve_cancelled_receipt_reviews(array $cancelled_order): void {
+        global $wpdb;
+        $cancelled_id = (int) ($cancelled_order['id'] ?? 0);
+        $cancelled_lines = json_decode((string) ($cancelled_order['payload'] ?? ''), true);
+        if ($cancelled_id <= 0 || !is_array($cancelled_lines)) return;
+        $reviews = [];
+        foreach ($cancelled_lines as $line) {
+            if (!is_array($line)) continue;
+            $variation = (string) ($line['square_variation_id'] ?? '');
+            $event_id = (string) ($line['square_receipt_review_event_id'] ?? '');
+            if ($variation !== '' && $event_id !== '' && is_array($line['square_receipt_review'] ?? null)) $reviews[$variation][$event_id] = true;
+        }
+        if (!$reviews) return;
+        $open_orders = self::rows($wpdb->prepare("SELECT id,payload FROM " . self::orders_table() . " WHERE status='ordered' AND id<>%d ORDER BY id", $cancelled_id));
+        foreach ($open_orders as $candidate) {
+            $lines = json_decode((string) ($candidate['payload'] ?? ''), true);
+            if (!is_array($lines)) continue;
+            $changed = false;
+            foreach ($lines as &$line) {
+                if (!is_array($line)) continue;
+                $variation = (string) ($line['square_variation_id'] ?? '');
+                $event_id = (string) ($line['square_receipt_review_event_id'] ?? '');
+                if (empty($reviews[$variation][$event_id]) || !is_array($line['square_receipt_review'] ?? null)) continue;
+                $cancelled_ids = array_values(array_unique(array_filter(array_map('absint', (array) ($line['square_receipt_review_cancelled_order_ids'] ?? [])))));
+                if (!in_array($cancelled_id, $cancelled_ids, true)) {
+                    $cancelled_ids[] = $cancelled_id;
+                    sort($cancelled_ids, SORT_NUMERIC);
+                    $line['square_receipt_review_cancelled_order_ids'] = $cancelled_ids;
+                    $changed = true;
+                }
+            }
+            unset($line);
+            if (!$changed) continue;
+            $payload = wp_json_encode(array_values($lines));
+            if (!is_string($payload) || $payload === '') throw new \RuntimeException('Could not encode the remaining order receipt review while cancelling.');
+            $updated = $wpdb->update(self::orders_table(), ['payload' => $payload], [
+                'id' => (int) $candidate['id'], 'status' => 'ordered', 'payload' => (string) $candidate['payload'],
+            ]);
+            self::checked_write($updated);
+            if ($updated !== 1) throw new \RuntimeException('Could not preserve ambiguous Square receipt evidence while cancelling the order.');
+        }
     }
 
     public static function update_order_payload(int $id, array $lines, ?string $expected_payload = null): bool {
@@ -393,6 +438,101 @@ class Store {
             $payload=wp_json_encode(array_values($lines));
             if ($payload === (string)$order['payload']) return true;
             return $wpdb->update(self::orders_table(), ['payload'=>$payload], ['id'=>$id,'payload'=>(string)$order['payload']]) === 1;
+        });
+    }
+    /** Explicitly attribute an ambiguous Square receipt to an authorized manager-selected order. */
+    public static function resolve_receipt_review(int $order_id, string $variation_id, string $receipt_event_id, int $user_id, string $resolved_at): bool {
+        global $wpdb;
+        if ($order_id <= 0 || $variation_id === '' || $receipt_event_id === '' || $user_id <= 0 || $resolved_at === '') return false;
+        return self::transaction(static function () use ($wpdb, $order_id, $variation_id, $receipt_event_id, $user_id, $resolved_at): bool {
+            $orders = self::rows("SELECT id,status,payload,created_at FROM " . self::orders_table() . " WHERE status IN ('ordered','cancelled') ORDER BY id");
+            $selected = null;
+            $selected_lines = null;
+            foreach ($orders as $candidate) {
+                if ((int) ($candidate['id'] ?? 0) !== $order_id || (string) ($candidate['status'] ?? '') !== 'ordered') continue;
+                $lines = json_decode((string) ($candidate['payload'] ?? ''), true);
+                if (!is_array($lines)) return false;
+                try { $created_ts = (new \DateTimeImmutable((string) ($candidate['created_at'] ?? ''), wp_timezone()))->getTimestamp(); }
+                catch (\Throwable $error) { return false; }
+                $matched = false;
+                foreach ($lines as $line) {
+                    if (!is_array($line) || (string) ($line['square_variation_id'] ?? '') !== $variation_id
+                        || (string) ($line['square_receipt_review_event_id'] ?? '') !== $receipt_event_id
+                        || !is_array($line['square_receipt_review'] ?? null)
+                        || (string) ($line['square_receipt_review']['id'] ?? '') !== $receipt_event_id
+                        || ((string) ($line['square_receipt_review_resolved_event_id'] ?? '') === $receipt_event_id
+                            && absint($line['square_receipt_review_resolved_order_id'] ?? 0) !== $order_id)
+                        || !self::receipt_qualifies_for_order($line['square_receipt_review'], $created_ts)) continue;
+                    $matched = true;
+                }
+                if (!$matched) return false;
+                $selected = $candidate;
+                $selected_lines = $lines;
+                break;
+            }
+            if (!is_array($selected) || !is_array($selected_lines)) return false;
+
+            $selected_changed = false;
+            foreach ($selected_lines as &$line) {
+                if (!is_array($line) || (string) ($line['square_variation_id'] ?? '') !== $variation_id
+                    || (string) ($line['square_receipt_review_event_id'] ?? '') !== $receipt_event_id
+                    || !is_array($line['square_receipt_review'] ?? null)
+                    || (string) ($line['square_receipt_review']['id'] ?? '') !== $receipt_event_id) continue;
+                $receipt = $line['square_receipt_review'];
+                $line['stock_increase_detected_at'] = (string) $receipt['created_at'];
+                $line['stock_increase_from'] = (float) ($line['square_receipt_review_stock_from'] ?? $line['last_observed_on_hand'] ?? 0);
+                $line['stock_increase_to'] = (float) ($line['square_receipt_review_stock_to'] ?? $line['last_observed_on_hand'] ?? 0);
+                $line['square_receipt_event_id'] = $receipt_event_id;
+                $line['square_receipt_quantity'] = (float) $receipt['quantity'];
+                $line['square_receipt_created_at'] = (string) $receipt['created_at'];
+                $line['square_receipt_occurred_at'] = (string) $receipt['occurred_at'];
+                $line['square_receipt_reason'] = 'RECEIVED';
+                $line['square_receipt_review_resolved_event_id'] = $receipt_event_id;
+                $line['square_receipt_review_resolved_order_id'] = $order_id;
+                $line['square_receipt_review_resolved_by'] = $user_id;
+                $line['square_receipt_review_resolved_at'] = $resolved_at;
+                unset($line['square_receipt_review'], $line['square_receipt_review_event_id'], $line['square_receipt_review_created_at'], $line['square_receipt_review_stock_from'], $line['square_receipt_review_stock_to']);
+                $selected_changed = true;
+            }
+            unset($line);
+            if (!$selected_changed) return false;
+            $selected_payload = wp_json_encode(array_values($selected_lines));
+            if (!is_string($selected_payload) || $selected_payload === '') throw new \RuntimeException('Could not encode the selected receipt attribution.');
+            $updated = $wpdb->update(self::orders_table(), ['payload' => $selected_payload, 'status' => 'stock_increased'], [
+                'id' => $order_id, 'status' => 'ordered', 'payload' => (string) $selected['payload'],
+            ]);
+            self::checked_write($updated);
+            if ($updated !== 1) return false;
+
+            // Preserve the attribution decision on every other copy of the
+            // ambiguous event. A future pull must not assign it to another
+            // still-open order merely because this selected order is now closed.
+            foreach ($orders as $candidate) {
+                if ((int) ($candidate['id'] ?? 0) === $order_id) continue;
+                $lines = json_decode((string) ($candidate['payload'] ?? ''), true);
+                if (!is_array($lines)) continue;
+                $changed = false;
+                foreach ($lines as &$line) {
+                    if (!is_array($line) || (string) ($line['square_variation_id'] ?? '') !== $variation_id
+                        || (string) ($line['square_receipt_review_event_id'] ?? '') !== $receipt_event_id
+                        || !is_array($line['square_receipt_review'] ?? null)) continue;
+                    $line['square_receipt_review_resolved_event_id'] = $receipt_event_id;
+                    $line['square_receipt_review_resolved_order_id'] = $order_id;
+                    $line['square_receipt_review_resolved_by'] = $user_id;
+                    $line['square_receipt_review_resolved_at'] = $resolved_at;
+                    $changed = true;
+                }
+                unset($line);
+                if (!$changed) continue;
+                $payload = wp_json_encode(array_values($lines));
+                if (!is_string($payload) || $payload === '') throw new \RuntimeException('Could not encode the related receipt attribution.');
+                $result = $wpdb->update(self::orders_table(), ['payload' => $payload], [
+                    'id' => (int) $candidate['id'], 'status' => (string) $candidate['status'], 'payload' => (string) $candidate['payload'],
+                ]);
+                self::checked_write($result);
+                if ($result !== 1) throw new \RuntimeException('Could not preserve the manager receipt attribution across related orders.');
+            }
+            return true;
         });
     }
     public static function open_order_for_vendor(string $vendor): ?array {
@@ -428,7 +568,7 @@ class Store {
             if (array_key_exists($name_key,$by_name)) $by_name[$name_key]=null; // Ambiguous names cannot establish receipt identity.
             else $by_name[$name_key] = ['square_variation_id' => (string) $product['square_variation_id'], 'on_hand' => (float) $product['on_hand']];
         }
-        $orders = self::rows("SELECT id,payload,created_at FROM " . self::orders_table() . " WHERE status='ordered'");
+        $orders = self::rows("SELECT id,status,payload,created_at FROM " . self::orders_table() . " WHERE status='ordered'");
         // A single Square receipt cannot safely establish which of multiple
         // outstanding vendor orders for the same variation it belongs to.
         // Count distinct orders (not matching payload lines) and defer all
@@ -448,14 +588,23 @@ class Store {
                 }
                 $candidate_receipt=$receipt_events[$candidate_variation]??null;
                 if (!is_array($candidate_receipt) && is_array($candidate_line['square_receipt_review']??null)) $candidate_receipt=$candidate_line['square_receipt_review'];
+                $candidate_event_id = is_array($candidate_receipt) ? (string) ($candidate_receipt['id'] ?? '') : '';
+                if ($candidate_event_id !== '' && (string) ($candidate_line['square_receipt_review_resolved_event_id'] ?? '') === $candidate_event_id
+                    && absint($candidate_line['square_receipt_review_resolved_order_id'] ?? 0) !== (int) $candidate['id']) continue;
                 if ($candidate_variation!=='' && is_array($candidate_receipt)
                     && self::receipt_qualifies_for_order($candidate_receipt,$candidate_created_ts)) {
-                    $receipt_order_ids[$candidate_variation][(string)$candidate['id']]=true;
+                    $receipt_order_ids[$candidate_variation][$candidate_event_id][(string)$candidate['id']]=true;
+                    foreach ((array) ($candidate_line['square_receipt_review_cancelled_order_ids'] ?? []) as $cancelled_order_id) {
+                        $cancelled_order_id = absint($cancelled_order_id);
+                        if ($cancelled_order_id > 0 && $cancelled_order_id !== (int) $candidate['id']) $receipt_order_ids[$candidate_variation][$candidate_event_id][(string)$cancelled_order_id]=true;
+                    }
                 }
             }
         }
         $ambiguous_receipts=[];
-        foreach ($receipt_order_ids as $variation_id=>$order_ids) if (count($order_ids)>1) $ambiguous_receipts[$variation_id]=true;
+        foreach ($receipt_order_ids as $variation_id=>$events) foreach ($events as $event_id=>$order_ids) {
+            if ($event_id !== '' && count($order_ids)>1) $ambiguous_receipts[$variation_id][$event_id]=true;
+        }
         $marked = 0;
         foreach ($orders as $order) {
             $lines = json_decode((string) ($order['payload'] ?? ''), true);
@@ -480,7 +629,11 @@ class Store {
                     if (!is_array($receipt) && is_array($line['square_receipt_review']??null)) $receipt=$line['square_receipt_review'];
                     $receipt_created_at = is_array($receipt) ? ($receipt['created_at'] ?? null) : null;
                     $receipt_occurred_at = is_array($receipt) ? ($receipt['occurred_at'] ?? null) : null;
-                    if (is_array($receipt) && empty($ambiguous_receipts[$variation_id])
+                    $receipt_event_id = is_array($receipt) ? (string) ($receipt['id'] ?? '') : '';
+                    $resolved_elsewhere = $receipt_event_id !== ''
+                        && (string) ($line['square_receipt_review_resolved_event_id'] ?? '') === $receipt_event_id
+                        && absint($line['square_receipt_review_resolved_order_id'] ?? 0) !== (int) $order['id'];
+                    if (is_array($receipt) && !$resolved_elsewhere && empty($ambiguous_receipts[$variation_id][$receipt_event_id])
                         && self::receipt_qualifies_for_order($receipt,$order_created_ts)) {
                         $increased = true;
                         $receipt_stock_from = $line['square_receipt_review_stock_from'] ?? $before;
@@ -494,7 +647,7 @@ class Store {
                         $line['square_receipt_created_at'] = $receipt_created_at;
                         $line['square_receipt_occurred_at'] = $receipt_occurred_at;
                         $line['square_receipt_reason'] = 'RECEIVED';
-                    } elseif (is_array($receipt) && !empty($ambiguous_receipts[$variation_id])
+                    } elseif (is_array($receipt) && !$resolved_elsewhere && !empty($ambiguous_receipts[$variation_id][$receipt_event_id])
                         && self::receipt_qualifies_for_order($receipt,$order_created_ts)) {
                         $line['square_receipt_review_event_id'] = (string) $receipt['id'];
                         $line['square_receipt_review_created_at'] = $receipt_created_at;
