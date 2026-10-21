@@ -106,6 +106,24 @@ try {
     && !$forced_composite_index_schema_ready,
     'cached and forced schema checks reject a composite logical-send index before any claim can be written');
 
+  // The cached schema marker must not hide a table engine change that removes
+  // the transaction/durability guarantees relied on by the send ledger.
+  $schema_option_filter = static fn($pre) => '1';
+  add_filter('pre_option_roxy_grosses_email_outbox_schema_version', $schema_option_filter, PHP_INT_MAX);
+  if ($fixture_db->query('ALTER TABLE `' . $table . '` ENGINE=MyISAM') === false) throw new RuntimeException('Could not switch the private outbox table to MyISAM for the engine-integrity fixture.');
+  $nontransactional_schema_ready = $outbox::ensure_schema(false);
+  $nontransactional_claim_blocked = false;
+  try { $outbox::claim('grosses:nontransactional-engine', 'daily_report', 97, '2039-04-04', ['report' => 'fixture'], ['trigger' => 'manual']); }
+  catch (RuntimeException $error) { $nontransactional_claim_blocked = true; }
+  $nontransactional_claim_count = (int) $fixture_db->get_var($fixture_db->prepare("SELECT COUNT(*) FROM `{$table}` WHERE key_hash = %s", hash('sha256', 'grosses:nontransactional-engine')));
+  if ($fixture_db->query('ALTER TABLE `' . $table . '` ENGINE=InnoDB') === false) throw new RuntimeException('Could not restore the private outbox table to InnoDB after the engine-integrity fixture.');
+  $restored_engine_schema_ready = $outbox::ensure_schema(true);
+  remove_filter('pre_option_roxy_grosses_email_outbox_schema_version', $schema_option_filter, PHP_INT_MAX);
+  $schema_option_filter = null;
+  $check(!$nontransactional_schema_ready && $nontransactional_claim_blocked && $nontransactional_claim_count === 0,
+    'cached schema marker rejects a nontransactional outbox engine before any send claim can be written');
+  $check($restored_engine_schema_ready, 'forced verification accepts the restored private InnoDB outbox table');
+
   $logical_key = 'grosses:daily:2039-04-05';
   $unicode_subject = 'Fixture report ' . "\u{2014}" . ' manager ' . "\u{2019}" . ' 🍿';
   $unicode_body = 'Provisional ' . "\u{2014}" . ' “review” — 🎟️';

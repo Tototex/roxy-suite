@@ -125,7 +125,7 @@ final class EmailOutbox {
       if (!is_object($wpdb) || !method_exists($wpdb, 'get_charset_collate') || !method_exists($wpdb, 'query')) return false;
       if (!$force_verify && function_exists('get_option')
         && (string) get_option(self::SCHEMA_OPTION, '') === self::SCHEMA_VERSION) {
-        if (!method_exists($wpdb, 'get_var') || !method_exists($wpdb, 'get_results') || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'esc_like')) return false;
+        if (!method_exists($wpdb, 'get_var') || !method_exists($wpdb, 'get_row') || !method_exists($wpdb, 'get_results') || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'esc_like')) return false;
         $table_name = trim($table, '`');
         $existing_table = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table_name)));
         if (!empty($wpdb->last_error)) throw self::storage_error('cached schema table check');
@@ -133,6 +133,9 @@ final class EmailOutbox {
         // empty after a loss could allow previously sent reports to be sent
         // again, so a stale marker must fail closed for explicit restoration.
         if ($existing_table === $table_name) {
+          $status = $wpdb->get_row($wpdb->prepare('SHOW TABLE STATUS LIKE %s', $wpdb->esc_like($table_name)), ARRAY_A);
+          if ($status === null || $status === false || !empty($wpdb->last_error)) throw self::storage_error('cached schema engine check');
+          if (strcasecmp((string) ($status['Engine'] ?? ''), 'InnoDB') !== 0) return false;
           $indexes = $wpdb->get_results('SHOW INDEX FROM ' . $table, ARRAY_A);
           if (!is_array($indexes) || !empty($wpdb->last_error)) throw self::storage_error('cached schema index check');
           if (self::has_unique_logical_send_index($indexes)) {
