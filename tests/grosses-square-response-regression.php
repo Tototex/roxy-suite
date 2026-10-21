@@ -22,10 +22,22 @@ namespace {
   function reset_fixture($responses){$GLOBALS['responses']=$responses;$GLOBALS['calls']=[];\RoxyGrosses\Settings::$locations='fixture-location';}
   function must_fail($responses,$label){reset_fixture($responses);try{\RoxyGrosses\Square::fetch_orders_for_date('2026-10-03');throw new \LogicException('Failure expected: '.$label);}catch(\RuntimeException $error){check(true,$label);}}
   require ($argv[2]??(($argv[1]??dirname(__DIR__)).'/includes/modules/grosses/includes/class-roxy-grosses-square.php'));
-  foreach ([401=>"Square rejected the saved access token. Reconnect Square in Grosses settings and verify the selected environment.",403=>"Square denied this request. Check the saved token's required permissions in Grosses settings."] as $status=>$expected) {
-    reset_fixture([response(['errors'=>[['detail'=>'provider-specific authorization text']]],$status)]);
+  foreach ([401=>"Square rejected the saved access token. Reconnect Square in Grosses settings and verify the selected environment. (Square error UNAUTHORIZED; HTTP 401)",403=>"Square denied this request. Check the saved token's required permissions in Grosses settings. (Square error INSUFFICIENT_SCOPES; HTTP 403)"] as $status=>$expected) {
+    $provider_code = $status === 401 ? 'UNAUTHORIZED' : 'INSUFFICIENT_SCOPES';
+    reset_fixture([response(['errors'=>[['code'=>$provider_code,'detail'=>'provider-specific authorization text']]],$status)]);
     try { \RoxyGrosses\Square::fetch_orders_for_date('2026-10-03'); throw new \LogicException('Authorization failure expected.'); }
-    catch (\RuntimeException $error) { check($error->getMessage()===$expected && !str_contains($error->getMessage(),'provider-specific'),'HTTP '.$status.' has actionable non-sensitive guidance'); }
+    catch (\RuntimeException $error) { check($error->getMessage()===$expected && !str_contains($error->getMessage(),'provider-specific'),'HTTP '.$status.' has actionable non-sensitive guidance and provider diagnostics'); }
+  }
+  reset_fixture([response(['errors'=>[['code'=>'INVALID_REQUEST_ERROR','detail'=>'This request could not be authorized.']]],400)]);
+  try { \RoxyGrosses\Square::fetch_orders_for_date('2026-10-03'); throw new \LogicException('Provider error expected.'); }
+  catch (\RuntimeException $error) { check($error->getMessage()==='This request could not be authorized. (Square error INVALID_REQUEST_ERROR; HTTP 400)','provider detail includes safe provider code and HTTP status'); }
+  reset_fixture([response(['errors'=>[['code'=>"UNAUTHORIZED\nBearer secret",'detail'=>'Provider failed.']]],400)]);
+  try { \RoxyGrosses\Square::fetch_orders_for_date('2026-10-03'); throw new \LogicException('Malformed provider code expected.'); }
+  catch (\RuntimeException $error) { check($error->getMessage()==='Provider failed. (Square HTTP 400)' && !str_contains($error->getMessage(),'Bearer'),'malformed provider code is excluded from diagnostics'); }
+  foreach ([['status'=>400,'body'=>'not-json'],response(null,400),response(['errors'=>'malformed'],400)] as $malformed_error) {
+    reset_fixture([$malformed_error]);
+    try { \RoxyGrosses\Square::fetch_orders_for_date('2026-10-03'); throw new \LogicException('Malformed error response expected.'); }
+    catch (\RuntimeException $error) { check($error->getMessage()==='Square request failed. (Square HTTP 400)','malformed provider error body retains HTTP status without PHP warnings'); }
   }
   foreach([['status'=>200,'body'=>'broken'],response(null),response([]),response('text'),response(['errors'=>[['detail'=>'failure']]]),response(['orders'=>null]),response(['orders'=>'bad']),response(['orders'=>['bad']]),response(['orders'=>[[]]]),response(['orders'=>['not-list'=>['id'=>'a']]]),response(['order_entries'=>[]]),response(['orders'=>[['id'=>'a']]],429),response(['orders'=>[['id'=>'a']]],500),new FixtureNetworkError('network failure')] as $r)must_fail([$r],'malformed/HTTP/error/incomplete order response cannot become a sales report');
   reset_fixture([['status'=>200,'body'=>'{}']]);check(\RoxyGrosses\Square::fetch_orders_for_date('2026-10-03')===[],'valid empty object remains a legitimate zero-order result');

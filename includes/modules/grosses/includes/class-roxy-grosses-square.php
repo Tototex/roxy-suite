@@ -389,6 +389,10 @@ class Square {
     $data = json_decode($raw, true);
 
     if ($code < 200 || $code >= 300) {
+      $provider_error = [];
+      if (is_array($data) && isset($data['errors'][0]) && is_array($data['errors'][0])) {
+        $provider_error = $data['errors'][0];
+      }
       if ($code === 401) {
         $message = 'Square rejected the saved access token. Reconnect Square in Grosses settings and verify the selected environment.';
       } elseif ($code === 403) {
@@ -396,8 +400,15 @@ class Square {
       } else {
         $message = 'Square request failed.';
       }
-      if ($code !== 401 && $code !== 403 && !empty($data['errors'][0]['detail'])) {
-        $message = (string) $data['errors'][0]['detail'];
+      $provider_detail = $provider_error['detail'] ?? '';
+      if ($code !== 401 && $code !== 403 && is_string($provider_detail) && $provider_detail !== '') {
+        $message = $provider_detail;
+      }
+      $provider_code = $provider_error['code'] ?? '';
+      if (is_string($provider_code) && preg_match('/^[A-Za-z0-9_-]{1,80}$/D', $provider_code)) {
+        $message .= ' (Square error ' . $provider_code . '; HTTP ' . $code . ')';
+      } else {
+        $message .= ' (Square HTTP ' . $code . ')';
       }
       throw new \RuntimeException($message);
     }
