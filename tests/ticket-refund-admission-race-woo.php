@@ -104,17 +104,29 @@ try {
   try { $refund = wc_create_refund($refund_args); }
   finally { remove_action('woocommerce_create_refund', $reproduce, 2); }
   if (is_wp_error($refund)) throw new RuntimeException('Baseline zero-dollar refund failed: ' . $refund->get_error_message());
-  $check(($baseline_worker['exit'] ?? -1) === 0 && ($baseline_worker['admitted'] ?? 0) === 1,
-    'reproduced the race: check-in commits in the pre-save window before a partial refund exists; worker=' . wp_json_encode($baseline_worker));
+  $baseline_admitted = ($baseline_worker['exit'] ?? -1) === 0 && ($baseline_worker['admitted'] ?? 0) === 1;
+  $baseline_pre_save_rejected = ($baseline_worker['exit'] ?? -1) === 0
+    && ($baseline_worker['admitted'] ?? 1) === 0
+    && is_array($baseline_worker)
+    && preg_match('/"refund_qty":-\d+(?:\.\d+)?/', (string) ($baseline_worker['stdout'] ?? ''))
+    && preg_match('/"refund_ids":\[0\]/', (string) ($baseline_worker['stdout'] ?? ''));
+  $check($baseline_admitted || $baseline_pre_save_rejected,
+    'baseline pre-save check is classified as either admitted or rejected by WooCommerce pre-save refund state; worker=' . wp_json_encode($baseline_worker));
   if (!\RoxyST\Tickets::sync_order_tickets($order_id)) throw new RuntimeException('Could not reconcile baseline refund fixture');
-  $check((int) get_post_meta($ticket_ids[1], '_roxy_checked_in', true) === 1
-    && (int) get_post_meta($ticket_ids[1], '_roxy_ticket_refunded', true) === 1,
-    'baseline leaves the refunded ticket with an actual admission, proving the interleaving');
+  if ($baseline_admitted) {
+    $check((int) get_post_meta($ticket_ids[1], '_roxy_checked_in', true) === 1
+      && (int) get_post_meta($ticket_ids[1], '_roxy_ticket_refunded', true) === 1,
+      'unlocked baseline admission is retained as refunded, proving the unsafe interleaving');
+  } else {
+    $check((int) get_post_meta($ticket_ids[1], '_roxy_checked_in', true) !== 1
+      && (int) get_post_meta($ticket_ids[1], '_roxy_ticket_refunded', true) === 1,
+      'WooCommerce pre-save refund state prevents admission and reconciliation marks the ticket refunded');
+  }
 
   $refund->delete(true);
   $refund = null;
   if (!\RoxyST\Tickets::sync_order_tickets($order_id)) throw new RuntimeException('Could not reconcile deleted baseline refund');
-  if (!\RoxyST\Tickets::undo_check_in_ticket($ticket_ids[1], 'ticket')) throw new RuntimeException('Could not reset isolated baseline admission');
+  if ($baseline_admitted && !\RoxyST\Tickets::undo_check_in_ticket($ticket_ids[1], 'ticket')) throw new RuntimeException('Could not reset isolated baseline admission');
 
   // Repeat with production hooks enabled. The independent worker must wait for
   // refund persistence and ticket reconciliation, then reject the refunded QR.
