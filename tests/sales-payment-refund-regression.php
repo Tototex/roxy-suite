@@ -78,7 +78,20 @@ eval('namespace ' . $namespace . ';
     public function update_meta_data(string $key, $value): void { $this->pending_meta[$key]=$value; }
     public function save(): int { if (!empty($GLOBALS["sales_fixture_order_save_failure"])) { $this->pending_meta=[]; return 0; } $this->meta=array_merge($this->meta,$this->pending_meta); $this->pending_meta=[]; return $this->id; }
   }
-  function wc_get_orders(array $args) { $GLOBALS["sales_fixture_query"] = $args; if (!empty($GLOBALS["sales_fixture_query_failure"]) && (empty($GLOBALS["sales_fixture_legacy_failure_only"]) || !isset($args["meta_query"]))) return false; if (!empty($GLOBALS['sales_fixture_drop_refresh_lock'])) { foreach ($GLOBALS['sales_fixture_locks'] as $name=>$owner) if ($owner===$GLOBALS['wpdb']->connection_id) unset($GLOBALS['sales_fixture_locks'][$name]); unset($GLOBALS['sales_fixture_drop_refresh_lock']); } $orders=array_filter($GLOBALS["sales_fixture_orders"] ?? [], static fn($order) => in_array($order->get_status(), $args["status"] ?? [], true)); if (!empty($GLOBALS["sales_fixture_filter_tagged_orders"]) && isset($args["meta_query"][0])) { $meta=$args["meta_query"][0]; $orders=array_filter($orders,static fn($order) => (string)$order->get_meta((string)$meta["key"],true)===(string)$meta["value"]); } return array_keys($orders); }
+  function wc_get_orders(array $args) {
+    $GLOBALS["sales_fixture_query"] = $args;
+    if (!empty($GLOBALS["sales_fixture_query_failure"]) && (empty($GLOBALS["sales_fixture_legacy_failure_only"]) || !isset($args["meta_query"]))) return false;
+    if (!empty($GLOBALS["sales_fixture_drop_refresh_lock"])) {
+      foreach ($GLOBALS["sales_fixture_locks"] as $name=>$owner) if ($owner===$GLOBALS["wpdb"]->connection_id) unset($GLOBALS["sales_fixture_locks"][$name]);
+      unset($GLOBALS["sales_fixture_drop_refresh_lock"]);
+    }
+    $orders=array_filter($GLOBALS["sales_fixture_orders"] ?? [], static fn($order) => in_array($order->get_status(), $args["status"] ?? [], true));
+    if (!empty($GLOBALS["sales_fixture_filter_tagged_orders"]) && isset($args["meta_query"][0])) {
+      $meta=$args["meta_query"][0];
+      $orders=array_filter($orders,static fn($order) => (string)$order->get_meta((string)$meta["key"],true)===(string)$meta["value"]);
+    }
+    return array_keys($orders);
+  }
   function wc_get_order($id) { return $GLOBALS["sales_fixture_orders"][(int)$id] ?? null; }
   function get_post_meta($id, $key, $single=false) { return $GLOBALS["sales_fixture_meta"][(int)$id][$key] ?? ""; }
   function update_post_meta($id, $key, $value) { if (!empty($GLOBALS["sales_fixture_tag_write_failure"]) && strpos((string)$key, "_roxy_contains_showing_") === 0) return false; if ($key==="_roxy_sales_stats") $GLOBALS["sales_fixture_stats_writes"] = ($GLOBALS["sales_fixture_stats_writes"] ?? 0)+1; $GLOBALS["sales_fixture_meta"][(int)$id][$key]=$value; return true; }
