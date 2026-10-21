@@ -248,7 +248,7 @@ try {
         && (int) get_post_meta($candidate_order->get_id(), '_roxy_seat_hold_until', true) > time(),
         'same Store API order receives a durable hold when entitlement is sufficient');
 
-    $assert((int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->posts} WHERE ID IN (%d,%d) AND post_status='draft'", $showing_id, $product_id)) === 2, 'fixture records remain private drafts');
+    $assert(get_post_status($showing_id) === 'publish' && get_post_status($product_id) === 'draft', 'capacity fixture uses a public test showing with its ticket product kept private');
     echo "Passed $checks installed Store API capacity checks. Only private synthetic Woo records were created; no checkout or payment was made.\n";
 } finally {
     $cleanup_errors = [];
