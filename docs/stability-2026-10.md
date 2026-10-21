@@ -1,5 +1,15 @@
 # Stability remediation tracker
 
+## Status reconciliation (2026-10-20)
+
+The table below retains `In progress` where broader verification or residual boundaries remain, but that state should not be read as proof that the original defect is still present. Current-source and regression review supports these narrower conclusions:
+
+- **T6:** the original member walk-up entitlement/capacity defect is resolved in managed flows; showing-scoped issuance locks and real Woo/WCS contention coverage are recorded. Keep broader paid-provider and guest/browser coverage open separately.
+- **T16:** the original site-timezone parsing and duplicated legacy-product identity defects are resolved and covered across DST/process timezones. Keep broader public/admin integration coverage open separately.
+- **G6:** the historical backfill pagination/data-loss defect is resolved and deployed with a collision reproduction. Keep unused legacy import-write APIs and audit-log edge handling labeled as latent residuals, not as an unresolved migration defect.
+
+These reconciliations do not close the overall audit or claim provider, device, historical-data, or full production-workflow certification.
+
 Inventory I4 live receipt confirmation (2026-10-21, read-only): production order history contains Square `RECEIVED` event IDs and timestamps on 15 of 30 Vistar lines, 7 of 7 Tripp lines, and 8 of 9 Odom lines; each corresponding order is `stock_increased`. The Vistar and Odom results confirm that partial receipts are recorded and can trigger the order-state reset without waiting for every line. A Pepsi Co order is also `stock_increased` but has no receipt-event markers; it is older history and was not rewritten or treated as proof of the new receipt flow. No Square request, inventory pull, order change, or receipt action was performed in this check. This supersedes the earlier note that no live receipt confirmation had yet been observed, while operational monitoring of future receipts remains prudent.
 
 Full runtime parity refresh (2026-10-20, read-only): compared all 99 tracked package/runtime files at local and `origin/stability/audit-2026-10` commit `faad191201962a92f0dc9aa776fdfe6f8ba4c898` against the production plugin over one SSH connection. 94 files are byte-identical; the other five (`roxy-grosses.php`, Requested Showings frontend/template, and Show Tickets Door Mode JS/eligibility) become byte-identical after canonicalizing CRLF/LF line endings. There are zero substantive content differences and zero missing packaged files. This supersedes the Oct 16 parity count and confirms current packaged code is semantically synced to production; it does not certify server-only files or database/provider runtime state. Three pre-existing untracked local artifact directories were preserved and excluded. No production or local source files were changed by the parity read.
