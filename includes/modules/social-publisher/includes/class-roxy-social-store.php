@@ -394,7 +394,12 @@ final class Store {
                     $post_ref = $wpdb->get_var($wpdb->prepare('SELECT ID FROM ' . $posts . ' WHERE ID <> %d AND (post_content LIKE %s OR post_content LIKE %s OR post_content LIKE %s) LIMIT 1', $attachment_id, '%' . $wpdb->esc_like($url) . '%', '%' . str_replace('/', '%', $wpdb->esc_like($url)) . '%', '%' . $wpdb->esc_like('wp-image-' . $attachment_id) . '%'));
                     if ($wpdb->last_error !== '' || $post_ref !== null) continue;
 
-                    if (self::has_core_attachment_reference($attachment_id, $url) || !self::owns_publish_lock($claim)) continue;
+                    // Revalidate our lifecycle lock before the broad reference scan so
+                    // that scan is the final database read before deletion. The lock
+                    // coordinates Social writers; unrelated WordPress writers cannot
+                    // be forced to acquire it, so keep this last check adjacent to the
+                    // destructive call to minimize that uncoordinated race window.
+                    if (!self::owns_publish_lock($claim) || self::has_core_attachment_reference($attachment_id, $url)) continue;
 
                     if (!wp_delete_attachment($attachment_id, true)) continue;
                     $deleted++;

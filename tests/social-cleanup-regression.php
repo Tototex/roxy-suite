@@ -151,7 +151,11 @@ final class CleanupWpdb {
             $this->locked[$name] = (string) $this->connection; return 1;
         }
         if (strpos($query, 'CONNECTION_ID()') !== false && strpos($query, 'IS_USED_LOCK') === false) return (string) $this->connection;
-        if (strpos($query, 'IS_USED_LOCK(') !== false) { preg_match("/IS_USED_LOCK\\('([^']+)'/", $query, $lock); return $this->locked[$lock[1] ?? ''] ?? null; }
+        if (strpos($query, 'IS_USED_LOCK(') !== false) {
+            preg_match("/IS_USED_LOCK\\('([^']+)'/", $query, $lock);
+            if (isset($GLOBALS['cleanup_during_lock_check'])) ($GLOBALS['cleanup_during_lock_check'])();
+            return $this->locked[$lock[1] ?? ''] ?? null;
+        }
         if (strpos($query, 'RELEASE_LOCK(') !== false) { preg_match("/RELEASE_LOCK\\('([^']+)'/", $query, $lock); unset($this->locked[$lock[1] ?? '']); return 1; }
         if ($this->reference_query_error) { $this->last_error = 'fixture reference query error'; return null; }
         if (strpos($query, 'FROM wp_roxy_social_media_cleanup') !== false) return null;
@@ -280,6 +284,17 @@ check_cleanup($interleaved_cleanup === 1 && $interleaved_save === false && !isse
     'expired-media deletion and another draft media save serialize on the shared lifecycle lock');
 $stale_save = \RoxySocial\Store::update_draft(2, 'reused', '2026-10-07 12:00:00', 'https://fixture.invalid/uploads/clip-42.mp4', 'video', \RoxySocial\Store::draft_revision($wpdb->rows[2]));
 check_cleanup($stale_save === false && $wpdb->rows[2]['media_url'] === '', 'a stale local upload URL cannot be saved after cleanup removed its attachment');
+
+fixture();
+$lock_checks = 0;
+$GLOBALS['cleanup_during_lock_check'] = static function () use (&$lock_checks): void {
+    global $wpdb;
+    if (++$lock_checks === 2) $wpdb->metadata_values['wp_options'][] = '42';
+};
+$late_reference_cleanup = \RoxySocial\Store::cleanup_expired();
+unset($GLOBALS['cleanup_during_lock_check']);
+check_cleanup($late_reference_cleanup === 0 && isset($wpdb->attachments[42]) && $wpdb->rows[1]['temporary_attachment_id'] === 42,
+    'a core metadata reference added immediately before the final reference scan prevents deletion');
 
 fixture();
 $wpdb->rows[2] = ['id'=>2, 'status'=>'posted', 'temporary_attachment_id'=>43, 'cleanup_after'=>'2026-10-06 12:01:00', 'media_url'=>''];
