@@ -12,9 +12,10 @@ final class Compatibility {
     public static function declare_storage_support(): void {
         $utility = '\\Automattic\\WooCommerce\\Utilities\\FeaturesUtil';
         if (class_exists($utility) && method_exists($utility, 'declare_compatibility')) {
-            // Order-facing modules use WooCommerce CRUD or verified shared
-            // item tables with transactional HPOS metadata paths.
-            $utility::declare_compatibility('custom_order_tables', ROXY_SUITE_PATH . 'roxy-suite.php', true);
+            // Several order-facing paths and active third-party integrations
+            // still rely on legacy post storage. Keep HPOS unsupported until
+            // the complete suite and production integrations are certified.
+            $utility::declare_compatibility('custom_order_tables', ROXY_SUITE_PATH . 'roxy-suite.php', false);
         }
     }
 
@@ -26,7 +27,7 @@ final class Compatibility {
         try {
             $enabled = $utility::custom_orders_table_usage_is_enabled();
             if ($enabled === true) {
-                return ['status' => 'pass', 'value' => 'HPOS custom order tables', 'message' => 'Roxy Suite supports WooCommerce HPOS. Order data is accessed through WooCommerce CRUD or verified shared item tables.'];
+                return ['status' => 'fail', 'value' => 'HPOS enabled — unsupported', 'message' => 'Roxy Suite has not been certified for authoritative HPOS across all modules and active integrations. Keep post-based order storage enabled until compatibility is verified.'];
             }
             if ($enabled !== false) {
                 return ['status' => 'warn', 'value' => 'Unknown', 'message' => 'WooCommerce order storage could not be verified. Review storage configuration before changing it.'];

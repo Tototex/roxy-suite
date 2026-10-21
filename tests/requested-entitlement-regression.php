@@ -527,9 +527,9 @@ namespace {
     $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_TARGET_AT] = '2026-10-30 19:00';
     \Automattic\WooCommerce\Utilities\OrderUtil::$enabled = true;
     $hpos_status = \RoxySuite\Compatibility::order_storage_status();
-    check_fixture(($hpos_status['status'] ?? '') === 'pass' && ($hpos_status['value'] ?? '') === 'HPOS custom order tables'
+    check_fixture(($hpos_status['status'] ?? '') === 'fail' && ($hpos_status['value'] ?? '') === 'HPOS enabled — unsupported'
         && !\RoxySuite\Compatibility::supports_legacy_order_storage(),
-        'HPOS is supported while legacy-only query optimizations remain disabled');
+        'HPOS remains globally uncertified while legacy-only query optimizations remain disabled');
     \Automattic\WooCommerce\Utilities\OrderUtil::$enabled = false;
 
     $approval_write_faults = [

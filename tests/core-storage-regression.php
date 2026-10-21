@@ -21,13 +21,13 @@ namespace {
     \RoxySuite\Compatibility::init();
     storage_check(isset($GLOBALS['storage_hooks']['before_woocommerce_init']), 'declaration registered at required WooCommerce hook');
     call_user_func($GLOBALS['storage_hooks']['before_woocommerce_init']);
-    storage_check(\Automattic\WooCommerce\Utilities\FeaturesUtil::$calls === [['custom_order_tables', $root . '/roxy-suite.php', true]], 'HPOS compatibility is declared for the actual plugin file');
+    storage_check(\Automattic\WooCommerce\Utilities\FeaturesUtil::$calls === [['custom_order_tables', $root . '/roxy-suite.php', false]], 'HPOS remains undeclared as supported until the full suite and integrations are certified');
     $status = \RoxySuite\Compatibility::order_storage_status();
     storage_check($status['status'] === 'pass' && $status['value'] === 'Post-based storage', 'legacy order storage remains supported');
     storage_check(\RoxySuite\Compatibility::supports_legacy_order_storage(), 'runtime guard allows workflows only when post-based storage is positively verified');
     \Automattic\WooCommerce\Utilities\OrderUtil::$result = true;
     $status = \RoxySuite\Compatibility::order_storage_status();
-    storage_check($status['status'] === 'pass' && $status['value'] === 'HPOS custom order tables', 'authoritative HPOS is recognized as a supported storage mode');
+    storage_check($status['status'] === 'fail' && $status['value'] === 'HPOS enabled — unsupported', 'authoritative HPOS is clearly identified as unsupported');
     storage_check(!\RoxySuite\Compatibility::supports_legacy_order_storage(), 'legacy-only query optimizations remain disabled when HPOS is active');
     \Automattic\WooCommerce\Utilities\OrderUtil::$result = '0';
     storage_check(\RoxySuite\Compatibility::order_storage_status()['status'] === 'warn', 'non-boolean storage detector result fails closed as unknown');
