@@ -423,6 +423,10 @@ $GLOBALS['types'][9003]='roxy_showing';
 $GLOBALS['meta'][9003]=['_roxy_start'=>current_datetime()->modify('+4 hours')->format('Y-m-d\\TH:i'),'_roxy_duration_minutes'=>'invalid'];
 ob_start(); \RoxyST\CPT::render_admin_column('roxy_runtime',9003); $invalid_runtime_column=ob_get_clean();
 check(str_contains($invalid_runtime_column,'Invalid') && str_contains($invalid_runtime_column,'sales closed'),'invalid runtime visibly identifies closed ticket sales');
+$GLOBALS['types'][9004]='roxy_showing';
+$GLOBALS['meta'][9004]=['_roxy_start'=>current_datetime()->modify('+5 hours')->format('Y-m-d\\TH:i'),'_roxy_duration_minutes'=>'   '];
+ob_start(); \RoxyST\CPT::render_admin_column('roxy_runtime',9004); $whitespace_runtime_column=ob_get_clean();
+check(str_contains($whitespace_runtime_column,'Invalid') && str_contains($whitespace_runtime_column,'sales closed'),'whitespace duration agrees with the sales gate and is not labeled missing');
 unset($GLOBALS['types'][1]); check(is_wp_error(\RoxyST\Eligibility::product_error(101)),'deleted showing rejects historical ticket product');
 echo "All publication and showing-end regressions passed.\n";
 }

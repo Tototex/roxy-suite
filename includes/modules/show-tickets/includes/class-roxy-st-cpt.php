@@ -713,7 +713,7 @@ class CPT {
     }
 
     if ($column === 'roxy_runtime') {
-      $duration_raw = trim((string) get_post_meta($post_id, '_roxy_duration_minutes', true));
+      $duration_raw = (string) get_post_meta($post_id, '_roxy_duration_minutes', true);
       if ($duration_raw === '') {
         echo '<span class="description">Not set — sales close at start</span>';
         return;
