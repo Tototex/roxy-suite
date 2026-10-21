@@ -44,8 +44,12 @@ jobs:
           node tests/social-bulk-editor-browser.cjs
 
   requested-showings-private-lifecycle:
-    name: Requested Showings private WordPress/Woo lifecycle
+    name: Requested Showings private WordPress/Woo lifecycle (PHP ${{ matrix.php_version }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        php_version: ['8.3', '8.5']
     services:
       mysql:
         image: mysql:8.0
@@ -65,7 +69,7 @@ jobs:
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.3'
+          php-version: ${{ matrix.php_version }}
           extensions: mysqli, zip
           coverage: none
       - name: Install WP-CLI
@@ -273,13 +277,14 @@ jobs:
           fi
 
   woocommerce-hpos-private-lifecycle:
-    name: Private WooCommerce HPOS lifecycle contract (WC ${{ matrix.woocommerce_version }})
+    name: Private WooCommerce HPOS lifecycle contract (WC ${{ matrix.woocommerce_version }}, PHP ${{ matrix.php_version }})
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         woocommerce_version: ['11.1.2', '11.2.1']
+        php_version: ['8.3', '8.5']
     services:
       mysql:
         image: mysql:8.0
@@ -299,7 +304,7 @@ jobs:
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.3'
+          php-version: ${{ matrix.php_version }}
           extensions: mysqli
           coverage: none
       - name: Install WP-CLI
