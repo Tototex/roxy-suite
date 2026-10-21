@@ -52,6 +52,18 @@ try {
   $order->calculate_totals();
   $order->set_status('processing');
   $order->save();
+  $marker = '_roxy_contains_showing_' . $showing_id;
+  $saved_order = wc_get_order($order_id);
+  if (!$saved_order || (string)$saved_order->get_meta($marker, true) !== '1') {
+    throw new RuntimeException('The fixture showing-discovery marker did not persist on its Woo order.');
+  }
+  $found_order_ids = wc_get_orders([
+    'limit'=>-1, 'return'=>'ids', 'status'=>['processing','completed','on-hold'],
+    'type'=>'shop_order', 'meta_query'=>[['key'=>$marker,'value'=>'1']],
+  ]);
+  if (!is_array($found_order_ids) || !in_array($order_id, array_map('intval', $found_order_ids), true)) {
+    throw new RuntimeException('Woo order lookup did not find the synthetic ticket order by its persisted showing marker.');
+  }
   update_post_meta($showing_id, '_roxy_sales_stats', []);
   wp_cache_delete($showing_id, 'post_meta');
 
