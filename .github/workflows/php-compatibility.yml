@@ -148,6 +148,19 @@ jobs:
             echo "::error title=Show Tickets sales projection Woo/MySQL fixture failed::$details"
             exit "$status"
           fi
+      - name: Reproduce concurrent Show Tickets sales refresh ordering
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/sales-refresh-concurrency-output.txt"
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/sales-refresh-concurrency-wordpress.php" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 60 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Show Tickets sales-refresh concurrency fixture failed::$details"
+            exit "$status"
+          fi
       - name: Run Show Tickets product-sync connection-loss recovery fixture
         shell: bash
         run: |

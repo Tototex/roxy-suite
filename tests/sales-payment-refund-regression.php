@@ -6,6 +6,7 @@ if (!defined('ROXY_ST_META_TICKET_TYPE')) define('ROXY_ST_META_TICKET_TYPE', '_r
 if (!class_exists('SalesFixtureDatabase')) {
   final class SalesFixtureDatabase {
     public int $connection_id = 101;
+    public string $last_error = '';
     public function prepare(string $query, ...$args): string {
       foreach ($args as $arg) {
         $replacement = is_int($arg) ? (string)$arg : "'" . str_replace("'", "''", (string)$arg) . "'";
@@ -94,8 +95,8 @@ eval('namespace ' . $namespace . ';
   }
   function wc_get_order($id) { return $GLOBALS["sales_fixture_orders"][(int)$id] ?? null; }
   function get_post_meta($id, $key, $single=false) { return $GLOBALS["sales_fixture_meta"][(int)$id][$key] ?? ""; }
-  function update_post_meta($id, $key, $value) { if (!empty($GLOBALS["sales_fixture_tag_write_failure"]) && strpos((string)$key, "_roxy_contains_showing_") === 0) return false; if ($key==="_roxy_sales_stats") $GLOBALS["sales_fixture_stats_writes"] = ($GLOBALS["sales_fixture_stats_writes"] ?? 0)+1; $GLOBALS["sales_fixture_meta"][(int)$id][$key]=$value; return true; }
-  function delete_post_meta($id, $key) { unset($GLOBALS["sales_fixture_meta"][(int)$id][$key]); return true; }
+  function update_post_meta($id, $key, $value) { if (!empty($GLOBALS["sales_fixture_tag_write_failure"]) && strpos((string)$key, "_roxy_contains_showing_") === 0) return false; if ($key==="_roxy_sales_stats" && !empty($GLOBALS["sales_fixture_drop_lock_during_stats_write"])) { foreach ($GLOBALS["sales_fixture_locks"] as $name=>$owner) if ($owner===$GLOBALS["wpdb"]->connection_id) unset($GLOBALS["sales_fixture_locks"][$name]); unset($GLOBALS["sales_fixture_drop_lock_during_stats_write"]); } if ($key==="_roxy_sales_stats" && !empty($GLOBALS["sales_fixture_stats_write_failure"])) { $GLOBALS["wpdb"]->last_error="fixture stats-cache write failure"; return false; } if ($key==="_roxy_sales_stats") $GLOBALS["sales_fixture_stats_writes"] = ($GLOBALS["sales_fixture_stats_writes"] ?? 0)+1; $GLOBALS["sales_fixture_meta"][(int)$id][$key]=$value; return true; }
+  function delete_post_meta($id, $key, $value=null) { if ($value===null || ($GLOBALS["sales_fixture_meta"][(int)$id][$key] ?? null)===$value) unset($GLOBALS["sales_fixture_meta"][(int)$id][$key]); return true; }
   function current_time($type) { return "2037-01-01 12:00:00"; }
   function wp_timezone() { return new \\DateTimeZone("UTC"); }
   function wp_date($format, $timestamp=null, $timezone=null) { return gmdate($format, $timestamp ?? time()); }
@@ -145,6 +146,23 @@ $check(!empty($lost_lock_refresh['read_error']) && ($GLOBALS['sales_fixture_stat
 $recovered_lock_refresh = $sales::refresh_showing_stats($showing_id);
 $check(empty($recovered_lock_refresh['read_error']) && ($GLOBALS['wpdb']->get_var($GLOBALS['wpdb']->prepare('SELECT IS_USED_LOCK(%s)', $sales_lock_name))===null),
   'a subsequent refresh recovers and releases its own showing lock');
+$previous_stats = ['cache_version'=>3,'sold_qty'=>7,'paid_qty'=>7,'gross_revenue'=>70.0,'refunded_revenue'=>0.0,'net_revenue'=>70.0,'order_count'=>2];
+$GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats'] = $previous_stats;
+$GLOBALS['wpdb']->last_error = '';
+$GLOBALS['sales_fixture_stats_write_failure'] = true;
+$write_failure_refresh = $sales::refresh_showing_stats($showing_id);
+unset($GLOBALS['sales_fixture_stats_write_failure']);
+$GLOBALS['wpdb']->last_error = '';
+$check(!empty($write_failure_refresh['read_error']) && $write_failure_refresh['sold_qty']===7
+  && $GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats']===$previous_stats
+  && ($GLOBALS['wpdb']->get_var($GLOBALS['wpdb']->prepare('SELECT IS_USED_LOCK(%s)', $sales_lock_name))===null),
+  'stats-cache database write failure preserves last-known-good totals and is not reported as success');
+unset($GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats']);
+$GLOBALS['sales_fixture_drop_lock_during_stats_write'] = true;
+$lost_write_refresh = $sales::refresh_showing_stats($showing_id);
+$check(!empty($lost_write_refresh['read_error']) && !isset($GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_sales_stats'])
+  && ($GLOBALS['wpdb']->get_var($GLOBALS['wpdb']->prepare('SELECT IS_USED_LOCK(%s)', $sales_lock_name))===null),
+  'connection loss at the stats-cache write boundary removes only its unowned candidate and fails closed');
 
 // Empty/default API contract includes explicit refund and net revenue totals.
 $empty = $sales::get_showing_stats(0);

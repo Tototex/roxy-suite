@@ -189,6 +189,20 @@ class Sales {
       $stored['cache_version'] = self::CACHE_VERSION;
       $stored['generated_at'] = current_time('mysql');
       update_post_meta($showing_id, self::META_KEY, $stored);
+      if (!self::owns_stats_refresh_lock($refresh_lock)) {
+        // A reconnect during update_post_meta can retry on a new connection
+        // without the named lock. Remove only this exact candidate value; a
+        // newer concurrent projection will not match and remains untouched.
+        delete_post_meta($showing_id, self::META_KEY, $stored);
+        throw new \RuntimeException('The database connection lost the showing totals refresh lock while saving.');
+      }
+      global $wpdb;
+      if (is_object($wpdb) && !empty($wpdb->last_error)) {
+        throw new \RuntimeException('The showing totals cache write failed.');
+      }
+      if (get_post_meta($showing_id, self::META_KEY, true) !== $stored) {
+        throw new \RuntimeException('The showing totals cache write could not be verified.');
+      }
     } catch (\Throwable $e) {
       return self::stats_refresh_error($showing_id, $e->getMessage());
     } finally {
