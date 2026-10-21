@@ -42,7 +42,7 @@ $collect_worker = static function () use (&$worker, &$worker_pipes): array {
   if (($exit === null || $exit < 0) && $close_exit >= 0) $exit = $close_exit;
   $worker = null;
   if (!preg_match('/REFUND_RACE_ADMISSION=([01])/', $stdout, $match)) throw new RuntimeException('Refund/admission worker result missing: ' . $stderr);
-  return ['admitted' => (int) $match[1], 'exit' => $exit, 'stderr' => $stderr];
+  return ['admitted' => (int) $match[1], 'exit' => $exit, 'stderr' => $stderr, 'stdout' => $stdout];
 };
 $spawn_worker = static function () use (&$worker, &$worker_pipes, $wp_cli, &$order_id, &$ticket_ids, $label, $ready_path): void {
   if (is_resource($worker)) throw new RuntimeException('Previous race worker is still active');
@@ -105,7 +105,7 @@ try {
   finally { remove_action('woocommerce_create_refund', $reproduce, 2); }
   if (is_wp_error($refund)) throw new RuntimeException('Baseline zero-dollar refund failed: ' . $refund->get_error_message());
   $check(($baseline_worker['exit'] ?? -1) === 0 && ($baseline_worker['admitted'] ?? 0) === 1,
-    'reproduced the race: check-in commits in the pre-save window before a partial refund exists');
+    'reproduced the race: check-in commits in the pre-save window before a partial refund exists; worker=' . wp_json_encode($baseline_worker));
   if (!\RoxyST\Tickets::sync_order_tickets($order_id)) throw new RuntimeException('Could not reconcile baseline refund fixture');
   $check((int) get_post_meta($ticket_ids[1], '_roxy_checked_in', true) === 1
     && (int) get_post_meta($ticket_ids[1], '_roxy_ticket_refunded', true) === 1,
