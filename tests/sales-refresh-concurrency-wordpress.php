@@ -40,7 +40,8 @@ try {
   $showing_id = (int)$showing_result;
   update_post_meta($showing_id, '_roxy_pid_adult', $product_id);
   update_post_meta($showing_id, '_roxy_legacy_sales_scan_complete', '1');
-  update_post_meta($product_id, '_roxy_showing_id', (string)$showing_id);
+  update_post_meta($product_id, ROXY_ST_META_SHOWING_ID, (string)$showing_id);
+  update_post_meta($product_id, ROXY_ST_META_TICKET_TYPE, 'adult');
 
   $order = wc_create_order(['status'=>'pending','customer_note'=>$token . ' private sales refresh fixture']);
   if (is_wp_error($order)) throw new RuntimeException('Could not create the zero-value order fixture.');
