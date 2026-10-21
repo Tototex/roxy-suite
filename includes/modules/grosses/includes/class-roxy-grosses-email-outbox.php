@@ -17,6 +17,7 @@ final class EmailOutbox {
   private const MAX_JSON_BYTES = 262144;
   private const MAX_ERROR_BYTES = 2000;
   private const MAX_LIST_LIMIT = 100;
+  private static ?string $verified_table_name = null;
 
   private static function table_name(): string {
     global $wpdb;
@@ -102,6 +103,7 @@ final class EmailOutbox {
   /** Create and verify the required InnoDB table. Safe to call repeatedly. */
   public static function ensure_schema(bool $force_verify = false): bool {
     global $wpdb;
+    self::$verified_table_name = null;
     try {
       $table = self::table_name();
       if (!is_object($wpdb) || !method_exists($wpdb, 'get_charset_collate') || !method_exists($wpdb, 'query')) return false;
@@ -119,7 +121,10 @@ final class EmailOutbox {
           if (!is_array($indexes) || !empty($wpdb->last_error)) throw self::storage_error('cached schema index check');
           foreach ($indexes as $index) {
             if (($index['Key_name'] ?? '') === 'logical_send' && (int) ($index['Non_unique'] ?? 1) === 0
-              && ($index['Column_name'] ?? '') === 'key_hash') return true;
+              && ($index['Column_name'] ?? '') === 'key_hash') {
+              self::$verified_table_name = $table_name;
+              return true;
+            }
           }
           return false;
         }
@@ -161,8 +166,10 @@ final class EmailOutbox {
       $required_columns = ['id', 'key_hash', 'created_at', 'updated_at', 'kind', 'source_id', 'report_date', 'status', 'payload_json', 'context_json', 'error_text'];
       $valid = $unique_key && count(array_diff($required_columns, $column_names)) === 0;
       if ($valid && !$force_verify && function_exists('update_option')) update_option(self::SCHEMA_OPTION, self::SCHEMA_VERSION, false);
+      if ($valid) self::$verified_table_name = trim($table, '`');
       return $valid;
     } catch (\Throwable $error) {
+      self::$verified_table_name = null;
       return false;
     }
   }
@@ -179,7 +186,10 @@ final class EmailOutbox {
     $report_date = self::valid_date($report_date);
     $payload_json = self::encode_json($payload, 'payload');
     $context_json = self::encode_json($context, 'context');
-    if (!self::ensure_schema()) throw new \RuntimeException('Grosses email outbox schema is unavailable or missing its unique send-key index; refusing to send.');
+    $table_name = trim(self::table_name(), '`');
+    if (self::$verified_table_name !== $table_name && !self::ensure_schema()) {
+      throw new \RuntimeException('Grosses email outbox schema is unavailable or missing its unique send-key index; refusing to send.');
+    }
     $table = self::table_name();
     $now = gmdate('Y-m-d H:i:s');
     $date_sql = $report_date === null ? 'NULL' : '%s';
