@@ -342,6 +342,15 @@ jobs:
             echo "::error title=Grosses mixed-show WordPress fixture failed::$details"
             exit "$status"
           fi
+          output="$RUNNER_TEMP/grosses-cashflow-integration-output.txt"
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/grosses-cashflow-integration-wordpress.php" "$GITHUB_WORKSPACE" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 40 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Grosses Cashflow combined provider integration fixture failed::$details"
+            exit "$status"
+          fi
 
   woocommerce-hpos-private-lifecycle:
     name: Private WooCommerce HPOS lifecycle contract (WC ${{ matrix.woocommerce_version }}, PHP ${{ matrix.php_version }})
