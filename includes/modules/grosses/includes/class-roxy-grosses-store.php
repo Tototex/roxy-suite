@@ -1091,10 +1091,10 @@ class Store {
     while ($processed < $expected) {
       $sql = 'SELECT id, report_date, showing_id, show_time, theater_name, film_title, general_qty, discount_qty, group_qty, total_tickets, gross_total, source_mode, source_report_id FROM ' . $table;
       if ($cursor_date === null) {
-        $sql .= ' WHERE id <= %d ORDER BY report_date ASC, film_title ASC, id ASC LIMIT %d';
+        $sql .= ' WHERE id <= %d ORDER BY report_date ASC, BINARY film_title ASC, id ASC LIMIT %d';
         $rows = $wpdb->get_results($wpdb->prepare($sql, $maximum, 100), ARRAY_A);
       } else {
-        $sql .= ' WHERE id <= %d AND (report_date > %s OR (report_date = %s AND (film_title > %s OR (film_title = %s AND id > %d)))) ORDER BY report_date ASC, film_title ASC, id ASC LIMIT %d';
+        $sql .= ' WHERE id <= %d AND (report_date > %s OR (report_date = %s AND (BINARY film_title > BINARY %s OR (BINARY film_title = BINARY %s AND id > %d)))) ORDER BY report_date ASC, BINARY film_title ASC, id ASC LIMIT %d';
         $rows = $wpdb->get_results($wpdb->prepare($sql, $maximum, $cursor_date, $cursor_date, $cursor_title, $cursor_title, $cursor_id, 100), ARRAY_A);
       }
       if ($wpdb->last_error !== '' || !is_array($rows)) throw new \RuntimeException('Legacy history migration page could not be read.');

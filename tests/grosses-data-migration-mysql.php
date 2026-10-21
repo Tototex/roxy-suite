@@ -141,6 +141,11 @@ try {
   $cursor_order=$wpdb->get_col($wpdb->prepare("SELECT film_title FROM {$history} WHERE report_date=%s ORDER BY film_title ASC,id ASC",$cursor_date));
   if($wpdb->last_error!==''||!is_array($cursor_order)||count($cursor_order)!==101)throw new RuntimeException('Could not verify the legacy-title cursor fixture sort order');
   $assert(array_slice($cursor_order,-2)===['A <b>B</b>','A B'],'raw sanitized-collision titles are ordered at the page boundary');
+  $boundary_title=(string)$cursor_order[99];
+  $boundary_id=(int)$wpdb->get_var($wpdb->prepare("SELECT id FROM {$history} WHERE report_date=%s AND BINARY film_title=BINARY %s",$cursor_date,$boundary_title));
+  $old_cursor_title=sanitize_text_field($boundary_title);
+  $old_cursor_remaining=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$history} WHERE report_date=%s AND (film_title>%s OR (film_title=%s AND id>%d))",$cursor_date,$old_cursor_title,$old_cursor_title,$boundary_id));
+  $assert($boundary_id===2000&&$old_cursor_remaining===0,'fixture reproduces the old sanitized cursor omitting the lower-ID following row');
   $cursor_migration=new ReflectionMethod($store,'migrate_history_to_entries');$cursor_migration->setAccessible(true);$cursor_migration->invoke(null);
   $cursor_entry_count=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$entries} WHERE report_date=%s AND source_type=%s",$cursor_date,'saved_report_migration'));
   $cursor_collision_count=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$entries} WHERE report_date=%s AND showing_id IN (%d,%d)",$cursor_date,19700100,19700101));
