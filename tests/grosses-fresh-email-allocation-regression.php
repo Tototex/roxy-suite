@@ -197,6 +197,13 @@ namespace {
   $second_daily = $reporter::send_report('2038-05-13', 'scheduled');
   $check(!empty($first_daily['success']) && $count_after_first_daily === $mail_count_before_duplicate + 1, 'first production daily report claims and sends once');
   $check(!empty($second_daily['success']) && !empty($second_daily['duplicate_suppressed']) && count($GLOBALS['fresh_email_mail_calls']) === $count_after_first_daily, 'manual/scheduled duplicate for the same date is suppressed across modes');
+  $GLOBALS['fresh_email_fixture_rows'] = [['report_date'=>'2038-05-18','show_time'=>'19:00','theater_name'=>'Fixture Theater','film_title'=>'Fixture Movie','general_qty'=>1,'discount_qty'=>0,'group_qty'=>0,'total_tickets'=>1,'gross_total'=>10.00,'concessions_total'=>0.00,'source_type'=>'square_auto']];
+  $mail_count_before_run_now = count($GLOBALS['fresh_email_mail_calls']);
+  $first_run_now = $reporter::send_report('2038-05-18', 'run-now');
+  $mail_count_after_run_now = count($GLOBALS['fresh_email_mail_calls']);
+  $second_run_now = $reporter::send_report('2038-05-18', 'run-now');
+  $check(!empty($first_run_now['success']) && $mail_count_after_run_now === $mail_count_before_run_now + 1, 'first Run Now claims and sends the daily report once');
+  $check(!empty($second_run_now['success']) && !empty($second_run_now['duplicate_suppressed']) && count($GLOBALS['fresh_email_mail_calls']) === $mail_count_after_run_now, 'repeated Run Now for the same date is suppressed by the shared daily key');
   $GLOBALS['fresh_email_mail_result'] = false;
   $mail_count_before_uncertain = count($GLOBALS['fresh_email_mail_calls']);
   $uncertain_first = $reporter::send_report('2038-05-14', 'manual');

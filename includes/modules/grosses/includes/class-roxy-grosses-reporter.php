@@ -392,7 +392,7 @@ class Reporter {
 
       Store::assert_refund_review_lock();
       $daily_key = 'daily-grosses:' . $report_date;
-      if (in_array($mode, ['manual', 'scheduled', 'scheduled-provisional'], true)) {
+      if (in_array($mode, ['manual', 'run-now', 'scheduled', 'scheduled-provisional'], true)) {
         try {
           $prior_attempt = EmailOutbox::find($daily_key);
           if ($prior_attempt !== null) {
@@ -2834,9 +2834,9 @@ class Reporter {
 
       $request_id = self::valid_send_request_id($send_request_id) ? $send_request_id : self::new_send_request_id();
       if ($send_key === null) {
-        if (in_array($mode, ['manual', 'scheduled', 'scheduled-provisional'], true)
+        if (in_array($mode, ['manual', 'run-now', 'scheduled', 'scheduled-provisional'], true)
           && preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $report_date)) {
-          // Manual and scheduled sends for one reporting date share one durable key.
+          // Manual, Run Now, and scheduled sends for one report date share one durable key.
           $send_key = 'daily-grosses:' . $report_date;
         } else {
           // Tests and ad-hoc non-production modes remain independently runnable.

@@ -23,7 +23,8 @@ namespace RoxyGrosses {
     public static function send_report(...$args): array { self::$send_calls++; self::$send_modes[] = $args; return ['success' => true]; }
   }
   final class Workbook {
-    public static function send_advertiser_summary(...$args): array { return ['success' => true]; }
+    public static array $calls = [];
+    public static function send_advertiser_summary(...$args): array { self::$calls[] = $args; return ['success' => true]; }
   }
 }
 
@@ -430,6 +431,31 @@ namespace {
   scheduler_calendar_assert(
     ($GLOBALS['fixture_options']['roxy_grosses_last_advertiser_send_result']['status'] ?? '') === 'skipped',
     'disabled advertiser scheduler records a skipped outcome without sending email'
+  );
+
+  \RoxyGrosses\Settings::$values = array_merge($settings, ['schedule_enabled' => '0', 'advertiser_schedule_enabled' => '1', 'advertiser_schedule_day' => '1']);
+  \RoxyGrosses\Workbook::$calls = [];
+  $GLOBALS['fixture_options']['roxy_grosses_last_advertiser_month'] = '2025-04';
+  \RoxyGrosses\Scheduler::run_monthly_advertiser_send(new DateTimeImmutable('2025-06-02 10:00:00', new DateTimeZone('America/Los_Angeles')));
+  scheduler_calendar_assert(
+    count(\RoxyGrosses\Workbook::$calls) === 1
+      && array_slice(\RoxyGrosses\Workbook::$calls[0], 0, 3) === [2025, 5, 'scheduled-advertiser']
+      && ($GLOBALS['fixture_options']['roxy_grosses_last_advertiser_month'] ?? '') === '2025-05'
+      && ($GLOBALS['fixture_options']['roxy_grosses_last_advertiser_send_result']['status'] ?? '') === 'completed',
+    'a monthly advertiser event one day late still sends the intended previous-month summary'
+  );
+  \RoxyGrosses\Scheduler::run_monthly_advertiser_send(new DateTimeImmutable('2025-06-02 10:00:00', new DateTimeZone('America/Los_Angeles')));
+  scheduler_calendar_assert(
+    count(\RoxyGrosses\Workbook::$calls) === 1
+      && ($GLOBALS['fixture_options']['roxy_grosses_last_advertiser_send_result']['status'] ?? '') === 'skipped',
+    'a late duplicate advertiser event is suppressed by the completed-month marker'
+  );
+  \RoxyGrosses\Settings::$values['advertiser_schedule_day'] = '2';
+  \RoxyGrosses\Scheduler::run_monthly_advertiser_send(new DateTimeImmutable('2025-07-01 10:00:00', new DateTimeZone('America/Los_Angeles')));
+  scheduler_calendar_assert(
+    count(\RoxyGrosses\Workbook::$calls) === 1
+      && ($GLOBALS['fixture_options']['roxy_grosses_last_advertiser_send_result']['status'] ?? '') === 'skipped',
+    'an advertiser event before its configured calendar day remains skipped'
   );
 
   $disabled = array_merge($edited, ['schedule_enabled' => '0', 'advertiser_schedule_enabled' => '0']);

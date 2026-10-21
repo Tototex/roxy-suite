@@ -256,7 +256,7 @@ class Scheduler {
     return $result;
   }
 
-  public static function run_monthly_advertiser_send(): void {
+  public static function run_monthly_advertiser_send(?\DateTimeImmutable $now_override = null): void {
     $run_id = function_exists('wp_generate_uuid4') ? wp_generate_uuid4() : bin2hex(random_bytes(16));
     $started_at = current_time('mysql', true);
     self::record_run_result(self::LAST_ADVERTISER_RESULT_KEY, [
@@ -275,14 +275,14 @@ class Scheduler {
       }
 
       $timezone = new \DateTimeZone(Settings::get_report_timezone());
-      $now = new \DateTimeImmutable('now', $timezone);
+      $now = ($now_override ?? new \DateTimeImmutable('now', $timezone))->setTimezone($timezone);
       $configured_day = max(1, min(31, (int) ($settings['advertiser_schedule_day'] ?? 1)));
       $scheduled_day = min($configured_day, (int) $now->format('t'));
-      if ((int) $now->format('j') !== $scheduled_day) {
+      if ((int) $now->format('j') < $scheduled_day) {
         self::record_run_result(self::LAST_ADVERTISER_RESULT_KEY, [
           'version' => 1, 'run_id' => (string) $run_id, 'status' => 'skipped',
           'started_at' => (string) $started_at, 'completed_at' => (string) current_time('mysql', true),
-          'message' => 'The advertiser schedule is not due today.',
+          'message' => 'The advertiser schedule date has not arrived yet.',
         ]);
         return;
       }
