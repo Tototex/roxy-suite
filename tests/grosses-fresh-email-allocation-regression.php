@@ -56,6 +56,13 @@ namespace FreshEmailAllocationFixture {
 }
 
 namespace {
+  $GLOBALS['wpdb'] = new class {
+    public string $prefix = 'fixture_';
+    public string $last_error = '';
+    public function prepare($query, ...$args) { return $query; }
+    public function esc_like($value) { return addcslashes((string) $value, '_%\\'); }
+    public function get_var($query) { $this->last_error = ''; return null; } // Inventory is absent from this isolated reporter fixture.
+  };
   if (!defined('ABSPATH')) define('ABSPATH', sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'roxy-no-web-root' . DIRECTORY_SEPARATOR);
   if (!defined('WP_CONTENT_DIR')) define('WP_CONTENT_DIR', ABSPATH . 'wp-content');
   $candidate = $argv[1] ?? (dirname(__DIR__).'/includes/modules/grosses/includes/class-roxy-grosses-reporter.php');
