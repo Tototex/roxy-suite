@@ -303,6 +303,7 @@ namespace {
     $_POST = [];
     $GLOBALS['funding_fixture']['fail_after_insert'] = false;
     $wpdb->query_fails = false;
+    $wpdb->rows = [];
     $GLOBALS['funding_fixture']['posts'] = [(object)['ID'=>41]];
     $GLOBALS['funding_fixture']['meta'][41]['_roxy_rs_deadline_at'] = '2000-01-01 00:00:00';
     \RoxyRS\Conversion::run_daily_review();
