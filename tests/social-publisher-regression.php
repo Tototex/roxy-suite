@@ -315,6 +315,18 @@ namespace {
         &&!array_filter($GLOBALS['scheduled_events'],static fn($event)=>$event[1]==='roxy_social_video_status_retry'),
         'expired video container identity clears for a reviewed fresh attempt and stops automatic retries');
 
+    reset_fixture('both','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['facebook_post_id']='facebook-already-published';\RoxySocial\Store::$row['instagram_container_id']='expired-instagram-container';
+    \RoxySocial\Store::$row['last_error']='Instagram video is still processing';$GLOBALS['responses']=[response(['status_code'=>'EXPIRED'])];
+    check(!\RoxySocial\Publisher::publish_now(1)
+        &&\RoxySocial\Store::$row['status']==='failed'
+        &&\RoxySocial\Store::$row['facebook_post_id']==='facebook-already-published'
+        &&\RoxySocial\Store::$row['instagram_container_id']===null
+        &&count($GLOBALS['calls'])===1
+        &&str_contains($GLOBALS['calls'][0][0],'/expired-instagram-container?fields=status_code')
+        &&!array_filter($GLOBALS['calls'],static fn($call)=>str_ends_with($call[0],'/photos')||str_ends_with($call[0],'/videos'))
+        &&!array_filter($GLOBALS['scheduled_events'],static fn($event)=>$event[1]==='roxy_social_video_status_retry'),
+        'expired Instagram retry preserves the already-published Facebook post without duplicating it or scheduling a retry');
+
     reset_fixture('instagram','failed');\RoxySocial\Store::$row['media_type']='video';\RoxySocial\Store::$row['instagram_container_id']='published-container';
     \RoxySocial\Store::$row['last_error']='Instagram video is still processing';$GLOBALS['responses']=[response(['status_code'=>'PUBLISHED'])];
     check(!\RoxySocial\Publisher::publish_now(1)&&\RoxySocial\Store::$row['status']==='needs_review'
