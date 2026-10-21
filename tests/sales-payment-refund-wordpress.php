@@ -80,6 +80,9 @@ try {
   $stats = $sales::get_showing_stats($showing_id);
   $check($stats['sold_qty']===3 && $stats['order_count']===1, 'actual processing order counts while unpaid on-hold order is excluded');
   $check($stats['gross_revenue']===0.0 && $stats['refunded_revenue']===0.0 && $stats['net_revenue']===0.0, 'actual eligible $0 orders retain zero gross/refund/net values');
+  $stats_lock = 'roxy_sales_stats_' . md5((string)get_current_blog_id() . ':' . $showing_id);
+  $check($wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', $stats_lock)) === null,
+    'real MySQL showing-refresh lock is released after calculating and persisting the projection');
 
   $refund = wc_create_refund([
     'amount'=>0,
