@@ -916,6 +916,41 @@ class Roxy_Arcade {
     add_submenu_page('roxy-suite', 'Arcade', 'Arcade', roxy_suite_admin_capability(), 'roxy-arcade-settings', [__CLASS__, 'settings_page']);
   }
 
+  private static function parse_award_claim_for_admin($raw): array {
+    if ($raw === null) return ['claim' => [], 'corrupt' => false];
+    if (is_string($raw)) {
+      $claim = json_decode($raw, true);
+      if (!is_array($claim) || json_last_error() !== JSON_ERROR_NONE) return ['claim' => [], 'corrupt' => true];
+    } elseif (is_array($raw)) {
+      $claim = $raw;
+    } else {
+      return ['claim' => [], 'corrupt' => true];
+    }
+
+    $state = $claim['state'] ?? null;
+    $user_id = $claim['user_id'] ?? null;
+    $subscription_id = $claim['subscription_id'] ?? null;
+    $token = $claim['token'] ?? null;
+    $created_via = $claim['created_via'] ?? null;
+    $valid_positive_id = static function ($value): bool {
+      return (is_int($value) && $value > 0) || (is_string($value) && ctype_digit($value) && (int) $value > 0);
+    };
+    $valid_nonnegative_id = static function ($value): bool {
+      return (is_int($value) && $value >= 0) || (is_string($value) && ctype_digit($value));
+    };
+
+    if (!is_string($state) || !in_array($state, ['started', 'needs_review', 'completed'], true)
+      || !$valid_positive_id($user_id) || !$valid_nonnegative_id($subscription_id)
+      || !is_string($token) || !preg_match('/^[a-f0-9-]{36}$/D', $token)
+      || !is_string($created_via) || $created_via !== 'roxy_arcade_prize_' . $token
+      || !preg_match('/^roxy_arcade_prize_[a-f0-9-]{36}$/D', $created_via)
+      || ($state === 'completed' && ((int) $subscription_id <= 0 || !is_string($claim['completed_at'] ?? null) || $claim['completed_at'] === ''))) {
+      return ['claim' => [], 'corrupt' => true];
+    }
+
+    return ['claim' => $claim, 'corrupt' => false];
+  }
+
   public static function settings_page() {
     if (!roxy_suite_user_can_access_admin()) return;
 
@@ -947,9 +982,9 @@ class Roxy_Arcade {
     $review_candidate = get_option(self::OPTION_LAST_REVIEW_CANDIDATE, []);
     if (!is_array($review_candidate)) $review_candidate = [];
     $claim_month = !empty($review_candidate['month']) ? (string) $review_candidate['month'] : wp_date('Y-m');
-    $award_claim = get_option('roxy_arcade_award_claim_' . $claim_month, []);
-    if (is_string($award_claim)) $award_claim = json_decode($award_claim, true);
-    if (!is_array($award_claim)) $award_claim = [];
+    $award_claim_status = self::parse_award_claim_for_admin(get_option('roxy_arcade_award_claim_' . $claim_month, null));
+    $award_claim = $award_claim_status['claim'];
+    $award_claim_corrupt = $award_claim_status['corrupt'];
 
     $next_ts = wp_next_scheduled('roxy_arcade_monthly_award');
     $next_run = $next_ts ? wp_date('Y-m-d H:i:s T', $next_ts, wp_timezone()) : 'Not scheduled';
@@ -1009,9 +1044,11 @@ class Roxy_Arcade {
                   Approve queued review candidate and issue the prize now
                 </label>
               <?php endif; ?>
-              <p>Monthly claim (<?php echo esc_html($claim_month); ?>): <?php echo esc_html($award_claim['state'] ?? 'No attempt recorded'); ?>.
+              <p>Monthly claim (<?php echo esc_html($claim_month); ?>): <?php echo esc_html($award_claim_corrupt ? 'Unreadable claim record' : ($award_claim['state'] ?? 'No attempt recorded')); ?>.
                 Subscription: <?php echo esc_html((string) ($award_claim['subscription_id'] ?? 0)); ?>.</p>
-              <?php if (($award_claim['state'] ?? '') !== 'completed' && (int) ($award_claim['subscription_id'] ?? 0) > 0): ?>
+              <?php if ($award_claim_corrupt): ?>
+                <p class="description"><strong>Manager investigation required:</strong> a prize claim record exists but its identity or state cannot be verified. Do not reset, retry, or issue this prize. Reconcile the claim and any matching WooCommerce subscription before taking manual action.</p>
+              <?php elseif (($award_claim['state'] ?? '') !== 'completed' && (int) ($award_claim['subscription_id'] ?? 0) > 0): ?>
                 <p class="description"><strong>Manager inspection required:</strong> subscription <?php echo esc_html((string) $award_claim['subscription_id']); ?> is attached to an incomplete or uncertain claim. Inspect it in WooCommerce before taking any action; this system will not activate or retry it automatically.</p>
               <?php else: ?>
                 <p class="description">Started or uncertain attempts require manual review before recovery. Completed claims cannot be reset to award twice.</p>

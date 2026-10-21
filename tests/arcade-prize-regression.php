@@ -51,6 +51,15 @@ require ($argv[1]??dirname(__DIR__)).'/includes/modules/arcade/roxy-arcade.php';
 $once=new ReflectionMethod('Roxy_Arcade','award_once');
 $GLOBALS['once']=$once;
 function prize_check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS: $label\n";}
+$parse_claim=new ReflectionMethod('Roxy_Arcade','parse_award_claim_for_admin');
+$valid_admin_claim=['state'=>'started','user_id'=>9,'subscription_id'=>0,'token'=>'11111111-2222-4333-8444-555555555555','created_via'=>'roxy_arcade_prize_11111111-2222-4333-8444-555555555555','started_at'=>'fixture'];
+prize_check($parse_claim->invoke(null,null)===['claim'=>[],'corrupt'=>false],'absent monthly prize claim is displayed as no attempt');
+prize_check($parse_claim->invoke(null,json_encode($valid_admin_claim))===['claim'=>$valid_admin_claim,'corrupt'=>false],'valid incomplete prize claim remains available for manager review');
+$completed_admin_claim=array_replace($valid_admin_claim,['state'=>'completed','subscription_id'=>123,'completed_at'=>'2026-10-20 12:00:00']);
+prize_check($parse_claim->invoke(null,json_encode($completed_admin_claim))===['claim'=>$completed_admin_claim,'corrupt'=>false],'valid completed prize claim remains visible and cannot be mistaken for a missing attempt');
+foreach(['{invalid-json',json_encode(['state'=>'started','user_id'=>9,'subscription_id'=>0]),json_encode(array_replace($valid_admin_claim,['created_via'=>'roxy_arcade_prize_99999999-9999-4999-8999-999999999999'])),json_encode(array_replace($valid_admin_claim,['state'=>'unknown']))] as $invalid_admin_claim){
+    prize_check($parse_claim->invoke(null,$invalid_admin_claim)===['claim'=>[],'corrupt'=>true],'malformed, incomplete, or unknown prize claim identity is surfaced as corrupt for manager investigation');
+}
 $lock_name_method=new ReflectionMethod('Roxy_Arcade','award_lock_name');$lock_helper=new ReflectionMethod('Roxy_Arcade','acquire_award_lock');$release_lock_method=new ReflectionMethod('Roxy_Arcade','release_award_lock');$lock_owner_method=new ReflectionMethod('Roxy_Arcade','award_lock_is_owned');$lock_name=$lock_name_method->invoke(null,'2700-01');
 prize_check(strlen($lock_name)<=64&&strpos($lock_name,'roxy_arcade_award_')===0&&$lock_name===$lock_name_method->invoke(null,'2700-01'),'month advisory lock name is deterministic, namespaced, and within MySQL length');
 $expected_lock_name='roxy_arcade_award_'.md5(DB_NAME.'|'.$GLOBALS['wpdb']->options.'|2700-01');
