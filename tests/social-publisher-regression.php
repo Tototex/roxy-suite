@@ -332,6 +332,7 @@ namespace {
     check(\RoxySocial\Publisher::queue_publish_now(1),'manual partial retry queues an explicit expired-container replacement intent');
     $manual_retry_args=$GLOBALS['scheduled_events'][count($GLOBALS['scheduled_events'])-1][2];
     check(count($manual_retry_args)===4&&$manual_retry_args[3]===true,'manual failed-row retry carries the expired-container replacement intent');
+    array_pop($GLOBALS['scheduled_events']); // The fixture executes the queued publish event now.
     \RoxySocial\Publisher::process_queued(...$manual_retry_args);
     check(\RoxySocial\Store::$row['status']==='failed'
         &&\RoxySocial\Store::$row['facebook_post_id']==='facebook-already-published'
@@ -343,7 +344,9 @@ namespace {
         'manual retry recreates only an Instagram container after confirmed expiry and keeps bounded status polling: '.json_encode(['row'=>\RoxySocial\Store::$row,'calls'=>$GLOBALS['calls'],'events'=>$GLOBALS['scheduled_events']]));
     $GLOBALS['responses']=[response(['status_code'=>'FINISHED']),response(['id'=>'778899'])];
     check(\RoxySocial\Publisher::queue_video_status_retry(1,1),'fresh Instagram container queues its normal first status poll');
-    $fresh_retry_args=$GLOBALS['scheduled_events'][count($GLOBALS['scheduled_events'])-1][2];\RoxySocial\Publisher::process_queued(...$fresh_retry_args);
+    $fresh_retry_args=$GLOBALS['scheduled_events'][count($GLOBALS['scheduled_events'])-1][2];
+    array_pop($GLOBALS['scheduled_events']); // The fixture executes the queued status event now.
+    \RoxySocial\Publisher::process_queued(...$fresh_retry_args);
     check(\RoxySocial\Store::$row['status']==='posted'
         &&\RoxySocial\Store::$row['facebook_post_id']==='facebook-already-published'
         &&\RoxySocial\Store::$row['instagram_media_id']==='778899'
