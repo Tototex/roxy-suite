@@ -16,8 +16,9 @@ namespace RoxyGrosses {
     public static array $send_modes = [];
     public static int $send_calls = 0;
     public static int $paid_rows = 0;
+    public static bool $sync_success = true;
     public static array $refresh_results = [];
-    public static function sync_automatic_tables(...$args): array { self::$sync_calls[] = $args; return ['success' => true, 'movie_paid_rows' => self::$paid_rows, 'movie_rows' => 0, 'live_rows' => 0]; }
+    public static function sync_automatic_tables(...$args): array { self::$sync_calls[] = $args; return ['success' => self::$sync_success, 'movie_paid_rows' => self::$paid_rows, 'movie_rows' => 0, 'live_rows' => 0]; }
     public static function refresh_closed_day(...$args): array { self::$closed_day_calls[] = $args; return self::$refresh_results ? array_shift(self::$refresh_results) : ['success' => true, 'message' => 'reviewed']; }
     public static function send_report(...$args): array { self::$send_calls++; self::$send_modes[] = $args; return ['success' => true]; }
   }
@@ -389,6 +390,26 @@ namespace {
     \RoxyGrosses\Scheduler::run_closed_day_refresh('2000-01-03', $attempt);
   }
   scheduler_calendar_assert(\RoxyGrosses\Scheduler::closed_day_refresh_health()['status'] === 'failed', 'closed-day retry budget terminates visibly instead of looping forever');
+  $GLOBALS['fixture_options']['roxy_grosses_closed_day_refresh_queue'] = [
+    '2000-01-03' => ['attempt'=>3,'status'=>'failed','message'=>'initial scheduled report failed','retry_at'=>0],
+    '2000-01-04' => ['attempt'=>1,'status'=>'pending','message'=>'other date','retry_at'=>123],
+  ];
+  \RoxyGrosses\Reporter::$paid_rows = 1;
+  $manual_sends_before = \RoxyGrosses\Reporter::$send_calls;
+  \RoxyGrosses\Reporter::$sync_success = false;
+  $failed_manual_result = \RoxyGrosses\Scheduler::run_now('2000-01-03');
+  scheduler_calendar_assert(empty($failed_manual_result['success'])
+    && isset($GLOBALS['fixture_options']['roxy_grosses_closed_day_refresh_queue']['2000-01-03'])
+    && \RoxyGrosses\Reporter::$send_calls === $manual_sends_before,
+    'failed manual rerun preserves its failed queue entry and sends no report');
+  \RoxyGrosses\Reporter::$sync_success = true;
+  $manual_result = \RoxyGrosses\Scheduler::run_now('2000-01-03');
+  $remaining_refreshes = $GLOBALS['fixture_options']['roxy_grosses_closed_day_refresh_queue'];
+  scheduler_calendar_assert(!empty($manual_result['success'])
+    && !isset($remaining_refreshes['2000-01-03']) && isset($remaining_refreshes['2000-01-04'])
+    && \RoxyGrosses\Reporter::$send_calls === $manual_sends_before + 1,
+    'successful manual rerun clears only its recovered failed date and preserves other queue entries');
+  \RoxyGrosses\Reporter::$paid_rows = 0;
   $GLOBALS['fixture_options']['roxy_grosses_closed_day_refresh_queue'] = [];
   \RoxyGrosses\Settings::$values = array_merge($settings, ['schedule_enabled' => '0', 'advertiser_schedule_enabled' => '0']);
   \RoxyGrosses\Scheduler::run_scheduled_send();

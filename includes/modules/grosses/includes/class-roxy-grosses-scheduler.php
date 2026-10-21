@@ -229,7 +229,21 @@ class Scheduler {
   public static function run_now(?string $report_date = null): array {
     $timezone = new \DateTimeZone(Settings::get_report_timezone());
     $report_date = $report_date ?: (new \DateTimeImmutable('now', $timezone))->format('Y-m-d');
-    return self::run_for_date($report_date, 'run-now', true);
+    $result = self::run_for_date($report_date, 'run-now', true);
+    if (empty($result['success'])) return $result;
+
+    // A successful manual rerun is also the recovery path for a closed-day
+    // refresh that exhausted its retries while the initial scheduled report
+    // was unavailable. Clear only this date; never discard other queued days.
+    $queue = self::read_closed_day_queue();
+    if (is_array($queue) && isset($queue[$report_date])) {
+      if (self::clear_pending_closed_day_refresh($report_date)) {
+        Store::insert_log('closed_day_refresh', 'manual-recovery', null, $report_date, true, 'Manual Grosses run completed for the date; its pending closed-day refresh was cleared.');
+      } else {
+        Store::insert_log('closed_day_refresh', 'manual-recovery', null, $report_date, false, 'Manual Grosses run completed, but the matching closed-day refresh state could not be cleared.');
+      }
+    }
+    return $result;
   }
 
   public static function run_monthly_advertiser_send(): void {

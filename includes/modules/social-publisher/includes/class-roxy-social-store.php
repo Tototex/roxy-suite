@@ -171,7 +171,21 @@ final class Store {
             '_roxy_social_video_poster_file', $file_path
         ));
         if ($wpdb->last_error !== '') return null;
-        return $reference !== null;
+        if ($reference !== null) return true;
+
+        // A generated poster may also have been embedded in ordinary site
+        // content. Match its sanitized basename conservatively: a collision
+        // only delays cleanup, while a miss could break a live page or post.
+        $normalized = function_exists('wp_normalize_path') ? wp_normalize_path($file_path) : str_replace('\\', '/', $file_path);
+        $filename = basename($normalized);
+        if ($filename === '' || !preg_match('/\\A[A-Za-z0-9._-]+\\z/D', $filename)) return null;
+        $wpdb->last_error = '';
+        $content_reference = $wpdb->get_var($wpdb->prepare(
+            "SELECT ID FROM {$wpdb->posts} WHERE post_content LIKE %s LIMIT 1",
+            '%' . $wpdb->esc_like($filename) . '%'
+        ));
+        if ($wpdb->last_error !== '') return null;
+        return $content_reference !== null;
     }
 
     private static function queue_detached_media(int $attachment_id, int $social_post_id): bool {
