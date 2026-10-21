@@ -127,6 +127,25 @@ try {
   if($wpdb->update($history,['film_title'=>'Repaired legacy title'],['id'=>$bad_id])===false)throw new RuntimeException('Could not repair malformed legacy-history fixture');
   $store::maybe_backfill_history();
   $assert(get_option($store::ENTRY_MIGRATION_OPTION)==='1'&&(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$entries} WHERE report_date=%s AND showing_id=%d",$bad_date,19600000))===1,'legacy history migration resumes after malformed source data is repaired');
+
+  // Force a sanitized-title collision exactly across the 100-row keyset boundary.
+  if($wpdb->query("DELETE FROM {$history}")===false)throw new RuntimeException('Could not isolate legacy-title cursor fixture');
+  $cursor_date='2055-01-01';
+  for($i=0;$i<99;$i++) {
+    $fixture_id=1000+$i;
+    if($wpdb->insert($history,['id'=>$fixture_id,'created_at'=>current_time('mysql'),'updated_at'=>current_time('mysql'),'report_date'=>$cursor_date,'showing_id'=>19700000+$i,'show_time'=>'18:00','film_title'=>sprintf('0 Fixture %03d',$i),'source_mode'=>'cursor-fixture'])===false)throw new RuntimeException('Could not seed legacy-title cursor prefix');
+  }
+  foreach([[2000,19700100,'A <b>B</b>'],[1500,19700101,'A B']] as [$fixture_id,$showing_id,$title]) {
+    if($wpdb->insert($history,['id'=>$fixture_id,'created_at'=>current_time('mysql'),'updated_at'=>current_time('mysql'),'report_date'=>$cursor_date,'showing_id'=>$showing_id,'show_time'=>'19:00','film_title'=>$title,'source_mode'=>'cursor-fixture'])===false)throw new RuntimeException('Could not seed colliding legacy-title cursor rows');
+  }
+  $cursor_order=$wpdb->get_col($wpdb->prepare("SELECT film_title FROM {$history} WHERE report_date=%s ORDER BY film_title ASC,id ASC",$cursor_date));
+  if($wpdb->last_error!==''||!is_array($cursor_order)||count($cursor_order)!==101)throw new RuntimeException('Could not verify the legacy-title cursor fixture sort order');
+  $assert(array_slice($cursor_order,-2)===['A <b>B</b>','A B'],'raw sanitized-collision titles are ordered at the page boundary');
+  $cursor_migration=new ReflectionMethod($store,'migrate_history_to_entries');$cursor_migration->setAccessible(true);$cursor_migration->invoke(null);
+  $cursor_entry_count=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$entries} WHERE report_date=%s AND source_type=%s",$cursor_date,'saved_report_migration'));
+  $cursor_collision_count=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$entries} WHERE report_date=%s AND showing_id IN (%d,%d)",$cursor_date,19700100,19700101));
+  $assert($wpdb->last_error===''&&$cursor_entry_count===101&&$cursor_collision_count===2,'legacy-title migration resumes from the raw database sort key and preserves both rows across the page boundary');
+
   delete_option($store::ENTRY_MIGRATION_OPTION);
   $other=new wpdb(DB_USER,DB_PASSWORD,DB_NAME,DB_HOST);$other->suppress_errors(true);
   $lock='roxy_fixture38_migration_'.substr(hash('sha256',$wpdb->prefix),0,24);

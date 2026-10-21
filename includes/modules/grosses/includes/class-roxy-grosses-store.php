@@ -1103,7 +1103,8 @@ class Store {
       foreach ($rows as $row) {
         $id = (int) ($row['id'] ?? 0);
         $row_date = (string) ($row['report_date'] ?? '');
-        $row_title = sanitize_text_field((string) ($row['film_title'] ?? ''));
+        $source_title = (string) ($row['film_title'] ?? '');
+        $row_title = sanitize_text_field($source_title);
         $parsed_date = \DateTimeImmutable::createFromFormat('!Y-m-d', $row_date, new \DateTimeZone('UTC'));
         $date_errors = \DateTimeImmutable::getLastErrors();
         if (!$parsed_date || $parsed_date->format('Y-m-d') !== $row_date || ($date_errors && ($date_errors['warning_count'] || $date_errors['error_count']))) {
@@ -1112,7 +1113,10 @@ class Store {
         if ($row_title === '') throw new \RuntimeException('Legacy history contains a row without a title; migration stopped for review.');
         if ($id <= 0 || $id > $maximum) throw new \RuntimeException('Legacy history migration page was invalid or repeated.');
         $cursor_date = $row_date;
-        $cursor_title = $row_title;
+        // The page query sorts and compares the original database title. Keep
+        // that exact key for pagination; sanitizing it can collide with the
+        // next row and skip records when a page boundary splits the pair.
+        $cursor_title = $source_title;
         $cursor_id = $id;
         $processed++;
         $entries[] = [
