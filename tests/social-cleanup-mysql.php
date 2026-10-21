@@ -13,7 +13,7 @@ $code=file_get_contents($path);
 $code=str_replace(['namespace RoxySocial;',"'roxy_social_posts'","'roxy_social_media_cleanup'","'roxy_social_poster_cleanup'"],['namespace '.$namespace.';',var_export($suffix,true),var_export($queue_suffix,true),var_export($poster_queue_suffix,true)],$code);
 eval('?>'.$code);$store=$namespace.'\\Store';
 eval('namespace '.$namespace.';
-function apply_filters($hook,$value){return $hook==="roxy_social_enable_detached_media_cleanup"?($GLOBALS["cleanup53_detached_enabled"]??$value):$value;}
+function apply_filters($hook,$value){if($hook==="roxy_social_enable_detached_media_cleanup")return $GLOBALS["cleanup53_detached_enabled"]??$value;if($hook==="roxy_social_yoast_indexable_table")return $GLOBALS["cleanup53_yoast_table"]??$value;return $value;}
 function get_post($id){return !empty($GLOBALS["cleanup53_exists"])?(object)["ID"=>$id,"post_type"=>"attachment"]:null;}
 function get_post_meta($id,$key,$single=true){return $key==="_roxy_social_temporary"?($GLOBALS["cleanup53_owner"]?"1":"0"):($key==="_roxy_hangar_asset_id"?"888":null);}
 function wp_get_attachment_url($id){return "https://fixture.example.invalid/cleanup53-".$id.".mp4";}
@@ -32,6 +32,7 @@ try {
         'Yoast image reference'=>'CREATE TEMPORARY TABLE '.$yoast_table.' (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, open_graph_image_id VARCHAR(32) NULL, twitter_image_id VARCHAR(32) NULL, PRIMARY KEY (id))',
         'post content reference'=>'CREATE TEMPORARY TABLE '.$reference_posts.' (ID BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, post_content LONGTEXT NOT NULL, PRIMARY KEY (ID))',
     ] as $label=>$sql){if($wpdb->query($sql)===false)throw new RuntimeException('Private cleanup schema failed for '.$label.': '.($wpdb->last_error?:$sql));}$created=true;
+    $GLOBALS['cleanup53_yoast_table']=$yoast_table;
     add_filter('query',$block,PHP_INT_MAX);add_filter('pre_wp_mail',$mail,PHP_INT_MAX);add_filter('pre_http_request',$http,PHP_INT_MAX);
 $virtual_base=random_int(50000000000,90000000000);
 $reset=static function()use($wpdb,$table,$virtual_base){
