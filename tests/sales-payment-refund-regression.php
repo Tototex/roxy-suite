@@ -34,7 +34,7 @@ eval('namespace ' . $namespace . ';
     public function get_quantity(): int { return $this->quantity; }
     public function get_total(): float { return $this->total; }
   }
-  final class Meta { private string $key; private $value; public function __construct(string $key,$value) {$this->key=$key;$this->value=$value;} public function get_data(): array {return ['key'=>$this->key,'value'=>$this->value];} }
+  final class Meta { private string $key; private $value; public function __construct(string $key,$value) {$this->key=$key;$this->value=$value;} public function get_data(): array {return ["key"=>$this->key,"value"=>$this->value];} }
   final class Order {
     public int $id; public string $status; public bool $paid; public array $items; public array $refund_qty; public array $refund_total; public array $meta=[]; public array $pending_meta=[];
     public function __construct(string $status, bool $paid, array $items, array $refund_qty=[], array $refund_total=[], int $id=42) { $this->id=$id; $this->status=$status; $this->paid=$paid; $this->items=$items; $this->refund_qty=$refund_qty; $this->refund_total=$refund_total; }
