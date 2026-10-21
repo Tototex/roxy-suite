@@ -135,8 +135,8 @@ try {
     $fixture_id=1000+$i;
     if($wpdb->insert($history,['id'=>$fixture_id,'created_at'=>current_time('mysql'),'updated_at'=>current_time('mysql'),'report_date'=>$cursor_date,'showing_id'=>19700000+$i,'show_time'=>'18:00','film_title'=>sprintf('0 Fixture %03d',$i),'source_mode'=>'cursor-fixture'])===false)throw new RuntimeException('Could not seed legacy-title cursor prefix');
   }
-  foreach([[2000,19700100,'A <b>B</b>'],[1500,19700101,'A B']] as [$fixture_id,$showing_id,$title]) {
-    if($wpdb->insert($history,['id'=>$fixture_id,'created_at'=>current_time('mysql'),'updated_at'=>current_time('mysql'),'report_date'=>$cursor_date,'showing_id'=>$showing_id,'show_time'=>'19:00','film_title'=>$title,'source_mode'=>'cursor-fixture'])===false)throw new RuntimeException('Could not seed colliding legacy-title cursor rows');
+  foreach([[2000,19700100,'A <b>B</b>','19:00'],[1500,19700101,'A B','20:00']] as [$fixture_id,$showing_id,$title,$show_time]) {
+    if($wpdb->insert($history,['id'=>$fixture_id,'created_at'=>current_time('mysql'),'updated_at'=>current_time('mysql'),'report_date'=>$cursor_date,'showing_id'=>$showing_id,'show_time'=>$show_time,'film_title'=>$title,'source_mode'=>'cursor-fixture'])===false)throw new RuntimeException('Could not seed colliding legacy-title cursor rows');
   }
   $cursor_order=$wpdb->get_col($wpdb->prepare("SELECT film_title FROM {$history} WHERE report_date=%s ORDER BY film_title ASC,id ASC",$cursor_date));
   if($wpdb->last_error!==''||!is_array($cursor_order)||count($cursor_order)!==101)throw new RuntimeException('Could not verify the legacy-title cursor fixture sort order');
