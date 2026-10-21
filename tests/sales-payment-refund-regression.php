@@ -34,6 +34,7 @@ eval('namespace ' . $namespace . ';
     public function get_quantity(): int { return $this->quantity; }
     public function get_total(): float { return $this->total; }
   }
+  final class Meta { private string $key; private $value; public function __construct(string $key,$value) {$this->key=$key;$this->value=$value;} public function get_data(): array {return ['key'=>$this->key,'value'=>$this->value];} }
   final class Order {
     public int $id; public string $status; public bool $paid; public array $items; public array $refund_qty; public array $refund_total; public array $meta=[]; public array $pending_meta=[];
     public function __construct(string $status, bool $paid, array $items, array $refund_qty=[], array $refund_total=[], int $id=42) { $this->id=$id; $this->status=$status; $this->paid=$paid; $this->items=$items; $this->refund_qty=$refund_qty; $this->refund_total=$refund_total; }
@@ -44,6 +45,7 @@ eval('namespace ' . $namespace . ';
     public function get_total_refunded_for_item(int $id) { return $this->refund_total[$id] ?? 0; }
     public function get_date_created() { return null; }
     public function get_meta(string $key, bool $single=true) { return $this->pending_meta[$key] ?? $this->meta[$key] ?? ""; }
+    public function get_meta_data(): array { $all=array_merge($this->meta,$this->pending_meta); $rows=[]; foreach ($all as $key=>$value) $rows[]=new Meta((string)$key,$value); return $rows; }
     public function update_meta_data(string $key, $value): void { $this->pending_meta[$key]=$value; }
     public function save(): int { if (!empty($GLOBALS["sales_fixture_order_save_failure"])) { $this->pending_meta=[]; return 0; } $this->meta=array_merge($this->meta,$this->pending_meta); $this->pending_meta=[]; return $this->id; }
   }
@@ -196,6 +198,22 @@ $sales::on_order_item_deleted(901);
 $after_item_removal = $sales::get_showing_stats($showing_id);
 $check($after_item_removal['sold_qty']===0 && $after_item_removal['gross_revenue']===0.0,
   'generic deletion of an order’s last ticket item clears its former showing projection');
+
+// Changing a line to another showing's product must clear the prior showing,
+// even though Woo's generic update action sees only the post-update item.
+$second_showing_id = 502; $second_product_id = 702;
+$GLOBALS['sales_fixture_meta'][$second_showing_id] = ['_roxy_pid_adult'=>$second_product_id, '_roxy_start'=>'2037-01-03T19:00', '_roxy_legacy_sales_scan_complete'=>'1'];
+$GLOBALS['sales_fixture_meta'][$second_product_id] = [ROXY_ST_META_SHOWING_ID => (string)$second_showing_id];
+$GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete'] = '1';
+$GLOBALS['sales_fixture_orders'][42] = new $order('processing',true,[new $item(901,701,3,30.0)]);
+$sales::on_order_changed(42);
+$GLOBALS['sales_fixture_orders'][42]->items=[new $item(901,702,2,24.0)];
+$sales::on_order_item_updated(901, ['order_item_qty'=>2,'line_total'=>24.0], 42);
+$old_product_showing_stats = $sales::get_showing_stats($showing_id);
+$new_product_showing_stats = $sales::get_showing_stats($second_showing_id);
+$check($old_product_showing_stats['sold_qty']===0 && $old_product_showing_stats['gross_revenue']===0.0
+  && $new_product_showing_stats['sold_qty']===2 && $new_product_showing_stats['gross_revenue']===24.0,
+  'generic ticket product reassignment clears former showing totals and refreshes the destination showing');
 
 $hooks = $GLOBALS['sales_fixture_hooks'];
 $check(($hooks['woocommerce_before_save_order_items'][2] ?? null)===2

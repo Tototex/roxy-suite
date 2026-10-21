@@ -478,6 +478,19 @@ class Sales {
     if (!$order) return [];
 
     $showing_ids = [];
+    // Keep discovery markers as well as current line-item mappings. A generic
+    // Woo CRUD edit can change the product before its update hook runs; the
+    // marker is the durable record of which projection must also be cleared.
+    if (method_exists($order, 'get_meta_data')) {
+      foreach ((array) $order->get_meta_data() as $meta) {
+        if (!is_object($meta) || !method_exists($meta, 'get_data')) continue;
+        $data = $meta->get_data();
+        $key = is_array($data) ? (string) ($data['key'] ?? '') : '';
+        if (preg_match('/^_roxy_contains_showing_([1-9][0-9]*)$/', $key, $matches)) {
+          $showing_ids[(int) $matches[1]] = (int) $matches[1];
+        }
+      }
+    }
     foreach ($order->get_items() as $item) {
       $product_id = (int) $item->get_product_id();
       if ($product_id <= 0) continue;
