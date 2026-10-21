@@ -19,6 +19,9 @@ $preflight = [
   'linked' => $item && in_array($ticket_id, (array) $item->get_meta('_roxy_ticket_ids', true), true),
   'eligible' => \RoxyST\Tickets::ticket_is_eligible($ticket_id, false),
   'refund_qty' => $item_id > 0 ? (float) $order->get_qty_refunded_for_item($item_id) : null,
+  'refund_ids' => array_map('intval', array_keys((array) $order->get_refunds())),
+  'item_qty' => $item ? (float) $item->get_quantity() : null,
+  'item_refund_meta' => $item ? $item->get_meta('_qty_refunded', true) : null,
 ];
 file_put_contents((string) $ready_path, 'ready');
 $admitted = \RoxyST\Tickets::check_in_ticket($ticket_id, 55, 'ticket');
