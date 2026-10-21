@@ -12,6 +12,7 @@ namespace {
     define('ARRAY_A', 'ARRAY_A');
     define('DAY_IN_SECONDS', 86400);
     function sanitize_text_field($value) { return (string) $value; }
+    function esc_html($value) { return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
     function current_time($format) { return '2026-10-01 12:00:00'; }
     function wp_json_encode($value) { return json_encode($value); }
     function get_option($key, $default = false) { return $GLOBALS['test_options'][$key] ?? ($key === 'admin_email' ? 'manager@example.test' : $default); }
@@ -118,6 +119,20 @@ namespace {
         ['product'=>['unit_cost'=>0],'qty'=>0],
     ]);
     check($known_costs === ['known_total'=>7.5,'incomplete'=>false], 'Zero-quantity unknown-cost rows do not affect known estimate');
+    $estimate_costs = \RoxyInventory\Admin::cost_summary([
+        ['product'=>['unit_cost'=>1.5,'unit_cost_status'=>'estimate'],'qty'=>2],
+    ]);
+    check($estimate_costs === ['known_total'=>3.0,'incomplete'=>false], 'Existing estimated prices remain usable in order totals');
+    $markup_method = new \ReflectionMethod(\RoxyInventory\Admin::class, 'cost_review_markup');
+    if (PHP_VERSION_ID < 80100) $markup_method->setAccessible(true);
+    $admin_source = file_get_contents($argv[1] . '/class-roxy-inventory-admin.php');
+    check(strpos($admin_source, '$cost_label = self::cost_review_markup($p);') !== false, 'Vendor review renders the tested quote provenance label');
+    $confirmed_markup = $markup_method->invoke(null, ['unit_cost'=>15.25,'unit_cost_status'=>'confirmed','unit_cost_source'=>'Vistar price book','unit_cost_checked_at'=>'2026-10-08']);
+    check(strpos($confirmed_markup, '$15.25 (Confirmed)') !== false && strpos($confirmed_markup, 'Source: Vistar price book; checked: 2026-10-08') !== false, 'Vendor review cost shows confirmed quote provenance');
+    $estimate_markup = $markup_method->invoke(null, ['unit_cost'=>1.50,'unit_cost_status'=>'estimate']);
+    check(strpos($estimate_markup, '$1.50 (Estimate)') !== false && strpos($estimate_markup, 'Source: not recorded; checked: not recorded') !== false, 'Vendor review identifies estimates without inventing provenance');
+    $escaped_markup = $markup_method->invoke(null, ['unit_cost'=>15.25,'unit_cost_status'=>'confirmed','unit_cost_source'=>'<img src=x>','unit_cost_checked_at'=>'2026-10-08']);
+    check(strpos($escaped_markup, '&lt;img src=x&gt;') !== false && strpos($escaped_markup, '<img') === false, 'Vendor review escapes quote source text');
     $unknown_costs = \RoxyInventory\Admin::cost_summary([
         ['product'=>['unit_cost'=>2.5],'qty'=>3],
         ['product'=>['unit_cost'=>0],'qty'=>1],

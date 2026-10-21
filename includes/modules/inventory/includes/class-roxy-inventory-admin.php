@@ -69,9 +69,9 @@ class Admin {
         echo '<table class="widefat striped" id="roxy-inventory-vendor-review"><thead><tr><th>Product</th><th>On hand</th><th>Pack</th><th>Order qty</th><th>Unit cost</th><th>Line total</th></tr></thead><tbody>';
         foreach ($rows as $row) {
             $p = $row['product']; $id = (int) $p['id']; $qty = (int) $row['qty']; $known = self::cost_is_known($p); $cost = $known ? (float)$p['unit_cost'] : 0.0;
-            $cost_label = ($p['unit_cost_status'] ?? '') === 'free' ? 'Free' : ($known ? '$' . number_format($cost,2) . ' (' . ucfirst((string)($p['unit_cost_status'] ?? 'estimate')) . ')' : 'Unknown');
+            $cost_label = self::cost_review_markup($p);
             $line_label = $known ? '$' . number_format($qty * $cost,2) : ($qty === 0 ? '$0.00' : 'Unknown');
-            echo '<tr><td>' . esc_html($p['name']) . '</td><td>' . esc_html(number_format((float) $p['on_hand'],0)) . '</td><td>' . esc_html(number_format((float) $p['pack_size'],0)) . '</td><td><input class="roxy-order-qty" data-cost="' . esc_attr($known ? $cost : '') . '" data-cost-known="' . esc_attr(self::cost_review_known_flag($p)) . '" name="order_qty[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($qty) . '" style="width:90px"' . ($open ? ' disabled' : '') . '></td><td>' . esc_html($cost_label) . '</td><td class="roxy-order-line-total">' . esc_html($line_label) . '</td></tr>';
+            echo '<tr><td>' . esc_html($p['name']) . '</td><td>' . esc_html(number_format((float) $p['on_hand'],0)) . '</td><td>' . esc_html(number_format((float) $p['pack_size'],0)) . '</td><td><input class="roxy-order-qty" data-cost="' . esc_attr($known ? $cost : '') . '" data-cost-known="' . esc_attr(self::cost_review_known_flag($p)) . '" name="order_qty[' . $id . ']" type="number" min="0" step="1" value="' . esc_attr($qty) . '" style="width:90px"' . ($open ? ' disabled' : '') . '></td><td>' . $cost_label . '</td><td class="roxy-order-line-total">' . esc_html($line_label) . '</td></tr>';
         }
         $estimate_label = $estimate['incomplete'] ? 'Incomplete — $' . number_format($total,2) . ' known' : '$' . number_format($total,2);
         echo '</tbody><tfoot><tr><th colspan="5">Estimated total</th><th id="roxy-order-total">' . esc_html($estimate_label) . '</th></tr></tfoot></table><input type="hidden" name="review_complete" value="1">';
@@ -207,6 +207,16 @@ JS;
     }
     public static function cost_review_known_flag(array $record): string {
         return self::cost_is_known($record) ? '1' : '0';
+    }
+    private static function cost_review_markup(array $record): string {
+        $known = self::cost_is_known($record);
+        $status = (string) ($record['unit_cost_status'] ?? 'estimate');
+        $cost = (float) ($record['unit_cost'] ?? 0);
+        $label = $status === 'free' ? 'Free' : ($known ? '$' . number_format($cost, 2) . ' (' . ucfirst($status) . ')' : 'Unknown');
+        $source = trim((string) ($record['unit_cost_source'] ?? ''));
+        $checked_at = trim((string) ($record['unit_cost_checked_at'] ?? ''));
+        $details = 'Source: ' . ($source !== '' ? esc_html($source) : 'not recorded') . '; checked: ' . ($checked_at !== '' ? esc_html($checked_at) : 'not recorded');
+        return esc_html($label) . '<br><small>' . $details . '</small>';
     }
     public static function cost_summary(array $rows): array {
         $known_total = 0.0; $incomplete = false;
