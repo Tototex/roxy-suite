@@ -94,6 +94,21 @@ jobs:
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" eval '$flags = array_fill_keys(["arcade","sub_check","will_call","show_tickets","requested_showings","event_booking","grosses","inventory","social_publisher"], false); $flags["sub_check"] = true; $flags["show_tickets"] = true; $flags["requested_showings"] = true; $flags["event_booking"] = true; update_option("roxy_suite_modules", $flags);'
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin activate roxy-suite/roxy-suite.php
           echo "R2_WP_PATH=$wp_path" >> "$GITHUB_ENV"
+      - name: Run Member Check schema and live-SQL regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          for fixture in member-schema-regression.php member-mysql-regression.php; do
+            output="$RUNNER_TEMP/$fixture-output.txt"
+            if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/$fixture" "$GITHUB_WORKSPACE" >"$output" 2>&1; then
+              cat "$output"
+            else
+              status=$?
+              details="$(tail -n 40 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+              echo "::error title=$fixture failed::$details"
+              exit "$status"
+            fi
+          done
       - name: Verify Arcade award locking on independent MySQL connections
         shell: bash
         run: |
@@ -118,6 +133,19 @@ jobs:
             status=$?
             details="$(tail -n 50 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
             echo "::error title=Show Tickets checkout-hold lifecycle fixture failed::$details"
+            exit "$status"
+          fi
+      - name: Run multi-day event room-lock regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/multi-day-event-lock-output.txt"
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/multi-day-event-lock-regression.php" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 40 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Multi-day event room-lock regression failed::$details"
             exit "$status"
           fi
       - name: Run Event Booking serialized reservation lifecycle fixture
