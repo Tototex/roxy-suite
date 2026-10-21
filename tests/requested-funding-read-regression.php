@@ -281,6 +281,8 @@ namespace {
     $GLOBALS['funding_fixture']['meta'][41][\RoxyRS\CPT::META_STATUS] = 'active';
     $GLOBALS['funding_fixture']['meta'][41][\RoxyRS\CPT::META_TARGET_NOTIFIED] = '';
     $GLOBALS['funding_fixture']['mail'] = 0;
+    $wpdb->query_fails = false;
+    $wpdb->last_error = '';
     $GLOBALS['wpdb']->rows = [['id'=>2,'request_id'=>41,'status'=>'pending','general_qty'=>'0','discount_qty'=>'0','support_qty'=>'0','subscriber_qty'=>'0','charge_total'=>'5000','sponsor_amount'=>'5000','sponsor_ticket_qty'=>'2','woo_order_id'=>null,'agreement_json'=>null,'approved_showing_id'=>null]];
     $GLOBALS['funding_fixture']['mail_result'] = false;
     \RoxyRS\Conversion::maybe_mark_request_ready(41);
