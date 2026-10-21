@@ -346,7 +346,7 @@ namespace {
     && $GLOBALS['fixture_options'][$queue_key]===$queue_before && !$GLOBALS['wpdb']->lock_held,
     'successful-but-no-op queue write fails verification and preserves existing dates');
   $GLOBALS['queue_write_mode'] = '';
-  $GLOBALS['fixture_options'][$queue_key] = [];
+  $GLOBALS['fixture_options'][$queue_key] = ['2000-01-04'=>['attempt'=>0,'status'=>'pending','message'=>'','retry_at'=>time()+60]];
   $GLOBALS['fixture_options']['roxy_grosses_last_auto_date'] = '';
   $GLOBALS['cron_events'] = array_values(array_filter($GLOBALS['cron_events'], static fn(array $event): bool => !($event['hook'] === 'roxy_grosses_closed_day_refresh' && ($event['args'] ?? []) === ['2000-01-04', 0])));
   $refresh_calls_before_defer = count(\RoxyGrosses\Reporter::$closed_day_calls);
