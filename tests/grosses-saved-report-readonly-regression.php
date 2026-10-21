@@ -34,6 +34,13 @@ namespace RoxyGrosses {
 }
 
 namespace {
+  $GLOBALS['wpdb'] = new class {
+    public string $prefix = 'fixture_';
+    public string $last_error = '';
+    public function prepare($query, ...$args) { return $query; }
+    public function esc_like($value) { return addcslashes((string) $value, '_%\\'); }
+    public function get_var($query) { $this->last_error = ''; return null; } // Inventory is absent from this isolated saved-report fixture.
+  };
   define('ABSPATH', sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'roxy-no-web-root' . DIRECTORY_SEPARATOR);
   define('WP_CONTENT_DIR', ABSPATH . 'wp-content');
   function add_action(...$args): void {}
