@@ -25,7 +25,13 @@ $block=static function($sql)use($table,$queue_table,$poster_queue_table,$yoast_t
 $mail=static function(){throw new RuntimeException('Unexpected mail.');};$http=static function(){throw new RuntimeException('Unexpected HTTP.');};
 $old=$wpdb->suppress_errors(true);$created=false;
 try {
-    if($wpdb->query('CREATE TEMPORARY TABLE '.$table.' LIKE '.$production)===false||$wpdb->query('CREATE TEMPORARY TABLE '.$queue_table.' (attachment_id BIGINT UNSIGNED NOT NULL, social_post_id BIGINT UNSIGNED NOT NULL, cleanup_after DATETIME NOT NULL, created_at DATETIME NOT NULL, PRIMARY KEY (attachment_id), KEY cleanup_after (cleanup_after), KEY social_post_id (social_post_id))')===false||$wpdb->query('CREATE TEMPORARY TABLE '.$poster_queue_table.' (path_hash CHAR(64) NOT NULL, file_path TEXT NOT NULL, attempts INT UNSIGNED NOT NULL DEFAULT 0, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, PRIMARY KEY (path_hash), KEY retry_batch (attempts, updated_at, path_hash))')===false||$wpdb->query('CREATE TEMPORARY TABLE '.$yoast_table.' (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, open_graph_image_id VARCHAR(32) NULL, twitter_image_id VARCHAR(32) NULL, PRIMARY KEY (id))')===false||$wpdb->query('CREATE TEMPORARY TABLE '.$reference_posts.' (ID BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, post_content LONGTEXT NOT NULL, PRIMARY KEY (ID))')===false)throw new RuntimeException('Private cleanup schema failed.');$created=true;
+    foreach([
+        'social rows'=>'CREATE TEMPORARY TABLE '.$table.' LIKE '.$production,
+        'media cleanup queue'=>'CREATE TEMPORARY TABLE '.$queue_table.' (attachment_id BIGINT UNSIGNED NOT NULL, social_post_id BIGINT UNSIGNED NOT NULL, cleanup_after DATETIME NOT NULL, created_at DATETIME NOT NULL, PRIMARY KEY (attachment_id), KEY cleanup_after (cleanup_after), KEY social_post_id (social_post_id))',
+        'poster cleanup queue'=>'CREATE TEMPORARY TABLE '.$poster_queue_table.' (path_hash CHAR(64) NOT NULL, file_path TEXT NOT NULL, attempts INT UNSIGNED NOT NULL DEFAULT 0, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, PRIMARY KEY (path_hash), KEY retry_batch (attempts, updated_at, path_hash))',
+        'Yoast image reference'=>'CREATE TEMPORARY TABLE '.$yoast_table.' (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, open_graph_image_id VARCHAR(32) NULL, twitter_image_id VARCHAR(32) NULL, PRIMARY KEY (id))',
+        'post content reference'=>'CREATE TEMPORARY TABLE '.$reference_posts.' (ID BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, post_content LONGTEXT NOT NULL, PRIMARY KEY (ID))',
+    ] as $label=>$sql){if($wpdb->query($sql)===false)throw new RuntimeException('Private cleanup schema failed for '.$label.': '.($wpdb->last_error?:$sql));}$created=true;
     add_filter('query',$block,PHP_INT_MAX);add_filter('pre_wp_mail',$mail,PHP_INT_MAX);add_filter('pre_http_request',$http,PHP_INT_MAX);
 $virtual_base=random_int(50000000000,90000000000);
 $reset=static function()use($wpdb,$table,$virtual_base){
