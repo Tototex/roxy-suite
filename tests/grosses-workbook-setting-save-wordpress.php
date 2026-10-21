@@ -29,9 +29,16 @@ foreach ([$settings_path, $workbook_path] as $path) {
         }
         $source = str_replace($redirect, 'wp_safe_redirect($url);' . "\n    return;", $source);
         $namespace_declaration = 'namespace ' . $namespace . ';';
+        $test_helpers = <<<'PHP'
+function roxy_suite_user_can_access_admin(): bool { return !empty($GLOBALS['roxy_workbook_request_authorized']); }
+function wp_handle_upload(array $file, array $overrides = []): array {
+    $path = (string) ($GLOBALS['roxy_workbook_upload_path'] ?? '');
+    return is_file($path) ? ['file' => $path] : ['error' => 'Synthetic upload fixture is missing.'];
+}
+PHP;
         $source = str_replace(
             $namespace_declaration,
-            $namespace_declaration . "\nfunction roxy_suite_user_can_access_admin(): bool { return !empty($GLOBALS['roxy_workbook_request_authorized']); }\nfunction wp_handle_upload(array $file, array $overrides = []): array { $path = (string) ($GLOBALS['roxy_workbook_upload_path'] ?? ''); return is_file($path) ? ['file' => $path] : ['error' => 'Synthetic upload fixture is missing.']; }",
+            $namespace_declaration . "\n" . $test_helpers,
             $source
         );
     }
