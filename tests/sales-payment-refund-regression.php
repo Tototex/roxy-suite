@@ -214,6 +214,11 @@ $new_product_showing_stats = $sales::get_showing_stats($second_showing_id);
 $check($old_product_showing_stats['sold_qty']===0 && $old_product_showing_stats['gross_revenue']===0.0
   && $new_product_showing_stats['sold_qty']===2 && $new_product_showing_stats['gross_revenue']===24.0,
   'generic ticket product reassignment clears former showing totals and refreshes the destination showing');
+$GLOBALS['sales_fixture_orders'][42]->items=[new $item(901,703,2,24.0)];
+$sales::on_order_item_updated(901, ['order_item_qty'=>2,'line_total'=>24.0], 42);
+$removed_ticket_showing_stats = $sales::get_showing_stats($second_showing_id);
+$check($removed_ticket_showing_stats['sold_qty']===0 && $removed_ticket_showing_stats['gross_revenue']===0.0,
+  'generic reassignment from a ticket product to a non-ticket product clears the former showing projection');
 
 $hooks = $GLOBALS['sales_fixture_hooks'];
 $check(($hooks['woocommerce_before_save_order_items'][2] ?? null)===2
