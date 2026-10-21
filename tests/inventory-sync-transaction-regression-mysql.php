@@ -361,7 +361,7 @@ eval($vendor_map_code);
         $check(is_array($run) && $run['run_type'] === 'pull' && $run['status'] === 'success'
             && strpos($run['message'], '2 Square variations pulled') !== false,
             'successful retry commits the pull activity record last');
-        $check(count($http_requests) === $request_count + 8, 'ambiguous, resolved, and follow-up pulls use only mocked Square reads');
+        $check(count($http_requests) === $request_count + 9, 'ambiguous, resolved, and follow-up pulls use only mocked Square reads');
         foreach ($http_requests as $request) {
             $check(parse_url($request['url'], PHP_URL_HOST) === 'connect.squareupsandbox.com', 'every provider request was intercepted by the sandbox fixture');
         }
