@@ -469,6 +469,27 @@ final class Store {
     private static function has_core_attachment_reference(int $attachment_id, string $url): bool {
         global $wpdb;
         if ($attachment_id <= 0 || $url === '') return true;
+        // Comments can contain linked media URLs independently of posts and
+        // metadata. Treat a query failure as a reference so cleanup fails closed.
+        if (!is_string($wpdb->comments) || !preg_match('/^[A-Za-z0-9_]+$/D', $wpdb->comments)) return true;
+        $comment_path = parse_url($url, PHP_URL_PATH);
+        if (!is_string($comment_path) || $comment_path === '') return true;
+        $comment_patterns = array_values(array_unique([
+            '%' . $wpdb->esc_like($url) . '%',
+            '%' . $wpdb->esc_like(str_replace('/', '\/', $url)) . '%',
+            '%' . $wpdb->esc_like($comment_path) . '%',
+            '%' . $wpdb->esc_like(str_replace('/', '\/', $comment_path)) . '%',
+            '%' . $wpdb->esc_like(ltrim($comment_path, '/')) . '%',
+            '%' . $wpdb->esc_like(str_replace('/', '\/', ltrim($comment_path, '/'))) . '%',
+            '%' . $wpdb->esc_like('wp-image-' . $attachment_id) . '%',
+        ]));
+        $comment_clauses = array_fill(0, count($comment_patterns), 'comment_content LIKE %s');
+        $wpdb->last_error = '';
+        $comment_reference = $wpdb->get_var($wpdb->prepare(
+            'SELECT comment_ID FROM ' . $wpdb->comments . ' WHERE ' . implode(' OR ', $comment_clauses) . ' LIMIT 1',
+            ...$comment_patterns
+        ));
+        if ($wpdb->last_error !== '' || $comment_reference !== null) return true;
         static $yoast_table_exists = [];
         // Yoast stores attachment IDs outside WordPress core metadata. When the
         // indexable table exists, include its social-preview image fields; a

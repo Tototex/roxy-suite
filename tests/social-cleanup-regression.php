@@ -7,6 +7,7 @@ if (!defined('DB_NAME')) define('DB_NAME', 'social_cleanup_fixture');
 final class CleanupWpdb {
     public string $prefix = 'wp_';
     public string $posts = 'wp_posts';
+    public string $comments = 'wp_comments';
     public string $postmeta = 'wp_postmeta';
     public string $usermeta = 'wp_usermeta';
     public string $termmeta = 'wp_termmeta';
@@ -19,6 +20,8 @@ final class CleanupWpdb {
     public array $meta = [];
     public array $post_content = [];
     public array $post_fields = [];
+    public array $comment_content = [];
+    public bool $comment_query_error = false;
     public array $postmeta_values = [];
     public array $metadata_values = ['wp_usermeta'=>[], 'wp_termmeta'=>[], 'wp_commentmeta'=>[], 'wp_options'=>[]];
     public bool $initial_query_error = false;
@@ -261,6 +264,18 @@ final class CleanupWpdb {
             }
             return null;
         }
+        if (strpos($query, 'FROM wp_comments') !== false) {
+            if ($this->comment_query_error) { $this->last_error = 'fixture comments read error'; return null; }
+            preg_match_all('/comment_content LIKE \'(.*?)\'/s', $query, $matches);
+            $patterns = array_map(static fn($pattern) => stripslashes($pattern), $matches[1] ?? []);
+            foreach ($this->comment_content as $id => $content) {
+                foreach ($patterns as $pattern) {
+                    $like_regex = '/^' . str_replace('%', '.*', preg_quote($pattern, '/')) . '$/s';
+                    if ($pattern !== '' && preg_match($like_regex, (string) $content)) return $id;
+                }
+            }
+            return null;
+        }
         foreach (['wp_postmeta'=>$this->postmeta_values] + $this->metadata_values as $table => $values) {
             if (strpos($query, 'FROM ' . $table) === false) continue;
             if ($this->fail_reference_table === $table) { $this->last_error = 'fixture ' . $table . ' read error'; return null; }
@@ -430,6 +445,9 @@ foreach ([
     ['relative post upload path without attachment ID', static function () { $GLOBALS['wpdb']->post_content[5] = '<img src="/uploads/clip.mp4">'; }],
     ['JSON-escaped relative post upload path', static function () { $GLOBALS['wpdb']->post_content[5] = '{"url":"\\/uploads\\/clip.mp4"}'; }],
     ['JSON-escaped post URL without attachment ID', static function () { $GLOBALS['wpdb']->post_content[5] = json_encode(['url'=>'https://fixture.invalid/uploads/clip.mp4']); }],
+    ['shared comment URL without attachment ID', static function () { $GLOBALS['wpdb']->comment_content[9] = '<img src="https://fixture.invalid/uploads/clip.mp4">'; }],
+    ['JSON-escaped relative comment upload path', static function () { $GLOBALS['wpdb']->comment_content[9] = '{"url":"\\/uploads\\/clip.mp4"}'; }],
+    ['comment read failure preserves media candidate', static function () { $GLOBALS['wpdb']->comment_query_error = true; }],
     ['shared post excerpt URL', static function () { $GLOBALS['wpdb']->post_fields[5]['post_excerpt'] = 'Preview https://fixture.invalid/uploads/clip.mp4'; }],
     ['shared filtered post content URL', static function () { $GLOBALS['wpdb']->post_fields[5]['post_content_filtered'] = 'https://fixture.invalid/uploads/clip.mp4'; }],
     ['shared post GUID URL', static function () { $GLOBALS['wpdb']->post_fields[5]['guid'] = 'https://fixture.invalid/uploads/clip.mp4'; }],
