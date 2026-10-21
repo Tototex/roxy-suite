@@ -152,6 +152,11 @@ try {
 
   $store_class = $prefix_class . 'Store';
   $report_class = $prefix_class . 'CashflowReport';
+  // WooCommerce/plugin setup can consult an external service when creating
+  // synthetic records. The guard remains active throughout; count only calls
+  // made by the read-only Cashflow projection below.
+  $http_calls = 0;
+  $mail_calls = 0;
   $events = $store_class::completed_refund_events_created_between('2026-10-21 07:00:00', '2026-10-22 07:00:00', ['fixture-location']);
   $assert(count($events) === 1 && ($events[0]['event_id'] ?? '') === $event_id, 'actual Store SQL excludes refund events outside configured Square locations');
   $oct20 = $report_class::for_day('2026-10-20');
