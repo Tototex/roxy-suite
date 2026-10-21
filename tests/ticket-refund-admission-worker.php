@@ -10,6 +10,17 @@ if (!$order || strpos((string) $order->get_customer_note(), (string) $label) !==
   || !class_exists('RoxyST\\Tickets')) {
   throw new RuntimeException('Private refund/admission fixture identity required');
 }
+$item_id = (int) get_post_meta($ticket_id, '_roxy_ticket_order_item_id', true);
+$item = $order->get_item($item_id);
+$preflight = [
+  'order_status' => (string) $order->get_status(),
+  'ticket_state' => (string) get_post_meta($ticket_id, '_roxy_ticket_state', true),
+  'ticket_refunded' => (string) get_post_meta($ticket_id, '_roxy_ticket_refunded', true),
+  'linked' => $item && in_array($ticket_id, (array) $item->get_meta('_roxy_ticket_ids', true), true),
+  'eligible' => \RoxyST\Tickets::ticket_is_eligible($ticket_id, false),
+  'refund_qty' => $item_id > 0 ? (float) $order->get_qty_refunded_for_item($item_id) : null,
+];
 file_put_contents((string) $ready_path, 'ready');
 $admitted = \RoxyST\Tickets::check_in_ticket($ticket_id, 55, 'ticket');
+echo 'REFUND_RACE_PREFLIGHT=' . wp_json_encode($preflight) . PHP_EOL;
 echo 'REFUND_RACE_ADMISSION=' . (int) $admitted . PHP_EOL;
