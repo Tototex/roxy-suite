@@ -21,6 +21,8 @@ class Tickets {
   private const QR_RATE_LIMIT_MAX = 60;
   private const DOOR_STATS_CACHE_TTL = 5;
   private static ?Issuance $issuance = null;
+  private static array $admin_item_save_orders = [];
+  private static array $deleted_ticket_order_items = [];
 
   public static function init(): void {
     add_action('init', [__CLASS__, 'register_post_type']);
@@ -28,7 +30,11 @@ class Tickets {
     add_action('woocommerce_order_status_changed', [__CLASS__, 'on_order_changed'], 30, 1);
     add_action('woocommerce_refund_created', [__CLASS__, 'on_refund_created'], 30, 2);
     add_action('woocommerce_refund_deleted', [__CLASS__, 'on_refund_deleted'], 30, 2);
-    add_action('roxy_st_retry_order_tickets', [__CLASS__, 'on_order_changed'], 10, 2);
+    add_action('woocommerce_before_save_order_items', [__CLASS__, 'before_order_items_saved'], 1, 2);
+    add_action('woocommerce_saved_order_items', [__CLASS__, 'on_order_items_saved'], 30, 2);
+    add_action('woocommerce_before_delete_order_item', [__CLASS__, 'before_order_item_deleted'], 1, 1);
+    add_action('woocommerce_delete_order_item', [__CLASS__, 'on_order_item_deleted'], 30, 1);
+    add_action('roxy_st_retry_order_tickets', [__CLASS__, 'on_order_changed'], 10, 3);
 
     add_action('admin_post_roxy_st_check_in_ticket', [__CLASS__, 'handle_check_in']);
     add_action('admin_post_roxy_st_uncheck_in_ticket', [__CLASS__, 'handle_uncheck_in']);
@@ -104,8 +110,51 @@ class Tickets {
     ]);
   }
 
-  public static function on_order_changed(int $order_id, int $attempt = 0): void {
-    self::sync_order_tickets($order_id, $attempt);
+  public static function on_order_changed(int $order_id, int $attempt = 0, array $removed_item_ids = []): void {
+    self::sync_order_tickets($order_id, $attempt, $removed_item_ids);
+  }
+
+  /** Capture Woo's batched order-item editor so ticket reconciliation runs after all edits. */
+  public static function before_order_items_saved(int $order_id, array $items = []): void {
+    if ($order_id > 0) self::$admin_item_save_orders[$order_id] = true;
+  }
+
+  public static function on_order_items_saved(int $order_id, array $items = []): void {
+    if ($order_id <= 0) return;
+    $removed = [];
+    foreach (self::$deleted_ticket_order_items as $item_id => $parent_order_id) {
+      if ($parent_order_id === $order_id) {
+        $removed[] = (int) $item_id;
+        unset(self::$deleted_ticket_order_items[$item_id]);
+      }
+    }
+    unset(self::$admin_item_save_orders[$order_id]);
+    self::sync_order_tickets($order_id, 0, $removed);
+  }
+
+  /** Preserve the parent identity before Woo removes an order line. */
+  public static function before_order_item_deleted(int $item_id): void {
+    $item = self::get_order_item_for_ticket_sync($item_id);
+    if (!$item || !method_exists($item, 'get_order_id')) return;
+    $order_id = (int) $item->get_order_id();
+    if ($order_id <= 0) return;
+    $product_id = (int) $item->get_product_id();
+    if ((int) get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true) <= 0
+      && !self::normalize_ticket_ids($item->get_meta('_roxy_ticket_ids', true))) return;
+    self::$deleted_ticket_order_items[$item_id] = $order_id;
+  }
+
+  public static function on_order_item_deleted(int $item_id): void {
+    $order_id = (int) (self::$deleted_ticket_order_items[$item_id] ?? 0);
+    if ($order_id <= 0 || isset(self::$admin_item_save_orders[$order_id])) return;
+    unset(self::$deleted_ticket_order_items[$item_id]);
+    self::sync_order_tickets($order_id, 0, [$item_id]);
+  }
+
+  private static function get_order_item_for_ticket_sync(int $item_id) {
+    if ($item_id <= 0 || !class_exists('WC_Order_Factory')) return null;
+    try { return \WC_Order_Factory::get_order_item($item_id); }
+    catch (\Throwable $error) { return null; }
   }
 
   public static function on_refund_created(int $refund_id, array $args = []): void {
@@ -120,18 +169,19 @@ class Tickets {
     if ($order_id > 0) self::sync_order_tickets($order_id);
   }
 
-  public static function sync_order_tickets(int $order_id, int $attempt = 0): bool {
+  public static function sync_order_tickets(int $order_id, int $attempt = 0, array $removed_item_ids = []): bool {
     if ($order_id <= 0) return false;
     if (self::$issuance !== null) return false;
     $attempt = max(0, $attempt);
     try {
       $operation = new Issuance($order_id);
-      $operation->run(static function (Issuance $operation) use ($order_id): void {
+      $removed_item_ids = array_values(array_unique(array_filter(array_map('intval', $removed_item_ids), static fn(int $id): bool => $id > 0)));
+      $operation->run(static function (Issuance $operation) use ($order_id, $removed_item_ids): void {
         self::$issuance = $operation;
         try {
           clean_post_cache($order_id);
           wp_cache_delete('order-items-'.$order_id, 'orders');
-          self::sync_order_tickets_locked($order_id);
+          self::sync_order_tickets_locked($order_id, $removed_item_ids);
         } finally { self::$issuance = null; }
       });
       self::invalidate_door_stats_cache_for_order($order_id);
@@ -141,13 +191,14 @@ class Tickets {
       Log::error('Ticket issuance incomplete; reconciliation required', ['order_id'=>$order_id,'attempt'=>$attempt]);
       if ($attempt < 3) {
         $retry_args = [$order_id, $attempt + 1];
+        if (!empty($removed_item_ids)) $retry_args[] = $removed_item_ids;
         if (!wp_next_scheduled('roxy_st_retry_order_tickets', $retry_args)) wp_schedule_single_event(time() + [60,300,900][$attempt], 'roxy_st_retry_order_tickets', $retry_args);
       }
       return false;
     }
   }
 
-  private static function sync_order_tickets_locked(int $order_id): void {
+  private static function sync_order_tickets_locked(int $order_id, array $removed_item_ids = []): void {
     $order = wc_get_order($order_id);
     if (!$order) throw new \RuntimeException('WooCommerce order could not be loaded for ticket reconciliation');
 
@@ -202,6 +253,15 @@ class Tickets {
       if ($existing !== $keep) {
         self::$issuance->item_ids((int)$item_id, $keep);
         $item->update_meta_data('_roxy_ticket_ids', $keep);
+      }
+    }
+
+    // A deleted line is no longer returned by the order CRUD reader, so its
+    // issued tickets need an explicit, auditable invalidation by the captured
+    // pre-delete item identity.
+    foreach ($removed_item_ids as $removed_item_id) {
+      foreach (self::$issuance->tickets_for_item($order_id, (int) $removed_item_id) as $ticket_id) {
+        self::set_ticket_state((int) $ticket_id, self::invalid_state_for_order($order_status));
       }
     }
   }
