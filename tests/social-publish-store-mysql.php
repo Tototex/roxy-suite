@@ -35,10 +35,13 @@ try {
     roxy_publish_fixture_check(\RoxySocial\PublishFixtureStore::compare_publish_status(2,'needs_review','approved')
         &&\RoxySocial\PublishFixtureStore::find(2)['last_error']===null,'explicit reviewed approval atomically clears the stale ambiguity marker');
     $wpdb->insert($table,['id'=>5,'status'=>'needs_review','updated_at'=>current_time('mysql'),'temporary_attachment_id'=>88,'cleanup_after'=>null]);
+    $removed_min_deadline=current_datetime()->modify('+72 hours')->format('Y-m-d H:i:s');
+    roxy_publish_fixture_check(!\RoxySocial\PublishFixtureStore::update_publish_result(5,'removed')
+        &&\RoxySocial\PublishFixtureStore::find(5)['status']==='needs_review','removed transition rejects a missing row-lock claim');
     $removed_claim=\RoxySocial\PublishFixtureStore::acquire_publish_lock(5);
     $removed_saved=$removed_claim&&\RoxySocial\PublishFixtureStore::update_publish_result(5,'removed','','','',$removed_claim);
     $removed_row=\RoxySocial\PublishFixtureStore::find(5);
-    roxy_publish_fixture_check($removed_saved&&$removed_row['status']==='removed'&&$removed_row['cleanup_after']>=current_datetime()->modify('+71 hours')->format('Y-m-d H:i:s')
+    roxy_publish_fixture_check($removed_saved&&$removed_row['status']==='removed'&&$removed_row['cleanup_after']>=$removed_min_deadline
         &&(int)$removed_row['temporary_attachment_id']===88,'confirmed removal durably schedules owned media cleanup after the grace period');
     if($removed_claim)\RoxySocial\PublishFixtureStore::release_publish_lock($removed_claim);
     $claim=\RoxySocial\PublishFixtureStore::acquire_publish_lock(1);

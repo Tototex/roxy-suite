@@ -1040,6 +1040,9 @@ final class Store {
         $media_claim = null;
         $cleanup_deadline = null;
         if ($status === 'removed') {
+            // A completed removal is a destructive lifecycle transition. Do
+            // not rely solely on Publisher callers to provide row ownership.
+            if ($claim === null || !self::owns_publish_lock($claim)) return false;
             $row = self::find($id);
             if (!$row) return false;
             if (!empty($row['temporary_attachment_id'])) {
