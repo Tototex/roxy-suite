@@ -251,6 +251,12 @@ namespace {
         return (object) ['ID'=>$id,'post_type'=>'roxy_req_showing','post_title'=>'Fixture request','post_content'=>'','post_excerpt'=>'','post_author'=>0,'post_status'=>$post_status];
     }
     function get_post_type($id) { return $id === 801 ? 'roxy_showing' : 'roxy_req_showing'; }
+    if (!in_array('--missing-showing-time-lock', $_SERVER['argv'] ?? [], true)) {
+        function roxy_eb_with_showing_time_lock($target_at, $showing_id, $write) {
+            if (!empty($GLOBALS['fixture_showing_lock_error'])) return new WP_Error('fixture_lock_failed', 'fixture conflict lock failed');
+            return $write();
+        }
+    }
     function wp_update_post($data, $wp_error = false) {
         if (($data['post_status'] ?? '') === 'publish' && !empty($GLOBALS['fixture_publish_write_error'])) return $wp_error ? new WP_Error('fixture_publish_failed', 'fixture publish failure') : 0;
         if (($data['post_status'] ?? '') === 'publish' && !empty($GLOBALS['fixture_stale_publish_readback'])) return (int) $data['ID'];
@@ -314,6 +320,7 @@ namespace {
         $GLOBALS['fixture_stale_approval_readback'] = false;
         $GLOBALS['fixture_stale_publish_readback'] = false;
         $GLOBALS['fixture_approval_status_read_error'] = false;
+        $GLOBALS['fixture_showing_lock_error'] = false;
         $GLOBALS['fixture_subscription_error'] = $entitlement_error;
         $GLOBALS['fixture_meta'] = [501 => [
             \RoxyRS\CPT::META_STATUS => 'active',
@@ -347,6 +354,17 @@ namespace {
     function has_error_redirect($url) { return strpos($url, 'roxy_rs_notice=error') !== false; }
 
     reset_fixture([]);
+    if (in_array('--missing-showing-time-lock', $_SERVER['argv'] ?? [], true)) {
+        reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing();
+        $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_TARGET_AT] = '2026-10-30 19:00';
+        $unavailable = \RoxyRS\Conversion::approve_request(501);
+        check_fixture(is_wp_error($unavailable) && $unavailable->get_error_code() === 'showing_lock_unavailable'
+            && $GLOBALS['fixture_order_creates'] === 0 && !isset($GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_APPROVED_SHOWING_ID])
+            && $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'conversion_review',
+            'missing shared showing-time lock stops approval before showing or order creation');
+        echo "OK: {$checks} missing showing-time lock checks\n";
+        exit(0);
+    }
     check_fixture(has_error_redirect(invoke_backing()) && count($wpdb->rows) === 0, 'nonmember cannot pledge subscriber tickets');
     check_fixture($wpdb->release_count === 0 && !$wpdb->is_locked(), 'nonmember denial acquired no entitlement lease');
     reset_fixture([new FixtureSubscription('expired', 2)]);
@@ -496,6 +514,14 @@ namespace {
     check_fixture(is_wp_error(\RoxyRS\Conversion::approve_request(501)) && $GLOBALS['fixture_order']->completed === 0, 'partial approval returns review rather than successful confirmation');
     check_fixture($GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_STATUS] === 'conversion_review'
         && $GLOBALS['fixture_mails'] === [['to'=>'admin@example.invalid','subject'=>'Requested showing approval needs attention: Fixture request']], 'partial approval closes pledging and sends only manager review notice');
+
+    reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing();
+    $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_TARGET_AT] = '2026-10-30 19:00';
+    $GLOBALS['fixture_showing_lock_error'] = true;
+    $lock_failure = \RoxyRS\Conversion::approve_request(501);
+    check_fixture(is_wp_error($lock_failure) && $GLOBALS['fixture_order_creates'] === 0
+        && !isset($GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_APPROVED_SHOWING_ID]),
+        'shared showing-time conflict lock stops approval before showing or order creation');
 
     reset_fixture([new FixtureSubscription('active', 2)]); seed_conversion_backing();
     $GLOBALS['fixture_meta'][501][\RoxyRS\CPT::META_TARGET_AT] = '2026-10-30 19:00';

@@ -70,7 +70,7 @@ namespace {
     $GLOBALS['funding_fixture'] = [
         'meta'=>[41=>['_roxy_rs_status'=>'active','_roxy_rs_funding_goal'=>5000,'_roxy_rs_deadline_at'=>'2000-01-01 00:00:00',
             '_roxy_rs_general_price'=>'12','_roxy_rs_discount_price'=>'8','_roxy_rs_matinee_price'=>'8','_roxy_rs_pricing_profile'=>'movie_evening']],
-        'updates'=>[], 'mail'=>0, 'posts'=>[], 'posts_error'=>false, 'options'=>[],
+        'updates'=>[], 'mail'=>0, 'mail_result'=>true, 'posts'=>[], 'posts_error'=>false, 'options'=>[],
     ];
     function roxy_rs_module_fixture_unused(): void {}
     function current_time(string $type, bool $gmt = false): string { return '2026-10-06 12:00:00'; }
@@ -103,7 +103,7 @@ namespace {
     function home_url(string $path = '/'): string { return 'https://fixture.invalid' . $path; }
     function get_the_title($id): string { return 'Fixture request'; }
     function admin_url(string $path = ''): string { return 'https://fixture.invalid/' . $path; }
-    function wp_mail(...$args): bool { $GLOBALS['funding_fixture']['mail']++; return true; }
+    function wp_mail(...$args): bool { $GLOBALS['funding_fixture']['mail']++; return $GLOBALS['funding_fixture']['mail_result']; }
     function wp_timezone(): DateTimeZone { return new DateTimeZone('UTC'); }
     function current_datetime(): DateTimeImmutable { return new DateTimeImmutable('2026-10-06 12:00:00', new DateTimeZone('UTC')); }
     function has_post_thumbnail(int $id): bool { return false; }
@@ -277,6 +277,27 @@ namespace {
         . ', message=' . ($GLOBALS['funding_fixture']['redirect']['message'] ?? 'missing') . ')');
     $check(in_array(501, $GLOBALS['funding_fixture']['cache'], true) && ($GLOBALS['funding_fixture']['saved_backing']['subscriber_qty'] ?? 0) === 1,
         'post-insert failure retains replay guard and original backing payload');
+
+    $GLOBALS['funding_fixture']['meta'][41][\RoxyRS\CPT::META_STATUS] = 'active';
+    $GLOBALS['funding_fixture']['meta'][41][\RoxyRS\CPT::META_TARGET_NOTIFIED] = '';
+    $GLOBALS['funding_fixture']['mail'] = 0;
+    $GLOBALS['wpdb']->rows = [['id'=>2,'request_id'=>41,'status'=>'pending','general_qty'=>'0','discount_qty'=>'0','support_qty'=>'0','subscriber_qty'=>'0','charge_total'=>'5000','sponsor_amount'=>'5000','sponsor_ticket_qty'=>'2','woo_order_id'=>null,'agreement_json'=>null,'approved_showing_id'=>null]];
+    $GLOBALS['funding_fixture']['mail_result'] = false;
+    \RoxyRS\Conversion::maybe_mark_request_ready(41);
+    $check(($GLOBALS['funding_fixture']['meta'][41][\RoxyRS\CPT::META_STATUS] ?? '') === 'threshold_met'
+        && empty($GLOBALS['funding_fixture']['meta'][41][\RoxyRS\CPT::META_TARGET_NOTIFIED])
+        && $GLOBALS['funding_fixture']['mail'] === 1,
+        'failed funding-goal email does not persist the sent marker');
+    \RoxyRS\Conversion::maybe_mark_request_ready(41);
+    $check(empty($GLOBALS['funding_fixture']['meta'][41][\RoxyRS\CPT::META_TARGET_NOTIFIED]) && $GLOBALS['funding_fixture']['mail'] === 2,
+        'later readiness pass retries an unconfirmed funding-goal email');
+    $GLOBALS['funding_fixture']['mail_result'] = true;
+    \RoxyRS\Conversion::maybe_mark_request_ready(41);
+    $check(!empty($GLOBALS['funding_fixture']['meta'][41][\RoxyRS\CPT::META_TARGET_NOTIFIED]) && $GLOBALS['funding_fixture']['mail'] === 3,
+        'successful funding-goal email records its sent marker');
+    \RoxyRS\Conversion::maybe_mark_request_ready(41);
+    $check($GLOBALS['funding_fixture']['mail'] === 3, 'confirmed funding-goal notification is not sent twice');
+
     $_POST = [];
     $GLOBALS['funding_fixture']['fail_after_insert'] = false;
     $wpdb->query_fails = false;

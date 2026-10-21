@@ -338,11 +338,13 @@ class Conversion {
 
         update_post_meta($request_id, CPT::META_STATUS, 'threshold_met');
         if (!get_post_meta($request_id, CPT::META_TARGET_NOTIFIED, true)) {
-            self::email_admin(
+            $notified = self::email_admin(
                 sprintf('Requested showing reached funding goal: %s', get_the_title($request_id)),
                 "The requested showing \"" . get_the_title($request_id) . "\" has reached its funding goal and is ready for manager review.\n\nReview: " . admin_url('post.php?post=' . $request_id . '&action=edit')
             );
-            update_post_meta($request_id, CPT::META_TARGET_NOTIFIED, current_time('mysql'));
+            // Only persist the sent marker after WordPress confirms the mail was
+            // accepted. A later readiness pass can retry when wp_mail() fails.
+            if ($notified) update_post_meta($request_id, CPT::META_TARGET_NOTIFIED, current_time('mysql'));
         }
     }
 
@@ -444,10 +446,14 @@ class Conversion {
             if ((string) get_post_meta($showing_id, '_roxy_start', true) !== $target_at) return new \WP_Error('showing_time_write', 'The showing date could not be verified. Review it before retrying.');
             return true;
         };
-        $showing_write_result = function_exists('roxy_eb_with_showing_time_lock')
-            ? roxy_eb_with_showing_time_lock($target_at, $showing_id, $write_showing)
-            : $write_showing();
+        if (!function_exists('roxy_eb_with_showing_time_lock')) {
+            return new \WP_Error('showing_lock_unavailable', 'The shared showing-time conflict check is unavailable. Approval was stopped before the showing was changed.');
+        }
+        $showing_write_result = roxy_eb_with_showing_time_lock($target_at, $showing_id, $write_showing);
         if (is_wp_error($showing_write_result)) return $showing_write_result;
+        if ($showing_write_result !== true) {
+            return new \WP_Error('showing_lock_failed', 'The shared showing-time check did not confirm the write. Approval was stopped for review.');
+        }
 
         $lease->assert_owner();
 
@@ -1477,8 +1483,8 @@ class Conversion {
         }
     }
 
-    private static function email_admin(string $subject, string $message): void {
-        wp_mail(get_option('admin_email'), $subject, $message);
+    private static function email_admin(string $subject, string $message): bool {
+        return wp_mail(get_option('admin_email'), $subject, $message) === true;
     }
 
     private static function email_recipients(array $emails, string $subject, string $message): void {
