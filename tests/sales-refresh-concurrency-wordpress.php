@@ -64,6 +64,15 @@ try {
   if (!is_array($found_order_ids) || !in_array($order_id, array_map('intval', $found_order_ids), true)) {
     throw new RuntimeException('Woo order lookup did not find the synthetic ticket order by its persisted showing marker.');
   }
+  $debug_items = [];
+  foreach ($saved_order->get_items() as $debug_item) {
+    $debug_items[] = ['product_id'=>(int)$debug_item->get_product_id(), 'quantity'=>(int)$debug_item->get_quantity(), 'total'=>(float)$debug_item->get_total()];
+  }
+  echo 'Fixture discovery: showing=' . $showing_id . ' adult_product=' . (int)get_post_meta($showing_id, '_roxy_pid_adult', true)
+    . ' product_showing=' . (int)get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true)
+    . ' product_type=' . (string)get_post_meta($product_id, ROXY_ST_META_TICKET_TYPE, true)
+    . ' order_status=' . $saved_order->get_status() . ' order_ids=' . wp_json_encode(array_map('intval', $found_order_ids))
+    . ' items=' . wp_json_encode($debug_items) . "\n";
   update_post_meta($showing_id, '_roxy_sales_stats', []);
   wp_cache_delete($showing_id, 'post_meta');
 
