@@ -51,8 +51,11 @@ class Sales {
     if ($order_id <= 0 && is_object($item) && method_exists($item, 'get_order_id')) {
       $order_id = (int) $item->get_order_id();
     }
-    $showing_ids = self::showing_ids_for_item($item);
-    if ($order_id <= 0 || !$showing_ids || isset(self::$admin_item_save_showings[$order_id])) return;
+    if ($order_id <= 0 || isset(self::$admin_item_save_showings[$order_id])) return;
+    // Use the order's current mappings plus durable discovery markers. The
+    // updated item may no longer map to a showing after ticket-to-merch edits.
+    $showing_ids = self::showing_ids_for_order($order_id);
+    if (!$showing_ids) return;
     self::refresh_order_projection($order_id, $showing_ids);
   }
 
