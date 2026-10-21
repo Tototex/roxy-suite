@@ -31,6 +31,10 @@ foreach ([$settings_path, $workbook_path] as $path) {
         $namespace_declaration = 'namespace ' . $namespace . ';';
         $test_helpers = <<<'PHP'
 function roxy_suite_user_can_access_admin(): bool { return !empty($GLOBALS['roxy_workbook_request_authorized']); }
+function wp_safe_redirect(string $location, int $status = 302, string $x_redirect_by = 'WordPress'): bool {
+    $GLOBALS['roxy_workbook_redirect_location'] = $location;
+    return true;
+}
 function wp_handle_upload(array $file, array $overrides = []): array {
     $path = (string) ($GLOBALS['roxy_workbook_upload_path'] ?? '');
     return is_file($path) ? ['file' => $path] : ['error' => 'Synthetic upload fixture is missing.'];
@@ -302,12 +306,7 @@ try {
     if (!$zip->close()) throw new RuntimeException('Could not finish synthetic admin-request workbook.');
 
     $request_upload_name = 'synthetic-admin-request-' . bin2hex(random_bytes(4)) . '.xlsx';
-    $redirect_location = '';
-    $redirect_filter = static function ($location) use (&$redirect_location) {
-        $redirect_location = (string) $location;
-        return false;
-    };
-    add_filter('wp_redirect', $redirect_filter, 999, 2);
+    $GLOBALS['roxy_workbook_redirect_location'] = '';
     $GLOBALS['roxy_workbook_request_authorized'] = true;
     $GLOBALS['roxy_workbook_upload_path'] = $request_upload_source;
     $_REQUEST = ['_wpnonce' => wp_create_nonce('roxy_grosses_upload_template')];
@@ -322,13 +321,14 @@ try {
     try {
         $workbook_class::handle_upload_template();
     } finally {
-        remove_filter('wp_redirect', $redirect_filter, 999);
         unset($GLOBALS['roxy_workbook_request_authorized']);
         unset($GLOBALS['roxy_workbook_upload_path']);
         $_REQUEST = $prior_request;
         $_POST = $prior_post;
         $_FILES = $prior_files;
     }
+    $redirect_location = (string) ($GLOBALS['roxy_workbook_redirect_location'] ?? '');
+    unset($GLOBALS['roxy_workbook_redirect_location']);
     parse_str((string) parse_url($redirect_location, PHP_URL_QUERY), $redirect_query);
     $check(($redirect_query['roxy_grosses_notice'] ?? '') === 'success'
         && ($redirect_query['tab'] ?? '') === 'workbook'
