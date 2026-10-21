@@ -176,7 +176,7 @@ namespace {
     $card = \RoxyRS\Frontend::render_request_card(41, true);
     $check(strpos($card, 'Funding temporarily unavailable') !== false && strpos($card, '<form') === false, 'public card reports unknown funding and omits backing form');
     $single = new ReflectionMethod(\RoxyRS\Frontend::class, 'render_single_request');
-    $single->setAccessible(true);
+    if (PHP_VERSION_ID < 80100) $single->setAccessible(true);
     $wpdb->row_reads = 0;
     $single_html = $single->invoke(null, 41);
     $check($wpdb->row_reads === 1 && strpos($single_html, 'Funding temporarily unavailable') !== false, 'single-request rendering performs one checked totals read');
