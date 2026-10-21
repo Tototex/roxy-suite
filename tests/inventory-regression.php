@@ -129,9 +129,10 @@ namespace {
     ]);
     check($history_costs === ['known_total'=>4.5,'incomplete'=>true], 'Raw stored history quantity field recognizes positive unknown-cost lines');
     foreach (['NaN','INF',NAN,INF,'1e309','not-a-price'] as $invalid_cost) {
+        $invalid_label = is_float($invalid_cost) ? (is_nan($invalid_cost) ? 'NAN' : 'INF') : (string) $invalid_cost;
         $summary = \RoxyInventory\Admin::cost_summary([['quantity'=>1,'unit_cost'=>$invalid_cost]]);
-        check($summary === ['known_total'=>0.0,'incomplete'=>true], 'Malformed or non-finite history cost is unknown: '.$invalid_cost);
-        check(!\RoxyInventory\Admin::verified_positive_cost($invalid_cost), 'Malformed or non-finite unit cost fails positive-cost validation: '.$invalid_cost);
+        check($summary === ['known_total'=>0.0,'incomplete'=>true], 'Malformed or non-finite history cost is unknown: '.$invalid_label);
+        check(!\RoxyInventory\Admin::verified_positive_cost($invalid_cost), 'Malformed or non-finite unit cost fails positive-cost validation: '.$invalid_label);
     }
     check(\RoxyInventory\Admin::verified_positive_cost('2.25'), 'Finite positive unit cost remains known');
     foreach (['ordered', 'rejected'] as $decision) {
