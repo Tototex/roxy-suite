@@ -52,9 +52,14 @@ try {
   $order->calculate_totals();
   $order->set_status('processing');
   $order->save();
+  // Other active checkout hooks correctly hold synthetic zero-dollar tickets;
+  // set only this isolated fixture's persisted status without re-running them.
+  $status_updated = $wpdb->update($wpdb->posts, ['post_status'=>'wc-processing'], ['ID'=>$order_id], ['%s'], ['%d']);
+  if ($status_updated !== 1) throw new RuntimeException('Could not set the isolated fixture order to processing status.');
+  clean_post_cache($order_id);
   $marker = '_roxy_contains_showing_' . $showing_id;
   $saved_order = wc_get_order($order_id);
-  if (!$saved_order || (string)$saved_order->get_meta($marker, true) !== '1') {
+  if (!$saved_order || $saved_order->get_status() !== 'processing' || (string)$saved_order->get_meta($marker, true) !== '1') {
     throw new RuntimeException('The fixture showing-discovery marker did not persist on its Woo order.');
   }
   $found_order_ids = wc_get_orders([
@@ -64,15 +69,6 @@ try {
   if (!is_array($found_order_ids) || !in_array($order_id, array_map('intval', $found_order_ids), true)) {
     throw new RuntimeException('Woo order lookup did not find the synthetic ticket order by its persisted showing marker.');
   }
-  $debug_items = [];
-  foreach ($saved_order->get_items() as $debug_item) {
-    $debug_items[] = ['product_id'=>(int)$debug_item->get_product_id(), 'quantity'=>(int)$debug_item->get_quantity(), 'total'=>(float)$debug_item->get_total()];
-  }
-  echo 'Fixture discovery: showing=' . $showing_id . ' adult_product=' . (int)get_post_meta($showing_id, '_roxy_pid_adult', true)
-    . ' product_showing=' . (int)get_post_meta($product_id, ROXY_ST_META_SHOWING_ID, true)
-    . ' product_type=' . (string)get_post_meta($product_id, ROXY_ST_META_TICKET_TYPE, true)
-    . ' order_status=' . $saved_order->get_status() . ' order_ids=' . wp_json_encode(array_map('intval', $found_order_ids))
-    . ' items=' . wp_json_encode($debug_items) . "\n";
   update_post_meta($showing_id, '_roxy_sales_stats', []);
   wp_cache_delete($showing_id, 'post_meta');
 
@@ -121,8 +117,6 @@ try {
   @unlink($ready_path);
   $newer_snapshot = json_decode(trim((string)$stdout), true);
 
-  echo 'Concurrency fixture observations: older=' . wp_json_encode($older_snapshot)
-    . '; newer=' . wp_json_encode($newer_snapshot) . '; worker_exit=' . (int)$worker_exit . "\n";
   $check(empty($older_snapshot['read_error']) && $older_snapshot['sold_qty']===1,
     'primary refresh retains the snapshot it calculated before the concurrent quantity change');
   $check($worker_exit===0 && is_array($newer_snapshot) && empty($newer_snapshot['read_error']) && ($newer_snapshot['sold_qty'] ?? null)===3,
