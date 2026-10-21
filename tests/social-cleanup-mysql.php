@@ -81,6 +81,12 @@ $reset=static function()use($wpdb,$table,$virtual_base){
     if($wpdb->insert($smtp_events_table,['content'=>'Prior message linked https://fixture.example.invalid/uploads/cleanup53-'.$virtual_base.'.mp4','initiator'=>'fixture'])!==1)throw new RuntimeException('Could not seed private SMTP debug-event reference.');
     $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0&&(int)$store::find(1)['temporary_attachment_id']===$virtual_base,'WP Mail SMTP debug-event URL reference preserves attachment and cleanup pointer');
     if($wpdb->delete($smtp_events_table,['id'=>$wpdb->insert_id])===false)throw new RuntimeException('Could not clear private SMTP debug-event reference.');
+    $row=$reset();$GLOBALS['cleanup53_delete_calls']=0;
+    $relative_path='/cleanup53-'.$virtual_base.'.mp4';
+    if($wpdb->insert($reference_posts,['post_content'=>'<img src="'.$relative_path.'">'])!==1)throw new RuntimeException('Could not seed private relative-path post reference.');
+    $relative_post_id=(int)$wpdb->insert_id;
+    $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0&&(int)$store::find(1)['temporary_attachment_id']===$virtual_base,'relative upload path in WordPress post prevents attachment cleanup');
+    if($wpdb->delete($reference_posts,['ID'=>$relative_post_id])===false)throw new RuntimeException('Could not clear private relative-path post reference.');
     $poster_path=sys_get_temp_dir().'/fixture-hangar-poster-'.bin2hex(random_bytes(6)).'-poster.png';
     $original_posts_table=$wpdb->posts;
     $wpdb->posts=$reference_posts;

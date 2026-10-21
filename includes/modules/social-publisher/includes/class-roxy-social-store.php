@@ -432,10 +432,16 @@ final class Store {
     private static function has_wp_post_reference(int $attachment_id, string $url): ?bool {
         global $wpdb;
         if ($attachment_id <= 0 || $url === '' || !is_string($wpdb->posts) || !preg_match('/^[A-Za-z0-9_]+$/D', $wpdb->posts)) return null;
+        $url_path = parse_url($url, PHP_URL_PATH);
+        if (!is_string($url_path) || $url_path === '') return null;
         $columns = ['post_content', 'post_excerpt', 'post_content_filtered', 'guid'];
         $patterns = [
             '%' . $wpdb->esc_like($url) . '%',
             '%' . str_replace('/', '%', $wpdb->esc_like($url)) . '%',
+            '%' . $wpdb->esc_like($url_path) . '%',
+            '%' . $wpdb->esc_like(str_replace('/', '\\/', $url_path)) . '%',
+            '%' . $wpdb->esc_like(ltrim($url_path, '/')) . '%',
+            '%' . $wpdb->esc_like(str_replace('/', '\\/', ltrim($url_path, '/'))) . '%',
             '%' . $wpdb->esc_like('wp-image-' . $attachment_id) . '%',
         ];
         $conditions = [];
@@ -579,9 +585,15 @@ final class Store {
             ));
             if ($wpdb->last_error !== '' || $smtp_reference !== null) return true;
         }
+        $url_path = parse_url($url, PHP_URL_PATH);
+        if (!is_string($url_path) || $url_path === '') return true;
         $patterns = [
             '%' . $wpdb->esc_like($url) . '%',
             '%' . str_replace('/', '%', $wpdb->esc_like($url)) . '%',
+            '%' . $wpdb->esc_like($url_path) . '%',
+            '%' . $wpdb->esc_like(str_replace('/', '\\/', $url_path)) . '%',
+            '%' . $wpdb->esc_like(ltrim($url_path, '/')) . '%',
+            '%' . $wpdb->esc_like(str_replace('/', '\\/', ltrim($url_path, '/'))) . '%',
             '%i:' . $attachment_id . ';%',
             '%"' . $attachment_id . '"%',
         ];
@@ -598,16 +610,11 @@ final class Store {
         ];
         foreach ($stores as [$table, $column, $identity]) {
             if (!is_string($table) || !preg_match('/^[A-Za-z0-9_]+$/D', $table)) return true;
+            $query_args = array_merge([(string) $attachment_id], $patterns, ['%' . $attachment_id . '%', $numeric_id_pattern]);
             $wpdb->last_error = '';
             $reference = $wpdb->get_var($wpdb->prepare(
-                'SELECT ' . $identity . ' FROM ' . $table . ' WHERE ' . $column . ' = %s OR ' . $column . ' LIKE %s OR ' . $column . ' LIKE %s OR ' . $column . ' LIKE %s OR ' . $column . ' LIKE %s OR (' . $column . ' LIKE %s AND ' . $column . ' REGEXP %s) LIMIT 1',
-                (string) $attachment_id,
-                $patterns[0],
-                $patterns[1],
-                $patterns[2],
-                $patterns[3],
-                '%' . $attachment_id . '%',
-                $numeric_id_pattern
+                'SELECT ' . $identity . ' FROM ' . $table . ' WHERE ' . $column . ' = %s OR ' . implode(' OR ', array_fill(0, count($patterns), $column . ' LIKE %s')) . ' OR (' . $column . ' LIKE %s AND ' . $column . ' REGEXP %s) LIMIT 1',
+                ...$query_args
             ));
             if ($wpdb->last_error !== '' || $reference !== null) return true;
         }
