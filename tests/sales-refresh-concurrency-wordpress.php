@@ -121,6 +121,7 @@ try {
     'primary refresh retains the snapshot it calculated before the concurrent quantity change');
   $check($worker_exit===0 && is_array($newer_snapshot) && empty($newer_snapshot['read_error']) && ($newer_snapshot['sold_qty'] ?? null)===3,
     'second refresh waits for the primary lock then recalculates the newer Woo order quantity' . ($stderr !== '' ? ': ' . trim($stderr) : ''));
+  wp_cache_delete($showing_id, 'post_meta');
   $stored = get_post_meta($showing_id, '_roxy_sales_stats', true);
   $check(is_array($stored) && ($stored['sold_qty'] ?? null)===3,
     'final persistent showing projection is the newer snapshot, not the late stale overwrite');
