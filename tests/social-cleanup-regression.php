@@ -289,7 +289,7 @@ fixture();
 $lock_checks = 0;
 $GLOBALS['cleanup_during_lock_check'] = static function () use (&$lock_checks): void {
     global $wpdb;
-    if (++$lock_checks === 2) $wpdb->metadata_values['wp_options'][] = '42';
+    if (++$lock_checks === 3) $wpdb->metadata_values['wp_options'][] = '42';
 };
 $late_reference_cleanup = \RoxySocial\Store::cleanup_expired();
 unset($GLOBALS['cleanup_during_lock_check']);
