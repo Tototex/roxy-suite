@@ -305,6 +305,7 @@ namespace {
     $wpdb->query_fails = false;
     $wpdb->rows = [];
     $GLOBALS['funding_fixture']['posts'] = [(object)['ID'=>41]];
+    $GLOBALS['funding_fixture']['meta'][41][\RoxyRS\CPT::META_STATUS] = 'active';
     $GLOBALS['funding_fixture']['meta'][41]['_roxy_rs_deadline_at'] = '2000-01-01 00:00:00';
     \RoxyRS\Conversion::run_daily_review();
     $check(($GLOBALS['funding_fixture']['meta'][41]['_roxy_rs_status'] ?? '') === 'failed', 'verified expired underfunded request retains ordinary closure behavior');
