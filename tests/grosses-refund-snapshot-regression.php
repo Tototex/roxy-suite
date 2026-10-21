@@ -266,6 +266,16 @@ namespace {
   $assert($collection_events[1]['amount_cents'] === 4345 && $collection_events[1]['order_id'] === 'order-1', 'split payments become independently identifiable tender events');
   $assert($collection_events[2]['payment_id'] === 'payment-3', 'Square tender id is used as payment identity when payment_id is absent');
   $assert(array_sum(array_column($collection_events, 'amount_cents')) === 12345, 'tender totals preserve the collected order amount without relying on order total_money');
+  $payment_events = \RoxyGrosses\SquarePaymentEvents::from_payments([
+    ['id'=>'payment-with-order','order_id'=>'square-order','location_id'=>'loc-1','status'=>'COMPLETED','amount_money'=>['amount'=>123,'currency'=>'USD'],'created_at'=>'2026-10-03T07:30:00Z'],
+    ['id'=>'payment-without-order','location_id'=>'loc-1','status'=>'COMPLETED','amount_money'=>['amount'=>456,'currency'=>'USD'],'created_at'=>'2026-10-03T07:31:00Z'],
+  ]);
+  $assert($payment_events[0]['order_id'] === 'square-order' && $payment_events[1]['order_id'] === 'payment-without-order', 'Square payment event preserves a valid order ID and only falls back to payment ID when order_id is absent');
+  foreach ([0, '', [], str_repeat('x', 193)] as $invalid_order_id) {
+    $expect_throw(static fn() => \RoxyGrosses\SquarePaymentEvents::from_payments([
+      ['id'=>'payment-invalid-order','order_id'=>$invalid_order_id,'location_id'=>'loc-1','status'=>'COMPLETED','amount_money'=>['amount'=>123,'currency'=>'USD'],'created_at'=>'2026-10-03T07:30:00Z'],
+    ]), 'malformed Square payment order identity fails closed');
+  }
   $expect_throw(static fn() => \RoxyGrosses\SquareCollectionEvents::from_orders([['id' => 'x', 'location_id' => 'l', 'state' => 'COMPLETED', 'total_money' => ['amount' => 1, 'currency' => 'USD'], 'closed_at' => '2026-10-03T07:30:00Z'], ['id' => 'x', 'location_id' => 'l', 'state' => 'COMPLETED', 'total_money' => ['amount' => 1, 'currency' => 'USD'], 'closed_at' => '2026-10-03T07:30:00Z']]), 'duplicate completed Square order identity fails closed');
   $expect_throw(static fn() => \RoxyGrosses\SquareCollectionEvents::from_orders([['id' => 'x', 'location_id' => 'l', 'state' => 'COMPLETED', 'tenders' => [
     ['payment_id' => 'p', 'id' => 'p', 'amount_money' => ['amount' => 1, 'currency' => 'USD'], 'created_at' => '2026-10-03T07:30:00Z'],

@@ -784,6 +784,10 @@ final class SquarePaymentEvents {
       }
       $seen[$id] = true;
       if ($payment['status'] !== 'COMPLETED') continue;
+      $order_id = $payment['order_id'] ?? null;
+      if ($order_id !== null && (!is_string($order_id) || $order_id === '' || strlen($order_id) > 192)) {
+        throw new \RuntimeException('Completed Square payment has an invalid order identity.');
+      }
       $money = $payment['amount_money'] ?? null;
       if (!is_array($money) || !is_int($money['amount'] ?? null) || $money['amount'] < 0 || ($money['currency'] ?? null) !== 'USD') {
         throw new \RuntimeException('Completed Square payment has an invalid amount or unsupported currency.');
@@ -797,7 +801,7 @@ final class SquarePaymentEvents {
       $errors = \DateTimeImmutable::getLastErrors();
       if ($errors && ($errors['warning_count'] || $errors['error_count'])) throw new \RuntimeException('Completed Square payment has an invalid creation date.');
       $events[] = [
-        'source' => 'square', 'order_id' => (string) ($payment['order_id'] ?? $id),
+        'source' => 'square', 'order_id' => $order_id ?? $id,
         'tender_id' => $id, 'payment_id' => $id, 'location_id' => $location_id,
         'amount_cents' => $money['amount'], 'currency' => 'USD',
         'collected_at' => $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
