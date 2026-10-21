@@ -666,7 +666,7 @@ jobs:
           bash tools/verify-release-package.sh "$archive" "$source_date_epoch"
 
       - name: Run Social cleanup regression with actionable diagnostics
-        if: matrix.php == '8.3'
+        if: matrix.php == '8.3' || matrix.php == '8.5'
         shell: bash
         run: |
           set -euo pipefail
@@ -682,7 +682,7 @@ jobs:
           fi
 
       - name: Run isolated cross-module regression suite
-        if: matrix.php == '8.3'
+        if: matrix.php == '8.3' || matrix.php == '8.5'
         shell: bash
         run: |
           set -euo pipefail
