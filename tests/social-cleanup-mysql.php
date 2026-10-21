@@ -6,10 +6,11 @@ $path=$args[0]??'';if(!is_file($path))throw new RuntimeException('Candidate Stor
 $namespace='SocialCleanup53_'.bin2hex(random_bytes(4));
 $suffix='fixture_social_cleanup53_'.bin2hex(random_bytes(5));$table=$wpdb->prefix.$suffix;$queue_suffix=$suffix.'_queue';$queue_table=$wpdb->prefix.$queue_suffix;$poster_queue_suffix=$suffix.'_poster_queue';$poster_queue_table=$wpdb->prefix.$poster_queue_suffix;
 $yoast_table=$wpdb->prefix.'yoast_indexable';
+$download_directories_table=$wpdb->prefix.'wc_product_download_directories';
 $reference_posts=$wpdb->prefix.'rcp_'.$suffix;
 $production=$wpdb->prefix.'roxy_social_posts';
 if(($wpdb->dbname??'')!=='roxy_test')throw new RuntimeException('This fixture may only run against the disposable roxy_test database.');
-if($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($yoast_table)))===$yoast_table)throw new RuntimeException('Refusing to replace a pre-existing Yoast fixture table.');
+if($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($yoast_table)))===$yoast_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($download_directories_table)))===$download_directories_table)throw new RuntimeException('Refusing to replace a pre-existing reference fixture table.');
 $before=hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)));
 $code=file_get_contents($path);
 $code=str_replace(['namespace RoxySocial;',"'roxy_social_posts'","'roxy_social_media_cleanup'","'roxy_social_poster_cleanup'"],['namespace '.$namespace.';',var_export($suffix,true),var_export($queue_suffix,true),var_export($poster_queue_suffix,true)],$code);
@@ -23,7 +24,7 @@ function wp_delete_attachment($id,$force=false){$GLOBALS["cleanup53_delete_calls
 function wp_schedule_single_event($timestamp,$hook,$args=[]){$GLOBALS["cleanup53_scheduled"][]=[$timestamp,$hook,$args];return true;}
 ');
 $checks=0;$assert=static function($ok,$label)use(&$checks){if(!$ok)throw new RuntimeException($label);$checks++;echo 'PASS: '.$label.PHP_EOL;};
-$block=static function($sql)use($table,$queue_table,$poster_queue_table,$yoast_table,$reference_posts){if(preg_match('/^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i',$sql)&&strpos($sql,$table)===false&&strpos($sql,$queue_table)===false&&strpos($sql,$poster_queue_table)===false&&strpos($sql,$yoast_table)===false&&strpos($sql,$reference_posts)===false)throw new RuntimeException('Non-private cleanup SQL mutation.');return $sql;};
+$block=static function($sql)use($table,$queue_table,$poster_queue_table,$yoast_table,$download_directories_table,$reference_posts){if(preg_match('/^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i',$sql)&&strpos($sql,$table)===false&&strpos($sql,$queue_table)===false&&strpos($sql,$poster_queue_table)===false&&strpos($sql,$yoast_table)===false&&strpos($sql,$download_directories_table)===false&&strpos($sql,$reference_posts)===false)throw new RuntimeException('Non-private cleanup SQL mutation.');return $sql;};
 $mail=static function(){throw new RuntimeException('Unexpected mail.');};$http=static function(){throw new RuntimeException('Unexpected HTTP.');};
 $old=$wpdb->suppress_errors(true);$created=false;
 try {
@@ -33,6 +34,7 @@ try {
         'poster cleanup queue'=>'CREATE TEMPORARY TABLE '.$poster_queue_table.' (path_hash CHAR(64) NOT NULL, file_path TEXT NOT NULL, attempts INT UNSIGNED NOT NULL DEFAULT 0, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, PRIMARY KEY (path_hash), KEY retry_batch (attempts, updated_at, path_hash))',
         'post content reference'=>'CREATE TEMPORARY TABLE '.$reference_posts.' (ID BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, post_content LONGTEXT NOT NULL, post_excerpt VARCHAR(255) NOT NULL DEFAULT \'\', post_content_filtered LONGTEXT NULL, guid VARCHAR(255) NOT NULL DEFAULT \'\', PRIMARY KEY (ID))',
         'Yoast image reference'=>'CREATE TABLE '.$yoast_table.' (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, open_graph_image_id VARCHAR(32) NULL, twitter_image_id VARCHAR(32) NULL, PRIMARY KEY (id))',
+        'WooCommerce download-directory reference'=>'CREATE TABLE '.$download_directories_table.' (url_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, url VARCHAR(255) NOT NULL, enabled TINYINT NOT NULL DEFAULT 1, PRIMARY KEY (url_id))',
     ] as $label=>$sql){if($wpdb->query($sql)===false)throw new RuntimeException('Private cleanup schema failed for '.$label.': '.($wpdb->last_error?:$sql));}$created=true;
     add_filter('query',$block,PHP_INT_MAX);add_filter('pre_wp_mail',$mail,PHP_INT_MAX);add_filter('pre_http_request',$http,PHP_INT_MAX);
 $virtual_base=random_int(50000000000,90000000000);
@@ -68,6 +70,10 @@ $reset=static function()use($wpdb,$table,$virtual_base){
         $assert($result===0&&$GLOBALS['cleanup53_delete_calls']===0&&(int)($current['temporary_attachment_id']??0)===$virtual_base,'Yoast '.$image_column.' keeps the referenced attachment and cleanup pointer; '.json_encode(['result'=>$result,'delete_calls'=>$GLOBALS['cleanup53_delete_calls'],'attachment_id'=>$current['temporary_attachment_id']??null,'db_error'=>$wpdb->last_error,'yoast_rows'=>$wpdb->get_results('SELECT * FROM '.$yoast_table,ARRAY_A)]));
         if($wpdb->delete($yoast_table,[$image_column=>(string)$virtual_base])===false)throw new RuntimeException('Could not clear private Yoast image reference.');
     }
+    $row=$reset();$GLOBALS['cleanup53_delete_calls']=0;
+    if($wpdb->insert($download_directories_table,['url'=>'https://fixture.example.invalid/uploads/cleanup53-'.$virtual_base.'.mp4','enabled'=>1])!==1)throw new RuntimeException('Could not seed private WooCommerce download-directory reference.');
+    $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0&&(int)$store::find(1)['temporary_attachment_id']===$virtual_base,'WooCommerce download-directory URL reference preserves attachment and cleanup pointer');
+    if($wpdb->delete($download_directories_table,['url'=>'https://fixture.example.invalid/uploads/cleanup53-'.$virtual_base.'.mp4'])===false)throw new RuntimeException('Could not clear private WooCommerce download-directory reference.');
     $poster_path=sys_get_temp_dir().'/fixture-hangar-poster-'.bin2hex(random_bytes(6)).'-poster.png';
     $original_posts_table=$wpdb->posts;
     $wpdb->posts=$reference_posts;
@@ -97,7 +103,7 @@ $reset=static function()use($wpdb,$table,$virtual_base){
     $assert($pagination_result===1&&($pagination_schedule[1]??'')==='roxy_social_cleanup_page'&&($pagination_schedule[2]??[])===[100,101],'actual private-table cleanup schedules exactly the remaining bounded high-water page; '.json_encode(['result'=>$pagination_result,'scheduled'=>$GLOBALS['cleanup53_scheduled']]));
     $assert(hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)))===$before,'pagination leaves production Social rows unchanged');
 } finally {
-    if($created&&($wpdb->query('DROP TABLE '.$yoast_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$reference_posts)===false||$wpdb->query('DROP TEMPORARY TABLE '.$poster_queue_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$queue_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$table)===false))throw new RuntimeException('Private cleanup schema removal failed.');
+    if($created&&($wpdb->query('DROP TABLE '.$yoast_table)===false||$wpdb->query('DROP TABLE '.$download_directories_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$reference_posts)===false||$wpdb->query('DROP TEMPORARY TABLE '.$poster_queue_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$queue_table)===false||$wpdb->query('DROP TEMPORARY TABLE '.$table)===false))throw new RuntimeException('Private cleanup schema removal failed.');
     remove_filter('query',$block,PHP_INT_MAX);remove_filter('pre_wp_mail',$mail,PHP_INT_MAX);remove_filter('pre_http_request',$http,PHP_INT_MAX);$wpdb->suppress_errors($old);
 }
 echo 'Passed '.$checks.' actual cleanup-SQL assertions with virtual media; private schema removed.'.PHP_EOL;

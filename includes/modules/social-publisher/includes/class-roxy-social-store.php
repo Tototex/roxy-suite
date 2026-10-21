@@ -521,6 +521,35 @@ final class Store {
             ));
             if ($wpdb->last_error !== '' || $notes_reference !== null) return true;
         }
+        // WooCommerce's download-directory registry can retain a file URL
+        // independently of products and core metadata. Check that active
+        // reference store too; a failed schema/read check must preserve media.
+        $download_directories_table = $wpdb->prefix . 'wc_product_download_directories';
+        if (!is_string($download_directories_table) || !preg_match('/^[A-Za-z0-9_]+$/D', $download_directories_table)) return true;
+        static $woocommerce_download_directories_table_exists = [];
+        if (!array_key_exists($download_directories_table, $woocommerce_download_directories_table_exists)) {
+            $wpdb->last_error = '';
+            $download_directories_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($download_directories_table)));
+            if ($wpdb->last_error !== '') return true;
+            $woocommerce_download_directories_table_exists[$download_directories_table] = $download_directories_exists === $download_directories_table;
+        }
+        if ($woocommerce_download_directories_table_exists[$download_directories_table]) {
+            $url_path = parse_url($url, PHP_URL_PATH);
+            if (!is_string($url_path) || $url_path === '') return true;
+            $download_patterns = [
+                '%' . $wpdb->esc_like($url) . '%',
+                '%' . $wpdb->esc_like(str_replace('/', '\\/', $url)) . '%',
+                '%' . $wpdb->esc_like($url_path) . '%',
+                '%' . $wpdb->esc_like(str_replace('/', '\\/', $url_path)) . '%',
+            ];
+            $download_clauses = array_fill(0, count($download_patterns), 'url LIKE %s');
+            $wpdb->last_error = '';
+            $download_reference = $wpdb->get_var($wpdb->prepare(
+                'SELECT url_id FROM ' . $download_directories_table . ' WHERE ' . implode(' OR ', $download_clauses) . ' LIMIT 1',
+                ...$download_patterns
+            ));
+            if ($wpdb->last_error !== '' || $download_reference !== null) return true;
+        }
         $patterns = [
             '%' . $wpdb->esc_like($url) . '%',
             '%' . str_replace('/', '%', $wpdb->esc_like($url)) . '%',
