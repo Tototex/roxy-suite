@@ -1,5 +1,9 @@
 # Stability remediation tracker
 
+## Ticket runtime visibility follow-up — 2026-10-21
+
+- The Roxy Showings admin list now includes a Runtime / sales end column. Verified durations show the runtime and calculated local end time; missing durations explicitly warn that sales close at the start; invalid durations show that sales are closed. Regression coverage verifies the header and all three states. This improves visibility but does not supply actual runtimes: existing showings still require manager-entered verified durations before online sales can remain open through the show. The PHP fixture requires hosted CI because PHP/WSL are unavailable on this PC; no live deployment or showing-data changes were made in this pass.
+
 ## Release provenance follow-up — 2026-10-21
 
 - Added GitHub-signed SLSA build provenance for both the versioned release ZIP and its SHA-256 manifest. The release job grants the required `id-token` and `attestations` permissions alongside existing release-write access; the `actions/attest` action is pinned to the verified v4.2.2 commit. The step is gated to release runs and executes after package/manifest creation but before tag/release publication. `tests/release-workflow-regression.js` now checks the exact permission scope, pinned action, both subjects, and step order; 33 checks pass locally, and GitHub workflow [39594570636](https://github.com/Tototex/roxy-suite/actions/runs/39594570636) passed all 15 jobs. GitHub's official [attest action documentation](https://github.com/actions/attest) describes the signed, verifiable provenance and required permissions. This closes the unsigned-artifact provenance gap at workflow level, but the signature itself cannot be functionally verified until a legitimate version-release run occurs on `master`; no version bump, tag, release, or live deployment was performed for this audit.

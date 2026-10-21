@@ -687,6 +687,7 @@ class CPT {
       $out[$key] = $label;
       if ($key === 'title') {
         $out['roxy_start'] = 'Start';
+        $out['roxy_runtime'] = 'Runtime / sales end';
         $out['roxy_sold'] = 'Sold';
         $out['roxy_remaining'] = 'Remaining';
         $out['roxy_revenue'] = 'Revenue';
@@ -696,7 +697,7 @@ class CPT {
   }
 
   public static function render_admin_column(string $column, int $post_id): void {
-    if (!in_array($column, ['roxy_start', 'roxy_sold', 'roxy_remaining', 'roxy_revenue'], true)) {
+    if (!in_array($column, ['roxy_start', 'roxy_runtime', 'roxy_sold', 'roxy_remaining', 'roxy_revenue'], true)) {
       return;
     }
 
@@ -708,6 +709,21 @@ class CPT {
         $timestamp = (new \DateTimeImmutable($start, wp_timezone()))->getTimestamp();
         echo esc_html(wp_date('M j, Y g:ia', $timestamp, wp_timezone()));
       }
+      return;
+    }
+
+    if ($column === 'roxy_runtime') {
+      $duration_raw = trim((string) get_post_meta($post_id, '_roxy_duration_minutes', true));
+      if ($duration_raw === '') {
+        echo '<span class="description">Not set — sales close at start</span>';
+        return;
+      }
+      $end = Eligibility::showing_end_timestamp($post_id);
+      if ($end === null) {
+        echo '<strong>Invalid — sales closed</strong>';
+        return;
+      }
+      echo esc_html((string) (int) $duration_raw . ' min · ends ' . wp_date('M j, Y g:ia', $end));
       return;
     }
 

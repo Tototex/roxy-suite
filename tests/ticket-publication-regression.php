@@ -409,6 +409,17 @@ check($GLOBALS['statuses'][101]==='draft' && $GLOBALS['statuses'][102]==='draft'
 check($GLOBALS['statuses'][200]==='publish','deactivation preserves unrelated product');
 $GLOBALS['statuses'][101]='publish'; \RoxyST\Products::on_showing_deleted(1);
 check($GLOBALS['statuses'][101]==='draft','permanent showing deletion deactivates linked product');
+$columns=\RoxyST\CPT::admin_columns(['cb'=>'','title'=>'Title']);
+check(isset($columns['roxy_runtime']) && $columns['roxy_runtime']==='Runtime / sales end','showings list exposes runtime and sales-end status');
+$GLOBALS['meta'][9001]=['_roxy_start'=>current_datetime()->modify('+2 hours')->format('Y-m-d\\TH:i'),'_roxy_duration_minutes'=>'120'];
+ob_start(); \RoxyST\CPT::render_admin_column('roxy_runtime',9001); $runtime_column=ob_get_clean();
+check(str_contains($runtime_column,'120 min') && str_contains($runtime_column,'ends '),'configured runtime displays duration and calculated end time');
+$GLOBALS['meta'][9002]=['_roxy_start'=>current_datetime()->modify('+3 hours')->format('Y-m-d\\TH:i')];
+ob_start(); \RoxyST\CPT::render_admin_column('roxy_runtime',9002); $missing_runtime_column=ob_get_clean();
+check(str_contains($missing_runtime_column,'Not set') && str_contains($missing_runtime_column,'sales close at start'),'missing runtime clearly identifies legacy start-time cutoff');
+$GLOBALS['meta'][9003]=['_roxy_start'=>current_datetime()->modify('+4 hours')->format('Y-m-d\\TH:i'),'_roxy_duration_minutes'=>'invalid'];
+ob_start(); \RoxyST\CPT::render_admin_column('roxy_runtime',9003); $invalid_runtime_column=ob_get_clean();
+check(str_contains($invalid_runtime_column,'Invalid') && str_contains($invalid_runtime_column,'sales closed'),'invalid runtime visibly identifies closed ticket sales');
 unset($GLOBALS['types'][1]); check(is_wp_error(\RoxyST\Eligibility::product_error(101)),'deleted showing rejects historical ticket product');
 echo "All publication and showing-end regressions passed.\n";
 }
