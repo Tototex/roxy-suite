@@ -8,10 +8,13 @@ $suffix='fixture_social_cleanup53_'.bin2hex(random_bytes(5));$table=$wpdb->prefi
 $yoast_table=$wpdb->prefix.'yoast_indexable';
 $download_directories_table=$wpdb->prefix.'wc_product_download_directories';
 $smtp_events_table=$wpdb->prefix.'wpmailsmtp_debug_events';
+$jetpack_queue_table=$wpdb->prefix.'jetpack_sync_queue';
+$mailchimp_carts_table=$wpdb->prefix.'mailchimp_carts';
+$mailchimp_jobs_table=$wpdb->prefix.'mailchimp_jobs';
 $reference_posts=$wpdb->prefix.'rcp_'.$suffix;
 $production=$wpdb->prefix.'roxy_social_posts';
 if(($wpdb->dbname??'')!=='roxy_test')throw new RuntimeException('This fixture may only run against the disposable roxy_test database.');
-if($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($yoast_table)))===$yoast_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($download_directories_table)))===$download_directories_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($smtp_events_table)))===$smtp_events_table)throw new RuntimeException('Refusing to replace a pre-existing reference fixture table.');
+if($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($yoast_table)))===$yoast_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($download_directories_table)))===$download_directories_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($smtp_events_table)))===$smtp_events_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($jetpack_queue_table)))===$jetpack_queue_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($mailchimp_carts_table)))===$mailchimp_carts_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($mailchimp_jobs_table)))===$mailchimp_jobs_table)throw new RuntimeException('Refusing to replace a pre-existing reference fixture table.');
 $before=hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)));
 $code=file_get_contents($path);
 $code=str_replace(['namespace RoxySocial;',"'roxy_social_posts'","'roxy_social_media_cleanup'","'roxy_social_poster_cleanup'"],['namespace '.$namespace.';',var_export($suffix,true),var_export($queue_suffix,true),var_export($poster_queue_suffix,true)],$code);
@@ -25,7 +28,7 @@ function wp_delete_attachment($id,$force=false){$GLOBALS["cleanup53_delete_calls
 function wp_schedule_single_event($timestamp,$hook,$args=[]){$GLOBALS["cleanup53_scheduled"][]=[$timestamp,$hook,$args];return true;}
 ');
 $checks=0;$assert=static function($ok,$label)use(&$checks){if(!$ok)throw new RuntimeException($label);$checks++;echo 'PASS: '.$label.PHP_EOL;};
-$block=static function($sql)use($table,$queue_table,$poster_queue_table,$yoast_table,$download_directories_table,$smtp_events_table,$reference_posts){if(preg_match('/^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i',$sql)&&strpos($sql,$table)===false&&strpos($sql,$queue_table)===false&&strpos($sql,$poster_queue_table)===false&&strpos($sql,$yoast_table)===false&&strpos($sql,$download_directories_table)===false&&strpos($sql,$smtp_events_table)===false&&strpos($sql,$reference_posts)===false)throw new RuntimeException('Non-private cleanup SQL mutation.');return $sql;};
+$block=static function($sql)use($table,$queue_table,$poster_queue_table,$yoast_table,$download_directories_table,$smtp_events_table,$jetpack_queue_table,$mailchimp_carts_table,$mailchimp_jobs_table,$reference_posts){if(preg_match('/^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i',$sql)&&strpos($sql,$table)===false&&strpos($sql,$queue_table)===false&&strpos($sql,$poster_queue_table)===false&&strpos($sql,$yoast_table)===false&&strpos($sql,$download_directories_table)===false&&strpos($sql,$smtp_events_table)===false&&strpos($sql,$jetpack_queue_table)===false&&strpos($sql,$mailchimp_carts_table)===false&&strpos($sql,$mailchimp_jobs_table)===false&&strpos($sql,$reference_posts)===false)throw new RuntimeException('Non-private cleanup SQL mutation.');return $sql;};
 $mail=static function(){throw new RuntimeException('Unexpected mail.');};$http=static function(){throw new RuntimeException('Unexpected HTTP.');};
 $old=$wpdb->suppress_errors(true);$created_tables=[];
 try {
@@ -37,6 +40,9 @@ try {
         ['Yoast image reference','CREATE TABLE '.$yoast_table.' (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, open_graph_image_id VARCHAR(32) NULL, twitter_image_id VARCHAR(32) NULL, PRIMARY KEY (id))','DROP TABLE '.$yoast_table],
         ['WooCommerce download-directory reference','CREATE TABLE '.$download_directories_table.' (url_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, url VARCHAR(255) NOT NULL, enabled TINYINT NOT NULL DEFAULT 1, PRIMARY KEY (url_id))','DROP TABLE '.$download_directories_table],
         ['WP Mail SMTP debug-event reference','CREATE TABLE '.$smtp_events_table.' (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, content TEXT NOT NULL, initiator TEXT NULL, event_type TINYINT NOT NULL DEFAULT 0, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (id))','DROP TABLE '.$smtp_events_table],
+        ['Jetpack sync payload reference','CREATE TABLE '.$jetpack_queue_table.' (ID BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, event_id VARCHAR(32) NOT NULL, event_payload LONGTEXT NOT NULL, timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (ID))','DROP TABLE '.$jetpack_queue_table],
+        ['Mailchimp cart reference','CREATE TABLE '.$mailchimp_carts_table.' (id VARCHAR(51) NOT NULL, cart TEXT NOT NULL, PRIMARY KEY (id))','DROP TABLE '.$mailchimp_carts_table],
+        ['Mailchimp job reference','CREATE TABLE '.$mailchimp_jobs_table.' (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, obj_id TEXT NOT NULL, job TEXT NOT NULL, PRIMARY KEY (id))','DROP TABLE '.$mailchimp_jobs_table],
     ];
     foreach($fixture_schema as [$label,$sql,$drop_sql]){if($wpdb->query($sql)===false)throw new RuntimeException('Private cleanup schema failed for '.$label.': '.($wpdb->last_error?:$sql));$created_tables[]=$drop_sql;}
     add_filter('query',$block,PHP_INT_MAX);add_filter('pre_wp_mail',$mail,PHP_INT_MAX);add_filter('pre_http_request',$http,PHP_INT_MAX);
@@ -81,6 +87,19 @@ $reset=static function()use($wpdb,$table,$virtual_base){
     if($wpdb->insert($smtp_events_table,['content'=>'Prior message linked https://fixture.example.invalid/uploads/cleanup53-'.$virtual_base.'.mp4','initiator'=>'fixture'])!==1)throw new RuntimeException('Could not seed private SMTP debug-event reference.');
     $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0&&(int)$store::find(1)['temporary_attachment_id']===$virtual_base,'WP Mail SMTP debug-event URL reference preserves attachment and cleanup pointer');
     if($wpdb->delete($smtp_events_table,['id'=>$wpdb->insert_id])===false)throw new RuntimeException('Could not clear private SMTP debug-event reference.');
+    $row=$reset();$GLOBALS['cleanup53_delete_calls']=0;$jetpack_payload='Private relative path /cleanup53-'.$virtual_base.'.mp4';
+    if($wpdb->insert($jetpack_queue_table,['event_id'=>'fixture-'.$virtual_base,'event_payload'=>$jetpack_payload])!==1)throw new RuntimeException('Could not seed private Jetpack sync-payload reference.');
+    $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0&&(int)$store::find(1)['temporary_attachment_id']===$virtual_base,'Jetpack sync-payload path preserves attachment and retry pointer');
+    if($wpdb->delete($jetpack_queue_table,['event_id'=>'fixture-'.$virtual_base])===false)throw new RuntimeException('Could not clear private Jetpack sync-payload reference.');
+    $row=$reset();$GLOBALS['cleanup53_delete_calls']=0;$mailchimp_cart='{"image":"\\/cleanup53-'.$virtual_base.'.mp4"}';
+    if($wpdb->insert($mailchimp_carts_table,['id'=>'fixture-'.$virtual_base,'cart'=>$mailchimp_cart])!==1)throw new RuntimeException('Could not seed private Mailchimp cart reference.');
+    $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0&&(int)$store::find(1)['temporary_attachment_id']===$virtual_base,'Mailchimp cart path preserves attachment and retry pointer');
+    if($wpdb->delete($mailchimp_carts_table,['id'=>'fixture-'.$virtual_base])===false)throw new RuntimeException('Could not clear private Mailchimp cart reference.');
+    $row=$reset();$GLOBALS['cleanup53_delete_calls']=0;$mailchimp_job='Private relative path /cleanup53-'.$virtual_base.'.mp4';
+    if($wpdb->insert($mailchimp_jobs_table,['obj_id'=>'fixture-'.$virtual_base,'job'=>$mailchimp_job])!==1)throw new RuntimeException('Could not seed private Mailchimp job reference.');
+    $mailchimp_job_id=(int)$wpdb->insert_id;
+    $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0&&(int)$store::find(1)['temporary_attachment_id']===$virtual_base,'Mailchimp job path preserves attachment and retry pointer');
+    if($wpdb->delete($mailchimp_jobs_table,['id'=>$mailchimp_job_id])===false)throw new RuntimeException('Could not clear private Mailchimp job reference.');
     $row=$reset();$GLOBALS['cleanup53_delete_calls']=0;
     $relative_path='/cleanup53-'.$virtual_base.'.mp4';
     $original_posts_table=$wpdb->posts;

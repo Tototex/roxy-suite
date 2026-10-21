@@ -585,8 +585,52 @@ final class Store {
             ));
             if ($wpdb->last_error !== '' || $smtp_reference !== null) return true;
         }
+        // Jetpack sync and Mailchimp integrations can retain serialized post,
+        // cart, or job payloads containing media URLs outside core metadata.
+        // Keep this list scoped to the active extensions' known text fields;
+        // unknown schemas or read errors fail closed.
+        $extension_reference_stores = [
+            [$wpdb->prefix . 'jetpack_sync_queue', 'event_id', ['event_payload']],
+            [$wpdb->prefix . 'mailchimp_carts', 'id', ['cart']],
+            [$wpdb->prefix . 'mailchimp_jobs', 'id', ['obj_id', 'job']],
+        ];
+        static $extension_reference_table_exists = [];
         $url_path = parse_url($url, PHP_URL_PATH);
         if (!is_string($url_path) || $url_path === '') return true;
+        $extension_patterns = array_values(array_unique([
+            '%' . $wpdb->esc_like($url) . '%',
+            '%' . $wpdb->esc_like(str_replace('/', '\\/', $url)) . '%',
+            '%' . $wpdb->esc_like($url_path) . '%',
+            '%' . $wpdb->esc_like(str_replace('/', '\\/', $url_path)) . '%',
+            '%' . $wpdb->esc_like(ltrim($url_path, '/')) . '%',
+            '%' . $wpdb->esc_like(str_replace('/', '\\/', ltrim($url_path, '/'))) . '%',
+        ]));
+        foreach ($extension_reference_stores as [$table, $identity, $columns]) {
+            if (!is_string($table) || !preg_match('/^[A-Za-z0-9_]+$/D', $table)
+                || !is_string($identity) || !preg_match('/^[A-Za-z0-9_]+$/D', $identity)) return true;
+            if (!array_key_exists($table, $extension_reference_table_exists)) {
+                $wpdb->last_error = '';
+                $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table)));
+                if ($wpdb->last_error !== '') return true;
+                $extension_reference_table_exists[$table] = $exists === $table;
+            }
+            if (!$extension_reference_table_exists[$table]) continue;
+            $clauses = [];
+            $values = [];
+            foreach ($columns as $column) {
+                if (!is_string($column) || !preg_match('/^[A-Za-z0-9_]+$/D', $column)) return true;
+                foreach ($extension_patterns as $pattern) {
+                    $clauses[] = $column . ' LIKE %s';
+                    $values[] = $pattern;
+                }
+            }
+            $wpdb->last_error = '';
+            $reference = $wpdb->get_var($wpdb->prepare(
+                'SELECT ' . $identity . ' FROM ' . $table . ' WHERE ' . implode(' OR ', $clauses) . ' LIMIT 1',
+                ...$values
+            ));
+            if ($wpdb->last_error !== '' || $reference !== null) return true;
+        }
         $patterns = [
             '%' . $wpdb->esc_like($url) . '%',
             '%' . str_replace('/', '%', $wpdb->esc_like($url)) . '%',
