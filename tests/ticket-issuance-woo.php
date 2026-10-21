@@ -20,6 +20,9 @@ try{
   $show=wp_insert_post(['post_type'=>'roxy_showing','post_status'=>'draft','post_title'=>'PRIVATE ISSUANCE FIXTURE 2026-10-05'],true);if(is_wp_error($show))throw new RuntimeException('Cannot create fixture');$created[]=$show;
   $product=new WC_Product_Simple();$product->set_name('PRIVATE ISSUANCE FIXTURE 2026-10-05');$product->set_status('draft');$product->set_catalog_visibility('hidden');$product->set_regular_price('0');$pid=$product->save();$created[]=$pid;
   update_post_meta($pid,ROXY_ST_META_SHOWING_ID,$show);update_post_meta($pid,ROXY_ST_META_TICKET_TYPE,'general');update_post_meta($show,'_roxy_pid_adult',$pid);update_post_meta($show,'_roxy_start',wp_date('Y-m-d',time()+DAY_IN_SECONDS).' 23:00');
+  global $wpdb;
+  if($wpdb->update($wpdb->posts,['post_status'=>'publish'],['ID'=>$show])!==1)throw new RuntimeException('Cannot publish private ticket issuance fixture');
+  clean_post_cache($show);
   $order=wc_create_order(['status'=>'pending','customer_note'=>'PRIVATE ISSUANCE FIXTURE 2026-10-05 — no payment or fulfillment']);if(is_wp_error($order))throw new RuntimeException('Cannot create private order');
   $item_id=$order->add_product($product,3);$order->calculate_totals();$order->save();
   $check(\RoxyST\IssuanceFixtureTickets::sync_order_tickets($order->get_id()),'actual Woo order issues complete ticket set');
@@ -79,7 +82,6 @@ try{
   $check(!\RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0],'ticket')&&(int)get_post_meta($ids[0],'_roxy_checked_in',true)===1,'source mismatch rejects stale undo');
   $check(\RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0],'will_call')&&get_post_meta($ids[0],'_roxy_checked_in_source',true)===''&&get_post_meta($ids[0],'_roxy_ticket_state',true)==='valid','matching explicit undo removes complete admission record');
   $check(!\RoxyST\IssuanceFixtureTickets::undo_check_in_ticket($ids[0]),'repeat undo does not report a phantom transition');
-  global $wpdb;
   $fail_admit=static function($sql)use($wpdb){return strpos($sql,"INSERT INTO `{$wpdb->postmeta}`")===0&&str_contains($sql,'_roxy_checked_in_by')?'INSERT INTO `roxy_missing_admission_failure_target` VALUES (1)':$sql;};
   add_filter('query',$fail_admit);$suppressed=$wpdb->suppress_errors(true);
   try{$check(!\RoxyST\IssuanceFixtureTickets::check_in_ticket($ids[0],9),'later admission write failure reports no admission');}

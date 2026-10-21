@@ -24,6 +24,8 @@ try {
   if(is_wp_error($show))throw new RuntimeException('Could not create private HPOS showing.');$created_posts[]=(int)$show;
   $start=wp_date('Y-m-d',time()+2*DAY_IN_SECONDS).' 23:00';
   update_post_meta($show,'_roxy_start',$start);update_post_meta($show,'_roxy_duration_minutes',90);update_post_meta($show,'_roxy_capacity',1);
+  if($wpdb->update($wpdb->posts,['post_status'=>'publish'],['ID'=>$show])!==1)throw new RuntimeException('Could not publish private HPOS showing fixture');
+  clean_post_cache($show);
   $product=new WC_Product_Simple();$product->set_name($token.' TICKET');$product->set_status('draft');$product->set_catalog_visibility('hidden');$product->set_regular_price('0');$product_id=$product->save();
   if($product_id<=0)throw new RuntimeException('Could not create private HPOS ticket product.');$created_posts[]=$product_id;
   update_post_meta($product_id,ROXY_ST_META_SHOWING_ID,(int)$show);update_post_meta($product_id,ROXY_ST_META_TICKET_TYPE,'general');update_post_meta($show,'_roxy_pid_adult',$product_id);
@@ -99,6 +101,8 @@ try {
   $issue_show=wp_insert_post(['post_type'=>'roxy_showing','post_status'=>'draft','post_title'=>$token.' ISSUE SHOW'],true);
   if(is_wp_error($issue_show))throw new RuntimeException('Could not create HPOS issuance showing.');$created_posts[]=(int)$issue_show;
   update_post_meta($issue_show,'_roxy_start',$start);update_post_meta($issue_show,'_roxy_duration_minutes',90);update_post_meta($issue_show,'_roxy_capacity',5);
+  if($wpdb->update($wpdb->posts,['post_status'=>'publish'],['ID'=>$issue_show])!==1)throw new RuntimeException('Could not publish private HPOS issuance fixture');
+  clean_post_cache($issue_show);
   $issue_product=new WC_Product_Simple();$issue_product->set_name($token.' ISSUE TICKET');$issue_product->set_status('publish');$issue_product->set_catalog_visibility('hidden');$issue_product->set_regular_price('0');$issue_product_id=$issue_product->save();
   if($issue_product_id<=0)throw new RuntimeException('Could not create HPOS issuance product.');$created_posts[]=$issue_product_id;
   update_post_meta($issue_product_id,ROXY_ST_META_SHOWING_ID,(int)$issue_show);update_post_meta($issue_product_id,ROXY_ST_META_TICKET_TYPE,'general');update_post_meta($issue_show,'_roxy_pid_adult',$issue_product_id);
