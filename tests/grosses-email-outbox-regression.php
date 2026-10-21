@@ -77,6 +77,24 @@ try {
   $check($outbox::ensure_schema(true), 'explicit forced schema verification can restore the private fixture after the fail-closed check');
   $created = $original_db->get_var($original_db->prepare('SHOW TABLES LIKE %s', $original_db->esc_like($table))) === $table;
 
+  // A cached version marker must not hide loss of the unique index that
+  // serializes logical sends. Exercise this only on the random private table.
+  $schema_option_filter = static fn($pre) => '1';
+  add_filter('pre_option_roxy_grosses_email_outbox_schema_version', $schema_option_filter, PHP_INT_MAX);
+  if ($fixture_db->query('ALTER TABLE `' . $table . '` DROP INDEX logical_send') === false) throw new RuntimeException('Could not remove private logical-send index for integrity fixture.');
+  $missing_index_schema_ready = $outbox::ensure_schema(false);
+  $missing_index_claim_blocked = false;
+  try { $outbox::claim('grosses:missing-index', 'daily_report', 98, '2039-04-04', ['report' => 'fixture'], ['trigger' => 'manual']); }
+  catch (RuntimeException $error) { $missing_index_claim_blocked = true; }
+  $missing_index_claim_count = (int) $fixture_db->get_var($fixture_db->prepare("SELECT COUNT(*) FROM `{$table}` WHERE key_hash = %s", hash('sha256', 'grosses:missing-index')));
+  if ($fixture_db->query('ALTER TABLE `' . $table . '` ADD UNIQUE KEY logical_send (key_hash)') === false) throw new RuntimeException('Could not restore private logical-send index after integrity fixture.');
+  $restored_index_schema_ready = $outbox::ensure_schema(true);
+  remove_filter('pre_option_roxy_grosses_email_outbox_schema_version', $schema_option_filter, PHP_INT_MAX);
+  $schema_option_filter = null;
+  $check(!$missing_index_schema_ready && $missing_index_claim_blocked && $missing_index_claim_count === 0,
+    'cached schema marker fails closed when the unique logical-send index is missing');
+  $check($restored_index_schema_ready, 'forced verification accepts the restored private unique index');
+
   $logical_key = 'grosses:daily:2039-04-05';
   $unicode_subject = 'Fixture report ' . "\u{2014}" . ' manager ' . "\u{2019}" . ' 🍿';
   $unicode_body = 'Provisional ' . "\u{2014}" . ' “review” — 🎟️';

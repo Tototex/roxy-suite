@@ -107,14 +107,22 @@ final class EmailOutbox {
       if (!is_object($wpdb) || !method_exists($wpdb, 'get_charset_collate') || !method_exists($wpdb, 'query')) return false;
       if (!$force_verify && function_exists('get_option')
         && (string) get_option(self::SCHEMA_OPTION, '') === self::SCHEMA_VERSION) {
-        if (!method_exists($wpdb, 'get_var') || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'esc_like')) return false;
+        if (!method_exists($wpdb, 'get_var') || !method_exists($wpdb, 'get_results') || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'esc_like')) return false;
         $table_name = trim($table, '`');
         $existing_table = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table_name)));
         if (!empty($wpdb->last_error)) throw self::storage_error('cached schema table check');
         // The table is also the durable duplicate-send ledger. Recreating it
         // empty after a loss could allow previously sent reports to be sent
         // again, so a stale marker must fail closed for explicit restoration.
-        if ($existing_table === $table_name) return true;
+        if ($existing_table === $table_name) {
+          $indexes = $wpdb->get_results('SHOW INDEX FROM ' . $table, ARRAY_A);
+          if (!is_array($indexes) || !empty($wpdb->last_error)) throw self::storage_error('cached schema index check');
+          foreach ($indexes as $index) {
+            if (($index['Key_name'] ?? '') === 'logical_send' && (int) ($index['Non_unique'] ?? 1) === 0
+              && ($index['Column_name'] ?? '') === 'key_hash') return true;
+          }
+          return false;
+        }
         return false;
       }
       $charset = trim((string) $wpdb->get_charset_collate());
@@ -171,6 +179,7 @@ final class EmailOutbox {
     $report_date = self::valid_date($report_date);
     $payload_json = self::encode_json($payload, 'payload');
     $context_json = self::encode_json($context, 'context');
+    if (!self::ensure_schema()) throw new \RuntimeException('Grosses email outbox schema is unavailable or missing its unique send-key index; refusing to send.');
     $table = self::table_name();
     $now = gmdate('Y-m-d H:i:s');
     $date_sql = $report_date === null ? 'NULL' : '%s';
