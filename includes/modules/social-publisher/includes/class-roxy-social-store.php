@@ -586,13 +586,16 @@ final class Store {
             if ($wpdb->last_error !== '' || $smtp_reference !== null) return true;
         }
         // Jetpack sync and Mailchimp integrations can retain serialized post,
-        // cart, or job payloads containing media URLs outside core metadata.
-        // Keep this list scoped to the active extensions' known text fields;
-        // unknown schemas or read errors fail closed.
+        // cart, job payloads, cached sessions, logs, or scheduled task metadata
+        // containing media URLs outside core metadata. Keep this list scoped to
+        // active extensions' known text fields; unknown schemas/read errors fail closed.
         $extension_reference_stores = [
             [$wpdb->prefix . 'jetpack_sync_queue', 'event_id', ['event_payload']],
             [$wpdb->prefix . 'mailchimp_carts', 'id', ['cart']],
             [$wpdb->prefix . 'mailchimp_jobs', 'id', ['obj_id', 'job']],
+            [$wpdb->prefix . 'woocommerce_log', 'log_id', ['message', 'context']],
+            [$wpdb->prefix . 'woocommerce_sessions', 'session_id', ['session_key', 'session_value']],
+            [$wpdb->prefix . 'wpmailsmtp_tasks_meta', 'id', ['action', 'data']],
         ];
         static $extension_reference_table_exists = [];
         $url_path = parse_url($url, PHP_URL_PATH);

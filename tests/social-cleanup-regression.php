@@ -34,9 +34,9 @@ final class CleanupWpdb {
     public bool $smtp_events_table_exists = true;
     public bool $smtp_events_query_error = false;
     public array $smtp_event_contents = [];
-    public array $extension_reference_table_exists = ['wp_jetpack_sync_queue'=>true, 'wp_mailchimp_carts'=>true, 'wp_mailchimp_jobs'=>true];
+    public array $extension_reference_table_exists = ['wp_jetpack_sync_queue'=>true, 'wp_mailchimp_carts'=>true, 'wp_mailchimp_jobs'=>true, 'wp_woocommerce_log'=>true, 'wp_woocommerce_sessions'=>true, 'wp_wpmailsmtp_tasks_meta'=>true];
     public array $extension_reference_query_errors = [];
-    public array $extension_reference_values = ['wp_jetpack_sync_queue'=>[], 'wp_mailchimp_carts'=>[], 'wp_mailchimp_jobs'=>[]];
+    public array $extension_reference_values = ['wp_jetpack_sync_queue'=>[], 'wp_mailchimp_carts'=>[], 'wp_mailchimp_jobs'=>[], 'wp_woocommerce_log'=>[], 'wp_woocommerce_sessions'=>[], 'wp_wpmailsmtp_tasks_meta'=>[]];
     public string $fail_reference_table = '';
     public bool $lock_busy = false;
     public array $busy_lock_names = [];
@@ -441,6 +441,9 @@ foreach ([
     ['relative Jetpack sync payload path', static function () { $GLOBALS['wpdb']->extension_reference_values['wp_jetpack_sync_queue'][] = '{"media":"\\/uploads\\/clip.mp4"}'; }],
     ['relative Mailchimp cart path', static function () { $GLOBALS['wpdb']->extension_reference_values['wp_mailchimp_carts'][] = '{"image":"/uploads/clip.mp4"}'; }],
     ['escaped Mailchimp job path', static function () { $GLOBALS['wpdb']->extension_reference_values['wp_mailchimp_jobs'][] = '{"asset":"\\/uploads\\/clip.mp4"}'; }],
+    ['WooCommerce log URL path', static function () { $GLOBALS['wpdb']->extension_reference_values['wp_woocommerce_log'][] = 'Attachment https://fixture.invalid/uploads/clip.mp4'; }],
+    ['WooCommerce session cached path', static function () { $GLOBALS['wpdb']->extension_reference_values['wp_woocommerce_sessions'][] = 'session_key|/uploads/clip.mp4'; }],
+    ['WP Mail SMTP scheduled task path', static function () { $GLOBALS['wpdb']->extension_reference_values['wp_wpmailsmtp_tasks_meta'][] = '{"attachment":"\\/uploads\\/clip.mp4"}'; }],
     ['shared option URL without attachment ID', static function () { $GLOBALS['wpdb']->metadata_values['wp_options'][] = 'https://fixture.invalid/uploads/clip.mp4'; }],
     ['JSON-escaped option URL without attachment ID', static function () { $GLOBALS['wpdb']->metadata_values['wp_options'][] = json_encode(['url'=>'https://fixture.invalid/uploads/clip.mp4']); }],
     ['serialized user metadata attachment ID', static function () { $GLOBALS['wpdb']->metadata_values['wp_usermeta'][] = 'a:1:{s:12:"attachment";i:42;}'; }],
@@ -452,7 +455,7 @@ foreach ([
     ['missing Hangar asset marker', static function () { $GLOBALS['wpdb']->meta[42]['_roxy_hangar_asset_id'] = '0'; }],
     ['wrong attachment type', static function () { $GLOBALS['wpdb']->attachments[42]->post_type = 'post'; }],
     ['reference read failure', static function () { $GLOBALS['wpdb']->reference_query_error = true; }],
-    ...array_map(static fn($table) => ['extension reference read failure: ' . $table, static function () use ($table) { $GLOBALS['wpdb']->extension_reference_query_errors[$table] = true; }], ['wp_jetpack_sync_queue', 'wp_mailchimp_carts', 'wp_mailchimp_jobs']),
+    ...array_map(static fn($table) => ['extension reference read failure: ' . $table, static function () use ($table) { $GLOBALS['wpdb']->extension_reference_query_errors[$table] = true; }], ['wp_jetpack_sync_queue', 'wp_mailchimp_carts', 'wp_mailchimp_jobs', 'wp_woocommerce_log', 'wp_woocommerce_sessions', 'wp_wpmailsmtp_tasks_meta']),
     ...array_map(static fn($table) => ['metadata store read failure: ' . $table, static function () use ($table) { $GLOBALS['wpdb']->fail_reference_table = $table; }], ['wp_usermeta', 'wp_termmeta', 'wp_commentmeta', 'wp_options']),
 ] as [$label, $setup]) {
     fixture(); $setup();

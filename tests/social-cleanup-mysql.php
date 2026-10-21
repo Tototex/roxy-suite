@@ -11,10 +11,13 @@ $smtp_events_table=$wpdb->prefix.'wpmailsmtp_debug_events';
 $jetpack_queue_table=$wpdb->prefix.'jetpack_sync_queue';
 $mailchimp_carts_table=$wpdb->prefix.'mailchimp_carts';
 $mailchimp_jobs_table=$wpdb->prefix.'mailchimp_jobs';
+$woocommerce_log_table=$wpdb->prefix.'woocommerce_log';
+$woocommerce_sessions_table=$wpdb->prefix.'woocommerce_sessions';
+$smtp_tasks_table=$wpdb->prefix.'wpmailsmtp_tasks_meta';
 $reference_posts=$wpdb->prefix.'rcp_'.$suffix;
 $production=$wpdb->prefix.'roxy_social_posts';
 if(($wpdb->dbname??'')!=='roxy_test')throw new RuntimeException('This fixture may only run against the disposable roxy_test database.');
-if($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($yoast_table)))===$yoast_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($download_directories_table)))===$download_directories_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($smtp_events_table)))===$smtp_events_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($jetpack_queue_table)))===$jetpack_queue_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($mailchimp_carts_table)))===$mailchimp_carts_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($mailchimp_jobs_table)))===$mailchimp_jobs_table)throw new RuntimeException('Refusing to replace a pre-existing reference fixture table.');
+if($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($yoast_table)))===$yoast_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($download_directories_table)))===$download_directories_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($smtp_events_table)))===$smtp_events_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($jetpack_queue_table)))===$jetpack_queue_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($mailchimp_carts_table)))===$mailchimp_carts_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($mailchimp_jobs_table)))===$mailchimp_jobs_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($woocommerce_log_table)))===$woocommerce_log_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($woocommerce_sessions_table)))===$woocommerce_sessions_table||$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$wpdb->esc_like($smtp_tasks_table)))===$smtp_tasks_table)throw new RuntimeException('Refusing to replace a pre-existing reference fixture table.');
 $before=hash('sha256',serialize($wpdb->get_results('SELECT * FROM '.$production.' ORDER BY id',ARRAY_A)));
 $code=file_get_contents($path);
 $code=str_replace(['namespace RoxySocial;',"'roxy_social_posts'","'roxy_social_media_cleanup'","'roxy_social_poster_cleanup'"],['namespace '.$namespace.';',var_export($suffix,true),var_export($queue_suffix,true),var_export($poster_queue_suffix,true)],$code);
@@ -28,7 +31,7 @@ function wp_delete_attachment($id,$force=false){$GLOBALS["cleanup53_delete_calls
 function wp_schedule_single_event($timestamp,$hook,$args=[]){$GLOBALS["cleanup53_scheduled"][]=[$timestamp,$hook,$args];return true;}
 ');
 $checks=0;$assert=static function($ok,$label)use(&$checks){if(!$ok)throw new RuntimeException($label);$checks++;echo 'PASS: '.$label.PHP_EOL;};
-$block=static function($sql)use($table,$queue_table,$poster_queue_table,$yoast_table,$download_directories_table,$smtp_events_table,$jetpack_queue_table,$mailchimp_carts_table,$mailchimp_jobs_table,$reference_posts){if(preg_match('/^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i',$sql)&&strpos($sql,$table)===false&&strpos($sql,$queue_table)===false&&strpos($sql,$poster_queue_table)===false&&strpos($sql,$yoast_table)===false&&strpos($sql,$download_directories_table)===false&&strpos($sql,$smtp_events_table)===false&&strpos($sql,$jetpack_queue_table)===false&&strpos($sql,$mailchimp_carts_table)===false&&strpos($sql,$mailchimp_jobs_table)===false&&strpos($sql,$reference_posts)===false)throw new RuntimeException('Non-private cleanup SQL mutation.');return $sql;};
+$block=static function($sql)use($table,$queue_table,$poster_queue_table,$yoast_table,$download_directories_table,$smtp_events_table,$jetpack_queue_table,$mailchimp_carts_table,$mailchimp_jobs_table,$woocommerce_log_table,$woocommerce_sessions_table,$smtp_tasks_table,$reference_posts){if(preg_match('/^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i',$sql)&&strpos($sql,$table)===false&&strpos($sql,$queue_table)===false&&strpos($sql,$poster_queue_table)===false&&strpos($sql,$yoast_table)===false&&strpos($sql,$download_directories_table)===false&&strpos($sql,$smtp_events_table)===false&&strpos($sql,$jetpack_queue_table)===false&&strpos($sql,$mailchimp_carts_table)===false&&strpos($sql,$mailchimp_jobs_table)===false&&strpos($sql,$woocommerce_log_table)===false&&strpos($sql,$woocommerce_sessions_table)===false&&strpos($sql,$smtp_tasks_table)===false&&strpos($sql,$reference_posts)===false)throw new RuntimeException('Non-private cleanup SQL mutation.');return $sql;};
 $mail=static function(){throw new RuntimeException('Unexpected mail.');};$http=static function(){throw new RuntimeException('Unexpected HTTP.');};
 $old=$wpdb->suppress_errors(true);$created_tables=[];
 try {
@@ -43,6 +46,9 @@ try {
         ['Jetpack sync payload reference','CREATE TABLE '.$jetpack_queue_table.' (ID BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, event_id VARCHAR(32) NOT NULL, event_payload LONGTEXT NOT NULL, timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (ID))','DROP TABLE '.$jetpack_queue_table],
         ['Mailchimp cart reference','CREATE TABLE '.$mailchimp_carts_table.' (id VARCHAR(51) NOT NULL, cart TEXT NOT NULL, PRIMARY KEY (id))','DROP TABLE '.$mailchimp_carts_table],
         ['Mailchimp job reference','CREATE TABLE '.$mailchimp_jobs_table.' (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, obj_id TEXT NOT NULL, job TEXT NOT NULL, PRIMARY KEY (id))','DROP TABLE '.$mailchimp_jobs_table],
+        ['WooCommerce log reference','CREATE TABLE '.$woocommerce_log_table.' (log_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, level SMALLINT NOT NULL, source VARCHAR(200) NOT NULL, message LONGTEXT NOT NULL, context LONGTEXT NULL, created DATETIME NOT NULL, PRIMARY KEY (log_id))','DROP TABLE '.$woocommerce_log_table],
+        ['WooCommerce session reference','CREATE TABLE '.$woocommerce_sessions_table.' (session_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, session_key char(32) NOT NULL, session_value longtext NOT NULL, session_expiry BIGINT UNSIGNED NOT NULL, PRIMARY KEY (session_id), UNIQUE KEY session_key (session_key))','DROP TABLE '.$woocommerce_sessions_table],
+        ['WP Mail SMTP scheduled task reference','CREATE TABLE '.$smtp_tasks_table.' (id bigint unsigned NOT NULL AUTO_INCREMENT, action varchar(255) NOT NULL, data longtext NOT NULL, PRIMARY KEY (id))','DROP TABLE '.$smtp_tasks_table],
     ];
     foreach($fixture_schema as [$label,$sql,$drop_sql]){if($wpdb->query($sql)===false)throw new RuntimeException('Private cleanup schema failed for '.$label.': '.($wpdb->last_error?:$sql));$created_tables[]=$drop_sql;}
     add_filter('query',$block,PHP_INT_MAX);add_filter('pre_wp_mail',$mail,PHP_INT_MAX);add_filter('pre_http_request',$http,PHP_INT_MAX);
@@ -100,6 +106,18 @@ $reset=static function()use($wpdb,$table,$virtual_base){
     $mailchimp_job_id=(int)$wpdb->insert_id;
     $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0&&(int)$store::find(1)['temporary_attachment_id']===$virtual_base,'Mailchimp job path preserves attachment and retry pointer');
     if($wpdb->delete($mailchimp_jobs_table,['id'=>$mailchimp_job_id])===false)throw new RuntimeException('Could not clear private Mailchimp job reference.');
+    $row=$reset();$GLOBALS['cleanup53_delete_calls']=0;
+    if($wpdb->insert($woocommerce_log_table,['level'=>200,'source'=>'fixture','message'=>'Attachment /cleanup53-'.$virtual_base.'.mp4','context'=>'{}','created'=>current_time('mysql')])!==1)throw new RuntimeException('Could not seed private WooCommerce log reference.');
+    $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0&&(int)$store::find(1)['temporary_attachment_id']===$virtual_base,'WooCommerce log relative path preserves attachment and cleanup pointer');
+    if($wpdb->delete($woocommerce_log_table,['log_id'=>$wpdb->insert_id])===false)throw new RuntimeException('Could not clear private WooCommerce log reference.');
+    $row=$reset();$GLOBALS['cleanup53_delete_calls']=0;
+    if($wpdb->insert($woocommerce_sessions_table,['session_key'=>md5('fixture-'.$virtual_base),'session_value'=>'cart_image|/cleanup53-'.$virtual_base.'.mp4','session_expiry'=>time()+3600])!==1)throw new RuntimeException('Could not seed private WooCommerce session reference.');
+    $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0&&(int)$store::find(1)['temporary_attachment_id']===$virtual_base,'WooCommerce cached session path preserves attachment and cleanup pointer');
+    if($wpdb->delete($woocommerce_sessions_table,['session_id'=>$wpdb->insert_id])===false)throw new RuntimeException('Could not clear private WooCommerce session reference.');
+    $row=$reset();$GLOBALS['cleanup53_delete_calls']=0;
+    if($wpdb->insert($smtp_tasks_table,['action'=>'fixture_task','data'=>'{"attachment":"\\/cleanup53-'.$virtual_base.'.mp4"}'])!==1)throw new RuntimeException('Could not seed private WP Mail SMTP task reference.');
+    $assert($store::cleanup_expired()===0&&$GLOBALS['cleanup53_delete_calls']===0&&(int)$store::find(1)['temporary_attachment_id']===$virtual_base,'WP Mail SMTP scheduled task path preserves attachment and cleanup pointer');
+    if($wpdb->delete($smtp_tasks_table,['id'=>$wpdb->insert_id])===false)throw new RuntimeException('Could not clear private WP Mail SMTP task reference.');
     $row=$reset();$GLOBALS['cleanup53_delete_calls']=0;
     $relative_path='/cleanup53-'.$virtual_base.'.mp4';
     $original_posts_table=$wpdb->posts;
