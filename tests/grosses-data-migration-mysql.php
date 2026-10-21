@@ -144,7 +144,8 @@ try {
   $cursor_migration=new ReflectionMethod($store,'migrate_history_to_entries');$cursor_migration->setAccessible(true);$cursor_migration->invoke(null);
   $cursor_entry_count=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$entries} WHERE report_date=%s AND source_type=%s",$cursor_date,'saved_report_migration'));
   $cursor_collision_count=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$entries} WHERE report_date=%s AND showing_id IN (%d,%d)",$cursor_date,19700100,19700101));
-  $assert($wpdb->last_error===''&&$cursor_entry_count===101&&$cursor_collision_count===2,'legacy-title migration resumes from the raw database sort key and preserves both rows across the page boundary');
+  if($wpdb->last_error!==''||$cursor_entry_count!==101||$cursor_collision_count!==2)throw new RuntimeException(sprintf('Legacy-title cursor regression failed: source=%d migrated=%d collision_pair=%d sql_error=%s',$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$history} WHERE report_date=%s",$cursor_date)),$cursor_entry_count,$cursor_collision_count,$wpdb->last_error));
+  $assert(true,'legacy-title migration resumes from the raw database sort key and preserves both rows across the page boundary');
 
   delete_option($store::ENTRY_MIGRATION_OPTION);
   $other=new wpdb(DB_USER,DB_PASSWORD,DB_NAME,DB_HOST);$other->suppress_errors(true);
