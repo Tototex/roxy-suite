@@ -43,6 +43,10 @@ try {
     ] as [$id, $key, $value]) {
         if (!add_post_meta($id, $key, $value)) throw new RuntimeException('Private fixture metadata could not be created.');
     }
+    if ($wpdb->update($wpdb->posts, ['post_status' => 'publish'], ['ID' => $showing_id]) !== 1) {
+        throw new RuntimeException('Private capacity fixture showing could not be published.');
+    }
+    clean_post_cache($showing_id);
     // Keep this test focused on Capacity: the independent publication gate is covered separately.
     if (class_exists(RoxyST\Eligibility::class)) {
         remove_filter('woocommerce_is_purchasable', [RoxyST\Eligibility::class, 'purchasable'], 99);
