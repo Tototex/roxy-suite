@@ -449,6 +449,43 @@ final class Store {
             ));
             if ($wpdb->last_error !== '' || $yoast_reference !== null) return true;
         }
+        // WooCommerce admin notes can retain images in a dedicated field or
+        // embedded in note content. This table is not part of WordPress core
+        // metadata, so include it explicitly when the installed Woo schema has
+        // it. Errors fail closed; legacy installs without the table skip it.
+        $notes_table = $wpdb->prefix . 'wc_admin_notes';
+        if (!is_string($notes_table) || !preg_match('/^[A-Za-z0-9_]+$/D', $notes_table)) return true;
+        static $woocommerce_notes_table_exists = [];
+        if (!array_key_exists($notes_table, $woocommerce_notes_table_exists)) {
+            $wpdb->last_error = '';
+            $notes_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($notes_table)));
+            if ($wpdb->last_error !== '') return true;
+            $woocommerce_notes_table_exists[$notes_table] = $notes_exists === $notes_table;
+        }
+        if ($woocommerce_notes_table_exists[$notes_table]) {
+            $url_path = parse_url($url, PHP_URL_PATH);
+            if (!is_string($url_path) || $url_path === '') return true;
+            $note_patterns = [
+                '%' . $wpdb->esc_like($url) . '%',
+                '%' . $wpdb->esc_like(str_replace('/', '\\/', $url)) . '%',
+                '%' . $wpdb->esc_like($url_path) . '%',
+                '%' . $wpdb->esc_like(str_replace('/', '\\/', $url_path)) . '%',
+            ];
+            $clauses = [];
+            $values = [];
+            foreach (['image', 'content', 'content_data'] as $column) {
+                foreach ($note_patterns as $pattern) {
+                    $clauses[] = $column . ' LIKE %s';
+                    $values[] = $pattern;
+                }
+            }
+            $wpdb->last_error = '';
+            $notes_reference = $wpdb->get_var($wpdb->prepare(
+                'SELECT note_id FROM ' . $notes_table . ' WHERE ' . implode(' OR ', $clauses) . ' LIMIT 1',
+                ...$values
+            ));
+            if ($wpdb->last_error !== '' || $notes_reference !== null) return true;
+        }
         $patterns = [
             '%' . $wpdb->esc_like($url) . '%',
             '%' . str_replace('/', '%', $wpdb->esc_like($url)) . '%',

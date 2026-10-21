@@ -24,6 +24,9 @@ final class CleanupWpdb {
     public bool $reference_query_error = false;
     public bool $yoast_table_exists = true;
     public array $yoast_reference_ids = [];
+    public bool $woocommerce_notes_table_exists = true;
+    public bool $woocommerce_notes_query_error = false;
+    public array $woocommerce_note_values = [];
     public string $fail_reference_table = '';
     public bool $lock_busy = false;
     public array $busy_lock_names = [];
@@ -124,12 +127,28 @@ final class CleanupWpdb {
             if ($this->reference_query_error) { $this->last_error = 'fixture Yoast table check failed'; return null; }
             return $this->yoast_table_exists ? 'wp_yoast_indexable' : null;
         }
+        if (strpos($unescaped_query, 'SHOW TABLES LIKE') !== false && strpos($unescaped_query, 'wp_wc_admin_notes') !== false) {
+            if ($this->reference_query_error) { $this->last_error = 'fixture WooCommerce notes table check failed'; return null; }
+            return $this->woocommerce_notes_table_exists ? 'wp_wc_admin_notes' : null;
+        }
         if (strpos($unescaped_query, 'FROM wp_yoast_indexable') !== false) {
             if ($this->reference_query_error) { $this->last_error = 'fixture Yoast reference query failed'; return null; }
             preg_match("/open_graph_image_id = '(\\d+)'/", $query, $open_graph);
             preg_match("/twitter_image_id = '(\\d+)'/", $query, $twitter);
             return in_array((int)($open_graph[1] ?? 0), $this->yoast_reference_ids, true)
                 || in_array((int)($twitter[1] ?? 0), $this->yoast_reference_ids, true) ? 1 : null;
+        }
+        if (strpos($unescaped_query, 'FROM wp_wc_admin_notes') !== false) {
+            if ($this->woocommerce_notes_query_error) { $this->last_error = 'fixture WooCommerce notes query failed'; return null; }
+            preg_match_all('/LIKE \'(.*?)\'/s', $query, $matches);
+            $patterns = array_map(static fn($pattern) => stripslashes($pattern), $matches[1] ?? []);
+            foreach ($this->woocommerce_note_values as $value) {
+                foreach ($patterns as $pattern) {
+                    $like_regex = '/^' . str_replace('%', '.*', preg_quote($pattern, '/')) . '$/s';
+                    if ($pattern !== '' && preg_match($like_regex, (string) $value)) return 1;
+                }
+            }
+            return null;
         }
         if (strpos($query, 'COALESCE(MAX(attachment_id), 0)') !== false) {
             preg_match('/cleanup_after <= \'([^\']+)\'/i', $query, $cutoff);
@@ -266,6 +285,16 @@ $GLOBALS['cleanup_detached_enabled'] = true;
 fixture(); $wpdb->yoast_table_exists = true; $wpdb->yoast_reference_ids = [42];
 check_cleanup(\RoxySocial\Store::cleanup_expired() === 0 && isset($wpdb->attachments[42]) && $wpdb->rows[1]['temporary_attachment_id'] === 42,
     'Yoast Open Graph or Twitter image ID reference prevents attachment deletion');
+
+fixture(); $wpdb->woocommerce_note_values = ['https://fixture.invalid/uploads/clip.mp4'];
+check_cleanup(\RoxySocial\Store::cleanup_expired() === 0 && isset($wpdb->attachments[42]) && $wpdb->rows[1]['temporary_attachment_id'] === 42,
+    'WooCommerce admin note image URL reference prevents attachment deletion');
+fixture(); $wpdb->woocommerce_note_values = ['{"html":"<img src=\\"/uploads/clip.mp4\\">"}'];
+check_cleanup(\RoxySocial\Store::cleanup_expired() === 0 && isset($wpdb->attachments[42]) && $wpdb->rows[1]['temporary_attachment_id'] === 42,
+    'WooCommerce admin note content-data URL reference prevents attachment deletion');
+fixture(); $wpdb->woocommerce_notes_query_error = true;
+check_cleanup(\RoxySocial\Store::cleanup_expired() === 0 && isset($wpdb->attachments[42]) && $wpdb->rows[1]['temporary_attachment_id'] === 42,
+    'WooCommerce admin note query failure preserves candidate and retry pointer');
 
 fixture();
 $wpdb->rows[2] = ['id'=>2,'status'=>'draft','post_text'=>'','scheduled_for'=>'2026-10-07 12:00:00','media_type'=>'video','media_url'=>'','media_urls'=>null,'temporary_attachment_id'=>null,'cleanup_after'=>null,'created_at'=>'2026-10-06 12:00:00','updated_at'=>'2026-10-06 12:00:00'];
