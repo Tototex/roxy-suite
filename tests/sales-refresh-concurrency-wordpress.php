@@ -99,6 +99,8 @@ try {
   @unlink($ready_path);
   $newer_snapshot = json_decode(trim((string)$stdout), true);
 
+  echo 'Concurrency fixture observations: older=' . wp_json_encode($older_snapshot)
+    . '; newer=' . wp_json_encode($newer_snapshot) . '; worker_exit=' . (int)$worker_exit . "\n";
   $check(empty($older_snapshot['read_error']) && $older_snapshot['sold_qty']===1,
     'primary refresh retains the snapshot it calculated before the concurrent quantity change');
   $check($worker_exit===0 && is_array($newer_snapshot) && empty($newer_snapshot['read_error']) && ($newer_snapshot['sold_qty'] ?? null)===3,
