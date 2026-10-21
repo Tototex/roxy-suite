@@ -130,6 +130,7 @@ try {
 
   // Repeat with production hooks enabled. The independent worker must wait for
   // refund persistence and ticket reconciliation, then reject the refunded QR.
+  add_action('woocommerce_create_refund', [\RoxyST\Tickets::class, 'on_refund_creating'], 1, 2);
   $probe = new wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
   if (!$probe->ready) throw new RuntimeException('Independent lock probe connection unavailable');
   $lock = 'roxy_ticket_' . substr(hash('sha256', $wpdb->prefix . ':' . $order_id), 0, 48);
