@@ -23,13 +23,19 @@ class Tickets {
   private static ?Issuance $issuance = null;
   private static array $admin_item_save_orders = [];
   private static array $deleted_ticket_order_items = [];
+  /** Refund creation leases serialize persisted refund allocation with admission. */
+  private static array $refund_creation_leases = [];
+  private static bool $refund_lease_shutdown_registered = false;
 
   public static function init(): void {
     add_action('init', [__CLASS__, 'register_post_type']);
     add_action('woocommerce_checkout_order_processed', [__CLASS__, 'on_order_changed'], 30, 1);
     add_action('woocommerce_order_status_changed', [__CLASS__, 'on_order_changed'], 30, 1);
+    add_action('woocommerce_create_refund', [__CLASS__, 'on_refund_creating'], 1, 2);
     add_action('woocommerce_refund_created', [__CLASS__, 'on_refund_created'], 30, 2);
+    add_action('woocommerce_refund_created', [__CLASS__, 'release_refund_creation_lease'], 40, 2);
     add_action('woocommerce_refund_deleted', [__CLASS__, 'on_refund_deleted'], 30, 2);
+    add_action('woocommerce_refund_deleted', [__CLASS__, 'release_deleted_refund_creation_lease'], 40, 2);
     add_action('woocommerce_before_save_order_items', [__CLASS__, 'before_order_items_saved'], 1, 2);
     add_action('woocommerce_saved_order_items', [__CLASS__, 'on_order_items_saved'], 30, 2);
     add_action('woocommerce_before_delete_order_item', [__CLASS__, 'before_order_item_deleted'], 1, 1);
@@ -163,6 +169,44 @@ class Tickets {
 
     // Reconcile cumulative persisted refunds, not just this callback's delta.
     self::sync_order_tickets($order_id);
+  }
+
+  /** Acquire the same per-order lock as check-in before Woo persists a refund. */
+  public static function on_refund_creating($refund, array $args = []): void {
+    $order_id = isset($args['order_id']) ? (int) $args['order_id'] : 0;
+    if ($order_id <= 0 || !is_object($refund)) throw new \RuntimeException('Refund order identity could not be verified');
+
+    $lease = new Issuance($order_id);
+    $lease->acquire_lease();
+    self::$refund_creation_leases[$order_id][] = $lease;
+    if (!self::$refund_lease_shutdown_registered) {
+      self::$refund_lease_shutdown_registered = true;
+      register_shutdown_function([__CLASS__, 'release_all_refund_creation_leases']);
+    }
+  }
+
+  /** Release after the persisted refund has been reconciled by on_refund_created. */
+  public static function release_refund_creation_lease(int $refund_id, array $args = []): void {
+    $order_id = isset($args['order_id']) ? (int) $args['order_id'] : 0;
+    self::release_one_refund_creation_lease($order_id);
+  }
+
+  /** Woo may delete a saved refund after a failed gateway attempt or exception. */
+  public static function release_deleted_refund_creation_lease(int $refund_id, int $order_id): void {
+    self::release_one_refund_creation_lease($order_id);
+  }
+
+  public static function release_all_refund_creation_leases(): void {
+    foreach (array_keys(self::$refund_creation_leases) as $order_id) {
+      while (!empty(self::$refund_creation_leases[$order_id])) self::release_one_refund_creation_lease((int) $order_id);
+    }
+  }
+
+  private static function release_one_refund_creation_lease(int $order_id): void {
+    if ($order_id <= 0 || empty(self::$refund_creation_leases[$order_id])) return;
+    $lease = array_pop(self::$refund_creation_leases[$order_id]);
+    if (!self::$refund_creation_leases[$order_id]) unset(self::$refund_creation_leases[$order_id]);
+    if ($lease instanceof Issuance) $lease->release_lease();
   }
 
   public static function on_refund_deleted(int $refund_id, int $order_id): void {
