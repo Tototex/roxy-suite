@@ -446,7 +446,7 @@ final class Store {
         // Yoast stores attachment IDs outside WordPress core metadata. When the
         // indexable table exists, include its social-preview image fields; a
         // schema/read error must preserve the candidate rather than delete it.
-        $yoast_table = apply_filters('roxy_social_yoast_indexable_table', $wpdb->prefix . 'yoast_indexable');
+        $yoast_table = $wpdb->prefix . 'yoast_indexable';
         if (!is_string($yoast_table) || !preg_match('/^[A-Za-z0-9_]+$/D', $yoast_table)) return true;
         if (!array_key_exists($yoast_table, $yoast_table_exists)) {
             $wpdb->last_error = '';
