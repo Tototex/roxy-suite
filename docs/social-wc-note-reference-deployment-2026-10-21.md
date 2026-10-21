@@ -20,3 +20,7 @@ Auxiliary WP-CLI class-load probes had command-quoting parse errors and are not 
 ## Runtime source parity
 
 After deployment, all 99 tracked runtime files were compared against the installed plugin in one read-only SSH session. Ninety-four match byte-for-byte; the only five raw-hash differences are `includes/modules/grosses/roxy-grosses.php`, Requested Showings frontend/template, and Show Tickets Door Mode JavaScript/eligibility. These are the same five already verified in the 2026-10-20 full parity checkpoint as line-ending-only differences, and none has changed in Git since that comparison. The newly deployed Social Store matches its branch source exactly. The three pre-existing untracked `.codex-*` directories were preserved.
+
+## Database reference-surface follow-up
+
+A read-only `information_schema` inventory confirmed production `wc_admin_notes` has all queried fields (`image`, `content`, and `content_data`) and 256 rows. The only other media-like custom columns outside WordPress/WooCommerce/Yoast and the Roxy Social tables were in legacy FormMaker, IGN products, Links, MemberDeck, and WP e-Commerce tables. FormMaker is inactive; the other legacy reference tables have zero rows. The remaining check-email log `attachments` field contains five tiny values and prior bounded content checks found no upload paths or attachment markers. This narrows current known database references but does not certify unknown opaque/plugin data or unrelated concurrent writers, so deletion stays disabled.
