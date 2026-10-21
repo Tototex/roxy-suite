@@ -11,6 +11,10 @@ try {
   if (is_wp_error($event_id) || !$event_id) throw new RuntimeException('Could not create the draft event fixture.');
   if (get_post_status((int)$event_id) !== 'private') throw new RuntimeException('The test event fixture is not private.');
 
+  // Other event fixtures may intentionally leave an admin notice transient behind.
+  // Start this independent save assertion with a clean request-scoped notice state.
+  delete_transient('roxy_st_event_invalid_' . get_current_user_id());
+
   $start = current_datetime()->modify('+5 years')->setTime(14, 30)->format('Y-m-d\\TH:i');
   $_POST = [
     'roxy_st_event_nonce'=>wp_create_nonce('roxy_st_event_save'),
