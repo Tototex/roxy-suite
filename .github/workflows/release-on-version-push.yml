@@ -223,6 +223,11 @@ jobs:
             exit 1
           fi
 
+          if ! unzip -t "$ZIP_PATH" >/dev/null; then
+            echo "Release ZIP failed its integrity test: $ZIP_PATH"
+            exit 1
+          fi
+
           SOURCE_SHA="$GITHUB_SHA" \
           RELEASE_VERSION="${{ steps.version.outputs.version }}" \
           ZIP_NAME="${{ steps.version.outputs.zip_name }}" \

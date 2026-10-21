@@ -124,6 +124,11 @@ const script = (name) => {
     }
   }
   check(source.includes('overwrite_files: true'), 'release retry can replace partially uploaded assets');
+  const zipBuild = source.split('      - name: Build plugin zip\n')[1]?.split('\n      - name: ')[0];
+  assert.ok(zipBuild, 'Missing release ZIP build step');
+  const zipIntegrityCheck = zipBuild.indexOf('unzip -t "$ZIP_PATH"');
+  check(zipIntegrityCheck > zipBuild.indexOf('zip -X') && zipIntegrityCheck < zipBuild.indexOf("node <<'NODE'"), 'release ZIP integrity is checked after creation and before its manifest is generated');
+  check(zipBuild.includes('Release ZIP failed its integrity test'), 'invalid release archive fails closed with actionable output');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'roxy-release-fixture-'));
   check(source.includes("--exclude='/tools/'"), 'maintenance/conversion tools are excluded from public runtime releases');
   check(source.includes("--exclude='/.gitignore'"), 'repository ignore metadata is excluded from public runtime releases');
