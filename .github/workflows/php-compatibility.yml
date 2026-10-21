@@ -351,7 +351,13 @@ jobs:
             echo "::error title=Grosses Cashflow combined provider integration fixture failed::$details"
             exit "$status"
           fi
+          # WooCommerce correctly blocks the HPOS migration while Roxy Suite
+          # declares suite-wide compatibility unsupported. The disposable
+          # fixture enables HPOS with the plugin inactive, then reactivates it
+          # to test selected paths without advertising global support.
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" plugin deactivate roxy-suite/roxy-suite.php
           php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" wc hpos enable
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" plugin activate roxy-suite/roxy-suite.php
           output="$RUNNER_TEMP/requested-lifecycle-hpos-output.txt"
           if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/requested-entitlement-lifecycle-wordpress.php" "$GITHUB_WORKSPACE" hpos >"$output" 2>&1; then
             cat "$output"
@@ -424,7 +430,11 @@ jobs:
             echo "::error title=Event Booking legacy lifecycle failed::$details"
             exit "$status"
           fi
+          # Enable authoritative HPOS only after the isolated site deactivates
+          # the plugin's intentionally conservative suite-wide declaration.
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin deactivate roxy-suite/roxy-suite.php
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" wc hpos enable
+          php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" plugin activate roxy-suite/roxy-suite.php
           php "$RUNNER_TEMP/wp-cli.phar" --path="$wp_path" eval '$u="\\Automattic\\WooCommerce\\Utilities\\OrderUtil"; if (!class_exists($u) || !$u::custom_orders_table_usage_is_enabled()) throw new RuntimeException("HPOS did not become authoritative in the isolated fixture."); global $wpdb; foreach (["wc_orders","wc_orders_meta"] as $n) { $t=$wpdb->prefix.$n; if ($wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s",$t)) !== $t) throw new RuntimeException("Required HPOS table missing: ".$t); }'
           echo "HPOS_WP_PATH=$wp_path" >> "$GITHUB_ENV"
       - name: Run private HPOS order-marker contract
