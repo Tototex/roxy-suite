@@ -135,6 +135,19 @@ jobs:
             echo "::error title=Show Tickets checkout-hold lifecycle fixture failed::$details"
             exit "$status"
           fi
+      - name: Run Show Tickets product-sync connection-loss recovery fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/ticket-product-sync-connection-loss-output.txt"
+          if php "$RUNNER_TEMP/wp-cli.phar" --path="$R2_WP_PATH" eval-file "$GITHUB_WORKSPACE/tests/ticket-product-sync-connection-loss-woocommerce.php" >"$output" 2>&1; then
+            cat "$output"
+          else
+            status=$?
+            details="$(tail -n 50 "$output" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=Show Tickets product-sync connection-loss fixture failed::$details"
+            exit "$status"
+          fi
       - name: Run multi-day event room-lock regression
         shell: bash
         run: |
