@@ -361,6 +361,7 @@ namespace {
   $GLOBALS['fixture_options'][$queue_key] = [];
   $GLOBALS['cron_events'] = array_values(array_filter($GLOBALS['cron_events'], static fn(array $event): bool => !($event['hook'] === 'roxy_grosses_closed_day_refresh' && ($event['args'] ?? []) === ['2000-01-04', 1])));
   $GLOBALS['fixture_options']['roxy_grosses_last_auto_date'] = '2000-01-02';
+  $GLOBALS['fixture_options'][$queue_key] = ['2000-01-02'=>['attempt'=>0,'status'=>'pending','message'=>'','retry_at'=>time()+60]];
   \RoxyGrosses\Reporter::$refresh_results = [['success' => false, 'message' => 'temporary failure'], ['success' => true, 'message' => 'reviewed']];
   $GLOBALS['cron_events'] = array_values(array_filter($GLOBALS['cron_events'], static fn(array $event): bool => !($event['hook'] === 'roxy_grosses_closed_day_refresh' && ($event['args'] ?? []) === ['2000-01-02', 0])));
   \RoxyGrosses\Scheduler::run_closed_day_refresh('2000-01-02');
