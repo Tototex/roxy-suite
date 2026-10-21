@@ -306,6 +306,15 @@ run_test('actual cancellation caller refuses missing orders and failed gateway w
     check(is_wp_error(roxy_eb_cancel_booking(82,'admin')),'gateway refusal propagated');
     check($GLOBALS['bookings'][82]['status']==='confirmed' && !$GLOBALS['queued_cancellations'],'failed refund cannot release reservation');
 });
+run_test('customer cannot complete paid manual booking cancellation without a refundable Woo order', function() {
+    reset_gateway(); make_booking(87,0);
+    $GLOBALS['bookings'][87]['payment_method']='pay_now'; $GLOBALS['bookings'][87]['total_price']=250;
+    $customer_result=roxy_eb_cancel_booking(87,'customer');
+    check(is_wp_error($customer_result) && $customer_result->get_error_code()==='refund_order_missing','customer must be directed to staff when paid booking has no online order to refund');
+    check($GLOBALS['bookings'][87]['status']==='confirmed' && !$GLOBALS['cleared_reminders'] && !$GLOBALS['queued_cancellations'],'manual-refund review keeps occupancy and follow-up intact');
+    check(roxy_eb_cancel_booking(87,'admin')===true && $GLOBALS['bookings'][87]['status']==='cancelled','staff can still cancel a manually managed booking');
+    check(count($GLOBALS['wc_refund_calls'])===0,'manual booking does not invent an online refund');
+});
 run_test('actual cancellation caller reports failed booking save after successful refund', function() {
     reset_gateway(); make_booking(83,183); register_order(new WC_Order(183,50,[1=>make_item(83,null,50)])); $GLOBALS['booking_save_error']=true;
     $result=roxy_eb_cancel_booking(83,'admin');

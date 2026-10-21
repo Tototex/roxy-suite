@@ -478,6 +478,16 @@ function roxy_eb_cancel_booking($booking_id, $by = 'customer') {
             if (!in_array($adjustment_order_id, $order_ids, true)) $order_ids[] = $adjustment_order_id;
         }
 
+        // A paid booking created manually by staff may not have a Woo order.
+        // Do not tell a customer that cancellation succeeded when the plugin
+        // has no payment record it can refund; route that case to staff.
+        if ($by === 'customer'
+            && ($booking['payment_method'] ?? 'pay_now') !== 'invoice'
+            && (float) ($booking['total_price'] ?? 0) > 0
+            && !$order_ids) {
+            return new WP_Error('refund_order_missing', 'This paid booking has no linked online order for an automatic refund. Please contact the theater to review your cancellation.');
+        }
+
         if ($order_ids && class_exists('WC_Order')) {
             foreach ($order_ids as $order_id) {
                 // A refund is external to the reservation transaction. If an
