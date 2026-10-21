@@ -1084,19 +1084,12 @@ class Store {
     global $wpdb;
     $table = self::history_table_name();
     [$maximum, $expected] = self::migration_read_boundary($table, 'legacy history');
-    $cursor_date = null;
-    $cursor_title = '';
     $cursor_id = 0;
     $processed = 0;
     while ($processed < $expected) {
       $sql = 'SELECT id, report_date, showing_id, show_time, theater_name, film_title, general_qty, discount_qty, group_qty, total_tickets, gross_total, source_mode, source_report_id FROM ' . $table;
-      if ($cursor_date === null) {
-        $sql .= ' WHERE id <= %d ORDER BY report_date ASC, BINARY film_title ASC, id ASC LIMIT %d';
-        $rows = $wpdb->get_results($wpdb->prepare($sql, $maximum, 100), ARRAY_A);
-      } else {
-        $sql .= ' WHERE id <= %d AND (report_date > %s OR (report_date = %s AND (BINARY film_title > BINARY %s OR (BINARY film_title = BINARY %s AND id > %d)))) ORDER BY report_date ASC, BINARY film_title ASC, id ASC LIMIT %d';
-        $rows = $wpdb->get_results($wpdb->prepare($sql, $maximum, $cursor_date, $cursor_date, $cursor_title, $cursor_title, $cursor_id, 100), ARRAY_A);
-      }
+      $sql .= ' WHERE id <= %d AND id > %d ORDER BY id ASC LIMIT %d';
+      $rows = $wpdb->get_results($wpdb->prepare($sql, $maximum, $cursor_id, 100), ARRAY_A);
       if ($wpdb->last_error !== '' || !is_array($rows)) throw new \RuntimeException('Legacy history migration page could not be read.');
       if (!$rows) break;
       $entries = [];
@@ -1112,11 +1105,8 @@ class Store {
         }
         if ($row_title === '') throw new \RuntimeException('Legacy history contains a row without a title; migration stopped for review.');
         if ($id <= 0 || $id > $maximum) throw new \RuntimeException('Legacy history migration page was invalid or repeated.');
-        $cursor_date = $row_date;
-        // The page query sorts and compares the original database title. Keep
-        // that exact key for pagination; sanitizing it can collide with the
-        // next row and skip records when a page boundary splits the pair.
-        $cursor_title = $source_title;
+        // A unique numeric source key avoids collation and sanitization
+        // differences between stored titles and the keyset cursor.
         $cursor_id = $id;
         $processed++;
         $entries[] = [
