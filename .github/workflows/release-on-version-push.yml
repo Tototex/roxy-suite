@@ -15,6 +15,10 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
 
     steps:
       - name: Check out repository
@@ -265,6 +269,14 @@ jobs:
           };
           fs.writeFileSync(path.resolve('build', process.env.MANIFEST_NAME), JSON.stringify(manifest, null, 2) + '\n');
           NODE
+
+      - name: Attest release artifacts
+        if: steps.compare.outputs.should_release == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            build/${{ steps.version.outputs.zip_name }}
+            build/${{ steps.version.outputs.manifest_name }}
 
       - name: Create Git tag when missing
         if: steps.compare.outputs.should_release == 'true'

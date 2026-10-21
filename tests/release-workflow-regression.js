@@ -152,6 +152,13 @@ const script = (name) => {
     check(manifest.archive.sha256 === hash(fs.readFileSync(path.join(temp, 'build', 'fixture.zip'))), 'archive hash matches fixture bytes');
     check(source.includes("--exclude='/tests/'") && source.includes("--exclude='/docs/'"), 'runtime package excludes tests and audit documents');
     check(source.includes('zip -X') && source.includes('LC_ALL=C sort') && source.includes('SOURCE_DATE_EPOCH'), 'package declares deterministic ordering and timestamps');
+  const releaseJob = source.split('  release:\n')[1]?.split('\njobs:\n')[0] || source.split('  release:\n')[1];
+  check(/permissions:\n\s+contents: write\n\s+id-token: write\n\s+attestations: write/.test(releaseJob), 'release job grants only the permissions needed for release publishing and artifact attestation');
+  const attestStep = source.split('      - name: Attest release artifacts\n')[1]?.split('\n      - name: ')[0];
+  check(Boolean(attestStep), 'release workflow attests its published artifacts');
+  check(attestStep.includes("if: steps.compare.outputs.should_release == 'true'") && attestStep.includes('uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2'), 'attestation is release-gated and pinned to the verified action commit');
+  check(attestStep.includes('build/${{ steps.version.outputs.zip_name }}') && attestStep.includes('build/${{ steps.version.outputs.manifest_name }}'), 'attestation covers both the distributable ZIP and its hash manifest');
+  check(source.indexOf('      - name: Build plugin zip\n') < source.indexOf('      - name: Attest release artifacts\n') && source.indexOf('      - name: Attest release artifacts\n') < source.indexOf('      - name: Create Git tag when missing\n'), 'attestation runs only after artifact creation and before release publication');
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
   console.log(`PASS: ${checks} release guard/manifest checks; no hosted release or actual ZIP build executed.`);
 })().catch(error => { console.error(error); process.exitCode = 1; });
