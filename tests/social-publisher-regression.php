@@ -421,7 +421,7 @@ namespace {
     $GLOBALS['wpdb']=new PublisherFixtureDb();$GLOBALS['due_rows']=[\RoxySocial\Store::$row];\RoxySocial\Publisher::publish_due();
     check(\RoxySocial\Store::$row['status']==='publishing'&&$GLOBALS['scheduled_events'][0][1]==='roxy_social_publish_single'
         &&$GLOBALS['scheduled_events'][0][2][0]===1&&$GLOBALS['scheduled_events'][0][2][1]===5
-        &&($GLOBALS['scheduled_events'][0][2][2]??null)===false&&count($GLOBALS['scheduled_events'][0][2])===4,
+        &&($GLOBALS['scheduled_events'][0][2][3]??null)===false&&count($GLOBALS['scheduled_events'][0][2])===4,
         'legacy stuck video receives one final status-check recovery instead of an unbounded retry loop');
 
     reset_fixture('instagram','failed');\RoxySocial\Store::$row['instagram_container_id']='legacy-container';
