@@ -173,32 +173,82 @@ class Sales {
       return self::empty_stats();
     }
 
+    $refresh_lock = self::acquire_stats_refresh_lock($showing_id);
+    if ($refresh_lock === false) {
+      return self::stats_refresh_error($showing_id, 'Could not acquire the showing totals refresh lock.');
+    }
+
     try {
       $stats = self::calculate_showing_stats($showing_id, $force_legacy_scan);
+      // A reconnect drops MySQL named locks. Never persist a snapshot unless
+      // this exact connection still owns the per-showing serialization lock.
+      if (!self::owns_stats_refresh_lock($refresh_lock)) {
+        throw new \RuntimeException('The database connection lost the showing totals refresh lock.');
+      }
+      $stored = $stats;
+      $stored['cache_version'] = self::CACHE_VERSION;
+      $stored['generated_at'] = current_time('mysql');
+      update_post_meta($showing_id, self::META_KEY, $stored);
     } catch (\Throwable $e) {
-      self::$stats_read_errors[$showing_id] = true;
-      if (function_exists('error_log')) {
-        error_log('[Roxy Suite Sales] Showing ' . $showing_id . ' totals refresh failed: ' . $e->getMessage());
-      }
-      // Keep the last known-good persistent and request-local totals. An
-      // unavailable marker makes capacity checks fail closed instead of
-      // interpreting a failed read as zero sold.
-      $previous = get_post_meta($showing_id, self::META_KEY, true);
-      if (is_array($previous) && (int) ($previous['cache_version'] ?? 0) === self::CACHE_VERSION) {
-        unset($previous['cache_version'], $previous['generated_at']);
-        return array_merge(self::empty_stats(), $previous, ['read_error' => true]);
-      }
-      return array_merge(self::empty_stats(), ['read_error' => true]);
+      return self::stats_refresh_error($showing_id, $e->getMessage());
+    } finally {
+      self::release_stats_refresh_lock($refresh_lock);
     }
+
     unset(self::$stats_read_errors[$showing_id]);
     self::$stats_cache[$showing_id] = $stats;
-
-    $stored = $stats;
-    $stored['cache_version'] = self::CACHE_VERSION;
-    $stored['generated_at'] = current_time('mysql');
-    update_post_meta($showing_id, self::META_KEY, $stored);
-
     return $stats;
+  }
+
+  /** Acquire a connection-owned MySQL lock to serialize projection snapshots. */
+  private static function acquire_stats_refresh_lock(int $showing_id) {
+    global $wpdb;
+    if (!is_object($wpdb) || !method_exists($wpdb, 'get_var') || !method_exists($wpdb, 'prepare')) return false;
+    $owner = (int) $wpdb->get_var('SELECT CONNECTION_ID()');
+    if ($owner <= 0) return false;
+    $lock = 'roxy_sales_stats_' . md5((string) (function_exists('get_current_blog_id') ? get_current_blog_id() : 1) . ':' . $showing_id);
+    $acquired = $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, %d)', $lock, 5));
+    if ((string) $acquired !== '1') return false;
+    $lease = ['owner' => $owner, 'name' => $lock];
+    if (self::owns_stats_refresh_lock($lease)) return $lease;
+    self::release_stats_refresh_lock($lease);
+    return false;
+  }
+
+  private static function owns_stats_refresh_lock(array $lease): bool {
+    global $wpdb;
+    if (!is_object($wpdb) || !method_exists($wpdb, 'get_var') || !method_exists($wpdb, 'prepare')) return false;
+    $owner = (int) ($lease['owner'] ?? 0);
+    $name = (string) ($lease['name'] ?? '');
+    if ($owner <= 0 || $name === '') return false;
+    $connection = (int) $wpdb->get_var('SELECT CONNECTION_ID()');
+    $lock_owner = (int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', $name));
+    return $connection === $owner && $lock_owner === $owner;
+  }
+
+  private static function release_stats_refresh_lock(array $lease): void {
+    global $wpdb;
+    $owner = (int) ($lease['owner'] ?? 0);
+    $name = (string) ($lease['name'] ?? '');
+    if ($owner <= 0 || $name === '' || !is_object($wpdb) || !method_exists($wpdb, 'get_var') || !method_exists($wpdb, 'prepare')) return;
+    if ((int) $wpdb->get_var('SELECT CONNECTION_ID()') !== $owner) return;
+    if ((int) $wpdb->get_var($wpdb->prepare('SELECT IS_USED_LOCK(%s)', $name)) === $owner) {
+      $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $name));
+    }
+  }
+
+  private static function stats_refresh_error(int $showing_id, string $message): array {
+    self::$stats_read_errors[$showing_id] = true;
+    if (function_exists('error_log')) {
+      error_log('[Roxy Suite Sales] Showing ' . $showing_id . ' totals refresh failed: ' . $message);
+    }
+    // Retain last-known-good totals and fail closed for capacity decisions.
+    $previous = get_post_meta($showing_id, self::META_KEY, true);
+    if (is_array($previous) && (int) ($previous['cache_version'] ?? 0) === self::CACHE_VERSION) {
+      unset($previous['cache_version'], $previous['generated_at']);
+      return array_merge(self::empty_stats(), $previous, ['read_error' => true]);
+    }
+    return array_merge(self::empty_stats(), ['read_error' => true]);
   }
 
   public static function clear_showing_cache(int $showing_id): void {

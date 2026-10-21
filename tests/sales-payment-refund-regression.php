@@ -3,6 +3,35 @@
 if (!defined('ABSPATH')) define('ABSPATH', __DIR__ . '/');
 if (!defined('ROXY_ST_META_SHOWING_ID')) define('ROXY_ST_META_SHOWING_ID', '_roxy_showing_id');
 if (!defined('ROXY_ST_META_TICKET_TYPE')) define('ROXY_ST_META_TICKET_TYPE', '_roxy_ticket_type');
+if (!class_exists('SalesFixtureDatabase')) {
+  final class SalesFixtureDatabase {
+    public int $connection_id = 101;
+    public function prepare(string $query, ...$args): string {
+      foreach ($args as $arg) {
+        $replacement = is_int($arg) ? (string)$arg : "'" . str_replace("'", "''", (string)$arg) . "'";
+        $query = preg_replace('/%[sd]/', $replacement, $query, 1);
+      }
+      return $query;
+    }
+    public function get_var(string $query) {
+      if ($query === 'SELECT CONNECTION_ID()') return $this->connection_id;
+      if (preg_match('/GET_LOCK\\(\\s*\'([^\']+)\'\\s*,\\s*\\d+\\s*\\)/', $query, $match)) {
+        $owner = $GLOBALS['sales_fixture_locks'][$match[1]] ?? null;
+        if ($owner !== null && (int)$owner !== $this->connection_id) return 0;
+        $GLOBALS['sales_fixture_locks'][$match[1]] = $this->connection_id;
+        return 1;
+      }
+      if (preg_match('/IS_USED_LOCK\\(\\s*\'([^\']+)\'\\s*\\)/', $query, $match)) return $GLOBALS['sales_fixture_locks'][$match[1]] ?? null;
+      if (preg_match('/RELEASE_LOCK\\(\\s*\'([^\']+)\'\\s*\\)/', $query, $match)) {
+        if (($GLOBALS['sales_fixture_locks'][$match[1]] ?? null) !== $this->connection_id) return 0;
+        unset($GLOBALS['sales_fixture_locks'][$match[1]]);
+        return 1;
+      }
+      return null;
+    }
+  }
+}
+if (!isset($GLOBALS['wpdb'])) $GLOBALS['wpdb'] = new SalesFixtureDatabase();
 if (!class_exists('WC_Order_Factory')) {
   class WC_Order_Factory {
     public static function get_order_item(int $item_id) {
@@ -49,7 +78,7 @@ eval('namespace ' . $namespace . ';
     public function update_meta_data(string $key, $value): void { $this->pending_meta[$key]=$value; }
     public function save(): int { if (!empty($GLOBALS["sales_fixture_order_save_failure"])) { $this->pending_meta=[]; return 0; } $this->meta=array_merge($this->meta,$this->pending_meta); $this->pending_meta=[]; return $this->id; }
   }
-  function wc_get_orders(array $args) { $GLOBALS["sales_fixture_query"] = $args; if (!empty($GLOBALS["sales_fixture_query_failure"]) && (empty($GLOBALS["sales_fixture_legacy_failure_only"]) || !isset($args["meta_query"]))) return false; $orders=array_filter($GLOBALS["sales_fixture_orders"] ?? [], static fn($order) => in_array($order->get_status(), $args["status"] ?? [], true)); if (!empty($GLOBALS["sales_fixture_filter_tagged_orders"]) && isset($args["meta_query"][0])) { $meta=$args["meta_query"][0]; $orders=array_filter($orders,static fn($order) => (string)$order->get_meta((string)$meta["key"],true)===(string)$meta["value"]); } return array_keys($orders); }
+  function wc_get_orders(array $args) { $GLOBALS["sales_fixture_query"] = $args; if (!empty($GLOBALS["sales_fixture_query_failure"]) && (empty($GLOBALS["sales_fixture_legacy_failure_only"]) || !isset($args["meta_query"]))) return false; if (!empty($GLOBALS['sales_fixture_drop_refresh_lock'])) { foreach ($GLOBALS['sales_fixture_locks'] as $name=>$owner) if ($owner===$GLOBALS['wpdb']->connection_id) unset($GLOBALS['sales_fixture_locks'][$name]); unset($GLOBALS['sales_fixture_drop_refresh_lock']); } $orders=array_filter($GLOBALS["sales_fixture_orders"] ?? [], static fn($order) => in_array($order->get_status(), $args["status"] ?? [], true)); if (!empty($GLOBALS["sales_fixture_filter_tagged_orders"]) && isset($args["meta_query"][0])) { $meta=$args["meta_query"][0]; $orders=array_filter($orders,static fn($order) => (string)$order->get_meta((string)$meta["key"],true)===(string)$meta["value"]); } return array_keys($orders); }
   function wc_get_order($id) { return $GLOBALS["sales_fixture_orders"][(int)$id] ?? null; }
   function get_post_meta($id, $key, $single=false) { return $GLOBALS["sales_fixture_meta"][(int)$id][$key] ?? ""; }
   function update_post_meta($id, $key, $value) { if (!empty($GLOBALS["sales_fixture_tag_write_failure"]) && strpos((string)$key, "_roxy_contains_showing_") === 0) return false; if ($key==="_roxy_sales_stats") $GLOBALS["sales_fixture_stats_writes"] = ($GLOBALS["sales_fixture_stats_writes"] ?? 0)+1; $GLOBALS["sales_fixture_meta"][(int)$id][$key]=$value; return true; }
@@ -83,6 +112,26 @@ $calculate = static function (int $id=42) use ($sales): array {
 $single_order = static function (string $status, bool $paid, int $qty=1, float $total=0.0, array $refund_qty=[], array $refund_total=[]) use ($item,$order): void {
   $GLOBALS['sales_fixture_orders'] = [42 => new $order($status,$paid,[new $item(901,701,$qty,$total)],$refund_qty,$refund_total)];
 };
+
+// Refresh serialization must fail closed on contention and after a reconnect.
+$GLOBALS['sales_fixture_meta'][$showing_id]['_roxy_legacy_sales_scan_complete'] = '1';
+$sales_lock_name = 'roxy_sales_stats_' . md5('1:' . $showing_id);
+$GLOBALS['sales_fixture_locks'][$sales_lock_name] = 999;
+$writes_before_busy_refresh = $GLOBALS['sales_fixture_stats_writes'] ?? 0;
+$busy_refresh = $sales::refresh_showing_stats($showing_id);
+$check(!empty($busy_refresh['read_error']) && ($GLOBALS['sales_fixture_stats_writes'] ?? 0)===$writes_before_busy_refresh
+  && ($GLOBALS['sales_fixture_locks'][$sales_lock_name] ?? null)===999,
+  'contended showing refresh preserves cached totals and does not write or release another connection’s lock');
+unset($GLOBALS['sales_fixture_locks'][$sales_lock_name]);
+$GLOBALS['sales_fixture_drop_refresh_lock'] = true;
+$writes_before_lost_lock = $GLOBALS['sales_fixture_stats_writes'] ?? 0;
+$lost_lock_refresh = $sales::refresh_showing_stats($showing_id);
+$check(!empty($lost_lock_refresh['read_error']) && ($GLOBALS['sales_fixture_stats_writes'] ?? 0)===$writes_before_lost_lock
+  && !isset($GLOBALS['sales_fixture_locks'][$sales_lock_name]),
+  'connection losing its showing lock after the sales query cannot persist its calculated snapshot');
+$recovered_lock_refresh = $sales::refresh_showing_stats($showing_id);
+$check(empty($recovered_lock_refresh['read_error']) && ($GLOBALS['wpdb']->get_var($GLOBALS['wpdb']->prepare('SELECT IS_USED_LOCK(%s)', $sales_lock_name))===null),
+  'a subsequent refresh recovers and releases its own showing lock');
 
 // Empty/default API contract includes explicit refund and net revenue totals.
 $empty = $sales::get_showing_stats(0);
