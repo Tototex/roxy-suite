@@ -78,6 +78,11 @@ $reset=static function()use($wpdb,$table,$virtual_base){
     $assert($store::poster_path_is_referenced($poster_path)===true,'WordPress post content reference prevents generated poster deletion');
     if($wpdb->delete($reference_posts,['ID'=>$reference_post_id])===false)throw new RuntimeException('Could not remove private poster-content reference.');
     $assert($store::poster_path_is_referenced($poster_path)===false,'unreferenced generated poster remains eligible for cleanup');
+    $assert($store::poster_path_is_referenced(sys_get_temp_dir().'/invalid poster name.png')===null,'malformed poster basename fails closed');
+    $original_postmeta_table=$wpdb->postmeta;
+    $wpdb->postmeta=$wpdb->prefix.'roxy_cleanup_fixture_missing_meta_'.$suffix;
+    $assert($store::poster_path_is_referenced($poster_path)===null,'postmeta query failure fails closed before content lookup');
+    $wpdb->postmeta=$original_postmeta_table;
     $wpdb->posts=$wpdb->prefix.'roxy_cleanup_fixture_missing_'.$suffix;
     $assert($store::poster_path_is_referenced($poster_path)===null,'post-content query failure fails closed and retains the poster');
     $wpdb->posts=$original_posts_table;

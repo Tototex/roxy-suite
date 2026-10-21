@@ -403,12 +403,20 @@ namespace {
     && \RoxyGrosses\Reporter::$send_calls === $manual_sends_before,
     'failed manual rerun preserves its failed queue entry and sends no report');
   \RoxyGrosses\Reporter::$sync_success = true;
+  wp_schedule_single_event(time() + 60, 'roxy_grosses_closed_day_refresh', ['2000-01-03', 3]);
   $manual_result = \RoxyGrosses\Scheduler::run_now('2000-01-03');
   $remaining_refreshes = $GLOBALS['fixture_options']['roxy_grosses_closed_day_refresh_queue'];
   scheduler_calendar_assert(!empty($manual_result['success'])
     && !isset($remaining_refreshes['2000-01-03']) && isset($remaining_refreshes['2000-01-04'])
     && \RoxyGrosses\Reporter::$send_calls === $manual_sends_before + 1,
     'successful manual rerun clears only its recovered failed date and preserves other queue entries');
+  $closed_day_calls_before_stale_retry = count(\RoxyGrosses\Reporter::$closed_day_calls);
+  $sends_before_stale_retry = \RoxyGrosses\Reporter::$send_calls;
+  \RoxyGrosses\Scheduler::run_closed_day_refresh('2000-01-03', 3);
+  scheduler_calendar_assert(count(\RoxyGrosses\Reporter::$closed_day_calls) === $closed_day_calls_before_stale_retry
+    && \RoxyGrosses\Reporter::$send_calls === $sends_before_stale_retry
+    && isset($GLOBALS['fixture_options']['roxy_grosses_closed_day_refresh_queue']['2000-01-04']),
+    'already-scheduled retry for a manually recovered date is ignored without another refresh or send');
   \RoxyGrosses\Reporter::$paid_rows = 0;
   $GLOBALS['fixture_options']['roxy_grosses_closed_day_refresh_queue'] = [];
   \RoxyGrosses\Settings::$values = array_merge($settings, ['schedule_enabled' => '0', 'advertiser_schedule_enabled' => '0']);

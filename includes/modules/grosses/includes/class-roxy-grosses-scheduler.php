@@ -196,6 +196,16 @@ class Scheduler {
       Store::insert_log('closed_day_refresh', 'closed-day-refresh', null, self::valid_report_date($intended_date) ? $intended_date : null, false, 'Closed-day refresh was skipped because its date or retry state is invalid.');
       return;
     }
+    $queue = self::read_closed_day_queue();
+    $pending = is_array($queue) ? ($queue[$intended_date] ?? null) : null;
+    if (!is_array($queue)) {
+      Store::insert_log('closed_day_refresh', 'closed-day-refresh', null, $intended_date, false, 'Closed-day refresh was skipped because its durable queue could not be read.');
+      return;
+    }
+    if (!is_array($pending) || ($pending['status'] ?? '') !== 'pending' || (int) ($pending['attempt'] ?? -1) !== $attempt) {
+      Store::insert_log('closed_day_refresh', 'closed-day-refresh-stale', null, $intended_date, true, 'Stale closed-day refresh event was ignored because no matching pending retry remains.');
+      return;
+    }
     if ($intended_date >= $now->format('Y-m-d')) {
       Store::insert_log('closed_day_refresh', 'closed-day-refresh', null, $intended_date, false, 'Closed-day refresh was skipped because its intended date is not yet closed.');
       self::ensure_pending_closed_day_refreshes($now);
